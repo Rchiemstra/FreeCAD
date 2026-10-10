@@ -1248,9 +1248,10 @@ void Document::beforeDelete()
 
 void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)
 {
-    // Replay, the stable-signal lock, a busy lane, or a non-GUI caller must
-    // not touch Coin or getMainWindow(). catchUpIdleLivePresentation() runs
-    // after scheduleGuiSingleShot once those are clear.
+    // Replay, the stable-signal lock, a busy lane, an atomic presentation
+    // admission, or a non-GUI caller must not touch Coin or getMainWindow().
+    // catchUpIdleLivePresentation() runs after scheduleGuiSingleShot once
+    // those are clear.
     if (deferLivePresentationUpdates()) {
         if (&Prop == &Obj.Visibility) {
             noteDeferredVisibilityChange(
@@ -1421,7 +1422,8 @@ bool Document::deferLivePresentationUpdates() const
     }
     return d->_pcDocument->collaborationNotificationsReplaying()
         || d->_pcDocument->collaborationStableNotificationActive()
-        || documentExecutionLaneBusy(*d->_pcDocument);
+        || documentExecutionLaneBusy(*d->_pcDocument)
+        || App::atomicPresentationMutationAdmissionActive();
 }
 
 void Document::noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider)

@@ -11,6 +11,9 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/MainThreadSignal.h>
+#include <App/MutationClassification.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
@@ -389,4 +392,17 @@ TEST_F(CollaborationResponsivenessTest,
     EXPECT_TRUE(commit.committed());
     EXPECT_EQ(_target->Label.getStrValue(), "Source-before/detached");
     EXPECT_TRUE(Gui::Camera::rotationsMatch(viewer->getCameraOrientation(), targetOrientation));
+}
+
+TEST_F(CollaborationResponsivenessTest, admissionDefersLivePresentationUpdates)
+{
+    QApplication::processEvents();
+    ASSERT_TRUE(App::MainThreadSignalConfig::isMainThread());
+    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*_document));
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    App::beginAtomicPresentationMutationTarget(*_document);
+    EXPECT_TRUE(_guiDocument->deferLivePresentationUpdates());
+    App::endAtomicPresentationMutationTarget(*_document);
+    EXPECT_FALSE(_guiDocument->deferLivePresentationUpdates());
 }

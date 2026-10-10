@@ -168,6 +168,54 @@ TEST_F(CrossDocumentExpressionRecomputeTest, openSourceDocumentDrivesTheDependen
     EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 9.0);
 }
 
+TEST_F(CrossDocumentExpressionRecomputeTest,
+       collaborativeCommitTellsTheCallerToRecomputeDirectly)
+{
+    // FeatureTest opts out of worker recompute, so it never reaches the
+    // closure check. A worker-capable object with a cross-document input does.
+    auto* sourceColumn = _source->addObject<App::FeatureTestColumn>("Column");
+    auto* drivenColumn = _driven->addObject<App::FeatureTestColumn>("DrivenColumn");
+    ASSERT_NE(sourceColumn, nullptr);
+    ASSERT_NE(drivenColumn, nullptr);
+    ASSERT_TRUE(drivenColumn->canRecomputeOnWorker());
+    sourceColumn->Value.setValue(6);
+    drivenColumn->Value.setValue(10);
+    EXPECT_NO_THROW(static_cast<void>(_source->recompute()));
+    _drivenObject->touch();
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    ASSERT_FALSE(_driven->mustExecute());
+
+    const std::string expression =
+        _sourceName + "#" + sourceColumn->getNameInDocument() + ".Value";
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::Structural;
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation,
+        [&] {
+            drivenColumn->setExpression(
+                App::ObjectIdentifier(drivenColumn->Value),
+                std::shared_ptr<App::Expression>(
+                    App::Expression::parse(drivenColumn, expression)));
+        });
+
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed) << result.message;
+    EXPECT_NE(result.message.find("unresolved cross-document dependency"), std::string::npos)
+        << result.message;
+    EXPECT_NE(result.message.find("outside this collaborative commit"), std::string::npos)
+        << result.message;
+    EXPECT_EQ(drivenColumn->Value.getValue(), 10);
+    EXPECT_TRUE(drivenColumn->ExpressionEngine.getExpressions().empty());
+
+    drivenColumn->setExpression(
+        App::ObjectIdentifier(drivenColumn->Value),
+        std::shared_ptr<App::Expression>(
+            App::Expression::parse(drivenColumn, expression)));
+    drivenColumn->touch();
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    EXPECT_FALSE(drivenColumn->isError());
+    EXPECT_EQ(drivenColumn->Value.getValue(), 6);
+}
+
 TEST_F(CrossDocumentExpressionRecomputeTest, closedSourceDocumentReportsUnresolvedLink)
 {
     EXPECT_EQ(_driven->recompute(), 1);

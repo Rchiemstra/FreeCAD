@@ -1914,7 +1914,21 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
             return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
         }
         if (derivedCoordinatorRecompute) {
-            static_cast<void>(collectClosure(document, *target));
+            // Cross-document links stay a refusal. The document owner can
+            // recompute them directly; this derived pass cannot.
+            try {
+                static_cast<void>(collectClosure(document, *target));
+            }
+            catch (const std::invalid_argument& error) {
+                const std::string_view text(error.what());
+                if (text.find("unresolved cross-document dependency")
+                    != std::string_view::npos) {
+                    throw std::invalid_argument(
+                        "generic recompute has an unresolved cross-document dependency; "
+                        "recompute the document directly, outside this collaborative commit");
+                }
+                throw;
+            }
         }
         return prepareOwnerThreadExecution();
     }
