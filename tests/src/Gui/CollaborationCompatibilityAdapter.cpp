@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <stdexcept>
@@ -22,7 +23,9 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/Expression.h>
 #include <App/PropertyGeo.h>
+#include <App/PropertyUnits.h>
 #include <Base/Placement.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/MainThreadSignal.h>
@@ -40,6 +43,7 @@
 #include <Gui/MainWindow.h>
 #include <Gui/MergeDocuments.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include <Gui/ViewProviderGeometryObject.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
@@ -1121,4 +1125,202 @@ TEST_F(CollaborationCompatibilityIntegrationTest, committedVisibilityChangeIsPre
     EXPECT_TRUE(restored->Visibility.getValue());
     EXPECT_TRUE(restoredView->Visibility.getValue());
     EXPECT_TRUE(restoredView->isShow());
+}
+
+int countOccurrences(const std::string& haystack, const std::string& needle)
+{
+    int count = 0;
+    for (std::size_t pos = 0; (pos = haystack.find(needle, pos)) != std::string::npos;
+         pos += needle.size()) {
+        ++count;
+    }
+    return count;
+}
+
+// A live main window (tree, property view, report view) is what recomputes a
+// Part feature after its expression source document has closed.
+class CrossDocumentExpressionGuiTest: public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        initializeCompatibilityGui();
+        Base::Interpreter().runString("import Part");
+        Base::Interpreter().runString("import PartGui");
+        Base::Interpreter().runString("import Spreadsheet");
+        // One window for the suite. Destroying it and constructing another
+        // re-enters a freed status-bar child.
+        if (!Gui::MainWindow::getInstance()) {
+            new Gui::MainWindow();
+        }
+    }
+
+    void SetUp() override
+    {
+        _directory = std::filesystem::temp_directory_path()
+            / ("fc-xdoc-gui-"
+               + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(_directory);
+
+        App::DocumentInitFlags flags;
+        // A 3D view is an MDI child. Leaving it for process teardown destroys
+        // that QMdiSubWindow after QApplication and segfaults in QFontCache.
+        flags.createView = false;
+        _sourceName = App::GetApplication().getUniqueDocumentName("QASrc");
+        _drivenName = App::GetApplication().getUniqueDocumentName("QADst");
+        _source = App::GetApplication().newDocument(_sourceName.c_str(), "sourceUser", flags);
+        _driven = App::GetApplication().newDocument(_drivenName.c_str(), "drivenUser", flags);
+        ASSERT_NE(_source, nullptr);
+        ASSERT_NE(_driven, nullptr);
+        QApplication::processEvents();
+
+        auto* sheet = _source->addObject("Spreadsheet::Sheet", "Dims");
+        ASSERT_NE(sheet, nullptr);
+        const std::string sheetSetup = "App.getDocument('" + _sourceName
+            + "').getObject('Dims').set('A1', '25')\n"
+            + "App.getDocument('" + _sourceName + "').getObject('Dims').setAlias('A1', 'Height')\n";
+        Base::Interpreter().runString(sheetSetup.c_str());
+        ASSERT_NO_THROW(static_cast<void>(_source->recompute()));
+        ASSERT_NE(sheet->getPropertyByName("Height"), nullptr);
+        _drivenBox = _driven->addObject("Part::Box", "Box");
+        ASSERT_NE(_drivenBox, nullptr);
+        drivenLength()->setValue(10.0);
+        Gui::Test::saveAsWithoutBlockingGui(*_source, (_directory / "qa_src.FCStd").string().c_str());
+        Gui::Test::saveAsWithoutBlockingGui(*_driven, (_directory / "qa_dst.FCStd").string().c_str());
+
+        const std::string expression = _sourceName + "#<<Dims>>.Height";
+        _drivenBox->setExpression(
+            App::ObjectIdentifier(*drivenLength()),
+            std::shared_ptr<App::Expression>(App::Expression::parse(_drivenBox, expression)));
+    }
+
+    void TearDown() override
+    {
+        if (App::GetApplication().getDocument(_drivenName.c_str())) {
+            App::GetApplication().closeDocument(_drivenName.c_str());
+        }
+        if (App::GetApplication().getDocument(_sourceName.c_str())) {
+            App::GetApplication().closeDocument(_sourceName.c_str());
+        }
+        QApplication::processEvents();
+        std::error_code error;
+        std::filesystem::remove_all(_directory, error);
+    }
+
+    App::PropertyLength* drivenLength() const
+    {
+        return dynamic_cast<App::PropertyLength*>(_drivenBox->getPropertyByName("Length"));
+    }
+
+    std::filesystem::path _directory;
+    std::string _sourceName;
+    std::string _drivenName;
+    App::Document* _source {nullptr};
+    App::Document* _driven {nullptr};
+    App::DocumentObject* _drivenBox {nullptr};
+};
+
+TEST_F(CrossDocumentExpressionGuiTest, openSourceRecomputeDoesNotLogExpressionErrors)
+{
+    ConsoleErrorCapture capture;
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    QApplication::processEvents();
+
+    EXPECT_FALSE(_drivenBox->isError());
+    ASSERT_NE(drivenLength(), nullptr);
+    EXPECT_DOUBLE_EQ(drivenLength()->getValue(), 25.0);
+    const auto errors = capture.errors();
+    EXPECT_EQ(errors.find("not found"), std::string::npos) << errors;
+    EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, closedSourceRecomputeDoesNotMutateDuringPresentation)
+{
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    QApplication::processEvents();
+    ASSERT_FALSE(_drivenBox->isError());
+    ASSERT_NE(drivenLength(), nullptr);
+    ASSERT_DOUBLE_EQ(drivenLength()->getValue(), 25.0);
+
+    App::GetApplication().closeDocument(_sourceName.c_str());
+    _source = nullptr;
+    QApplication::processEvents();
+
+    ConsoleErrorCapture capture;
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_NE(App::GetApplication().getDocument(_drivenName.c_str()), nullptr);
+    EXPECT_TRUE(_drivenBox->isError());
+    const char* diagnostic = _driven->getErrorDescription(_drivenBox);
+    ASSERT_NE(diagnostic, nullptr);
+    const std::string diagnosticText(diagnostic);
+    EXPECT_NE(diagnosticText.find("not found"), std::string::npos) << diagnosticText;
+    EXPECT_NE(diagnosticText.find(_sourceName), std::string::npos) << diagnosticText;
+
+    const auto errors = capture.errors();
+    EXPECT_EQ(countOccurrences(errors, "not found"), 1) << errors;
+    EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
+}
+
+// A GUI edit of shape appearance, with no atomic presentation in progress,
+// reaches the view provider and does not trip the mutation guard.
+TEST_F(CrossDocumentExpressionGuiTest, guiThreadAppearanceEditIsPresented)
+{
+    auto* guiDocument = Gui::Application::Instance->getDocument(_driven);
+    ASSERT_NE(guiDocument, nullptr);
+    auto* view = freecad_cast<Gui::ViewProviderGeometryObject*>(
+        guiDocument->getViewProvider(_drivenBox));
+    ASSERT_NE(view, nullptr);
+
+    App::Material material = view->ShapeAppearance[0];
+    material.diffuseColor = Base::Color(0.1F, 0.2F, 0.3F);
+    ConsoleErrorCapture capture;
+    EXPECT_NO_THROW(view->ShapeAppearance.setValue(material));
+
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, material.diffuseColor);
+    const auto errors = capture.errors();
+    EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
+}
+
+// Regression: refreshing a view property while the document owner holds atomic
+// presentation admission (the closed-source recompute's error presentation)
+// called into the App document and the GUI catch logged "mutation is
+// unavailable from a non-owner thread during an atomic presentation callback".
+TEST_F(CrossDocumentExpressionGuiTest, viewAppearanceDuringOwnerAdmissionIsNotLogged)
+{
+    auto* guiDocument = Gui::Application::Instance->getDocument(_driven);
+    ASSERT_NE(guiDocument, nullptr);
+    auto* view = freecad_cast<Gui::ViewProviderGeometryObject*>(
+        guiDocument->getViewProvider(_drivenBox));
+    ASSERT_NE(view, nullptr);
+
+    App::Material material = view->ShapeAppearance[0];
+    material.diffuseColor = Base::Color(0.4F, 0.5F, 0.6F);
+    std::string thrown;
+    ConsoleErrorCapture capture;
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
+        App::beginAtomicPresentationMutationTarget(*_driven);
+        const auto endAdmission =
+            qScopeGuard([&] { App::endAtomicPresentationMutationTarget(*_driven); });
+        App::MainThreadSignalConfig::invoke(
+            [&] {
+                try {
+                    view->ShapeAppearance.setValue(material);
+                }
+                catch (const Base::Exception& error) {
+                    thrown = error.what();
+                }
+            },
+            true);
+    });
+
+    EXPECT_TRUE(thrown.empty()) << thrown;
+    const auto errors = capture.errors();
+    EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, material.diffuseColor);
 }

@@ -37,6 +37,7 @@
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
 #include <App/Link.h>
+#include <App/MutationClassification.h>
 #include <App/Origin.h>
 #include <Base/Tools.h>
 
@@ -272,7 +273,11 @@ void ViewProviderDocumentObject::onBeforeChange(const App::Property* prop)
     if (isAttachedToDocument()) {
         App::DocumentObject* obj = getObject();
         App::Document* doc = obj ? obj->getDocument() : nullptr;
-        if (doc) {
+        // A GUI view-property write notifies the App document here. That hook
+        // refuses the call while another thread holds atomic presentation
+        // admission, and the presentation catch logs the refusal. The view
+        // value still updates; only the document notification is skipped.
+        if (doc && !App::atomicPresentationMutationAdmissionHeldByOtherThread(*doc)) {
             onBeforeChangeProperty(doc, prop);
         }
     }
@@ -339,8 +344,12 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
             // The mirrored App::DocumentObject::Visibility property is
             // intentionally NoModify to prevent double accounting.  The
             // ViewProvider is therefore the sole Appearance authority for a
-            // user-visible show/hide change.
-            getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+            // user-visible show/hide change. markFileChange() refuses a GUI
+            // caller while another thread holds atomic presentation admission.
+            if (!App::atomicPresentationMutationAdmissionHeldByOtherThread(
+                    *getObject()->getDocument())) {
+                getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+            }
         }
     }
     else if (prop == &SelectionStyle) {
@@ -360,7 +369,12 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
         if (prop) {
             FC_LOG(prop->getFullName() << " changed");
         }
-        getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+        // markFileChange() enforces atomic presentation admission. A refresh
+        // that landed while another thread still holds it must not log that refusal.
+        if (!App::atomicPresentationMutationAdmissionHeldByOtherThread(
+                *getObject()->getDocument())) {
+            getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+        }
     }
 
     ViewProvider::onChanged(prop);
