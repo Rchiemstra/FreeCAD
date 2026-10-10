@@ -1488,8 +1488,17 @@ void Document::catchUpIdleLivePresentation()
             continue;
         }
         try {
-            const bool wantVisible = viewProvider->Visibility.getValue();
+            // Deferred slotChangedObject records the provider but skips
+            // ViewProviderDocumentObject::update(), the only copy of App
+            // Visibility onto the view provider. updateView() below still
+            // refreshes every other App property through updateData().
             const bool deferred = deferredVisibility.contains(viewProvider);
+            if (deferred) {
+                if (App::DocumentObject* object = viewProvider->getObject()) {
+                    viewProvider->update(&object->Visibility);
+                }
+            }
+            const bool wantVisible = viewProvider->Visibility.getValue();
             if (deferred && wantVisible != viewProvider->isShow()) {
                 if (wantVisible) {
                     viewProvider->show();

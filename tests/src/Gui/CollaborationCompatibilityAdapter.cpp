@@ -4,10 +4,13 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+#include <Inventor/nodes/SoTransform.h>
 
 #include <QApplication>
 #include <QScopeGuard>
@@ -19,6 +22,8 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/PropertyGeo.h>
+#include <Base/Placement.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/MainThreadSignal.h>
 #include <App/MergeDocuments.h>
@@ -990,4 +995,130 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     EXPECT_THROW(viewProvider->Visibility.setStatus(App::Property::Hidden, true),
                  Base::RuntimeError);
     EXPECT_FALSE(viewProvider->Visibility.testStatus(App::Property::Hidden));
+}
+
+namespace
+{
+
+App::DocumentObject* addShownPlacement(App::Document& document, const char* name)
+{
+    auto* placement = document.addObject("App::Placement", name);
+    if (!placement) {
+        return nullptr;
+    }
+    Gui::Test::recomputeWithoutBlockingGui(document);
+    return placement;
+}
+
+Gui::ViewProviderDocumentObject* placementView(Gui::Document& guiDocument,
+                                               App::DocumentObject& object)
+{
+    return freecad_cast<Gui::ViewProviderDocumentObject*>(guiDocument.getViewProvider(&object));
+}
+
+void pumpGuiUntil(const std::function<bool()>& done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+App::DocumentCommitResult commitOnPlacement(App::Document& document, std::function<void()> body)
+{
+    return Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        document,
+        {App::CollaborationCompatibilityScope::Structural, {}, {}},
+        std::move(body));
+}
+
+}  // namespace
+
+// A direct App Visibility write on the GUI thread is applied by
+// slotChangedObject -> ViewProviderDocumentObject::update().
+TEST_F(CollaborationCompatibilityIntegrationTest, guiThreadVisibilityHideIsPresented)
+{
+    auto* placement = addShownPlacement(*_document, "DirectVisibility");
+    ASSERT_NE(placement, nullptr);
+    auto* view = placementView(*_guiDocument, *placement);
+    ASSERT_NE(view, nullptr);
+    ASSERT_TRUE(placement->Visibility.getValue());
+    ASSERT_TRUE(view->Visibility.getValue());
+    ASSERT_TRUE(view->isShow());
+
+    placement->Visibility.setValue(false);
+    pumpGuiUntil([&] { return !view->Visibility.getValue() && !view->isShow(); });
+
+    EXPECT_FALSE(placement->Visibility.getValue());
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_FALSE(view->isShow());
+}
+
+// Placement is an App property whose view refresh goes through updateData(),
+// which the idle catch-up already replays. Visibility is the special case.
+TEST_F(CollaborationCompatibilityIntegrationTest, committedPlacementChangeIsPresented)
+{
+    auto* placement = addShownPlacement(*_document, "CommittedPlacement");
+    ASSERT_NE(placement, nullptr);
+    auto* view = placementView(*_guiDocument, *placement);
+    ASSERT_NE(view, nullptr);
+    auto* transform = view->getTransformNode();
+    ASSERT_NE(transform, nullptr);
+
+    auto* placementProperty =
+        dynamic_cast<App::PropertyPlacement*>(placement->getPropertyByName("Placement"));
+    ASSERT_NE(placementProperty, nullptr);
+    const auto result = commitOnPlacement(*_document, [&] {
+        placementProperty->setValue(Base::Placement(Base::Vector3d(12, 0, 0), Base::Rotation()));
+    });
+    ASSERT_TRUE(result.committed()) << result.message;
+    pumpGuiUntil([&] { return transform->translation.getValue()[0] > 11.0F; });
+
+    EXPECT_NEAR(transform->translation.getValue()[0], 12.0, 1e-4);
+}
+
+// Regression: a collaborative commit sets App::DocumentObject::Visibility on
+// the owner thread. The change is replayed while live presentation is
+// deferred, and the idle catch-up must still copy it onto the view provider
+// (and the reverse show).
+TEST_F(CollaborationCompatibilityIntegrationTest, committedVisibilityChangeIsPresented)
+{
+    auto* placement = addShownPlacement(*_document, "CommittedVisibility");
+    ASSERT_NE(placement, nullptr);
+    auto* view = placementView(*_guiDocument, *placement);
+    ASSERT_NE(view, nullptr);
+    ASSERT_TRUE(view->Visibility.getValue());
+    ASSERT_TRUE(view->isShow());
+
+    const auto hidden = commitOnPlacement(*_document, [&] {
+        placement->Visibility.setValue(false);
+    });
+    ASSERT_TRUE(hidden.committed()) << hidden.message;
+    pumpGuiUntil([&] { return !view->Visibility.getValue() && !view->isShow(); });
+
+    EXPECT_FALSE(placement->Visibility.getValue());
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_FALSE(view->isShow());
+
+    // Reverse: hide on the GUI thread (that path already follows the view
+    // provider), then show again from inside a collaborative commit.
+    auto* restored = addShownPlacement(*_document, "CommittedVisibilityShow");
+    ASSERT_NE(restored, nullptr);
+    auto* restoredView = placementView(*_guiDocument, *restored);
+    ASSERT_NE(restoredView, nullptr);
+    restored->Visibility.setValue(false);
+    pumpGuiUntil([&] { return !restoredView->Visibility.getValue() && !restoredView->isShow(); });
+    ASSERT_FALSE(restoredView->Visibility.getValue());
+    ASSERT_FALSE(restoredView->isShow());
+
+    const auto shown = commitOnPlacement(*_document, [&] {
+        restored->Visibility.setValue(true);
+    });
+    ASSERT_TRUE(shown.committed()) << shown.message;
+    pumpGuiUntil([&] { return restoredView->Visibility.getValue() && restoredView->isShow(); });
+
+    EXPECT_TRUE(restored->Visibility.getValue());
+    EXPECT_TRUE(restoredView->Visibility.getValue());
+    EXPECT_TRUE(restoredView->isShow());
 }
