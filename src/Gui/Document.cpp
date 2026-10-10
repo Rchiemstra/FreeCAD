@@ -1420,9 +1420,13 @@ bool Document::deferLivePresentationUpdates() const
     if (!d->_pcDocument || !App::MainThreadSignalConfig::isMainThread()) {
         return true;
     }
+    // Undo/redo apply on the lane owner through dispatchToOwner(), which
+    // does not mark the lane busy. Catch-up in that window writes view
+    // properties over the values Paste just restored.
     return d->_pcDocument->collaborationNotificationsReplaying()
         || d->_pcDocument->collaborationStableNotificationActive()
         || documentExecutionLaneBusy(*d->_pcDocument)
+        || d->_pcDocument->isPerformingTransaction()
         || App::atomicPresentationMutationAdmissionActive();
 }
 

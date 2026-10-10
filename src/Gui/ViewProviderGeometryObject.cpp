@@ -184,9 +184,18 @@ void ViewProviderGeometryObject::updateData(const App::Property* prop)
              */
             App::Material defaultMaterial;
             auto material = geometry->getMaterialAppearance();
+            // operator== is true for any shared uuid, so a ShapeColor edit of
+            // that material still compares equal. Compare the visible fields or
+            // presentation catch-up restores the material and drops the edit.
+            const auto sameVisualAppearance = [](App::Material lhs, App::Material rhs) {
+                lhs.uuid.clear();
+                rhs.uuid.clear();
+                return lhs == rhs;
+            };
             if ((ShapeAppearance.getSize() == 1)
-                && (ShapeAppearance[0] == defaultMaterial || ShapeAppearance[0] == materialAppearance)
-                && (material != defaultMaterial)) {
+                && (sameVisualAppearance(ShapeAppearance[0], defaultMaterial)
+                    || sameVisualAppearance(ShapeAppearance[0], materialAppearance))
+                && !sameVisualAppearance(material, defaultMaterial)) {
                 ShapeAppearance.setValue(material);
                 materialAppearance = material;
             }

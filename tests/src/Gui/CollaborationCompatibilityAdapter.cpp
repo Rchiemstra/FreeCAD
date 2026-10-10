@@ -1241,6 +1241,106 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     EXPECT_EQ(errors.find("exception while restoring"), std::string::npos) << errors;
 }
 
+// An App property changed in a transaction is restored by undo and put back by
+// redo when both run on the document owner, the collaboration history path.
+TEST_F(CollaborationCompatibilityIntegrationTest, appLabelUndoRedoOnOwnerRestoresValue)
+{
+    _document->clearUndos();
+    _document->openTransaction("Rename");
+    _object->Label.setValue("renamed");
+    _document->commitTransaction();
+    ASSERT_EQ(std::string(_object->Label.getValue()), "renamed");
+    ASSERT_TRUE(_document->undoStackRecordsProperty(_object, "Label"));
+
+    ASSERT_TRUE(undoOnOwner(*_document));
+    EXPECT_EQ(std::string(_object->Label.getValue()), "before");
+
+    ASSERT_TRUE(redoOnOwner(*_document));
+    EXPECT_EQ(std::string(_object->Label.getValue()), "renamed");
+}
+
+// set_color writes ShapeAppearance and Transparency on the GUI thread inside a
+// transaction. Undo on the owner thread restores the defaults. Redo must put
+// the colour, transparency, and a direct ViewObject.Visibility edit back.
+TEST_F(CollaborationCompatibilityIntegrationTest, viewPropertyUndoRedoOnOwnerRestoresAppearance)
+{
+    if (!Gui::MainWindow::getInstance()) {
+        new Gui::MainWindow();
+    }
+    Base::Interpreter().runString("import Part");
+    Base::Interpreter().runString("import PartGui");
+
+    auto* box = _document->addObject("Part::Box", "ColorBox");
+    ASSERT_NE(box, nullptr);
+    Gui::Test::recomputeWithoutBlockingGui(*_document);
+    auto* view = freecad_cast<Gui::ViewProviderGeometryObject*>(
+        _guiDocument->getViewProvider(box));
+    ASSERT_NE(view, nullptr);
+
+    const App::Material originalAppearance = view->ShapeAppearance[0];
+    const long originalTransparency = view->Transparency.getValue();
+    ASSERT_TRUE(view->Visibility.getValue());
+
+    App::Material colored = originalAppearance;
+    colored.diffuseColor = Base::Color(0.1F, 0.8F, 0.2F);
+    _document->clearUndos();
+    _document->openTransaction("Color");
+    view->ShapeAppearance.setValue(colored);
+    view->Transparency.setValue(25);
+    _document->commitTransaction();
+    ASSERT_EQ(view->ShapeAppearance[0].diffuseColor, colored.diffuseColor);
+    ASSERT_EQ(view->Transparency.getValue(), 25);
+    ASSERT_TRUE(_document->undoStackRecordsProperty(view, "ShapeAppearance"))
+        << undoNamesOf(*_document);
+    ASSERT_TRUE(_document->undoStackRecordsProperty(view, "Transparency"))
+        << undoNamesOf(*_document);
+
+    ConsoleErrorCapture capture;
+    ASSERT_TRUE(undoOnOwner(*_document));
+    for (int step = 0; step < 8; ++step) {
+        QApplication::processEvents();
+    }
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, originalAppearance.diffuseColor);
+    EXPECT_EQ(view->Transparency.getValue(), originalTransparency);
+
+    ASSERT_TRUE(redoOnOwner(*_document));
+    for (int step = 0; step < 8; ++step) {
+        QApplication::processEvents();
+    }
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, colored.diffuseColor);
+    EXPECT_EQ(view->Transparency.getValue(), 25);
+
+    _document->clearUndos();
+    _document->openTransaction("Hide");
+    view->Visibility.setValue(false);
+    _document->commitTransaction();
+    ASSERT_FALSE(view->Visibility.getValue());
+    ASSERT_TRUE(_document->undoStackRecordsProperty(view, "Visibility"))
+        << undoNamesOf(*_document);
+    // The colour edit must survive a later visibility transaction.
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, colored.diffuseColor);
+
+    ASSERT_TRUE(undoOnOwner(*_document));
+    for (int step = 0; step < 8; ++step) {
+        QApplication::processEvents();
+    }
+    EXPECT_TRUE(view->Visibility.getValue());
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, colored.diffuseColor);
+
+    ASSERT_TRUE(redoOnOwner(*_document));
+    for (int step = 0; step < 8; ++step) {
+        QApplication::processEvents();
+    }
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, colored.diffuseColor);
+    EXPECT_EQ(view->Transparency.getValue(), 25);
+
+    const auto errors = capture.errors();
+    EXPECT_EQ(errors.find("main thread"), std::string::npos) << errors;
+    EXPECT_EQ(errors.find("exception while restoring"), std::string::npos) << errors;
+    EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
+}
+
 int countOccurrences(const std::string& haystack, const std::string& needle)
 {
     int count = 0;
