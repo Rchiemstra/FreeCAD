@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import contextlib
 import io
+import struct
+import tempfile
 import unittest
+import zlib
+from pathlib import Path
+from unittest import mock
 
 from run_gui_tests import (
     EXPECTED_GUI_SUITES,
@@ -276,6 +281,148 @@ class EndToEndFakeFreeCAD(unittest.TestCase):
             return 0, _ran(1)
 
         self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 4)
+
+
+def _build_fcrash(path: Path, frames: list[tuple[str, int]], *, code: int) -> None:
+    """Write a v1 .fcrash with the same layout as src/Base/CrashReporter/Format.h."""
+    strings = bytearray()
+    packed_frames = bytearray()
+    for module, offset in frames:
+        encoded = module.encode()
+        strings += struct.pack("<H", len(encoded)) + encoded
+        string_offset = len(strings) - (2 + len(encoded))
+        packed_frames += struct.pack("<QQII", 0x1000 + offset, offset, string_offset, 0)
+    frame_table = 128
+    string_table = frame_table + len(packed_frames)
+    file_size = string_table + len(strings) + 4
+    header = struct.pack(
+        "<IIQQqIIIIIIIIIIBBBBB",
+        0x52434346,
+        1,
+        0,
+        1,
+        0,
+        42,
+        code,
+        len(frames),
+        file_size,
+        0,
+        frame_table,
+        string_table,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        2,
+        1,
+        27,
+        1,
+        0,
+    )
+    if len(header) != 77:
+        raise AssertionError(len(header))
+    body = header + bytes(51) + bytes(packed_frames) + bytes(strings)
+    if len(body) != file_size - 4:
+        raise AssertionError((len(body), file_size))
+    path.write_bytes(body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF))
+
+
+def _capture_modules(run, **kwargs) -> tuple[int, str, str]:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        rc = run_gui_modules("FreeCAD", run=run, crash_helper=False, **kwargs)
+    return rc, stdout.getvalue(), stderr.getvalue()
+
+
+class CrashReportDiagnostics(unittest.TestCase):
+    def test_signal_death_prints_decoded_frames(self):
+        cases = ((-11, 11, "SIGSEGV"), (-6, 6, "SIGABRT"), (245, 11, "SIGSEGV"))
+        for child_rc, fault, fault_name in cases:
+            with self.subTest(rc=child_rc):
+                with tempfile.TemporaryDirectory() as tmp:
+                    directory = Path(tmp)
+                    _build_fcrash(
+                        directory / "crash-1-1.fcrash",
+                        [("libStale.so", 0x10)],
+                        code=fault,
+                    )
+
+                    def run(cmd, _rc=child_rc, _fault=fault, _dir=directory):
+                        if Path(cmd[0]).name == "gdb":
+                            return 0, "thread apply all bt"
+                        if cmd[-1] == "-t":
+                            return 0, _listing(*FULL_SUITES)
+                        if cmd[-1] == "GuiDocument":
+                            _build_fcrash(
+                                _dir / "crash-9-9.fcrash",
+                                [("libFreeCADApp.so", 0x1234)],
+                                code=_fault,
+                            )
+                            return _rc, ""
+                        return 0, _ran(1)
+
+                    def symbolize(module: str, offset: int) -> str | None:
+                        if module == "libFreeCADApp.so" and offset == 0x1234:
+                            return "App::Document::recompute at src/App/Document.cpp:10"
+                        return None
+
+                    def which(name: str) -> str | None:
+                        return "/usr/bin/gdb" if name == "gdb" else None
+
+                    with mock.patch("run_gui_tests.shutil.which", side_effect=which):
+                        rc, _stdout, stderr = _capture_modules(
+                            run,
+                            crash_reports_dir=directory,
+                            symbolize=symbolize,
+                        )
+                    self.assertEqual(rc, 1)
+                    self.assertIn(
+                        "#0 libFreeCADApp.so+0x1234 "
+                        "App::Document::recompute at src/App/Document.cpp:10",
+                        stderr,
+                    )
+                    self.assertIn(fault_name, stderr)
+                    self.assertNotIn("libStale.so", stderr)
+                    self.assertLess(
+                        stderr.index("libFreeCADApp.so+0x1234"),
+                        stderr.index("Re-running GuiDocument under gdb"),
+                    )
+
+    def test_signal_death_without_report_prints_one_line(self):
+        def run(cmd):
+            if Path(cmd[0]).name == "gdb":
+                return 0, "thread apply all bt"
+            if cmd[-1] == "-t":
+                return 0, _listing(*FULL_SUITES)
+            if cmd[-1] == "GuiDocument":
+                return -11, ""
+            return 0, _ran(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _stdout, stderr = _capture_modules(
+                run, crash_reports_dir=Path(tmp)
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stderr.count("No crash report (.fcrash) found."), 1)
+        self.assertLess(
+            stderr.index("No crash report (.fcrash) found."),
+            stderr.index("Re-running") if "Re-running" in stderr else len(stderr),
+        )
+
+    def test_clean_exit_prints_nothing_about_crash_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            _build_fcrash(directory / "crash-1-1.fcrash", [("libStale.so", 0x10)], code=11)
+
+            def run(cmd):
+                if cmd[-1] == "-t":
+                    return 0, _listing(*FULL_SUITES)
+                return 0, _ran(1)
+
+            rc, _stdout, stderr = _capture_modules(run, crash_reports_dir=directory)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Crash report", stderr)
+        self.assertNotIn("No crash report", stderr)
+        self.assertNotIn("libStale.so", stderr)
 
 
 if __name__ == "__main__":
