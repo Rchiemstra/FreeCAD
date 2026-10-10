@@ -3708,6 +3708,39 @@ void Document::onChanged(const Property* prop)
     }
 }
 
+void Document::captureActiveTransactionProperty(const TransactionalObject* who,
+                                                const Property* what)
+{
+    if (!who || !what || d->rollback || d->undoing) {
+        return;
+    }
+    // openTransaction() only books an id. The transaction object is created
+    // on the first recorded change. Status bits do not go through
+    // onBeforeChange, so open that booked transaction here.
+    if (!d->activeUndoTransaction) {
+        _checkTransaction(nullptr, what, __LINE__);
+    }
+    if (d->activeUndoTransaction) {
+        d->activeUndoTransaction->addObjectChange(who, what);
+        d->activeUndoTransaction->noteSerializedStatus(who, what);
+    }
+}
+
+void Document::captureInverseTransactionProperty(const TransactionalObject* who,
+                                                   const Property* what,
+                                                   bool restoreSerializedStatus)
+{
+    // Undo and redo apply one transaction while another records the inverse.
+    // Snapshot first so Paste side effects cannot rewrite that record.
+    if (!who || !what || d->rollback || !d->undoing || !d->activeUndoTransaction) {
+        return;
+    }
+    d->activeUndoTransaction->addObjectChange(who, what);
+    if (restoreSerializedStatus) {
+        d->activeUndoTransaction->noteSerializedStatus(who, what);
+    }
+}
+
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
     // ViewProvider properties reach the owning App document here even though

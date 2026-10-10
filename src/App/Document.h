@@ -1328,6 +1328,14 @@ public:
     /// Abort the currently running transaction.
     void abortTransaction() const;
 
+    /// Record a property in the open transaction. A booked id is opened first.
+    /// No change signal is emitted.
+    void captureActiveTransactionProperty(const TransactionalObject* who, const Property* what);
+    /// Snapshot a live property into the inverse undo/redo transaction before it is applied.
+    void captureInverseTransactionProperty(const TransactionalObject* who,
+                                          const Property* what,
+                                          bool restoreSerializedStatus);
+
     /// Check whether a transaction is open.
     bool hasPendingTransaction() const;
 

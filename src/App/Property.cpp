@@ -103,6 +103,33 @@ void publishPropertyMutation(Property& property, bool structural)
     static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 
+constexpr unsigned long serializedPropertyStatusMask()
+{
+    return (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+}
+
+void capturePersistedStaticStatus(Property& property,
+                                  Document& document,
+                                  unsigned long oldStatus,
+                                  unsigned long newStatus)
+{
+    if (property.testStatus(Property::PropDynamic)) {
+        return;
+    }
+    if (((oldStatus ^ newStatus) & serializedPropertyStatusMask()) == 0) {
+        return;
+    }
+    auto* object = dynamic_cast<DocumentObject*>(property.getContainer());
+    if (!object || object->getDocument() != &document) {
+        return;
+    }
+    document.captureActiveTransactionProperty(object, &property);
+}
+
 }  // namespace
 
 
@@ -464,6 +491,7 @@ void Property::setStatusValue(unsigned long status)
             // ensurePropertyStatusMutationAllowed ignores those runtime bits.
             Internal::CollaborationStructuralMutationRecorder::
                 ensurePropertyStatusMutationAllowed(*document, *this, oldStatus, status);
+            capturePersistedStaticStatus(*this, *document, oldStatus, status);
         }
         else {
             // ViewProvider properties are GUI-owned containers. Their existing

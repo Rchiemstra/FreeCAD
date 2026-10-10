@@ -237,6 +237,17 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
     const auto* object = dynamic_cast<const DocumentObject*>(container);
     const bool attachedStructuralObject = object && object->getDocument() == &document
         && document.containsObject(object);
+    // ReadOnly, Hidden, and the other persisted flags on an existing static
+    // property are presentation state. They are not an object or
+    // dynamic-property structure change, so the stable-boundary gate does not
+    // apply. Dynamic-property status stays structural.
+    if (attachedStructuralObject && !property.testStatus(Property::PropDynamic)) {
+        const char* propertyName = property.getName();
+        if (propertyName && *propertyName
+            && object->getPropertyByName(propertyName) == &property) {
+            return;
+        }
+    }
     const bool newStructuralObject = attachedStructuralObject
         && isNewStructuralObject(*document.d, *object);
     // unsetupObject() may adjust persistent property flags while an object is

@@ -2043,16 +2043,19 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
         const bool affectsPersistence = serializedDelta
             && !prop.testStatus(Property::PropNoPersist);
         if (affectsPersistence) {
-            // Existing-object status changes are not part of Transaction's
-            // property payload and therefore remain sticky. A
-            // transaction-owned new object is removed as a whole on
-            // abort/undo, including its serialized property status.
+            // Static property status is stored in the open transaction and
+            // follows its file token. Dynamic-property status stays outside
+            // that payload and remains sticky. A transaction-owned new
+            // object is removed as a whole on abort/undo, including its
+            // serialized property status.
             const bool transactionOwnedNewObject =
                 Internal::CollaborationStructuralMutationRecorder::
                     isTransactionOwnedNewObject(*getDocument(), *this);
+            const bool transactionOwnedStaticStatus = !prop.testStatus(Property::PropDynamic)
+                && getDocument()->hasPendingTransaction();
             getDocument()->markFileChange(
                 DocumentFileChange::Model,
-                transactionOwnedNewObject
+                (transactionOwnedNewObject || transactionOwnedStaticStatus)
                     ? DocumentFileChangeOwnership::AutoTransaction
                     : DocumentFileChangeOwnership::Sticky);
         }

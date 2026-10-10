@@ -194,6 +194,9 @@ void Transaction::mergeInto(Transaction& parent)
                         FC_LOG("mergeInto: property record kind mismatch on "
                                << prop->first << ", keeping the parent's");
                     }
+                    if (prop->second.restoreSerializedStatus) {
+                        inserted.first->second.restoreSerializedStatus = true;
+                    }
                     ++prop;
                 }
             }
@@ -427,6 +430,18 @@ void Transaction::addObjectDel(const TransactionalObject* Obj)
     }
 }
 
+void Transaction::noteSerializedStatus(const TransactionalObject* Obj, const Property* Prop)
+{
+    if (!Obj || !Prop) {
+        return;
+    }
+    auto& index = _Objects.get<1>();
+    auto pos = index.find(Obj);
+    if (pos != index.end()) {
+        pos->second->noteSerializedStatus(Prop);
+    }
+}
+
 void Transaction::addObjectChange(const TransactionalObject* Obj, const Property* Prop)
 {
     auto& index = _Objects.get<1>();
@@ -487,9 +502,53 @@ void TransactionObject::applyChnChecked(Document& /*Doc*/,
     applyChnImpl(pcObj, true);
 }
 
+namespace
+{
+
+constexpr unsigned long serializedPropertyStatusMask()
+{
+    return (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+}
+
+void restoreSerializedStaticPropertyStatus(Property& live, const Property& snapshot)
+{
+    if (live.testStatus(Property::PropDynamic)) {
+        return;
+    }
+    const unsigned long liveStatus = live.getStatus();
+    const unsigned long snapshotStatus = snapshot.getStatus();
+    const unsigned long mask = serializedPropertyStatusMask();
+    if (((liveStatus ^ snapshotStatus) & mask) == 0) {
+        return;
+    }
+    // Keep runtime bits from the live property. Restoring the whole word would
+    // clear Touched, which Paste has just set.
+    const unsigned long merged = (liveStatus & ~mask) | (snapshotStatus & mask);
+    live.setStatusValue(merged);
+}
+
+}  // namespace
+
 void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateErrors)
 {
     if (status == New || status == Chn) {
+        if (auto* object = freecad_cast<DocumentObject*>(pcObj)) {
+            if (Document* document = object->getDocument()) {
+                for (auto& entry : _PropChangeMap) {
+                    const Property* original = entry.second.propertyOrig;
+                    if (!original || !entry.second.property
+                        || original->testStatus(Property::PropDynamic)) {
+                        continue;
+                    }
+                    document->captureInverseTransactionProperty(
+                        object, original, entry.second.restoreSerializedStatus);
+                }
+            }
+        }
         // Property change order is not preserved, as it is recursive in nature
         for (auto& v : _PropChangeMap) {
             auto& data = v.second;
@@ -621,6 +680,9 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
             // }
             try {
                 prop->Paste(*data.property);
+                if (data.restoreSerializedStatus) {
+                    restoreSerializedStaticPropertyStatus(*prop, *data.property);
+                }
             }
             catch (Base::Exception& e) {
                 if (propagateErrors) {
@@ -641,6 +703,17 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                 }
             }
         }
+    }
+}
+
+void TransactionObject::noteSerializedStatus(const Property* prop)
+{
+    if (!prop) {
+        return;
+    }
+    auto it = _PropChangeMap.find(prop->getID());
+    if (it != _PropChangeMap.end()) {
+        it->second.restoreSerializedStatus = true;
     }
 }
 

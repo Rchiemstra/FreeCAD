@@ -6,6 +6,7 @@
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
+#include <App/FeatureTest.h>
 #include <App/MutationClassification.h>
 #include <Base/Exception.h>
 #include <Base/Tools.h>
@@ -507,6 +508,147 @@ TEST_F(CollaborationAuthorityRemovalTest,
 
     EXPECT_TRUE(GetApplication().closeDocument(otherName.c_str()));
     EXPECT_EQ(GetApplication().getDocument(otherName.c_str()), nullptr);
+}
+
+DocumentCommitResult commitStructuralStatus(
+    Document& document,
+    CollaborationCompatibilityCallback callback)
+{
+    CollaborationCompatibilityMutation mutation;
+    mutation.scope = CollaborationCompatibilityScope::Structural;
+    return document.collaborationService().commitCompatibilityMutation(
+        std::move(mutation),
+        std::move(callback));
+}
+
+Property* staticFloat(DocumentObject& object)
+{
+    auto* property = object.getPropertyByName("Float");
+    EXPECT_NE(property, nullptr);
+    EXPECT_FALSE(property->testStatus(Property::PropDynamic));
+    return property;
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, staticPropertyStatusChangesOutsideACommit)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* property = staticFloat(*object);
+    ASSERT_NE(property, nullptr);
+
+    EXPECT_NO_THROW(property->setReadOnly(true));
+    EXPECT_TRUE(property->isReadOnly());
+    EXPECT_NO_THROW(property->setReadOnly(false));
+    EXPECT_FALSE(property->isReadOnly());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, staticPropertyStatusChangesInsideACollaborativeCommit)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* property = staticFloat(*object);
+    ASSERT_NE(property, nullptr);
+
+    const auto result = commitStructuralStatus(document(), [&] {
+        property->setReadOnly(true);
+    });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::Committed) << result.message;
+    EXPECT_TRUE(property->isReadOnly());
+    ASSERT_TRUE(document().undo());
+    EXPECT_FALSE(property->isReadOnly());
+    ASSERT_TRUE(document().redo());
+    EXPECT_TRUE(property->isReadOnly());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, staticPropertyStatusRollsBackWhenTheTransactionAborts)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* property = staticFloat(*object);
+    ASSERT_NE(property, nullptr);
+
+    ASSERT_NE(document().openTransaction("static status"), 0);
+    property->setReadOnly(true);
+    property->setStatus(Property::Hidden, true);
+    ASSERT_TRUE(property->isReadOnly());
+    ASSERT_TRUE(property->testStatus(Property::Hidden));
+    document().abortTransaction();
+
+    EXPECT_FALSE(property->isReadOnly());
+    EXPECT_FALSE(property->testStatus(Property::Hidden));
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, abortedCollaborativeCommitRestoresStaticPropertyStatus)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* property = staticFloat(*object);
+    ASSERT_NE(property, nullptr);
+
+    bool changed = false;
+    const auto result = commitStructuralStatus(document(), [&] {
+        property->setReadOnly(true);
+        changed = property->isReadOnly();
+        throw std::runtime_error("abort after status");
+    });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("abort after status"), std::string::npos) << result.message;
+    EXPECT_TRUE(changed) << result.message;
+    EXPECT_FALSE(property->isReadOnly());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, undoOfAValueChangeLeavesALaterStaticStatusChange)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* feature = dynamic_cast<FeatureTest*>(object);
+    ASSERT_NE(feature, nullptr);
+    const double original = feature->Float.getValue();
+
+    ASSERT_NE(document().openTransaction("value"), 0);
+    feature->Float.setValue(original + 4.0);
+    document().commitTransaction();
+    feature->Float.setReadOnly(true);
+    ASSERT_TRUE(feature->Float.isReadOnly());
+
+    ASSERT_TRUE(document().undo());
+    EXPECT_DOUBLE_EQ(feature->Float.getValue(), original);
+    EXPECT_TRUE(feature->Float.isReadOnly());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, dynamicPropertyStatusStaysRestrictedInsideACollaborativeCommit)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+    auto* property = object->addDynamicProperty("App::PropertyString", "Extra");
+    ASSERT_NE(property, nullptr);
+
+    const auto result = commitStructuralStatus(document(), [&] {
+        property->setReadOnly(true);
+    });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("kind=Restricted"), std::string::npos) << result.message;
+    EXPECT_NE(result.message.find("mutation=propertyStatus"), std::string::npos) << result.message;
+    EXPECT_FALSE(property->isReadOnly());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, addingADynamicPropertyStaysRestrictedInsideACollaborativeCommit)
+{
+    auto* object = document().addObject("App::FeatureTest", "Feature");
+    ASSERT_NE(object, nullptr);
+
+    const auto result = commitStructuralStatus(document(), [&] {
+        if (!object->addDynamicProperty("App::PropertyString", "Extra")) {
+            throw std::runtime_error("addDynamicProperty returned null");
+        }
+    });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("kind=Restricted"), std::string::npos) << result.message;
+    EXPECT_EQ(object->getPropertyByName("Extra"), nullptr);
 }
 
 }  // namespace
