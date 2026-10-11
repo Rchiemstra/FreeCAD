@@ -2782,9 +2782,12 @@ def scope_entries(repository_root: Path) -> list[str]:
     return entries
 
 
-def build_payload(repository_root: Path) -> dict[str, object]:
-    """Return the complete ordered payload that ``inventory.json`` stores."""
-    findings = scan(repository_root)
+def build_payload(
+    repository_root: Path, *, findings: list[Finding] | None = None
+) -> dict[str, object]:
+    """Build the ordered inventory, optionally reusing this caller's fresh scan."""
+    if findings is None:
+        findings = scan(repository_root)
     exclusions = load_exclusions()
     curated = apply_exclusions(findings, exclusions)
     return {
@@ -2886,7 +2889,7 @@ def main(argv: list[str] | None = None) -> int:
     findings = scan(repository_root)
     exclusions = load_exclusions()
     curated = apply_exclusions(findings, exclusions)
-    payload = build_payload(repository_root)
+    payload = build_payload(repository_root, findings=findings)
 
     text = json.dumps(payload, indent=2, sort_keys=False) + "\n"
     if args.write:

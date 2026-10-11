@@ -2987,6 +2987,66 @@ class ExclusionsValidationTests(unittest.TestCase):
         self.assertTrue(any(".." in v for v in violations), violations)
 
 
+def _payload_probe_repository(root: Path) -> Path:
+    gui = root / "src" / "Gui"
+    gui.mkdir(parents=True)
+    source = gui / "Probe.cpp"
+    source.write_text("doc->recompute();\n", encoding="utf-8")
+    return source
+
+
+def test_build_payload_default_observes_source_changes(tmp_path: Path) -> None:
+    source = _payload_probe_repository(tmp_path)
+    with mock.patch.object(scanner, "scan", wraps=scanner.scan) as fresh_scan:
+        first = scanner.build_payload(tmp_path)
+        source.write_text("// no live model ingress\n", encoding="utf-8")
+        second = scanner.build_payload(tmp_path)
+    assert first["findings"]
+    assert second["findings"] == []
+    assert fresh_scan.call_count == 2
+
+
+def test_build_payload_reuses_fresh_findings_with_byte_identical_output(tmp_path: Path) -> None:
+    _payload_probe_repository(tmp_path)
+    expected = scanner.build_payload(tmp_path)
+    findings = scanner.scan(tmp_path)
+    assert findings
+    with mock.patch.object(scanner, "scan", side_effect=AssertionError("unexpected second scan")):
+        reused = scanner.build_payload(tmp_path, findings=findings)
+    assert json.dumps(reused, indent=2) == json.dumps(expected, indent=2)
+
+
+def test_build_payload_reuses_an_empty_fresh_scan(tmp_path: Path) -> None:
+    source = _payload_probe_repository(tmp_path)
+    source.write_text("// no live model ingress\n", encoding="utf-8")
+    expected = scanner.build_payload(tmp_path)
+    with mock.patch.object(scanner, "scan", side_effect=AssertionError("unexpected second scan")):
+        reused = scanner.build_payload(tmp_path, findings=[])
+    assert reused == expected
+
+
+def test_scanner_cli_collects_source_findings_once(tmp_path: Path, capsys) -> None:
+    _payload_probe_repository(tmp_path)
+    with mock.patch.object(scanner, "scan", wraps=scanner.scan) as fresh_scan:
+        assert scanner.main(["--repo-root", str(tmp_path)]) == 0
+    assert fresh_scan.call_count == 1
+    assert json.loads(capsys.readouterr().out) == scanner.build_payload(tmp_path)
+
+
+def test_repository_inventory_fixture_collects_source_findings_once(tmp_path: Path) -> None:
+    _payload_probe_repository(tmp_path)
+
+    class ProbeInventory(RepositoryInventoryTests):
+        pass
+
+    fixture_globals = RepositoryInventoryTests.setUpClass.__func__.__globals__
+    with mock.patch.dict(fixture_globals, {"REPOSITORY_ROOT": tmp_path}):
+        with mock.patch.object(scanner, "scan", wraps=scanner.scan) as fresh_scan:
+            ProbeInventory.setUpClass()
+    assert fresh_scan.call_count == 1
+    assert ProbeInventory.payload == scanner.build_payload(tmp_path)
+
+
 class RepositoryInventoryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -2995,7 +3055,7 @@ class RepositoryInventoryTests(unittest.TestCase):
         cls.category_keys = frozenset(rules.CATEGORY_BY_KEY)
         cls.dispositions = frozenset(rules.DISPOSITIONS)
         cls.scanned = scanner.scan(REPOSITORY_ROOT)
-        cls.payload = scanner.build_payload(REPOSITORY_ROOT)
+        cls.payload = scanner.build_payload(REPOSITORY_ROOT, findings=cls.scanned)
         cls.excluded_keys = {_exclusion_key(entry) for entry in cls.exclusions}
 
     def test_inventory_entries_are_well_formed_and_real(self) -> None:
