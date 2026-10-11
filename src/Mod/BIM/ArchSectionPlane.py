@@ -1211,15 +1211,47 @@ class _SectionPlane:
         self.Type = "SectionPlane"
 
 
+def _createSectionPlaneViewProvider(vobj):
+    """Initialize the view while makeSectionPlane still has inputs to set."""
+    return _ViewProviderSectionPlane(vobj, defer_dimension_inputs=True)
+
+
 class _ViewProviderSectionPlane:
     "A View Provider for Section Planes"
 
-    def __init__(self, vobj):
+    def __init__(self, vobj, defer_dimension_inputs=False):
 
-        vobj.Proxy = self
-        self.setProperties(vobj)
+        # Assigning Proxy can synchronously attach before view properties exist.
+        # The section factory also has model and display inputs left to set.
+        self._initializing_view = True
+        initialized = False
+        try:
+            vobj.Proxy = self
+            self.setProperties(vobj)
+            initialized = True
+        finally:
+            self._initializing_view = initialized and defer_dimension_inputs
+        if not defer_dimension_inputs:
+            self._finishDimensionInitialization(vobj)
+
+    def _finishDimensionInitialization(self, vobj, completed=True):
+        self._initializing_view = False
+        if not completed:
+            return
+        if vobj.Object.PlaneDimensionsRevision:
+            self.updateData(vobj.Object, "PlaneDimensionsRevision")
+        else:
+            self._submitDimensionInputs(vobj)
 
     def setProperties(self, vobj):
+        initializing = getattr(self, "_initializing_view", False)
+        self._initializing_view = True
+        try:
+            self._setProperties(vobj)
+        finally:
+            self._initializing_view = initializing
+
+    def _setProperties(self, vobj):
 
         pl = vobj.PropertiesList
         d = 0
@@ -1363,6 +1395,16 @@ class _ViewProviderSectionPlane:
         return []
 
     def attach(self, vobj):
+        initializing = getattr(self, "_initializing_view", False)
+        self._initializing_view = True
+        try:
+            self._attach(vobj)
+        finally:
+            self._initializing_view = initializing
+        if not initializing:
+            self._submitDimensionInputs(vobj)
+
+    def _attach(self, vobj):
 
         self.Object = vobj.Object
         self.clip = None
@@ -1525,6 +1567,8 @@ class _ViewProviderSectionPlane:
 
     def _submitDimensionInputs(self, vobj):
         """Enqueue an owner input command without waiting on GUI main."""
+        if getattr(self, "_initializing_view", False):
+            return
         import threading
 
         # Native Transacting covers undo/redo and rollback, not ordinary open

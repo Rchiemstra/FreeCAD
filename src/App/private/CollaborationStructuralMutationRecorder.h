@@ -26,6 +26,43 @@ namespace App::Internal
 
 class SpreadsheetCellRemovalPhysical;
 
+// A native Sheet supplies this adapter at construction. The private constructor
+// prevents unrelated features from registering execute callbacks; the exact
+// native type and owner are checked in addition to the C++ cross-cast.
+class AppExport SpreadsheetDerivedCacheAdapter
+{
+public:
+    virtual ~SpreadsheetDerivedCacheAdapter();
+    SpreadsheetDerivedCacheAdapter(const SpreadsheetDerivedCacheAdapter&) = delete;
+    SpreadsheetDerivedCacheAdapter& operator=(const SpreadsheetDerivedCacheAdapter&) = delete;
+
+private:
+    friend class Spreadsheet::Sheet;
+    friend class CollaborationStructuralMutationRecorder;
+    SpreadsheetDerivedCacheAdapter(
+        DocumentObject& owner, Base::Type nativeType,
+        DocumentObjectExecReturn* (*refresh)(DocumentObject&));
+    DocumentObject& _owner;
+    const Base::Type _nativeType;
+    DocumentObjectExecReturn* (*const _refresh)(DocumentObject&);
+};
+
+// Non-granting for its whole lifetime, including expression evaluation and
+// cellUpdated callbacks. Only the private native cache helpers may mutate
+// canonical schema; public schema/clear/recompute calls remain closed.
+class SpreadsheetDerivedCacheOperation final
+{
+private:
+    friend class CollaborationStructuralMutationRecorder;
+    SpreadsheetDerivedCacheOperation(Document& document, DocumentObject& object);
+    Document& _document;
+    DocumentObject& _object;
+    const DocumentIdentity _documentIdentity;
+    const std::string _objectIdentity;
+    const long _objectId;
+    const Base::Type _objectType;
+};
+
 // Only the native Sheet adapter can prove its raw canonical property and
 // exact propAddress entry. This is an operation, not an ambient schema grant.
 class AppExport SpreadsheetCellClearOperation final
@@ -44,7 +81,8 @@ private:
     SpreadsheetCellClearOperation(DocumentObject& object, Property* property,
                                   CellAddress address,
                                   std::optional<CellAddress> mappedAddress,
-                                  const std::map<const Property*, CellAddress>& addressMap);
+                                  const std::map<const Property*, CellAddress>& addressMap,
+                                  bool derivedCacheRemoval = false);
     void removeCache();
     static bool requiresBoundary(const Document* document);
 
@@ -59,6 +97,7 @@ private:
     const std::optional<CellAddress> _mappedAddress;
     const std::map<const Property*, CellAddress>& _addressMap;
     const std::string _name;
+    const bool _derivedCacheRemoval;
     DocumentIdentity _documentIdentity;
     std::string _objectIdentity;
     bool _privileged {false};
@@ -86,6 +125,8 @@ private:
 class CollaborationStructuralMutationRecorder final
 {
 public:
+    static std::optional<bool> recomputeSpreadsheetCache(Document& document,
+                                                        DocumentObject& object);
     static void record(
         Document& document,
         const std::vector<DocumentRevisionPublicationRequest>& effects)
@@ -139,6 +180,16 @@ public:
         std::string extension);
 
 private:
+    friend class Spreadsheet::Sheet;
+    static bool spreadsheetDerivedCacheActive(const DocumentObject& object);
+    static void validateSpreadsheetDerivedCache(const SpreadsheetDerivedCacheOperation& operation);
+    static void validateSpreadsheetDerivedCacheReuse(
+        DocumentObject& object, Property* property, CellAddress address,
+        Base::Type nativePropertyType,
+        const std::map<const Property*, CellAddress>& addressMap);
+    static Property* addSpreadsheetDerivedCache(
+        DocumentObject& object, CellAddress address, Base::Type nativePropertyType,
+        const std::map<const Property*, CellAddress>& addressMap);
     friend class SpreadsheetCellClearOperation;
     friend class SpreadsheetCellRemovalPhysical;
     friend class App::DynamicProperty;

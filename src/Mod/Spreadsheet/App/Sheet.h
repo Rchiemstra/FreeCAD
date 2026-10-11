@@ -36,6 +36,7 @@
 #include <vector>
 
 #include <App/DocumentObject.h>
+#include <App/private/CollaborationStructuralMutationRecorder.h>
 #include <App/DynamicProperty.h>
 #include <App/FeaturePython.h>
 #include <App/PropertyUnits.h>
@@ -73,7 +74,8 @@ public:
     void Paste(const Property& from) override;
 };
 
-class SpreadsheetExport Sheet: public App::DocumentObject
+class SpreadsheetExport Sheet: public App::DocumentObject,
+                               public App::Internal::SpreadsheetDerivedCacheAdapter
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Spreadsheet::Sheet);
 
@@ -267,6 +269,11 @@ public:
     void setCopyOrCutRanges(const std::vector<App::Range>& ranges, bool copy = true);
     const std::vector<App::Range>& getCopyOrCutRange(bool copy = true) const;
     unsigned getCopyOrCutBorder(App::CellAddress address, bool copy = true) const;
+
+private:
+    static App::DocumentObjectExecReturn* refreshDerivedCache(App::DocumentObject& object);
+    App::Property* addCellCache(App::CellAddress key, Base::Type nativePropertyType);
+    void removeCellCache(App::CellAddress key);
 
 protected:
     void onChanged(const App::Property* prop) override;

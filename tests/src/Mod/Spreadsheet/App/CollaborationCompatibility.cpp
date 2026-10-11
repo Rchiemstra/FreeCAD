@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -165,7 +166,14 @@ protected:
     {
         const auto poll = _document->collaborationRevisions().pollPublications(_cursor);
         ASSERT_EQ(poll.events.size(), 1U);
-        ASSERT_EQ(poll.events.front().changes.size(), 2U);
+        std::ostringstream revisionKeys;
+        for (const auto& change : poll.events.front().changes) {
+            revisionKeys << "kind=" << static_cast<int>(change.key.kind)
+                         << ",subject=" << change.key.subject
+                         << ",propertyName=" << change.key.propertyName
+                         << ",stableIDpresent=" << change.stableObjectIdentity.has_value() << "; ";
+        }
+        ASSERT_EQ(poll.events.front().changes.size(), 2U) << revisionKeys.str();
 
         const auto& changes = poll.events.front().changes;
         const auto find = [&](const App::DocumentRevisionKey& key) {
@@ -187,7 +195,7 @@ protected:
 
     // A supported public FeaturePython producer executes on a different object
     // from its target sheet, just as ArchReport does. No private grant is used.
-    App::DocumentObject* makeCellClearProducer()
+    App::DocumentObject* makeCellClearProducer(bool captureDerived = false)
     {
         auto* producer = _document->addObject("App::FeaturePython", "CellClearProducer");
         auto* target = static_cast<App::PropertyLink*>(
@@ -208,6 +216,9 @@ protected:
             "    armed = False\n"
             "    errors = ()\n"
             "    clear_address = 'A1'\n"
+            "    capture_derived = False\n"
+            "    derived_snapshot = ()\n"
+            "    derived_input = '=6+7'\n"
             "    def execute(self, obj):\n"
             "        if not self.armed:\n"
             "            return\n"
@@ -223,12 +234,27 @@ protected:
             "                           getattr(obj.Target, 'B1', None))\n"
             "            raise\n"
             "        obj.Target.set('A1', '13')\n"
+            "        if self.capture_derived:\n"
+            "            obj.Target.set('A1', 'Amount')\n"
+            "            obj.Target.set('A2', self.derived_input)\n"
             "        obj.Target.recompute()\n"
+            "        if self.capture_derived:\n"
+            "            self.derived_snapshot = (getattr(obj.Target, 'A1', None),\n"
+            "                getattr(obj.Target, 'A2', None),\n"
+            "                'A3' in obj.Target.PropertiesList, obj.Target.getContents('A3'))\n"
+            "            obj.Target.purgeTouched()\n"
             "producer.Proxy = CellClearProxy()\n",
             Py_file_input, globals.get(), globals.get()));
         if (!installed.get()) {
             PyErr_Print();
             throw std::runtime_error("could not install cell-clear producer proxy");
+        }
+        if (captureDerived) {
+            PyObjectRef proxy(PyObject_GetAttrString(object.get(), "Proxy"));
+            if (!proxy.get()
+                || PyObject_SetAttrString(proxy.get(), "capture_derived", Py_True) != 0) {
+                throw std::runtime_error("could not enable derived cache capture");
+            }
         }
         _document->recompute();
         return producer;
@@ -298,6 +324,173 @@ protected:
                     _failure->ExceptionType.setValue(1);
                 }
             });
+    }
+
+    void useLiteralDerivedInput(App::DocumentObject* producer)
+    {
+        Base::PyGILStateLocker gil;
+        PyObjectRef object(producer->getPyObject());
+        PyObjectRef proxy(PyObject_GetAttrString(object.get(), "Proxy"));
+        PyObjectRef value(PyUnicode_FromString("13"));
+        ASSERT_NE(proxy.get(), nullptr);
+        ASSERT_NE(value.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(proxy.get(), "derived_input", value.get()), 0);
+    }
+
+    void expectUnadoptedDerivedReuseDenied(short flags, long initialValue)
+    {
+        // Settle ALL ordinary executes before inserting the custom A2. Only
+        // A1 is seeded/cleared; clearing A2 would test the old removal gate.
+        _sheet->setCell("A1", "7");
+        ASSERT_TRUE(_document->recompute());
+        auto* producer = makeCellClearProducer(true);
+        useLiteralDerivedInput(producer);
+        ASSERT_EQ(_sheet->getPropertyByName("A2"), nullptr);
+        ASSERT_EQ(_sheet->getCell(App::CellAddress("A2")), nullptr);
+        auto* raw = _sheet->addDynamicProperty(
+            "App::PropertyInteger", "A2", nullptr, nullptr, flags);
+        ASSERT_NE(raw, nullptr);
+        static_cast<App::PropertyInteger*>(raw)->setValue(initialValue);
+        const auto propertyId = raw->getID();
+        const auto propertyType = raw->getTypeId();
+        App::CellAddress mapped;
+        ASSERT_FALSE(_sheet->getCellAddress(raw, mapped));
+        _cursor = _document->collaborationRevisions().pollPublications(_cursor).nextCursor;
+
+        int snapshots = 0;
+        long observedValue = -1;
+        bool observedOwnership = true;
+        // cellUpdated is the existing synchronous native signal. On success
+        // it follows the setter; on rejection execute's error path emits it.
+        // Capture the FIRST A2 observation while the producer is still inside
+        // target.recompute(), before producer return, rollback, or observers.
+        fastsignals::scoped_connection connection = _sheet->cellUpdated.connect(
+            [&](App::CellAddress address) {
+                if (address != App::CellAddress("A2") || snapshots != 0
+                    || !producer->testStatus(App::ObjectStatus::Recompute)) {
+                    return;
+                }
+                ++snapshots;
+                EXPECT_TRUE(_document->hasPendingTransaction());
+                EXPECT_TRUE(_document->testStatus(App::Document::Recomputing));
+                EXPECT_FALSE(_sheet->testStatus(App::ObjectStatus::Recompute));
+                auto* current = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
+                EXPECT_EQ(current, raw);
+                // Resolve the raw canonical pointer before any lifetime/type
+                // dereference, including a callback after a failed operation.
+                if (current != raw) {
+                    return;
+                }
+                EXPECT_EQ(current->getID(), propertyId);
+                EXPECT_EQ(current->getTypeId(), propertyType);
+                EXPECT_EQ(current->getContainer(), _sheet);
+                EXPECT_STREQ(current->getName(), "A2");
+                if (current->getTypeId() != App::PropertyInteger::getClassTypeId()) {
+                    return;
+                }
+                observedValue = static_cast<App::PropertyInteger*>(current)->getValue();
+                observedOwnership = _sheet->getCellAddress(current, mapped);
+                EXPECT_EQ(observedValue, initialValue);
+                EXPECT_FALSE(observedOwnership);
+            });
+        const auto result = commitProducer(producer);
+        EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed) << result.message;
+        EXPECT_EQ(snapshots, 1);
+        EXPECT_EQ(observedValue, initialValue);
+        EXPECT_FALSE(observedOwnership);
+        EXPECT_TRUE(_document->collaborationRevisions().pollPublications(_cursor).events.empty());
+        auto* retained = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
+        ASSERT_EQ(retained, raw);
+        ASSERT_NE(retained, nullptr);
+        EXPECT_EQ(retained->getID(), propertyId);
+        ASSERT_EQ(retained->getTypeId(), propertyType);
+        EXPECT_EQ(retained->getContainer(), _sheet);
+        EXPECT_STREQ(retained->getName(), "A2");
+        EXPECT_EQ(static_cast<App::PropertyInteger*>(retained)->getValue(), initialValue);
+        EXPECT_FALSE(_sheet->getCellAddress(retained, mapped));
+    }
+
+    void expectAdoptedDerivedReuseRefreshes(bool persistent)
+    {
+        _sheet->setCell("A1", "7");
+        App::Property* adopted = nullptr;
+        if (persistent) {
+            adopted = _sheet->addDynamicProperty("App::PropertyInteger", "A2");
+            ASSERT_NE(adopted, nullptr);
+            static_cast<App::PropertyInteger*>(adopted)->setValue(101);
+            App::CellAddress mapped;
+            ASSERT_FALSE(_sheet->getCellAddress(adopted, mapped));
+        }
+        _sheet->setCell("A2", "7");
+        ASSERT_TRUE(_document->recompute()); // Legacy same-type adoption.
+        if (!persistent) {
+            adopted = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
+        }
+        ASSERT_NE(adopted, nullptr);
+        ASSERT_EQ(_sheet->App::PropertyContainer::getDynamicPropertyByName("A2"), adopted);
+        const auto propertyId = adopted->getID();
+        const auto propertyType = adopted->getTypeId();
+        ASSERT_EQ(propertyType, App::PropertyInteger::getClassTypeId());
+        App::CellAddress mapped;
+        ASSERT_TRUE(_sheet->getCellAddress(adopted, mapped));
+        ASSERT_EQ(mapped, App::CellAddress("A2"));
+        EXPECT_EQ(static_cast<App::PropertyInteger*>(adopted)->getValue(), 7);
+        EXPECT_EQ(adopted->getType() & App::Prop_NoPersist,
+                  persistent ? 0 : App::Prop_NoPersist);
+        EXPECT_EQ(adopted->testStatus(App::Property::ReadOnly), !persistent);
+        EXPECT_EQ(adopted->testStatus(App::Property::Hidden), !persistent);
+        auto* producer = makeCellClearProducer(true);
+        useLiteralDerivedInput(producer);
+        auto* dependent = freecad_cast<Spreadsheet::Sheet*>(
+            _document->addObject("Spreadsheet::Sheet", "Dependent"));
+        ASSERT_NE(dependent, nullptr);
+        auto* anchor = static_cast<App::PropertyLink*>(
+            dependent->addDynamicProperty("App::PropertyLink", "ProducerAnchor"));
+        anchor->setValue(producer);
+        dependent->setCell("A1", "=Sheet.A2*2");
+        ASSERT_TRUE(_document->recompute());
+        ASSERT_EQ(static_cast<App::PropertyInteger*>(dependent->getPropertyByName("A1"))
+                      ->getValue(), 14);
+        int snapshots = 0;
+        fastsignals::scoped_connection connection = _sheet->cellUpdated.connect(
+            [&](App::CellAddress address) {
+                if (address != App::CellAddress("A2") || snapshots != 0
+                    || !producer->testStatus(App::ObjectStatus::Recompute)) {
+                    return;
+                }
+                ++snapshots;
+                auto* current = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
+                EXPECT_EQ(current, adopted);
+                if (current != adopted) {
+                    return;
+                }
+                EXPECT_EQ(current->getID(), propertyId);
+                EXPECT_EQ(current->getTypeId(), propertyType);
+                EXPECT_EQ(static_cast<App::PropertyInteger*>(current)->getValue(), 13);
+                EXPECT_TRUE(_sheet->getCellAddress(current, mapped));
+                EXPECT_EQ(mapped, App::CellAddress("A2"));
+            });
+        armCellClearProducer(producer);
+        producer->touch();
+        ASSERT_TRUE(_document->recompute()); // ONE public call, no repair.
+        EXPECT_EQ(snapshots, 1);
+        auto* current = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
+        ASSERT_EQ(current, adopted);
+        EXPECT_EQ(current->getID(), propertyId);
+        EXPECT_EQ(current->getTypeId(), propertyType);
+        EXPECT_EQ(static_cast<App::PropertyInteger*>(current)->getValue(), 13);
+        ASSERT_TRUE(_sheet->getCellAddress(current, mapped));
+        EXPECT_EQ(mapped, App::CellAddress("A2"));
+        auto* output = freecad_cast<App::PropertyInteger*>(dependent->getPropertyByName("A1"));
+        ASSERT_NE(output, nullptr);
+        EXPECT_EQ(output->getValue(), 26);
+        for (auto* object : {producer, static_cast<App::DocumentObject*>(_sheet),
+                             static_cast<App::DocumentObject*>(dependent)}) {
+            EXPECT_TRUE(object->isValid()) << _document->getErrorDescription(object);
+            EXPECT_FALSE(object->isTouched());
+            EXPECT_FALSE(object->isError());
+        }
+        EXPECT_FALSE(_document->mustExecute());
     }
 
     std::string _documentName;
@@ -658,6 +851,108 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
 }
 
 TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       linkedProducerRefreshesCacheBeforeDependentInOnePublicRecompute)
+{
+    _sheet->setCell("A1", "Amount");
+    _sheet->setCell("A2", "7");
+    _sheet->setCell("A3", "obsolete");
+    ASSERT_TRUE(_document->recompute());
+    auto* producer = makeCellClearProducer(true);
+    setProducerClearAddress(producer, "A1:A3");
+    auto* dependent = freecad_cast<Spreadsheet::Sheet*>(
+        _document->addObject("Spreadsheet::Sheet", "Dependent"));
+    ASSERT_NE(dependent, nullptr);
+    auto* anchor = static_cast<App::PropertyLink*>(
+        dependent->addDynamicProperty("App::PropertyLink", "ProducerAnchor"));
+    anchor->setValue(producer);
+    dependent->setCell("A1", "=Sheet.A2*2");
+    ASSERT_TRUE(_document->recompute());
+    ASSERT_EQ(static_cast<App::PropertyInteger*>(dependent->getPropertyByName("A1"))
+                  ->getValue(), 14);
+
+    int cacheCallbacks = 0;
+    auto* note = _sheet->addDynamicProperty("App::PropertyString", "UserNote");
+    auto* custom = _sheet->addDynamicProperty(
+        "App::PropertyString", "CustomCache", nullptr, nullptr, App::Prop_NoPersist);
+    fastsignals::scoped_connection connection = _sheet->cellUpdated.connect(
+        [&](App::CellAddress address) {
+            if (address != App::CellAddress("A2")) {
+                return;
+            }
+            ++cacheCallbacks;
+            EXPECT_TRUE(_document->hasPendingTransaction());
+            EXPECT_TRUE(producer->testStatus(App::ObjectStatus::Recompute));
+            // Derived refresh must not mark the target as an executing feature
+            // or let synchronous native signals borrow its schema privilege.
+            EXPECT_FALSE(_sheet->testStatus(App::ObjectStatus::Recompute));
+            EXPECT_THROW(_sheet->removeDynamicProperty("UserNote"), Base::Exception);
+            EXPECT_THROW(_sheet->removeDynamicProperty("CustomCache"), Base::Exception);
+            EXPECT_THROW(_sheet->addDynamicProperty("App::PropertyString", "Borrowed",
+                nullptr, nullptr, App::Prop_NoPersist), Base::Exception);
+            EXPECT_THROW(custom->setStatus(App::Property::Hidden, true), Base::Exception);
+            EXPECT_THROW(_sheet->clear(App::CellAddress("A1")), Base::Exception);
+            EXPECT_THROW(_document->recomputeFeature(_sheet), Base::Exception);
+            EXPECT_THROW(_document->recomputeFeature(producer), Base::Exception);
+            EXPECT_THROW(_sheet->recomputeCells(App::Range("A1:A2")), Base::Exception);
+            EXPECT_THROW(_document->recompute(), Base::Exception);
+        });
+
+    armCellClearProducer(producer);
+    producer->touch();
+    ASSERT_TRUE(_document->recompute()); // ONE public call; no observer repair/retry.
+    {
+        Base::PyGILStateLocker gil;
+        PyObjectRef object(producer->getPyObject());
+        PyObjectRef proxy(PyObject_GetAttrString(object.get(), "Proxy"));
+        ASSERT_NE(proxy.get(), nullptr);
+        PyObjectRef snapshot(PyObject_GetAttrString(proxy.get(), "derived_snapshot"));
+        ASSERT_NE(snapshot.get(), nullptr);
+        ASSERT_TRUE(PyTuple_Check(snapshot.get()));
+        ASSERT_EQ(PyTuple_Size(snapshot.get()), 4);
+        // Snapshot is taken INSIDE native producer execute, before purgeTouched,
+        // producer return, coordinator continuation, or deferred observers.
+        EXPECT_TRUE(PyUnicode_Check(PyTuple_GetItem(snapshot.get(), 0)));
+        if (PyUnicode_Check(PyTuple_GetItem(snapshot.get(), 0))) {
+            EXPECT_STREQ(PyUnicode_AsUTF8(PyTuple_GetItem(snapshot.get(), 0)), "Amount");
+        }
+        EXPECT_TRUE(PyLong_Check(PyTuple_GetItem(snapshot.get(), 1)));
+        if (PyLong_Check(PyTuple_GetItem(snapshot.get(), 1))) {
+            EXPECT_EQ(PyLong_AsLong(PyTuple_GetItem(snapshot.get(), 1)), 13);
+        }
+        EXPECT_EQ(PyObject_IsTrue(PyTuple_GetItem(snapshot.get(), 2)), 0);
+        EXPECT_STREQ(PyUnicode_AsUTF8(PyTuple_GetItem(snapshot.get(), 3)), "");
+        PyObjectRef errors(PyObject_GetAttrString(proxy.get(), "errors"));
+        ASSERT_NE(errors.get(), nullptr);
+        EXPECT_EQ(PyTuple_Size(errors.get()), 0);
+        EXPECT_FALSE(PyErr_Occurred());
+    }
+    EXPECT_EQ(cacheCallbacks, 1);
+    auto* result = freecad_cast<App::PropertyInteger*>(dependent->getPropertyByName("A1"));
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(result->getValue(), 26);
+    auto* cache = freecad_cast<App::PropertyInteger*>(_sheet->getPropertyByName("A2"));
+    ASSERT_NE(cache, nullptr);
+    EXPECT_EQ(cache->getValue(), 13);
+    EXPECT_EQ(_sheet->getPropertyByName("A3"), nullptr);
+    EXPECT_EQ(_sheet->getCell(App::CellAddress("A3")), nullptr);
+    EXPECT_EQ(_sheet->getPropertyByName("UserNote"), note);
+    EXPECT_EQ(_sheet->getPropertyByName("CustomCache"), custom);
+    EXPECT_EQ(_sheet->getPropertyByName("Borrowed"), nullptr);
+    EXPECT_FALSE(custom->testStatus(App::Property::Hidden));
+    const auto& outList = dependent->getOutList();
+    EXPECT_NE(std::ranges::find(outList, _sheet), outList.end());
+    const auto& inList = _sheet->getInList();
+    EXPECT_NE(std::ranges::find(inList, dependent), inList.end());
+    for (auto* object : {producer, static_cast<App::DocumentObject*>(_sheet),
+                         static_cast<App::DocumentObject*>(dependent)}) {
+        EXPECT_TRUE(object->isValid()) << _document->getErrorDescription(object);
+        EXPECT_FALSE(object->isTouched());
+        EXPECT_FALSE(object->isError());
+    }
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
        linkedProducerClearSupportsAdoptedPersistentCell)
 {
     auto* adopted = _sheet->addDynamicProperty("App::PropertyInteger", "A1");
@@ -756,7 +1051,9 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     // Finish the permanently denied fixture after preserving its evidence;
     // a pending producer must not affect the later healthy commit assertion.
     _document->removeObject(producer->getNameInDocument());
-    ASSERT_TRUE(_document->recompute());
+    bool hasError = true;
+    static_cast<void>(_document->recompute({}, false, &hasError));
+    ASSERT_FALSE(hasError);
     ASSERT_FALSE(_document->mustExecute());
     EXPECT_EQ(commitCell("B1", "9").status, App::DocumentCommitStatus::Committed);
 }
@@ -789,7 +1086,9 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     // Finish the permanently denied fixture after preserving its evidence;
     // a pending producer must not affect the later healthy commit assertion.
     _document->removeObject(producer->getNameInDocument());
-    ASSERT_TRUE(_document->recompute());
+    bool hasError = true;
+    static_cast<void>(_document->recompute({}, false, &hasError));
+    ASSERT_FALSE(hasError);
     ASSERT_FALSE(_document->mustExecute());
     EXPECT_EQ(commitCell("B1", "9").status, App::DocumentCommitStatus::Committed);
 }
@@ -1155,3 +1454,27 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
 }
 
 }  // namespace
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       linkedProducerDerivedReuseRejectsUnadoptedPersistentCell)
+{
+    expectUnadoptedDerivedReuseDenied(0, 17);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       linkedProducerDerivedReuseRejectsUnadoptedNoPersistCell)
+{
+    expectUnadoptedDerivedReuseDenied(App::Prop_NoPersist, 101);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       linkedProducerDerivedReuseRefreshesAdoptedPersistentCell)
+{
+    expectAdoptedDerivedReuseRefreshes(true);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       linkedProducerDerivedReuseRefreshesNativeCell)
+{
+    expectAdoptedDerivedReuseRefreshes(false);
+}

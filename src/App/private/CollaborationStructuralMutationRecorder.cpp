@@ -3,12 +3,15 @@
 #include "CollaborationStructuralMutationRecorder.h"
 
 #include <algorithm>
+#include <exception>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "App/Application.h"
 #include "App/MutationClassification.h"
 #include "Base/Exception.h"
+#include "Base/Tools.h"
 #include "App/DocumentObject.h"
 #include "App/ExtensionContainer.h"
 #include "App/GroupExtension.h"
@@ -198,6 +201,178 @@ void deferOrEmitDynamicExtension(
 
 }  // namespace
 
+SpreadsheetDerivedCacheAdapter::SpreadsheetDerivedCacheAdapter(
+    DocumentObject& owner, Base::Type nativeType,
+    DocumentObjectExecReturn* (*refresh)(DocumentObject&))
+    : _owner(owner), _nativeType(nativeType), _refresh(refresh)
+{}
+
+SpreadsheetDerivedCacheAdapter::~SpreadsheetDerivedCacheAdapter() = default;
+
+SpreadsheetDerivedCacheOperation::SpreadsheetDerivedCacheOperation(
+    Document& document, DocumentObject& object)
+    : _document(document), _object(object)
+    , _documentIdentity(document.collaborationIdentity())
+    , _objectIdentity(document.collaborationObjectIdentity(object))
+    , _objectId(object.getID()), _objectType(object.getTypeId())
+{}
+
+void CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCache(
+    const SpreadsheetDerivedCacheOperation& operation)
+{
+    auto& document = operation._document;
+    auto& object = operation._object;
+    auto& state = *document.d;
+    enforceAtomicPresentationMutationTarget(&document);
+    if (!document.containsObject(&object) || object.getDocument() != &document
+        || !object.isAttachedToDocument() || object.getID() != operation._objectId
+        || object.getTypeId() != operation._objectType
+        || document.collaborationIdentity() != operation._documentIdentity
+        || operation._documentIdentity.state != DocumentLifecycleState::Live
+        || document.collaborationObjectIdentity(object) != operation._objectIdentity
+        || !document.isCollaborationOwnerThread()
+        || !document.testStatus(Document::Recomputing)
+        || !state.collaborationCommitNotificationBarrier || !state.activeUndoTransaction
+        || !state.suppressCollaborationRevisionPublication
+        || state.collaborationCompatibilityStructuralMutationGranted
+        || state.collaborationAtomicPresentationAuditActive
+        || state.collaborationCommitPoisoned || state.collaborationReplayingNotifications
+        || state.rollback || state.collaborationRollbackVerification
+        || state.collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 1
+        || object.testStatus(ObjectStatus::Recompute)
+        || object.testStatus(ObjectStatus::Destroy) || object.testStatus(ObjectStatus::Remove)
+        || (state.collaborationSpreadsheetDerivedCache
+            && state.collaborationSpreadsheetDerivedCache != &operation)) {
+        throw Base::RuntimeError("spreadsheet derived cache crossed its authoritative boundary");
+    }
+}
+
+std::optional<bool> CollaborationStructuralMutationRecorder::recomputeSpreadsheetCache(
+    Document& document, DocumentObject& object)
+{
+    auto* adapter = dynamic_cast<SpreadsheetDerivedCacheAdapter*>(&object);
+    auto& state = *document.d;
+    if (!adapter || &adapter->_owner != &object || object.getTypeId() != adapter->_nativeType
+        || !document.testStatus(Document::Recomputing)
+        || state.collaborationCompatibilityStructuralMutationGranted
+        || !state.collaborationDeferredRecomputeBlocked
+        || state.collaborationSpreadsheetRecomputeSchemaObject
+        || state.collaborationSpreadsheetCellClear) {
+        return std::nullopt;
+    }
+    // The calling producer must be executing in this document and hold a real
+    // dependency link to the sheet. No recursive scheduler or type-name trust.
+    if (!std::ranges::any_of(object.getInList(), [&document](const DocumentObject* producer) {
+            return producer && producer->getDocument() == &document
+                && producer->testStatus(ObjectStatus::Recompute);
+        })) {
+        return std::nullopt;
+    }
+    SpreadsheetDerivedCacheOperation operation(document, object);
+    validateSpreadsheetDerivedCache(operation);
+    Base::ScopeGuard close([&] { state.collaborationSpreadsheetDerivedCache = nullptr; });
+    state.collaborationSpreadsheetDerivedCache = &operation;
+    try {
+        // Own an error result even if post-call identity validation throws.
+        std::unique_ptr<DocumentObjectExecReturn> result(adapter->_refresh(object));
+        validateSpreadsheetDerivedCache(operation);
+        if (result.get() != DocumentObject::StdReturn) {
+            result->Which = &object;
+            state.addRecomputeLog(result.release());
+            return false;
+        }
+        object.setStatus(ObjectStatus::Error, false);
+        return object.isValid();
+    }
+    catch (const Base::Exception& error) {
+        state.addRecomputeLog(error.what(), &object);
+    }
+    catch (const std::exception& error) {
+        state.addRecomputeLog(error.what(), &object);
+    }
+    return false;
+}
+
+bool CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(
+    const DocumentObject& object)
+{
+    auto* document = object.getDocument();
+    return document && document->d->collaborationSpreadsheetDerivedCache
+        && &document->d->collaborationSpreadsheetDerivedCache->_object == &object;
+}
+
+void CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+    DocumentObject& object, Property* property, CellAddress address,
+    Base::Type nativePropertyType,
+    const std::map<const Property*, CellAddress>& addressMap)
+{
+    const std::string name = address.toString(CellAddress::Cell::ShowRowColumn);
+    // Resolve the current raw canonical pointer before lifetime/type/container
+    // access. No alias lookup or property flags can establish native ownership.
+    if (!address.isValid() || !property
+        || object.PropertyContainer::getDynamicPropertyByName(name.c_str()) != property) {
+        throw Base::RuntimeError("native spreadsheet cache reuse requires its canonical property");
+    }
+    const auto propertyId = property->getID();
+    const auto propertyType = property->getTypeId();
+    auto* document = object.getDocument();
+    auto* operation = document ? document->d->collaborationSpreadsheetDerivedCache : nullptr;
+    if (!operation || &operation->_object != &object) {
+        throw Base::RuntimeError("native spreadsheet cache reuse has no matching operation");
+    }
+    validateSpreadsheetDerivedCache(*operation);
+    const auto mapping = addressMap.find(property);
+    if (object.PropertyContainer::getDynamicPropertyByName(name.c_str()) != property
+        || property->getID() != propertyId || property->getTypeId() != propertyType
+        || property->getContainer() != &object
+        || !property->getName() || name != property->getName()
+        || !property->testStatus(Property::PropDynamic)
+        || property->testStatus(Property::LockDynamic)
+        || mapping == addressMap.end() || mapping->second != address
+        || (propertyType.isDerivedFrom(nativePropertyType) && propertyType != nativePropertyType)) {
+        throw Base::RuntimeError("native spreadsheet cache reuse requires its exact owned native entry");
+    }
+    // A different type still goes through the existing typed removal gate.
+    // An exact same-type entry is now admitted BEFORE map/value assignment.
+}
+
+Property* CollaborationStructuralMutationRecorder::addSpreadsheetDerivedCache(
+    DocumentObject& object, CellAddress address, Base::Type nativePropertyType,
+    const std::map<const Property*, CellAddress>& addressMap)
+{
+    auto& document = *object.getDocument();
+    auto* operation = document.d->collaborationSpreadsheetDerivedCache;
+    if (!operation || &operation->_object != &object || !address.isValid()) {
+        throw Base::RuntimeError("native spreadsheet cache addition has no matching operation");
+    }
+    validateSpreadsheetDerivedCache(*operation);
+    const std::string name = address.toString(CellAddress::Cell::ShowRowColumn);
+    if (object.PropertyContainer::getPropertyByName(name.c_str())
+        || std::ranges::any_of(addressMap, [address](const auto& entry) {
+            return entry.second == address;
+        })) {
+        throw Base::RuntimeError("native spreadsheet cache addition requires an empty canonical entry");
+    }
+    // Fixed native property types are supplied solely by Sheet's private
+    // setters. This qualified path has no granting scope, executes no feature,
+    // and reaches the index insertion before any transaction/observer callback.
+    auto* property = object.TransactionalObject::addDynamicProperty(
+        nativePropertyType.getName(), name.c_str(), nullptr, nullptr,
+        Prop_ReadOnly | Prop_Hidden | Prop_NoPersist);
+    if (!property || object.PropertyContainer::getDynamicPropertyByName(name.c_str()) != property
+        || property->getTypeId() != nativePropertyType || property->getContainer() != &object) {
+        throw Base::RuntimeError("native spreadsheet cache addition changed its canonical identity");
+    }
+    const auto propertyId = property->getID();
+    document.addOrRemovePropertyOfObject(&object, property, true);
+    validateSpreadsheetDerivedCache(*operation);
+    if (object.PropertyContainer::getDynamicPropertyByName(name.c_str()) != property
+        || property->getID() != propertyId || property->getTypeId() != nativePropertyType) {
+        throw Base::RuntimeError("native spreadsheet cache addition changed during transaction capture");
+    }
+    return property;
+}
+
 bool SpreadsheetCellClearOperation::requiresBoundary(const Document* document)
 {
     return CollaborationStructuralMutationRecorder::requiresCellClearBoundary(document);
@@ -215,7 +390,7 @@ bool CollaborationStructuralMutationRecorder::requiresCellClearBoundary(const Do
 SpreadsheetCellClearOperation::SpreadsheetCellClearOperation(
     DocumentObject& object, Property* property, CellAddress address,
     std::optional<CellAddress> mappedAddress,
-    const std::map<const Property*, CellAddress>& addressMap)
+    const std::map<const Property*, CellAddress>& addressMap, bool derivedCacheRemoval)
     : _document(object.getDocument())
     , _object(object)
     , _property(property)
@@ -225,6 +400,7 @@ SpreadsheetCellClearOperation::SpreadsheetCellClearOperation(
     , _mappedAddress(mappedAddress)
     , _addressMap(addressMap)
     , _name(address.toString(CellAddress::Cell::ShowRowColumn))
+    , _derivedCacheRemoval(derivedCacheRemoval)
 {
     CollaborationStructuralMutationRecorder::beginCellClear(*this);
 }
@@ -296,6 +472,13 @@ void CollaborationStructuralMutationRecorder::validateCellClear(
     // Also enforces foreign/read-only/prepared mutation-target admission.
     enforceAtomicPresentationMutationTarget(document);
     auto& state = *document->d;
+    if (state.collaborationSpreadsheetDerivedCache) {
+        if (!operation._derivedCacheRemoval
+            || &state.collaborationSpreadsheetDerivedCache->_object != &object) {
+            throw Base::RuntimeError("clear callbacks cannot borrow spreadsheet derived cache authority");
+        }
+        validateSpreadsheetDerivedCache(*state.collaborationSpreadsheetDerivedCache);
+    }
     if (!object.isAttachedToDocument() || !document->containsObject(&object)
         || object.getDocument() != document
         || document->collaborationIdentity() != operation._documentIdentity
@@ -446,7 +629,8 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
     // admission. During native clear, callbacks must not change dynamic locks
     // or schema flags (including NoPersist caches) between Entry and Physical.
     // Runtime locker bits keep their established non-granting behavior.
-    if (document.d->collaborationSpreadsheetCellClear
+    if ((document.d->collaborationSpreadsheetCellClear
+         || document.d->collaborationSpreadsheetDerivedCache)
         && property.testStatus(Property::PropDynamic)
         && ((oldStatus ^ newStatus) & dynamicSchemaStatusMask()) != 0) {
         throw Base::RuntimeError("status callbacks cannot borrow spreadsheet cell-clear authority");

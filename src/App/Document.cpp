@@ -808,7 +808,8 @@ void Document::recordCollaborationObservedStructuralEffects(
     const std::vector<DocumentRevisionPublicationRequest>& effects)
 {
     if (!d->collaborationCompatibilityStructuralMutationGranted
-        && !d->collaborationSpreadsheetRecomputeSchemaObject) {
+        && !d->collaborationSpreadsheetRecomputeSchemaObject
+        && !d->collaborationSpreadsheetDerivedCache) {
         return;
     }
     d->collaborationObservedStructuralEffects.insert(
@@ -1105,6 +1106,9 @@ void Document::ensureCollaborationStructuralMutationAllowed(
     CollaborationStructuralMutationKind kind,
     const char* mutation) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
     if (d->collaborationSpreadsheetCellClear) {
         throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
     }
@@ -1176,6 +1180,9 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
     const DocumentObject& object,
     short propertyType) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
     if (d->collaborationSpreadsheetCellClear) {
         throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
     }
@@ -1219,6 +1226,9 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
     const DocumentObject& object,
     const Property* property) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
     if (d->collaborationSpreadsheetCellClear) {
         throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
     }
@@ -7203,6 +7213,9 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     }
 
     enforceAtomicPresentationMutationTarget(*this);
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("document recompute is blocked during native spreadsheet cache refresh");
+    }
 
     const auto submitEmpty = [this] {
         DocumentRecomputeRequest request;
@@ -7836,6 +7849,9 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
             [this, feature, recursive] { return recomputeFeature(feature, recursive); });
     }
     enforceAtomicPresentationMutationTarget(*this);
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("spreadsheet derived cache callbacks cannot recursively recompute features");
+    }
 
     // A feature that recomputes itself from inside its own execute() (CAM
     // operations do this after updateDepths() so StartDepth/FinalDepth pick up
@@ -7867,6 +7883,13 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     // that may execute object code for a structural compatibility commit.
     if (d->collaborationCompatibilityStructuralMutationGranted
         || d->collaborationDeferredRecomputeBlocked) {
+        if (!recursive && feature && containsObject(feature)
+            && feature->getDocument() == this && feature->isAttachedToDocument()) {
+            if (auto refreshed = Internal::CollaborationStructuralMutationRecorder::
+                    recomputeSpreadsheetCache(*this, *feature)) {
+                return *refreshed;
+            }
+        }
         return true;
     }
 

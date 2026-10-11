@@ -1238,22 +1238,31 @@ def makeSectionPlane(objectslist=None, name=None):
         baseClassName="_SectionPlane",
         internalName="Section",
         defaultLabel=name if name else translate("Arch", "Section"),
+        viewProviderName="_createSectionPlaneViewProvider",
     )
 
-    # Initialize all relevant properties
-    if objectslist:
-        sectionPlane.Objects = objectslist
-        boundBox = FreeCAD.BoundBox()
-        for obj in Draft.get_group_contents(objectslist):
-            if hasattr(obj, "Shape") and hasattr(obj.Shape, "BoundBox"):
-                boundBox.add(obj.Shape.BoundBox)
-        sectionPlane.Placement = get_working_plane().get_placement()
-        sectionPlane.Placement.Base = boundBox.Center
-        if FreeCAD.GuiUp:
-            margin = boundBox.XLength * 0.1
-            sectionPlane.ViewObject.DisplayLength = boundBox.XLength + margin
-            sectionPlane.ViewObject.DisplayHeight = boundBox.YLength + margin
-    return sectionPlane
+    completed = False
+    try:
+        # Initialize all relevant properties
+        if objectslist:
+            sectionPlane.Objects = objectslist
+            boundBox = FreeCAD.BoundBox()
+            for obj in Draft.get_group_contents(objectslist):
+                if hasattr(obj, "Shape") and hasattr(obj.Shape, "BoundBox"):
+                    boundBox.add(obj.Shape.BoundBox)
+            sectionPlane.Placement = get_working_plane().get_placement()
+            sectionPlane.Placement.Base = boundBox.Center
+            if FreeCAD.GuiUp:
+                margin = boundBox.XLength * 0.1
+                sectionPlane.ViewObject.DisplayLength = boundBox.XLength + margin
+                sectionPlane.ViewObject.DisplayHeight = boundBox.YLength + margin
+        completed = True
+        return sectionPlane
+    finally:
+        if FreeCAD.GuiUp and sectionPlane is not None:
+            sectionPlane.ViewObject.Proxy._finishDimensionInitialization(
+                sectionPlane.ViewObject, completed
+            )
 
 
 def makeSite(objectslist=None, baseobj=None, name=None):

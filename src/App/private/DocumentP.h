@@ -74,6 +74,10 @@ using Path = std::vector<size_t>;
 
 namespace App
 {
+namespace Internal
+{
+class SpreadsheetDerivedCacheOperation;
+}
 using HasherMap = boost::bimap<StringHasherRef, int>;
 class Document;
 class Transaction;
@@ -244,6 +248,7 @@ struct DocumentP
     bool collaborationTransactionControlGranted {false};
     bool collaborationCompatibilityStructuralMutationGranted {false};
     bool collaborationDerivedRecomputeGranted {false};
+    const Internal::SpreadsheetDerivedCacheOperation* collaborationSpreadsheetDerivedCache {nullptr};
     bool collaborationDeferredRecomputeBlocked {false};
     bool collaborationRecomputeStableNotificationDeferred {false};
     bool collaborationImportDeferralActive {false};
