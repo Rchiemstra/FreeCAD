@@ -1741,6 +1741,9 @@ class _ViewProviderSectionPlane:
             with self._dimension_lock:
                 if self._dimension_errors:
                     raise self._dimension_errors[0]
+        error = getattr(self, "_dimension_timer_error", None)
+        if error is not None:
+            raise error
 
     def onBeforeChange(self, vobj, prop):
         # Native onChanged can be deferred while the owner lane is busy.
@@ -1761,7 +1764,13 @@ class _ViewProviderSectionPlane:
 
         def submit():
             if self._dimension_input_pending:
-                self._submitDimensionInputs(vobj)
+                try:
+                    self._submitDimensionInputs(vobj)
+                except Exception as exc:
+                    # A queued input can outlive its view or document. Retain
+                    # the failure for the normal completion/error observer.
+                    if getattr(self, "_dimension_timer_error", None) is None:
+                        self._dimension_timer_error = exc
 
         QtCore.QTimer.singleShot(0, submit)
 
