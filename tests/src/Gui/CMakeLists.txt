@@ -19,6 +19,7 @@ add_executable(Gui_tests_run
         DocumentPresentationCache.cpp
         DocumentRecovery.cpp
         GuiPythonGate.cpp
+        UpdateGuiThread.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp
         StyleParameters/DiagnosticsCapture.h

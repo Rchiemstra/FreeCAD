@@ -516,7 +516,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1125,
+      "line": 1129,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -524,7 +524,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1919,
+      "line": 1923,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",

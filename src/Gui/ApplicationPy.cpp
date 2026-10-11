@@ -1119,9 +1119,13 @@ PyObject* ApplicationPy::sUpdateGui(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    if (!requirePythonMainThread("FreeCADGui.updateGui")) {
-        return nullptr;
+    // updateGui() only pumps the Qt event loop. Importers call it from the
+    // document owner thread as a progress heartbeat, where that pump is not
+    // available, so ignore the call instead of logging and raising.
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        Py_Return;
     }
+
     qApp->processEvents();
 
     Py_Return;
