@@ -11,6 +11,7 @@
 #include "DocumentObject.h"
 #include "GenericIsolatedRecompute.h"
 #include "MainThreadSignal.h"
+#include "MutationClassification.h"
 
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
@@ -31,6 +32,36 @@ namespace
 
 constexpr App::PreparedEditExecutionId IsolatedExecutionBit =
     App::PreparedEditExecutionId {1} << 63;
+
+// A serialized extension callback retains an outer document lock. Nested
+// commits must return their admission refusal rather than wait with that
+// lock held, including when the nested call targets another document.
+thread_local bool serializedCompatibilityCallbackActive {false};
+
+class SerializedCompatibilityCallbackScope final
+{
+public:
+    SerializedCompatibilityCallbackScope() noexcept
+        : _previous(std::exchange(serializedCompatibilityCallbackActive, true))
+    {}
+
+    ~SerializedCompatibilityCallbackScope() noexcept
+    {
+        serializedCompatibilityCallbackActive = _previous;
+    }
+
+private:
+    bool _previous;
+};
+
+App::DocumentCommitResult preserveSerializedCallbackAdmission(
+    App::DocumentCommitResult result)
+{
+    if (serializedCompatibilityCallbackActive) {
+        result.presentationAdmissionDeferred = false;
+    }
+    return result;
+}
 
 App::PreparedEditExecutionId publicGeometryExecutionId(const App::GeometryJobId id)
 {
@@ -158,6 +189,21 @@ bool DocumentCollaborationService::collaborationOwnerThread(
     const Document& document) noexcept
 {
     return document.isCollaborationOwnerThread();
+}
+
+std::optional<DocumentCommitResult>
+DocumentCollaborationService::rejectSerializedCompatibilityDispatch(
+    std::string operationId) const
+{
+    if (!serializedCompatibilityCallbackActive || _document.isCollaborationOwnerThread()) {
+        return std::nullopt;
+    }
+    // The caller retains another document's serialization lock. Its context
+    // cannot be lost in a foreign owner hop that may await a GUI refresh.
+    return rejectedCompatibilityCommit(
+        DocumentCommitStatus::Busy,
+        std::move(operationId),
+        "a serialized compatibility callback cannot dispatch a foreign document commit");
 }
 
 template<typename Result, typename Callable>
@@ -1345,6 +1391,9 @@ DocumentCommitResult DocumentCollaborationService::commitEdit(const std::string&
                               edit,
                               "document close has sealed collaboration access");
     }
+    if (auto rejected = rejectSerializedCompatibilityDispatch(edit.operationId())) {
+        return std::move(*rejected);
+    }
     // Always hop through the document owner (lane / MainThreadSignal). A headless
     // short-circuit to _coordinator.commit would skip session cancel / stale checks
     // in commitEditOnDocumentThread and let a queued cancel lose the race.
@@ -1362,43 +1411,55 @@ DocumentCommitResult DocumentCollaborationService::commitEditOnDocumentThread(
                               edit,
                               "collaboration commit was not dispatched to the document owner thread");
     }
-    std::lock_guard lock(_document.collaborationCommitMutex());
-    if (_document.collaborationNotificationsReplaying()) {
-        return rejectedCommit(DocumentCommitStatus::Busy,
-                              edit,
-                              "a committed collaboration boundary is notifying observers");
+    for (;;) {
+        std::unique_lock lock(_document.collaborationCommitMutex());
+        if (_document.collaborationNotificationsReplaying()) {
+            return rejectedCommit(DocumentCommitStatus::Busy,
+                                  edit,
+                                  "a committed collaboration boundary is notifying observers");
+        }
+        const auto identity = _document.collaborationIdentity();
+        if (identity.state != DocumentLifecycleState::Live
+            || identity.instanceId != edit.documentInstanceId()
+            || identity.lifecycleEpoch != edit.lifecycleEpoch()) {
+            return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                                  edit,
+                                  "prepared edit targets a stale document lifecycle epoch");
+        }
+        const auto session = sessionStatus(sessionId);
+        if (!session) {
+            return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                  edit,
+                                  "unknown edit session");
+        }
+        if (session->documentInstanceId() != edit.documentInstanceId()) {
+            return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                                  edit,
+                                  "edit session and prepared edit target different documents");
+        }
+        if (session->status() != EditSessionStatus::Active) {
+            return rejectedCommit(DocumentCommitStatus::Cancelled,
+                                  edit,
+                                  session->cancellationReason().value_or("edit session is cancelled"));
+        }
+        if (!CollaborativeOperationRegistry::instance().matches(
+                edit.adapterRegistrationId(), edit.operationType())) {
+            return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                  edit,
+                                  "prepared edit adapter registration is no longer trusted");
+        }
+        auto result = preserveSerializedCallbackAdmission(_coordinator.commit(edit));
+        if (!result.presentationAdmissionDeferred) {
+            return result;
+        }
+        // Only the typed pre-apply admission refusal can resume this same
+        // payload. Release every service lock before waiting for the GUI,
+        // then repeat lifecycle, session and adapter validation on wakeup.
+        lock.unlock();
+        if (!waitForLivePresentationRefresh()) {
+            return result;
+        }
     }
-    const auto identity = _document.collaborationIdentity();
-    if (identity.state != DocumentLifecycleState::Live
-        || identity.instanceId != edit.documentInstanceId()
-        || identity.lifecycleEpoch != edit.lifecycleEpoch()) {
-        return rejectedCommit(DocumentCommitStatus::StaleDocument,
-                              edit,
-                              "prepared edit targets a stale document lifecycle epoch");
-    }
-    const auto session = sessionStatus(sessionId);
-    if (!session) {
-        return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
-                              edit,
-                              "unknown edit session");
-    }
-    if (session->documentInstanceId() != edit.documentInstanceId()) {
-        return rejectedCommit(DocumentCommitStatus::StaleDocument,
-                              edit,
-                              "edit session and prepared edit target different documents");
-    }
-    if (session->status() != EditSessionStatus::Active) {
-        return rejectedCommit(DocumentCommitStatus::Cancelled,
-                              edit,
-                              session->cancellationReason().value_or("edit session is cancelled"));
-    }
-    if (!CollaborativeOperationRegistry::instance().matches(
-            edit.adapterRegistrationId(), edit.operationType())) {
-        return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
-                              edit,
-                              "prepared edit adapter registration is no longer trusted");
-    }
-    return _coordinator.commit(edit);
 }
 
 DocumentCommitResult DocumentCollaborationService::commitRecomputeEdit(
@@ -1410,6 +1471,9 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEdit(
         return rejectedCommit(DocumentCommitStatus::StaleDocument,
                               edit,
                               "document close has sealed collaboration access");
+    }
+    if (auto rejected = rejectSerializedCompatibilityDispatch(edit.operationId())) {
+        return std::move(*rejected);
     }
     return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
         _document,
@@ -1462,7 +1526,7 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEditOnDocument
                               edit,
                               "prepared recompute adapter registration is no longer trusted");
     }
-    return _coordinator.commitRecompute(edit);
+    return preserveSerializedCallbackAdmission(_coordinator.commitRecompute(edit));
 }
 
 DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
@@ -1508,6 +1572,9 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWi
             DocumentCommitStatus::StaleDocument,
             rejectedOperationId,
             "document close has sealed compatibility mutation access");
+    }
+    if (auto rejected = rejectSerializedCompatibilityDispatch(rejectedOperationId)) {
+        return std::move(*rejected);
     }
     return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
         _document,
@@ -1572,7 +1639,7 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                                            "compatibility mutation callback is required");
     }
 
-    std::lock_guard lock(_document.collaborationCommitMutex());
+    std::unique_lock lock(_document.collaborationCommitMutex());
     const auto identity = _document.collaborationIdentity();
     if (identity.state != DocumentLifecycleState::Live) {
         return rejectedCompatibilityCommit(DocumentCommitStatus::StaleDocument,
@@ -1646,10 +1713,20 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     if (options.recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && _document.mustExecute()) {
         try {
-            bool recomputeError = false;
-            for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
-                static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+            // Settlement can defer a feature commit until an idle GUI refresh
+            // finishes. That refresh may itself need this mutex and the GIL.
+            lock.unlock();
+            {
+                std::optional<Base::PyGILStateRelease> release;
+                if (Py_IsInitialized() && PyGILState_Check()) {
+                    release.emplace();
+                }
+                bool recomputeError = false;
+                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                }
             }
+            lock.lock();
         }
         catch (const Base::Exception& exception) {
             return rejectedCompatibilityCommit(
@@ -1664,6 +1741,26 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                 rejectedOperationId,
                 std::string("compatibility mutation could not settle pending recompute work: ")
                     + exception.what());
+        }
+        const auto settledIdentity = _document.collaborationIdentity();
+        if (settledIdentity.state != DocumentLifecycleState::Live
+            || settledIdentity.instanceId != identity.instanceId
+            || settledIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::StaleDocument,
+                rejectedOperationId,
+                "compatibility mutation document changed during recompute settlement");
+        }
+        if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
+            const auto* object = _document.getObject(mutation.objectName.c_str());
+            if (!object
+                || _document.collaborationObjectIdentity(*object)
+                    != mutation.stableObjectIdentity) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::StaleDocument,
+                    rejectedOperationId,
+                    "compatibility mutation object changed during recompute settlement");
+            }
         }
         if (_document.mustExecute()) {
             return rejectedCompatibilityCommit(
@@ -1691,10 +1788,23 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                       std::move(effects),
                       "legacy-gui-compatibility",
                       std::move(operation));
-    return _coordinator.commitCompatibilityWithOptions(
-        edit,
-        mutation.scope == CollaborationCompatibilityScope::Structural,
-        options.recomputePolicy);
+    for (;;) {
+        auto result = preserveSerializedCallbackAdmission(
+            _coordinator.commitCompatibilityWithOptions(
+                edit,
+                mutation.scope == CollaborationCompatibilityScope::Structural,
+                options.recomputePolicy));
+        if (!result.presentationAdmissionDeferred) {
+            return result;
+        }
+        // The callback and its revision fence stay in this PreparedEdit.
+        // Admission has not run apply; only this refusal can be redispatched.
+        lock.unlock();
+        if (!waitForLivePresentationRefresh()) {
+            return result;
+        }
+        lock.lock();
+    }
 }
 
 DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(
@@ -1707,6 +1817,9 @@ DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallbac
             DocumentCommitStatus::StaleDocument,
             operationId,
             "document close has sealed serialized compatibility access");
+    }
+    if (auto rejected = rejectSerializedCompatibilityDispatch(operationId)) {
+        return std::move(*rejected);
     }
     return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
         _document,
@@ -1726,6 +1839,9 @@ DocumentCommitResult DocumentCollaborationService::serializeAtomicCompatibilityC
             DocumentCommitStatus::StaleDocument,
             operationId,
             "document close has sealed atomic compatibility access");
+    }
+    if (auto rejected = rejectSerializedCompatibilityDispatch(operationId)) {
+        return std::move(*rejected);
     }
     return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
         _document,
@@ -1767,6 +1883,7 @@ DocumentCollaborationService::serializeCompatibilityCallbackOnDocumentThread(
             "a committed collaboration boundary is notifying observers");
     }
     try {
+        SerializedCompatibilityCallbackScope serializedCallback;
         callback();
     }
     catch (const Base::Exception& exception) {
@@ -1809,8 +1926,9 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                                            "atomic compatibility callback is required");
     }
 
-    std::lock_guard lock(_document.collaborationCommitMutex());
-    if (_document.collaborationIdentity().state != DocumentLifecycleState::Live) {
+    std::unique_lock lock(_document.collaborationCommitMutex());
+    const auto identity = _document.collaborationIdentity();
+    if (identity.state != DocumentLifecycleState::Live) {
         return rejectedCompatibilityCommit(DocumentCommitStatus::StaleDocument,
                                            operationId,
                                            "atomic compatibility targets a non-live document");
@@ -1834,10 +1952,18 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
     }
     if (_document.mustExecute()) {
         try {
-            bool recomputeError = false;
-            for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
-                static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+            lock.unlock();
+            {
+                std::optional<Base::PyGILStateRelease> release;
+                if (Py_IsInitialized() && PyGILState_Check()) {
+                    release.emplace();
+                }
+                bool recomputeError = false;
+                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                }
             }
+            lock.lock();
         }
         catch (const Base::Exception& exception) {
             return rejectedCompatibilityCommit(
@@ -1852,6 +1978,34 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                 operationId,
                 std::string("atomic compatibility could not settle pending recompute work: ")
                     + exception.what());
+        }
+        // No transaction/audit has begun yet. Revalidate every admission
+        // condition after settlement has temporarily released serialization.
+        const auto settledIdentity = _document.collaborationIdentity();
+        if (settledIdentity.state != DocumentLifecycleState::Live
+            || settledIdentity.instanceId != identity.instanceId
+            || settledIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::StaleDocument,
+                operationId,
+                "atomic compatibility document changed during recompute settlement");
+        }
+        if (_document.collaborationNotificationsReplaying()) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                operationId,
+                "a committed collaboration boundary is notifying observers");
+        }
+        if (_document.collaborationCommitPoisoned()) {
+            return rejectedCompatibilityCommit(DocumentCommitStatus::RollbackFailed,
+                                               operationId,
+                                               _document.collaborationCommitPoisonDiagnostic());
+        }
+        if (_document.hasPendingTransaction() || _document.transacting()
+            || _document.getBookedTransactionID() != 0 || _document.isTransactionLocked()) {
+            return rejectedCompatibilityCommit(DocumentCommitStatus::Busy,
+                                               operationId,
+                                               "document already has a native transaction in progress");
         }
         if (_document.mustExecute()) {
             return rejectedCompatibilityCommit(
@@ -1955,6 +2109,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
 
     std::string callbackFailure;
     try {
+        SerializedCompatibilityCallbackScope serializedCallback;
         callback();
     }
     catch (const Base::Exception& exception) {

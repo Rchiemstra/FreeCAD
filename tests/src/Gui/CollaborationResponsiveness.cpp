@@ -9,6 +9,7 @@
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
 #include <App/MainThreadSignal.h>
@@ -22,12 +23,18 @@
 #include <Gui/MainWindow.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Gui/ViewProviderDocumentObject.h>
 #include <src/App/InitApplication.h>
+
+#include <Base/Exception.h>
+#include <QScopeGuard>
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -131,6 +138,121 @@ public:
 
     std::shared_ptr<PreparationGate> gate;
     std::string token;
+};
+
+class LivePresentationProbe final: public Gui::ViewProviderDocumentObject
+{
+public:
+    std::function<void()> refresh;
+
+protected:
+    void updateData(const App::Property* property) override
+    {
+        if (getObject() && property == &getObject()->Label && refresh) {
+            // Clear before invoking: the probe's App write can notify this
+            // provider recursively, and must not start a second attempt.
+            auto callback = std::exchange(refresh, {});
+            callback();
+        }
+        Gui::ViewProviderDocumentObject::updateData(property);
+    }
+};
+
+class OwnerAdmissionAttempt final
+{
+public:
+    OwnerAdmissionAttempt(App::Document& document, const std::atomic_bool& refreshing)
+        : _document(document)
+        , _refreshing(refreshing)
+        , _worker([this] { run(); })
+    {}
+
+    ~OwnerAdmissionAttempt()
+    {
+        releaseAndJoin();
+    }
+
+    bool startAndWait()
+    {
+        std::unique_lock lock(_mutex);
+        _start = true;
+        _changed.notify_all();
+        // A watchdog only: both successful admission and an explicit Busy
+        // refusal complete this handshake. A timeout always fails the test.
+        return _changed.wait_for(lock, 5s, [this] { return _attemptFinished; });
+    }
+
+    void release()
+    {
+        std::lock_guard lock(_mutex);
+        _release = true;
+        _changed.notify_all();
+    }
+
+    void releaseAndJoin()
+    {
+        release();
+        if (_worker.joinable()) {
+            _worker.join();
+        }
+    }
+
+    bool accepted {false};
+    bool acceptedDuringRefresh {false};
+    std::string rejection;
+    std::exception_ptr failure;
+
+private:
+    void run()
+    {
+        try {
+            {
+                std::unique_lock lock(_mutex);
+                _changed.wait(lock, [this] { return _start || _release; });
+                if (!_start) {
+                    return;
+                }
+            }
+            auto* lane = _document.executionLane();
+            if (!lane) {
+                throw std::runtime_error("presentation probe requires a document owner lane");
+            }
+            lane->dispatchToOwner([this] {
+                try {
+                    App::beginAtomicPresentationMutationTarget(_document);
+                    accepted = true;
+                    acceptedDuringRefresh = _refreshing.load(std::memory_order_acquire);
+                }
+                catch (const Base::Exception& error) {
+                    rejection = error.what();
+                }
+                const auto endAdmission = qScopeGuard([this] {
+                    if (accepted) {
+                        App::endAtomicPresentationMutationTarget(_document);
+                    }
+                });
+                std::unique_lock lock(_mutex);
+                _attemptFinished = true;
+                _changed.notify_all();
+                _changed.wait(lock, [this] { return _release; });
+            });
+        }
+        catch (...) {
+            std::lock_guard lock(_mutex);
+            failure = std::current_exception();
+            _attemptFinished = true;
+            _changed.notify_all();
+        }
+    }
+
+    App::Document& _document;
+    const std::atomic_bool& _refreshing;
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    bool _start {false};
+    bool _release {false};
+    bool _attemptFinished {false};
+    std::thread _worker;
 };
 
 class ResponsiveOperation final: public App::CollaborativeOperation
@@ -310,6 +432,23 @@ protected:
         }
     }
 
+    LivePresentationProbe* addLivePresentationProbe()
+    {
+        // DocumentObject has no default GUI provider, so this document can
+        // take ownership of the probe without replacing an existing provider.
+        auto* object = _document->addObject("App::DocumentObject", "RefreshProbe");
+        if (!object) {
+            return nullptr;
+        }
+        auto provider = std::make_unique<LivePresentationProbe>();
+        provider->attach(object);
+        _guiDocument->addViewProvider(provider.get());
+        auto* result = provider.release();  // The GUI document owns the provider.
+        Gui::Test::recomputeWithoutBlockingGui(*_document, "presentation-probe-setup");
+        QApplication::processEvents();
+        return result;
+    }
+
     App::Document* _document {nullptr};
     App::DocumentObject* _source {nullptr};
     App::DocumentObject* _target {nullptr};
@@ -405,4 +544,141 @@ TEST_F(CollaborationResponsivenessTest, admissionDefersLivePresentationUpdates)
     EXPECT_TRUE(_guiDocument->deferLivePresentationUpdates());
     App::endAtomicPresentationMutationTarget(*_document);
     EXPECT_FALSE(_guiDocument->deferLivePresentationUpdates());
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       livePresentationRefreshKeepsNewOwnerAdmissionOutUntilRefreshEnds)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    std::atomic_bool refreshing {false};
+    OwnerAdmissionAttempt attempt(*_document, refreshing);
+    bool attemptReturned = false;
+    bool appWriteRejected = false;
+    int refreshCalls = 0;
+    provider->refresh = [&] {
+        ++refreshCalls;
+        refreshing.store(true, std::memory_order_release);
+        const auto release = qScopeGuard([&] {
+            refreshing.store(false, std::memory_order_release);
+            attempt.release();
+        });
+        // updateData is reached strictly after catch-up's idle/deferral
+        // checks. Admit the owner here to reproduce the former check/use gap.
+        attemptReturned = attempt.startAndWait();
+        try {
+            provider->getObject()->Label.setValue("Refreshed after admission check");
+        }
+        catch (const Base::RuntimeError&) {
+            appWriteRejected = true;
+        }
+    };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+
+    EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
+    attempt.releaseAndJoin();
+    ASSERT_TRUE(attemptReturned) << "owner admission did not return before the watchdog";
+    ASSERT_EQ(attempt.failure, nullptr);
+    EXPECT_EQ(refreshCalls, 1);
+    EXPECT_FALSE(attempt.acceptedDuringRefresh)
+        << "owner admission started after the deferral check but before refresh finished";
+    EXPECT_FALSE(appWriteRejected)
+        << "a live presentation App write escaped to a foreign atomic admission";
+    EXPECT_EQ(provider->getObject()->Label.getStrValue(),
+              "Refreshed after admission check");
+
+    // Refusing the overlapping admission is temporary: the legitimate owner
+    // can rejoin once the GUI refresh has returned.
+    EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_document, [&] {
+        App::beginAtomicPresentationMutationTarget(*_document);
+        const auto endAdmission = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_document);
+        });
+        App::enforceAtomicPresentationMutationTarget(*_document);
+    }));
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       changedObjectRefreshKeepsNewOwnerAdmissionOutUntilRefreshEnds)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    std::atomic_bool refreshing {false};
+    OwnerAdmissionAttempt attempt(*_document, refreshing);
+    bool attemptReturned = false;
+    bool appWriteRejected = false;
+    int refreshCalls = 0;
+    provider->refresh = [&] {
+        ++refreshCalls;
+        refreshing.store(true, std::memory_order_release);
+        const auto release = qScopeGuard([&] {
+            refreshing.store(false, std::memory_order_release);
+            attempt.release();
+        });
+        attemptReturned = attempt.startAndWait();
+        try {
+            provider->getObject()->Label.setValue("Refreshed after changed-object check");
+        }
+        catch (const Base::RuntimeError&) {
+            appWriteRejected = true;
+        }
+    };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+
+    // Exercise the existing signal connection to slotChangedObject directly;
+    // no pending App mutation or idle catch-up can supply the reservation.
+    EXPECT_NO_THROW(_document->signalChangedObject(*provider->getObject(),
+                                                  provider->getObject()->Label));
+    attempt.releaseAndJoin();
+    ASSERT_TRUE(attemptReturned) << "owner admission did not return before the watchdog";
+    ASSERT_EQ(attempt.failure, nullptr);
+    EXPECT_EQ(refreshCalls, 1);
+    EXPECT_FALSE(attempt.acceptedDuringRefresh);
+    EXPECT_FALSE(appWriteRejected);
+    EXPECT_EQ(provider->getObject()->Label.getStrValue(),
+              "Refreshed after changed-object check");
+
+    EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_document, [&] {
+        App::beginAtomicPresentationMutationTarget(*_document);
+        const auto endAdmission = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_document);
+        });
+        App::enforceAtomicPresentationMutationTarget(*_document);
+    }));
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       deferredLivePresentationRefreshResumesAfterOwnerAdmissionEnds)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    std::atomic_bool refreshing {false};
+    OwnerAdmissionAttempt attempt(*_document, refreshing);
+    int refreshCalls = 0;
+    provider->refresh = [&] {
+        ++refreshCalls;
+        provider->getObject()->Label.setValue("Refreshed after owner release");
+    };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+
+    const bool attemptReturned = attempt.startAndWait();
+    if (attemptReturned && !attempt.failure) {
+        EXPECT_TRUE(attempt.accepted);
+        EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
+        EXPECT_EQ(refreshCalls, 0);
+    }
+    attempt.releaseAndJoin();
+    ASSERT_TRUE(attemptReturned) << "owner admission did not return before the watchdog";
+    ASSERT_EQ(attempt.failure, nullptr);
+    ASSERT_TRUE(attempt.accepted);
+
+    EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
+    QApplication::processEvents();
+    EXPECT_EQ(refreshCalls, 1);
+    EXPECT_EQ(provider->getObject()->Label.getStrValue(), "Refreshed after owner release");
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
 }

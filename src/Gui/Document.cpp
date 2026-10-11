@@ -1252,7 +1252,11 @@ void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Prop
     // admission, or a non-GUI caller must not touch Coin or getMainWindow().
     // catchUpIdleLivePresentation() runs after scheduleGuiSingleShot once
     // those are clear.
-    if (deferLivePresentationUpdates()) {
+    std::optional<App::LivePresentationRefreshScope> refresh;
+    if (!deferLivePresentationUpdates()) {
+        refresh.emplace();
+    }
+    if (!refresh || !refresh->acquired()) {
         if (&Prop == &Obj.Visibility) {
             noteDeferredVisibilityChange(
                 freecad_cast<ViewProviderDocumentObject*>(getViewProvider(&Obj)));
@@ -1472,6 +1476,15 @@ void Document::catchUpIdleLivePresentation()
         || d->_pcDocument->mustExecute()
         || d->_pcDocument->testStatus(App::Document::Recomputing)
         || App::atomicPresentationMutationAdmissionActive()) {
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
+    // Close the gap between the idle checks and provider callbacks. The
+    // reservation never holds its mutex while refreshing or redrawing, and
+    // refuses new admission until all live presentation work has returned.
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired()) {
         scheduleLivePresentationCatchUp();
         return;
     }

@@ -33,6 +33,7 @@ namespace App
 {
 
 class Document;
+class DocumentPy;
 class Application;
 class DocumentRecomputeCoordinator;
 struct RecoverySnapshotSaveOptions;
@@ -209,6 +210,8 @@ public:
 
 private:
     [[nodiscard]] static bool collaborationOwnerThread(const Document& document) noexcept;
+    [[nodiscard]] std::optional<DocumentCommitResult> rejectSerializedCompatibilityDispatch(
+        std::string operationId) const;
 
     template<typename Result, typename Callable>
     static Result invokeOnDocumentThread(Callable&& callable);
@@ -220,6 +223,7 @@ private:
     friend class Gui::Document;
     friend class Application;
     friend class Document;
+    friend class DocumentPy;
     // The lane's Edit command opens and closes its undo transaction here, so
     // the private native controls stay behind the coordinator.
     friend class DocumentExecutionLane;

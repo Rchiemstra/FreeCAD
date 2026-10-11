@@ -13,11 +13,13 @@
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
+#include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
 #include <src/App/InitApplication.h>
 
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -751,6 +753,341 @@ protected:
 
 static_assert(!std::is_constructible_v<DocumentCollaborationService, Document&>);
 static_assert(!std::is_copy_constructible_v<DocumentCollaborationService>);
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationCompatibilityHappyPathAppliesExactlyOnce)
+{
+    int calls = 0;
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto before = _document->collaborationRevisions().current(wildcard);
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            ++calls;
+            _target->Label.setValue("After");
+        });
+    EXPECT_EQ(result.status, DocumentCommitStatus::Committed) << result.message;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersCompatibilityWithoutApplyingThenCommitsOnce)
+{
+    std::atomic_int calls {0};
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto before = _document->collaborationRevisions().current(wildcard);
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before);
+    refresh.reset();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersPreexistingEagerRecomputeBeforeCompatibility)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executionsBefore = target->ExecCount.getValue();
+    target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    std::atomic_int calls {0};
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    EXPECT_EQ(target->ExecCount.getValue(), executionsBefore);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        Base::PyGILStateLocker gil;
+        return _document->collaborationService().sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersPreparedEditAndPreservesPayload)
+{
+    auto prepared = prepare("presentation-deferral", "After", "record-thread");
+    {
+        std::lock_guard lock(InstrumentationMutex);
+        ApplyThreads.clear();
+    }
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    refresh.reset();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(committed.operationId, "presentation-deferral");
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    std::lock_guard lock(InstrumentationMutex);
+    ASSERT_EQ(ApplyThreads.size(), 1U);
+    EXPECT_EQ(ApplyThreads.front(), _document->executionLane()->ownerThreadId());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshRevalidatesSessionCancellationBeforePreparedApply)
+{
+    auto prepared = prepare("presentation-cancel", "Must Not Apply");
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "refresh cancelled"));
+    refresh.reset();
+    const auto cancelled = result.get();
+    EXPECT_EQ(cancelled.status, DocumentCommitStatus::Cancelled) << cancelled.message;
+    EXPECT_EQ(cancelled.message, "refresh cancelled");
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshRevalidatesRevisionBeforePreparedApply)
+{
+    auto prepared = prepare("presentation-conflict", "Must Not Apply");
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    _target->Label.setValue("Intervening change");
+    refresh.reset();
+    const auto conflict = result.get();
+    EXPECT_EQ(conflict.status, DocumentCommitStatus::Conflict) << conflict.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Intervening change");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshOwnerReentryReturnsBusyWithoutApplying)
+{
+    int calls = 0;
+    const auto result = _document->executionLane()->dispatchToOwner([&] {
+        LivePresentationRefreshScope refresh;
+        EXPECT_TRUE(refresh.acquired());
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] { ++calls; });
+    });
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationUnrelatedTransactionBusyRemainsTerminal)
+{
+    _document->openTransaction("caller transaction");
+    int calls = 0;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { ++calls; });
+    _document->abortTransaction();
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationNestedSerializedCompatibilityNeverWaitsWithOuterLock)
+{
+    int calls = 0;
+    DocumentCommitResult nested;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().serializeCompatibilityCallback([&] {
+            nested = _document->collaborationService().commitCompatibilityMutation(
+                {}, [&] { ++calls; });
+        });
+    });
+    started.wait();
+    // A nested call cannot drop the serializer's recursive lock depth, so
+    // admission must return Busy rather than await the foreign refresh.
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    const auto serialized = result.get();
+    EXPECT_TRUE(serialized.committed()) << serialized.message;
+    EXPECT_EQ(nested.status, DocumentCommitStatus::Busy) << nested.message;
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationAtomicEagerSettlementReleasesGilAndCommitMutex)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executionsBefore = target->ExecCount.getValue();
+    const auto visibilityBefore = target->Visibility.getValue();
+    target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    auto& service = _document->collaborationService();
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+    std::atomic_int calls {0};
+    std::optional<CollaborationAtomicCommitPointResult> committedStep;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+            service,
+            [&] {
+                ++calls;
+                target->Visibility.setValue(!visibilityBefore);
+                committedStep.emplace(
+                    Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+            },
+            allowedWrites);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        Base::PyGILStateLocker gil;
+        return service.sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    const auto committed = result.get();
+    EXPECT_TRUE(committed.committed()) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(committedStep.has_value());
+    EXPECT_TRUE(committedStep->committed) << committedStep->diagnostic;
+    EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+    EXPECT_EQ(target->Visibility.getValue(), !visibilityBefore);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationForeignDocumentCompatibilityHappyPathCommitsOnce)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("foreignCompatibility");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto* target = foreign->addObject<FeatureTest>("ForeignTarget");
+    foreign->recompute();
+    int calls = 0;
+    const auto result = _document->executionLane()->dispatchToOwner([&] {
+        return foreign->collaborationService().commitCompatibilityMutation({}, [&] {
+            ++calls;
+            target->Label.setValue("After");
+        });
+    });
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(target->Label.getStrValue(), "After");
+    App::GetApplication().closeDocument(name.c_str());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationNestedForeignDocumentCompatibilityReturnsBusyBeforeDispatch)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("foreignSerializedCompatibility");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto* target = foreign->addObject<FeatureTest>("ForeignTarget");
+    target->Label.setValue("Before");
+    foreign->recompute();
+    int calls = 0;
+    DocumentCommitResult nested;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().serializeCompatibilityCallback([&] {
+            nested = foreign->collaborationService().commitCompatibilityMutation(
+                {}, [&] {
+                    ++calls;
+                    target->Label.setValue("Must Not Apply");
+                });
+        });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        return _document->collaborationService().sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    auto gilAccess = std::async(std::launch::async, [] {
+        Base::PyGILStateLocker gil;
+        return PyGILState_Check() != 0;
+    });
+    EXPECT_EQ(gilAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(gilAccess.get());
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    EXPECT_TRUE(result.get().committed());
+    EXPECT_EQ(nested.status, DocumentCommitStatus::Busy) << nested.message;
+    EXPECT_FALSE(nested.presentationAdmissionDeferred);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(target->Label.getStrValue(), "Before");
+    App::GetApplication().closeDocument(name.c_str());
+}
 
 TEST_F(DocumentCollaborationServiceTest,
        compatibilityPostconditionRunsAfterRecomputeBeforeCommit)

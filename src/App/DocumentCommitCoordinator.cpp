@@ -902,6 +902,33 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                   "one or more semantic revisions changed before commit",
                                   std::move(conflicts));
     }
+    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
+    try {
+        mutationTarget.reset(new CollaborationPreparedMutationTargetScope(_document));
+    }
+    catch (const LivePresentationRefreshInProgress& exception) {
+        auto result = makeResult(DocumentCommitStatus::Busy,
+                                 edit,
+                                 stageFailure("binding commit mutation target failed",
+                                              exception.what()));
+        // No transaction, pending recompute settlement or payload apply has
+        // started. All other Busy results remain terminal.
+        result.presentationAdmissionDeferred = exception.deferrable();
+        return result;
+    }
+    catch (const Base::Exception& exception) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          stageFailure("binding commit mutation target failed",
+                                       exception.what()));
+    }
+    catch (const std::exception& exception) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          stageFailure("binding commit mutation target failed",
+                                       exception.what()));
+    }
+
     // The eager recompute below is scoped to transaction-owned new objects
     // and work made pending by operation.apply(), plus downstream dependents.
     // Start only from a clean boundary so that scoped capture is complete.
@@ -954,23 +981,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                               edit,
                               "document has pending recompute work outside the prepared operation");
         }
-    }
-
-    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
-    try {
-        mutationTarget.reset(new CollaborationPreparedMutationTargetScope(_document));
-    }
-    catch (const Base::Exception& exception) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          stageFailure("binding commit mutation target failed",
-                                       exception.what()));
-    }
-    catch (const std::exception& exception) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          stageFailure("binding commit mutation target failed",
-                                       exception.what()));
     }
 
     try {

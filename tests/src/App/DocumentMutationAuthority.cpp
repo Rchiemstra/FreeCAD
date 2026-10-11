@@ -136,6 +136,82 @@ TEST_F(CollaborationAuthorityRemovalTest, atomicPresentationAdmissionActiveTrack
     EXPECT_FALSE(atomicPresentationMutationAdmissionActive());
 }
 
+TEST_F(CollaborationAuthorityRemovalTest,
+       nestedLivePresentationRefreshKeepsAdmissionOutUntilOuterScopeEnds)
+{
+    const auto tryAdmission = [&] {
+        beginAtomicPresentationMutationTarget(document());
+        endAtomicPresentationMutationTarget(document());
+    };
+
+    {
+        LivePresentationRefreshScope outer;
+        ASSERT_TRUE(outer.acquired());
+        EXPECT_FALSE(atomicPresentationMutationAdmissionActive());
+        // Admission on the refresh thread must also refuse: a provider may
+        // re-enter from its callback before the outer refresh has returned.
+        EXPECT_THROW(tryAdmission(), Base::RuntimeError);
+        {
+            LivePresentationRefreshScope inner;
+            ASSERT_TRUE(inner.acquired());
+            EXPECT_THROW(tryAdmission(), Base::RuntimeError);
+        }
+        EXPECT_THROW(tryAdmission(), Base::RuntimeError)
+            << "nested refresh teardown released the outer reservation";
+    }
+    EXPECT_NO_THROW(tryAdmission());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest,
+       livePresentationRefreshExceptionUnwindReleasesNestedReservations)
+{
+    bool outerAcquired = false;
+    bool innerAcquired = false;
+    EXPECT_THROW(
+        [&] {
+            LivePresentationRefreshScope outer;
+            outerAcquired = outer.acquired();
+            LivePresentationRefreshScope inner;
+            innerAcquired = inner.acquired();
+            throw Base::RuntimeError("presentation callback failed");
+        }(),
+        Base::RuntimeError);
+    EXPECT_TRUE(outerAcquired);
+    EXPECT_TRUE(innerAcquired);
+    EXPECT_FALSE(atomicPresentationMutationAdmissionActive());
+    EXPECT_NO_THROW({
+        beginAtomicPresentationMutationTarget(document());
+        endAtomicPresentationMutationTarget(document());
+    });
+    LivePresentationRefreshScope afterUnwind;
+    EXPECT_TRUE(afterUnwind.acquired());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest,
+       livePresentationRefreshCannotBypassReadOnlyMutationTarget)
+{
+    auto* object = document().addObject("App::FeatureTest", "RefreshReadOnlyTarget");
+    ASSERT_NE(object, nullptr);
+    const auto labelBefore = object->Label.getStrValue();
+
+    beginCollaborationReadOnlyMutationTarget(document());
+    {
+        LivePresentationRefreshScope refresh;
+        EXPECT_FALSE(refresh.acquired());
+        EXPECT_TRUE(atomicPresentationMutationAdmissionActive());
+        EXPECT_THROW(object->Label.setValue("Forbidden refresh write"), Base::RuntimeError);
+        EXPECT_EQ(object->Label.getStrValue(), labelBefore);
+    }
+    EXPECT_TRUE(atomicPresentationMutationAdmissionActive());
+    endCollaborationReadOnlyMutationTarget(document());
+
+    EXPECT_NO_THROW(object->Label.setValue("Ordinary write after validation"));
+    LivePresentationRefreshScope refresh;
+    EXPECT_TRUE(refresh.acquired());
+    EXPECT_NO_THROW(object->Label.setValue("Ordinary refresh write"));
+    EXPECT_EQ(object->Label.getStrValue(), "Ordinary refresh write");
+}
+
 // Regression: closing a document on its lane thread marks every object Destroy
 // in ~Document(); while another document held atomic presentation admission the
 // guard threw from that destructor and std::terminate aborted TestArchGui.

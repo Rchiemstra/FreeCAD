@@ -944,8 +944,13 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         _read(SERVICE_SOURCE),
         "DocumentCollaborationService::commitRecomputeEditOnDocumentThread",
     ))
-    assert "return_coordinator.commitRecompute(edit);" in service
+    assert "returnpreserveSerializedCallbackAdmission(_coordinator.commitRecompute(edit));" in service
     assert service.count("_coordinator.commitRecompute(edit)") == 1
+    admission = _compact(_body(_read(SERVICE_SOURCE), "preserveSerializedCallbackAdmission"))
+    assert admission == (
+        "if(serializedCompatibilityCallbackActive){result.presentationAdmissionDeferred=false;}"
+        "returnresult;"
+    )
 
     routing = _compact(_body(
         _read(COMMIT_SOURCE),

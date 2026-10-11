@@ -5,6 +5,7 @@
 #include "MutationKind.h"
 
 #include <FCGlobal.h>
+#include <Base/Exception.h>
 
 #include <mutex>
 #include <optional>
@@ -42,6 +43,54 @@ private:
 
     std::unique_lock<std::mutex> _lock;
 };
+
+/**
+ * Nonblocking reservation for idle live presentation refresh.
+ *
+ * A successful reservation keeps new mutation-target admission out until the
+ * scope ends, without holding the admission mutex across provider callbacks.
+ * Reservations may nest on the same thread, independently of mutation-target
+ * depths. Callers must defer refresh when acquired() is false.
+ */
+class AppExport LivePresentationRefreshScope final
+{
+public:
+    LivePresentationRefreshScope() noexcept;
+    LivePresentationRefreshScope(const LivePresentationRefreshScope&) = delete;
+    LivePresentationRefreshScope& operator=(const LivePresentationRefreshScope&) = delete;
+    ~LivePresentationRefreshScope() noexcept;
+
+    [[nodiscard]] bool acquired() const noexcept
+    {
+        return _acquired;
+    }
+
+private:
+    bool _acquired {false};
+};
+
+/** Admission refused before a prepared operation can start applying. */
+class AppExport LivePresentationRefreshInProgress final: public Base::RuntimeError
+{
+public:
+    explicit LivePresentationRefreshInProgress(bool deferrable);
+
+    [[nodiscard]] bool deferrable() const noexcept
+    {
+        return _deferrable;
+    }
+
+private:
+    bool _deferrable;
+};
+
+/**
+ * Wait for a foreign refresh with the GIL released. The caller must hold no
+ * document locks. Returns false on the GUI/refresh thread, where waiting would
+ * prevent the reservation from ending. A resumed commit must revalidate its
+ * retained prepared edit before attempting admission again.
+ */
+[[nodiscard]] AppExport bool waitForLivePresentationRefresh();
 
 /**
  * Unforgeable process-target ownership used by the native commit coordinator.

@@ -546,7 +546,9 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
     service_validation = service.find(
         "CollaborativeOperationRegistry::instance().matches("
     )
-    service_delegate = service.find("return_coordinator.commitRecompute(edit)")
+    service_delegate = service.find(
+        "returnpreserveSerializedCallbackAdmission(_coordinator.commitRecompute(edit))"
+    )
     assert 0 <= service_validation < service_delegate
     assert service.count("_coordinator.commitRecompute(edit)") == 1
 

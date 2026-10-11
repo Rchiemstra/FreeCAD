@@ -207,6 +207,7 @@ struct DocumentRecomputeCoordinator::Job
         DocumentRecomputeFeatureRequest request;
         DocumentRecomputeFeatureState state {DocumentRecomputeFeatureState::Waiting};
         std::optional<PreparedEditExecutionId> executionId;
+        std::unique_ptr<PreparedEdit> pendingPreparedEdit;
         std::string diagnostic;
         bool executed {true};
     };
@@ -350,6 +351,7 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
             job->nodes.emplace(featureId,
                                Job::Node {.request = std::move(feature),
                                           .executionId = std::nullopt,
+                                          .pendingPreparedEdit = nullptr,
                                           .diagnostic = {}});
         }
         if (job->nodes.empty()) {
@@ -408,6 +410,14 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                 }
             }
 
+            // Keep detached preparation capacity as the backpressure boundary
+            // while refresh prevents commits; collected payloads must not make
+            // room for an ever-growing queue of independent prepared results.
+            if (std::ranges::any_of(job.nodes, [](const auto& entry) {
+                    return bool(entry.second.pendingPreparedEdit);
+                })) {
+                break;
+            }
             if (job.refreshRevisionFenceAfterEachCommit
                 && std::ranges::any_of(job.nodes, [](const auto& entry) {
                        const auto state = entry.second.state;
@@ -530,7 +540,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
     return _service.runOnOwnerThread([this, id] {
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
-    std::vector<std::pair<std::string, PreparedEditExecutionId>> active;
+    std::vector<std::pair<std::string, std::optional<PreparedEditExecutionId>>> active;
     std::vector<PreparedEditExecutionId> forwardedCancels;
     {
         std::lock_guard stateLock(_stateMutex);
@@ -547,7 +557,11 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 node.state = DocumentRecomputeFeatureState::Cancelling;
                 forwardedCancels.push_back(*node.executionId);
             }
-            if (node.executionId
+            if (node.pendingPreparedEdit
+                && node.state == DocumentRecomputeFeatureState::Committing) {
+                active.emplace_back(featureId, std::nullopt);
+            }
+            else if (node.executionId
                 && (node.state == DocumentRecomputeFeatureState::Preparing
                     || node.state == DocumentRecomputeFeatureState::Cancelling)) {
                 active.emplace_back(featureId, *node.executionId);
@@ -564,121 +578,135 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 
     bool changed = false;
     for (const auto& [featureId, executionId] : active) {
-        std::optional<PreparedEditExecutionSnapshot> execution;
-        try {
-            execution = _service.preparedEditStatus(executionId);
-        }
-        catch (const Base::Exception& error) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = std::string("preparation status failed: ") + error.what();
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
-            }
-            changed = true;
-            continue;
-        }
-        catch (const std::exception& error) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = std::string("preparation status failed: ") + error.what();
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
-            }
-            changed = true;
-            continue;
-        }
-        catch (...) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = "preparation status failed with unknown exception";
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
-            }
-            changed = true;
-            continue;
-        }
-
-        if (!execution) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Stale;
-            node.diagnostic = "detached preparation is no longer available for this document lifecycle";
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
-            }
-            changed = true;
-            continue;
-        }
-        if (execution->status == PreparedEditExecutionStatus::Queued
-            || execution->status == PreparedEditExecutionStatus::Running) {
-            continue;
-        }
-
         std::optional<CollaborationPreparedEditResult> terminal;
-        try {
-            terminal = _service.takeRecomputePreparedEdit(
-                [&] {
-                    std::lock_guard stateLock(_stateMutex);
-                    return _jobs.at(id)->sessionId;
-                }(),
-                executionId);
-        }
-        catch (const Base::Exception& error) {
+        if (!executionId) {
+            // A previous attempt refused only presentation admission before
+            // apply. Reuse that exact payload; never recapture or re-execute it.
             std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = std::string("preparation collection failed: ") + error.what();
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
-            }
-            changed = true;
-            continue;
+            auto& node = _jobs.at(id)->nodes.at(featureId);
+            terminal.emplace();
+            terminal->status = PreparedEditExecutionStatus::Completed;
+            terminal->preparedEdit = std::move(node.pendingPreparedEdit);
         }
-        catch (const std::exception& error) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = std::string("preparation collection failed: ") + error.what();
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
+        else {
+            std::optional<PreparedEditExecutionSnapshot> execution;
+            try {
+                execution = _service.preparedEditStatus(*executionId);
             }
-            changed = true;
-            continue;
-        }
-        catch (...) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = "preparation collection failed with unknown exception";
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
+            catch (const Base::Exception& error) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = std::string("preparation status failed: ") + error.what();
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
             }
-            changed = true;
-            continue;
-        }
+            catch (const std::exception& error) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = std::string("preparation status failed: ") + error.what();
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
+            catch (...) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = "preparation status failed with unknown exception";
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
 
-        if (!terminal) {
-            std::lock_guard stateLock(_stateMutex);
-            auto& job = *_jobs.at(id);
-            auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
-            node.diagnostic = "terminal detached preparation could not be collected";
-            if (job.diagnostic.empty()) {
-                job.diagnostic = node.diagnostic;
+            if (!execution) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Stale;
+                node.diagnostic = "detached preparation is no longer available for this document lifecycle";
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
             }
-            changed = true;
-            continue;
+            if (execution->status == PreparedEditExecutionStatus::Queued
+                || execution->status == PreparedEditExecutionStatus::Running) {
+                continue;
+            }
+
+            try {
+                terminal = _service.takeRecomputePreparedEdit(
+                    [&] {
+                        std::lock_guard stateLock(_stateMutex);
+                        return _jobs.at(id)->sessionId;
+                    }(),
+                    *executionId);
+            }
+            catch (const Base::Exception& error) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = std::string("preparation collection failed: ") + error.what();
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
+            catch (const std::exception& error) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = std::string("preparation collection failed: ") + error.what();
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
+            catch (...) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = "preparation collection failed with unknown exception";
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
+
+            if (!terminal) {
+                std::lock_guard stateLock(_stateMutex);
+                auto& job = *_jobs.at(id);
+                auto& node = job.nodes.at(featureId);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = "terminal detached preparation could not be collected";
+                if (job.diagnostic.empty()) {
+                    job.diagnostic = node.diagnostic;
+                }
+                changed = true;
+                continue;
+            }
+
+            std::lock_guard stateLock(_stateMutex);
+            _jobs.at(id)->nodes.at(featureId).executionId.reset();
         }
 
         bool cancelled = false;
@@ -732,6 +760,19 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         catch (...) {
             commit.status = DocumentCommitStatus::ApplyFailed;
             commit.message = "recompute commit failed with unknown exception";
+        }
+        if (commit.status == DocumentCommitStatus::Busy
+            && commit.presentationAdmissionDeferred) {
+            std::lock_guard stateLock(_stateMutex);
+            auto& node = _jobs.at(id)->nodes.at(featureId);
+            node.pendingPreparedEdit = std::move(terminal->preparedEdit);
+            node.state = DocumentRecomputeFeatureState::Committing;
+            node.diagnostic = commit.message;
+            node.executed = false;
+            changed = true;
+            // Return to the owner pump so GUI refresh and cancellation can
+            // progress. The next poll revalidates session, lifetime and revision.
+            continue;
         }
         // Read the recompute outcome only once the commit has run. An isolated
         // result already knows how the detached execute() went before it is
@@ -802,6 +843,9 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
         throw std::runtime_error("reentrant document recompute mutation is not supported");
     }
     std::vector<PreparedEditExecutionId> executions;
+    // Extension payload destruction may re-enter status(). Dispose only after
+    // both coordinator locks and the operation admission guard have ended.
+    std::vector<std::unique_ptr<PreparedEdit>> cancelledPayloads;
     {
         std::lock_guard stateLock(_stateMutex);
         const auto foundJob = _jobs.find(id);
@@ -820,7 +864,10 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
         }
         for (auto& [featureId, node] : job.nodes) {
             static_cast<void>(featureId);
-            if (node.state == DocumentRecomputeFeatureState::Waiting) {
+            if (node.state == DocumentRecomputeFeatureState::Waiting
+                || (onOwner && node.pendingPreparedEdit
+                    && node.state == DocumentRecomputeFeatureState::Committing)) {
+                cancelledPayloads.push_back(std::move(node.pendingPreparedEdit));
                 node.state = DocumentRecomputeFeatureState::Cancelled;
                 node.diagnostic = reason;
             }

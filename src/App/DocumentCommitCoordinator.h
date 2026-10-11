@@ -51,6 +51,10 @@ struct AppExport DocumentCommitResult
     std::vector<DocumentRevisionConflict> conflicts;
     std::vector<DocumentRevisionObservation> publishedRevisions;
 
+    /** Internal pre-apply refusal; only this Busy result can retain work for
+     * later admission after releasing all document locks. */
+    bool presentationAdmissionDeferred {false};
+
     [[nodiscard]] bool committed() const noexcept
     {
         return status == DocumentCommitStatus::Committed;

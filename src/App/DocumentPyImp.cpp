@@ -2115,29 +2115,43 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
             // self-pin that keeps the Document alive for the lambda's lifetime.
             Document* docPtr = &document;
 
-            auto future = std::make_shared<std::future<AsyncMutationPayload>>(
-                lane->postToOwner([docPtr,
-                                   mutCapture = std::move(mutCapture),
-                                   optCapture = std::move(optCapture),
-                                   cbErrCapture,
-                                   nativeCbCapture = std::move(nativeCbCapture)]()
-                                      mutable -> AsyncMutationPayload {
-                    CollaborationCompatibilityMutation mut = mutCapture;
-                    CollaborationCompatibilityMutationOptions opt = std::move(optCapture);
-                    CollaborationCompatibilityCallback cb = std::move(nativeCbCapture);
-                    AsyncMutationPayload payload;
-                    payload.result =
-                        docPtr->collaborationService().commitCompatibilityMutationWithOptions(
-                            std::move(mut), std::move(cb), std::move(opt));
-                    if (cbErrCapture->captured()
-                        && payload.result.status != DocumentCommitStatus::RollbackFailed) {
-                        // Do NOT restore the Python exception here (owner thread).
-                        // The wait() callable restores callbackError on the waiting
-                        // thread so the error is visible in the right thread's state.
-                        payload.callbackFailed = true;
-                    }
-                    return payload;
-                }));
+            std::shared_ptr<std::future<AsyncMutationPayload>> future;
+            if (auto rejected = document.collaborationService()
+                                    .rejectSerializedCompatibilityDispatch("legacy-compatibility")) {
+                // Preserve the async wait handle while rejecting on the sender,
+                // where the outer serialized callback context is still known.
+                std::promise<AsyncMutationPayload> completed;
+                future = std::make_shared<std::future<AsyncMutationPayload>>(
+                    completed.get_future());
+                AsyncMutationPayload payload;
+                payload.result = std::move(*rejected);
+                completed.set_value(std::move(payload));
+            }
+            else {
+                future = std::make_shared<std::future<AsyncMutationPayload>>(
+                    lane->postToOwner([docPtr,
+                                       mutCapture = std::move(mutCapture),
+                                       optCapture = std::move(optCapture),
+                                       cbErrCapture,
+                                       nativeCbCapture = std::move(nativeCbCapture)]()
+                                          mutable -> AsyncMutationPayload {
+                        CollaborationCompatibilityMutation mut = mutCapture;
+                        CollaborationCompatibilityMutationOptions opt = std::move(optCapture);
+                        CollaborationCompatibilityCallback cb = std::move(nativeCbCapture);
+                        AsyncMutationPayload payload;
+                        payload.result =
+                            docPtr->collaborationService().commitCompatibilityMutationWithOptions(
+                                std::move(mut), std::move(cb), std::move(opt));
+                        if (cbErrCapture->captured()
+                            && payload.result.status != DocumentCommitStatus::RollbackFailed) {
+                            // Do NOT restore the Python exception here (owner thread).
+                            // The wait() callable restores callbackError on the waiting
+                            // thread so the error is visible in the right thread's state.
+                            payload.callbackFailed = true;
+                        }
+                        return payload;
+                    }));
+            }
 
             // Expose a blocking wait(timeout=-1.0) Python callable.
             // It releases the GIL while blocking on the owner-thread result,
