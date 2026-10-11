@@ -6,7 +6,7 @@ export CCACHE_BASEDIR="$CI_WORKSPACE"
 ccache -M "$CCACHE_MAXSIZE" || true
 
 echo "== ccache stats before release build =="
-ccache -s || true
+ccache -svv || true
 
 cmake --preset release -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/gcc \
@@ -17,4 +17,4 @@ cmake --preset release -G Ninja \
 ci/run_cmake_build_with_log.sh build/release release
 
 echo "== ccache stats after release build =="
-ccache -s || true
+ccache -svv || true
