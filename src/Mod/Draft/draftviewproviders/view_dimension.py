@@ -909,10 +909,9 @@ class ViewProviderAngularDimension(ViewProviderDimensionBase):
         # L7: geometry and the dimension string come from the shared SVG helper.
         from draftfunctions.svg import _derive_angular_dimension_svg_geometry
 
-        geometry = _derive_angular_dimension_svg_geometry(obj, vobj)
+        geometry = _derive_angular_dimension_svg_geometry(obj, vobj, angle=obj.Angle.Value)
         self.circle = geometry["circle"]
         radius = geometry["radius"]
-        angle = geometry["angle"]
         self.p1 = geometry["p1"]
         self.p2 = geometry["p2"]
         self.p3 = geometry["p3"]
@@ -1118,12 +1117,6 @@ class ViewProviderAngularDimension(ViewProviderDimensionBase):
         q = r.Q
         self.textpos.translation.setValue([self.tbase.x, self.tbase.y, self.tbase.z])
         self.textpos.rotation = coin.SbRotation(q[0], q[1], q[2], q[3])
-
-        # Set the angle property
-        _round_1 = round(obj.Angle, utils.precision())
-        _round_2 = round(angle, utils.precision())
-        if _round_1 != _round_2:
-            obj.Angle = angle
 
     def onChanged(self, vobj, prop):
         """Execute when a view property is changed."""

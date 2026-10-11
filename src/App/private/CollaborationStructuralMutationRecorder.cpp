@@ -255,7 +255,8 @@ void CollaborationStructuralMutationRecorder::validateCellClear(
     auto* document = operation._document;
     auto& object = operation._object;
     auto* property = operation._property;
-    if (!operation._address.isValid()
+    auto address = operation._address;
+    if (!address.isValid()
         || object.testStatus(ObjectStatus::Destroy)
         || object.testStatus(ObjectStatus::Remove)) {
         throw Base::RuntimeError("spreadsheet cell clear requires a live cell owner");

@@ -1784,12 +1784,21 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     names = "|".join(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
-    pattern = re.compile(rf"(?<![\w:])(?:::)?\s*(?:{names})\s*\(")
+    pattern = re.compile(rf"(?<![\w:])(?:::\s*)?(?:{names})\s*\(")
     decoded: list[tuple[str, list[int]]] = []
     for match in pattern.finditer(masked):
-        if _cpp_offset_in_ranges(match.start(), unevaluated_ranges):
+        # Start the search at a token: a leading \s* retries every suffix of
+        # long masked whitespace runs. Preserve its former context offset for
+        # the namespace/member/unevaluated checks below, without regex retries.
+        start = match.start()
+        if not masked.startswith("::", start):
+            while start > 0 and masked[start - 1].isspace():
+                start -= 1
+            if start > 0 and (masked[start - 1].isalnum() or masked[start - 1] in "_:"):
+                start += 1
+        if _cpp_offset_in_ranges(start, unevaluated_ranges):
             continue
-        opening = masked.find("(", match.start(), match.end())
+        opening = masked.find("(", start, match.end())
         if opening < 0:
             continue
         closing = _cpp_call_end(masked, opening)
@@ -1799,14 +1808,14 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
         function_name = re.sub(r"\s*::\s*", "::", raw_function_name)
         globally_qualified = function_name.startswith("::")
         lookup_name = function_name.removeprefix("::")
-        qualifier = _cpp_qualifier_before(masked, match.start())
-        context = _cpp_namespace_at(namespace_ranges, match.start())
-        if globally_qualified and _cpp_global_prefix_is_qualified(masked, match.start()):
+        qualifier = _cpp_qualifier_before(masked, start)
+        context = _cpp_namespace_at(namespace_ranges, start)
+        if globally_qualified and _cpp_global_prefix_is_qualified(masked, start):
             continue
-        if _cpp_member_access_before(masked, match.start()):
+        if _cpp_member_access_before(masked, start):
             continue
         if "::" not in lookup_name:
-            if re.search(r"(?:\.|->|::)\s*$", masked[: match.start()]):
+            if re.search(r"(?:\.|->|::)\s*$", masked[: start]):
                 continue
         elif lookup_name in _CPP_GUI_WRAPPER_NAMES:
             if qualifier is not None:
@@ -1814,7 +1823,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             if not globally_qualified and not _cpp_gui_name_is_global(
                 context,
                 namespace_ranges,
-                match.start(),
+                start,
                 namespace_identities,
                 gui_shadows,
             ):
@@ -1826,7 +1835,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
                 if context is not None and context.split("::", 1)[0] != "Gui":
                     continue
             elif (context is None or context.split("::", 1)[0] != "Gui") and not _cpp_has_gui_using(
-                match.start(),
+                start,
                 brace_ranges,
                 namespace_ranges,
                 using_declarations,

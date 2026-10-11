@@ -621,6 +621,70 @@ class MaskingTests(unittest.TestCase):
         self.assertEqual(masked_py.count("\n"), py_source.count("\n"))
 
 
+class CppCommandSearchRegressionTests(unittest.TestCase):
+    def test_cpp_command_search_starts_at_tokens_after_masked_whitespace(self) -> None:
+        # Inspect the actual search cursor, without a machine-dependent time limit.
+        # Starting at whitespace lets an unanchored greedy prefix retry every suffix
+        # of a masked comment/string/indentation run that contains no wrapper.
+        source = "/*" + " " * 1024 + "*/\n" + (
+            'Gui :: Command :: doCommand(Gui::Command::Doc, "doc.recompute()");\n'
+        ) + " " * 2048
+        starts = []
+        compile_pattern = re.compile
+
+        class ObservedPattern:
+            def __init__(self, pattern):
+                self.pattern = pattern
+
+            def finditer(self, text):
+                for match in self.pattern.finditer(text):
+                    starts.append(text[match.start()])
+                    yield match
+
+        def observe(pattern, *args, **kwargs):
+            compiled = compile_pattern(pattern, *args, **kwargs)
+            if pattern.startswith(r"(?<![\w:])"):
+                return ObservedPattern(compiled)
+            return compiled
+
+        with mock.patch.object(scanner.re, "compile", side_effect=observe):
+            decoded = scanner._decoded_cpp_command_literals(source)
+        self.assertEqual(decoded, [("doc.recompute()", [2] * len("doc.recompute()"))])
+        self.assertEqual(starts, ["G"])
+
+    def test_cpp_command_search_preserves_trivia_offsets_and_rejections(self) -> None:
+        source = (
+            'void f(){ return /* trivia */ Gui :: Command :: doCommand(0,\n'
+            '"App.ActiveDocument." /* join */ "recompute()"); }\n'
+            'namespace Other::Gui { void f(){ return :: /* trivia */ Gui :: Command :: doCommand(0,\n'
+            'R"x(App.ActiveDocument.recompute())x"); } }\n'
+            'namespace Gui { void f(){ using Gui::Command; return\n'
+            'Command /* trivia */ :: doCommand(0, "App.ActiveDocument.recompute()"); } }\n'
+            'void f(){ using Gui::Command; return Command::doCommand(0, "App.ActiveDocument.recompute()"); }\n'
+            'void f(){ return doCommand(0, "App.ActiveDocument.recompute()"); }\n'
+            'Other /* trivia */ :: Gui :: Command :: doCommand(0, "bad.recompute()");\n'
+            'obj /* trivia */ . Gui :: Command :: doCommand(0, "bad.recompute()");\n'
+            'obj /* trivia */ -> Gui :: Command :: doCommand(0, "bad.recompute()");\n'
+            'namespace Other { void f(){ Command::doCommand(0, "bad.recompute()"); } }\n'
+            'void f(){ struct Gui {}; Gui::Command::doCommand(0, "bad.recompute()"); }\n'
+            'sizeof( /* trivia */ Gui::Command::doCommand(0, "bad.recompute()"));\n'
+            'requires { /* trivia */ Gui::Command::doCommand(0, "bad.recompute()"); };\n'
+            '// Gui::Command::doCommand(0, "bad.recompute()");\n'
+            'auto text = R"x(Gui::Command::doCommand(0, "bad.recompute()"))x";\n'
+        )
+        payload = "App.ActiveDocument.recompute()"
+        expected_lines = [2, 4, 6, 7, 8]
+        self.assertEqual(
+            scanner._decoded_cpp_command_literals(source),
+            [(payload, [line] * len(payload)) for line in expected_lines],
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Trivia.cpp")
+        self.assertEqual(
+            [finding.line for finding in findings if finding.category == "direct-recompute"],
+            expected_lines,
+        )
+
+
 class RuleRegressionTests(unittest.TestCase):
     """Focused regressions for the search rules themselves (no repository scan)."""
 

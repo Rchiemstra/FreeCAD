@@ -207,7 +207,7 @@ def format_point(coords, action="L"):
     return "{action}{x},{y}".format(x=coords.x, y=coords.y, action=action)
 
 
-def _derive_angular_dimension_svg_geometry(obj, vobj):
+def _derive_angular_dimension_svg_geometry(obj, vobj, *, angle=None):
     """Build angular arc endpoints from App (+ view) properties without Proxy.
 
     TechDraw DraftView may call Draft.get_svg after an off-GUI recompute, when
@@ -242,9 +242,17 @@ def _derive_angular_dimension_svg_geometry(obj, vobj):
                 p4 = p3 + DraftVecUtils.scaleTo(proj2, rest)
 
     if obj.LastAngle.Value > obj.FirstAngle.Value:
-        angle = obj.LastAngle.Value - obj.FirstAngle.Value
+        derived_angle = obj.LastAngle.Value - obj.FirstAngle.Value
     else:
-        angle = (360 - obj.FirstAngle.Value) + obj.LastAngle.Value
+        derived_angle = (360 - obj.FirstAngle.Value) + obj.LastAngle.Value
+    if angle is None:
+        angle = derived_angle
+    # Owner publication preserves the old precision-rounded no-op. Preserve
+    # the old label precision too when the committed measurement agrees at
+    # that precision, including view Decimals above utils.precision().
+    display_angle = (derived_angle
+                     if round(angle, utils.precision()) == round(derived_angle, utils.precision())
+                     else angle)
 
     show_unit = True
     if vobj is not None and hasattr(vobj, "ShowUnit"):
@@ -253,11 +261,11 @@ def _derive_angular_dimension_svg_geometry(obj, vobj):
         from draftutils import units as draft_units
 
         if vobj is not None and hasattr(vobj, "Decimals"):
-            dim_string = draft_units.display_external(angle, vobj.Decimals, "Angle", show_unit)
+            dim_string = draft_units.display_external(display_angle, vobj.Decimals, "Angle", show_unit)
         else:
-            dim_string = draft_units.display_external(angle, None, "Angle", show_unit)
+            dim_string = draft_units.display_external(display_angle, None, "Angle", show_unit)
     except Exception:
-        dim_string = str(round(angle, utils.precision()))
+        dim_string = str(round(display_angle, utils.precision()))
 
     if vobj is not None and getattr(vobj, "Override", None):
         dim_string = vobj.Override.replace("$dim", dim_string)
@@ -710,28 +718,46 @@ def get_svg(
         if not App.GuiUp and vobj is None:
             _wrn("Export of dimensions to SVG is only available in GUI mode")
 
-        prx = getattr(vobj, "Proxy", None) if vobj is not None else None
-        if prx is not None and hasattr(prx, "circle"):
-            circle = prx.circle
-            raw_p1, raw_p2, raw_p3, raw_p4 = prx.p1, prx.p2, prx.p3, prx.p4
-            dim_string = getattr(prx, "string", "")
-            tbase_raw = getattr(prx, "tbase", None)
-            circle1 = getattr(prx, "circle1", None)
-            circle2 = getattr(prx, "circle2", None)
-        else:
-            # Lane / post-stable TechDraw fills may run before Proxy.circle exists.
-            derived = _derive_angular_dimension_svg_geometry(obj, vobj)
-            circle = derived["circle"]
-            raw_p1, raw_p2, raw_p3, raw_p4 = (
-                derived["p1"],
-                derived["p2"],
-                derived["p3"],
-                derived["p4"],
-            )
-            dim_string = derived["string"]
-            tbase_raw = None
-            circle1 = None
-            circle2 = None
+        # The model may have recomputed before GUI catch-up. Always derive
+        # geometry/text from current inputs and the committed scalar Angle.
+        derived = _derive_angular_dimension_svg_geometry(obj, vobj, angle=obj.Angle.Value)
+        circle = derived["circle"]
+        raw_p1, raw_p2, raw_p3, raw_p4 = (
+            derived["p1"], derived["p2"], derived["p3"], derived["p4"],
+        )
+        dim_string = derived["string"]
+        tbase_raw = None
+        circle1 = circle2 = None
+        if circle is not None and vobj is not None and vobj.DisplayMode == "Screen":
+            # Match the provider's 24-segment text gap using fresh geometry.
+            first, last = circle.FirstParameter, circle.LastParameter
+            midp = circle.valueAt((first + last) / 2.0)
+            spacing = len(dim_string) * vobj.FontSize.Value / 8.0
+            pts1, pts2 = [], []
+            cut = False
+            for i in range(25):
+                point = circle.valueAt(first + (last - first) / 24 * i)
+                if (point - midp).Length <= spacing:
+                    cut = True
+                elif cut:
+                    pts2.append(point)
+                else:
+                    pts1.append(point)
+            if len(pts1) >= 3 and len(pts2) >= 3:
+                circle1 = Part.Arc(pts1[0], pts1[1], pts1[-1]).toShape()
+                circle2 = Part.Arc(pts2[0], pts2[1], pts2[-1]).toShape()
+            tbase_raw = midp
+            if hasattr(vobj, "TextPosition") and not DraftVecUtils.isNull(vobj.TextPosition):
+                tbase_raw = vobj.TextPosition
+            ray = midp - obj.Center
+            if not DraftVecUtils.isNull(ray):
+                spacing = (vobj.TextSpacing.Value * vobj.ScaleMultiplier
+                           if hasattr(vobj, "TextSpacing") and hasattr(vobj, "ScaleMultiplier")
+                           else 0.05)
+                offset = DraftVecUtils.scaleTo(ray, spacing)
+                if not getattr(vobj, "FlipText", False):
+                    offset = offset.negative()
+                tbase_raw = tbase_raw + offset
 
         if circle is not None and vobj is not None:
             p1 = get_proj(raw_p1, plane)

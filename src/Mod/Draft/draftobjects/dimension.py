@@ -598,8 +598,8 @@ class AngularDimension(DimensionBase):
     def execute(self, obj):
         """Execute when the object is created or recomputed.
 
-        Nothing is actually done here, except update the viewprovider,
-        as the lines and text are created in the viewprovider.
+        Publish the measurement on the document owner. The viewprovider
+        consumes committed model properties through its normal updateData hook.
         """
         # TODO: introduce the calculation of 'Angle' by taking a pair of
         # objects and edges in the 'LinkedGeometry' property.
@@ -614,13 +614,10 @@ class AngularDimension(DimensionBase):
         #      obj.LastAngle) = measure_two_obj_angles(obj.LinkedGeometry[0],
         #                                              obj.LinkedGeometry[1])
 
-        # TODO: move the calculation of 'Angle' from the viewprovider
-        # to this object class.
-        # The viewprovider should modify visual properties only, not real
-        # properties. It can react to real properties by using the 'updateData'
-        # method.
-        if App.GuiUp and obj.ViewObject:
-            obj.ViewObject.update()
+        first, last = obj.FirstAngle.Value, obj.LastAngle.Value
+        angle = last - first if last > first else (360 - first) + last
+        if round(obj.Angle, utils.precision()) != round(angle, utils.precision()):
+            obj.Angle = angle
 
     def onChanged(self, obj, prop):
         """Execute when a property is changed.
