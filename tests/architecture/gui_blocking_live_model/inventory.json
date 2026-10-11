@@ -4572,19 +4572,11 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 1477,
+      "line": 1486,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
       "evidence": "if not FreeCAD.ActiveDocument:"
-    },
-    {
-      "path": "src/Mod/BIM/Arch.py",
-      "line": 1507,
-      "category": "live-app-dereference",
-      "subsystem": "BIM",
-      "disposition": "investigate",
-      "evidence": "stair = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
     },
     {
       "path": "src/Mod/BIM/Arch.py",
@@ -4596,7 +4588,15 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 1553,
+      "line": 1525,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "stair = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1562,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4604,7 +4604,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 1573,
+      "line": 1582,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -4612,7 +4612,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 1812,
+      "line": 1821,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4620,7 +4620,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 1856,
+      "line": 1865,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4628,7 +4628,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2092,
+      "line": 2101,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4636,7 +4636,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2319,
+      "line": 2328,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -4644,7 +4644,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2319,
+      "line": 2328,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -4652,7 +4652,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2361,
+      "line": 2370,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4660,7 +4660,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2373,
+      "line": 2382,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4668,7 +4668,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2506,
+      "line": 2515,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4676,7 +4676,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2608,
+      "line": 2617,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4684,7 +4684,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2643,
+      "line": 2652,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -4692,7 +4692,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2643,
+      "line": 2652,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4700,7 +4700,7 @@
     },
     {
       "path": "src/Mod/BIM/Arch.py",
-      "line": 2643,
+      "line": 2652,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -5988,7 +5988,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 548,
+      "line": 566,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -5996,7 +5996,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 554,
+      "line": 572,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6004,7 +6004,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 565,
+      "line": 583,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6012,15 +6012,15 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 747,
+      "line": 774,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
-      "evidence": "sp.recompute()"
+      "evidence": "recomputed = sp.recompute()"
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 1924,
+      "line": 1953,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6028,7 +6028,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 1926,
+      "line": 1955,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6036,7 +6036,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 2138,
+      "line": 2167,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6044,7 +6044,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 2138,
+      "line": 2167,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6052,7 +6052,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchReport.py",
-      "line": 2138,
+      "line": 2167,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6236,7 +6236,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1477,
+      "line": 1532,
       "category": "update-data-provider",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6244,7 +6244,15 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1789,
+      "line": 1692,
+      "category": "thread-waits",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "result = recompute_handle.wait(120.0)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 2072,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6252,7 +6260,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1833,
+      "line": 2116,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6260,7 +6268,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1833,
+      "line": 2116,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6268,7 +6276,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1833,
+      "line": 2116,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6276,7 +6284,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1838,
+      "line": 2121,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6284,7 +6292,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1838,
+      "line": 2121,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6292,7 +6300,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1838,
+      "line": 2121,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6396,7 +6404,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchStairs.py",
-      "line": 603,
+      "line": 610,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6404,7 +6412,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchStairs.py",
-      "line": 628,
+      "line": 635,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6412,11 +6420,11 @@
     },
     {
       "path": "src/Mod/BIM/ArchStairs.py",
-      "line": 877,
-      "category": "live-app-dereference",
+      "line": 2472,
+      "category": "update-data-provider",
       "subsystem": "BIM",
-      "disposition": "investigate",
-      "evidence": "doc = FreeCAD.ActiveDocument"
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/BIM/ArchStructure.py",
@@ -17956,7 +17964,7 @@
     },
     {
       "path": "src/Mod/Draft/draftfunctions/svg.py",
-      "line": 574,
+      "line": 582,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17964,7 +17972,7 @@
     },
     {
       "path": "src/Mod/Draft/draftfunctions/svg.py",
-      "line": 607,
+      "line": 615,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",

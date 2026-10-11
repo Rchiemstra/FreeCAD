@@ -1,24 +1,24 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (4,367 findings across nine categories, snapshot in `inventory.json`) and proposes bounded follow-up task
+This report summarizes the reproducible inventory (4,368 findings across nine categories, snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
 ## Inventory at a glance
 
 | Category | Findings | Disposition | Summary |
 | --- | ---: | --- | --- |
-| `live-app-dereference` | 2887 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads and `Gui::Document::getDocument()->getObject()` ingress. |
+| `live-app-dereference` | 2886 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads and `Gui::Document::getDocument()->getObject()` ingress. |
 | `live-reference-callback` | 237 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
 | `live-reference-payload` | 5 | migrate | `fastsignals::signal` declarations carrying live `App::Property*` or `App::DocumentObject*` payloads (including tree highlight/expand navigation). |
-| `update-data-provider` | 236 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
+| `update-data-provider` | 237 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
 | `direct-recompute` | 489 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs, including executable literals passed to known C++ GUI command wrappers/macros. |
 | `sync-document-api` | 378 | migrate | Document-shaped sync calls (`recompute`, `save`/`saveAs`, `undo`/`redo`, `closeDocument`, `commitCompatibilityMutation`) from first-party GUI code. Coin3D/property/feature touch, painter and image saves, feature-level `obj.recompute()`, `Gui::Document` async ingress, and the ingress implementation itself are not findings. |
 | `process-events-polling` | 73 | investigate | Manual event-loop pumping. |
-| `thread-waits` | 62 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
+| `thread-waits` | 63 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
 | `blocking-invokes` | 0 | migrate | No remaining production `Qt::BlockingQueuedConnection` sites in the snapshot. |
 
-The snapshot spans 2,003 C++ and 2,364 Python findings. Owning subsystems:
-`BIM` (1072), `CAM` (582), `Fem` (463), `Gui` (400), `Sketcher` (364), `TechDraw` (346), `Draft` (273), `Part` (182), `PartDesign` (147), `Spreadsheet` (110), `Mesh` (107), `Assembly` (92), `OpenSCAD` (67), `Robot` (32), `Surface` (29), `AddonManager` (27), `Measure` (21), `Inspection` (13), `Material` (12), `MeshPart` (8), `Points` (7), `Import` (6), `ReverseEngineering` (6),
+The snapshot spans 2,003 C++ and 2,365 Python findings. Owning subsystems:
+`BIM` (1073), `CAM` (582), `Fem` (463), `Gui` (400), `Sketcher` (364), `TechDraw` (346), `Draft` (273), `Part` (182), `PartDesign` (147), `Spreadsheet` (110), `Mesh` (107), `Assembly` (92), `OpenSCAD` (67), `Robot` (32), `Surface` (29), `AddonManager` (27), `Measure` (21), `Inspection` (13), `Material` (12), `MeshPart` (8), `Points` (7), `Import` (6), `ReverseEngineering` (6),
 and `Start` (1).
 
 ## Bounded follow-up task candidates

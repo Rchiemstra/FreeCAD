@@ -39,9 +39,10 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/BIM/ArchPanel.py` | `_ViewProviderPanel` | 605 | unsupported |
 | `src/Mod/BIM/ArchRebar.py` | `_ViewProviderRebar` | 612 | unsupported |
 | `src/Mod/BIM/ArchReference.py` | `ViewProviderArchReference` | 638 | unsupported |
-| `src/Mod/BIM/ArchSectionPlane.py` | `_ViewProviderSectionPlane` | 1477 | unsupported |
+| `src/Mod/BIM/ArchSectionPlane.py` | `_ViewProviderSectionPlane` | 1532 | unsupported |
 | `src/Mod/BIM/ArchSite.py` | `_ViewProviderSite` | 1724 | unsupported |
 | `src/Mod/BIM/ArchSpace.py` | `_ViewProviderSpace` | 724 | unsupported |
+| `src/Mod/BIM/ArchStairs.py` | `_ViewProviderStairs` | 2472 | unsupported |
 | `src/Mod/BIM/ArchStructure.py` | `_ViewProviderStructure` | 1491 | unsupported |
 | `src/Mod/BIM/ArchWall.py` | `_ViewProviderWall` | 1952 | unsupported |
 | `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | 901 | unsupported |
