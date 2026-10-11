@@ -27,6 +27,7 @@
 #include <BRepTools.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <gp_Trsf.hxx>
@@ -1054,7 +1055,28 @@ void ViewProviderPartExt::unsetEdit(int ModNum)
     }
 }
 
-void ViewProviderPartExt::setupCoinGeometry(
+namespace
+{
+
+void clearCoinGeometry(
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset)
+{
+    coords->point.setNum(0);
+    norm->vector.setNum(0);
+    faceset->coordIndex.setNum(0);
+    faceset->partIndex.setNum(0);
+    lineset->coordIndex.setNum(0);
+    lineset->setEdgeMapping({});
+    nodeset->startIndex.setValue(0);
+}
+
+}  // namespace
+
+static void setupCoinGeometryUnchecked(
     TopoDS_Shape shape,
     SoCoordinate3* coords,
     SoBrepFaceSet* faceset,
@@ -1197,9 +1219,13 @@ void ViewProviderPartExt::setupCoinGeometry(
 
     // get the raw memory for fast fill up
     SbVec3f* verts = coords->point.startEditing();
+    Base::ScopeGuard finishVertices([&] { coords->point.finishEditing(); });
     SbVec3f* norms = norm->vector.startEditing();
+    Base::ScopeGuard finishNormals([&] { norm->vector.finishEditing(); });
     int32_t* index = faceset->coordIndex.startEditing();
+    Base::ScopeGuard finishFaces([&] { faceset->coordIndex.finishEditing(); });
     int32_t* parts = faceset->partIndex.startEditing();
+    Base::ScopeGuard finishParts([&] { faceset->partIndex.finishEditing(); });
 
     // preset the normal vector with null vector
     for (int i = 0; i < numNorms; i++) {
@@ -1467,18 +1493,13 @@ void ViewProviderPartExt::setupCoinGeometry(
     numLines = lineSetCoords.size();
     lineset->coordIndex.setNum(numLines);
     int32_t* lines = lineset->coordIndex.startEditing();
+    Base::ScopeGuard finishLines([&] { lineset->coordIndex.finishEditing(); });
 
     int l = 0;
     for (auto it = lineSetCoords.begin(); it != lineSetCoords.end(); ++it, l++) {
         lines[l] = *it;
     }
 
-    // end the editing of the nodes
-    coords->point.finishEditing();
-    norm->vector.finishEditing();
-    faceset->coordIndex.finishEditing();
-    faceset->partIndex.finishEditing();
-    lineset->coordIndex.finishEditing();
 
 #ifdef FC_DEBUG
     Base::Console().log(
@@ -1494,6 +1515,46 @@ void ViewProviderPartExt::setupCoinGeometry(
         numLines
     );
 #endif
+}
+
+// This entry point is also used by owner-thread presentation capture and previews.
+// Keep OCC failures inside the common helper, and never publish partial geometry.
+void ViewProviderPartExt::setupCoinGeometry(
+    TopoDS_Shape shape,
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset,
+    double deviation,
+    double angularDeflection,
+    bool normalsFromUV)
+{
+    try {
+        for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+            if (BRep_Tool::Surface(TopoDS::Face(faces.Current())).IsNull()) {
+                throw Standard_Failure("Face has no surface");
+            }
+        }
+        if (!Part::Tools::isShapeEmpty(shape) && !BRepCheck_Analyzer(shape).IsValid()) {
+            throw Standard_Failure("Invalid shape");
+        }
+        setupCoinGeometryUnchecked(
+            shape, coords, faceset, norm, lineset, nodeset,
+            deviation, angularDeflection, normalsFromUV);
+    }
+    catch (const Standard_Failure& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: " << error.GetMessageString());
+    }
+    catch (const std::exception& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: " << error.what());
+    }
+    catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: unknown C++ exception");
+    }
 }
 
 void ViewProviderPartExt::setupCoinGeometry(
@@ -1519,7 +1580,24 @@ void ViewProviderPartExt::setupCoinGeometry(
 
 void ViewProviderPartExt::updateVisual()
 {
-    TopoDS_Shape shape = getRenderedShape().getShape();
+    TopoDS_Shape shape;
+    try {
+        shape = getRenderedShape().getShape();
+    }
+    catch (const Standard_Failure& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
+        FC_ERR("Cannot obtain shape for display: " << error.GetMessageString());
+        return;
+    }
+    catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
+        FC_ERR("Cannot obtain shape for display");
+        return;
+    }
 
     if (!VisualTouched && lastRenderedShape.IsPartner(shape)) {
         // shape unchanged so do not rebuild geometry
@@ -1567,12 +1645,18 @@ void ViewProviderPartExt::updateVisual()
         VisualTouched = false;
     }
     catch (const Standard_Failure& e) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
         FC_ERR(
             "Cannot compute Inventor representation for the shape of "
             << pcObject->getFullName() << ": " << e.GetMessageString()
         );
     }
     catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
         FC_ERR("Cannot compute Inventor representation for the shape of " << pcObject->getFullName());
     }
 

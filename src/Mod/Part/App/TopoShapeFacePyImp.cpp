@@ -128,6 +128,7 @@ PyObject* TopoShapeFacePy::PyMake(struct _typeobject*, PyObject*, PyObject*)  //
 
 // constructor method
 int TopoShapeFacePy::PyInit(PyObject* args, PyObject* /*kwd*/)
+try
 {
     if (PyArg_ParseTuple(args, "")) {
         // Undefined Face
@@ -383,6 +384,26 @@ int TopoShapeFacePy::PyInit(PyObject* args, PyObject* /*kwd*/)
         "(list_of_wires, facemaker_class_name)\n"
         "(surface, list_of_wires)\n"
     );
+    return -1;
+}
+catch (const Standard_Failure& error) {
+    const char* message = error.GetMessageString();
+    PyErr_SetString(PartExceptionOCCError, message ? message : "OCCT failure creating a face");
+    return -1;
+}
+catch (const Base::Exception& error) {
+    error.setPyException();
+    return -1;
+}
+catch (const Py::Exception&) {
+    return -1;
+}
+catch (const std::exception& error) {
+    PyErr_SetString(PyExc_RuntimeError, error.what());
+    return -1;
+}
+catch (...) {
+    PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception creating a face");
     return -1;
 }
 

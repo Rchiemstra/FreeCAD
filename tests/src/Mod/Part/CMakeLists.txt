@@ -4,6 +4,7 @@ add_subdirectory(App)
 
 if(BUILD_GUI)
     target_sources(Part_tests_run PRIVATE
+        Gui/FaceRendering.cpp
         Gui/SoBrepEdgeSet.cpp
         Gui/ViewProviderGridExtension.cpp
         Gui/ViewProviderPreviewExtension.cpp

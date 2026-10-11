@@ -837,6 +837,86 @@ class PartTestShapeFix(unittest.TestCase):
 
         fix.clearModes()
 
+    def testShapeFix_FaceSurfaceWireHappyPath(self):
+        surface = Part.Plane()
+        wire = surface.toShape(-1, 1, -1, 1).OuterWire
+        fix = Part.ShapeFix.Face(surface, 1e-7, True)
+        fix.add(wire)
+        fix.perform()
+        self.assertTrue(fix.face().isValid())
+        self.assertTrue(Part.Face(surface, wire).isValid())
+
+    def testFaceInconsistentSurfaceWireIsHarmless(self):
+        plane = Part.Plane()
+        wire = plane.toShape(-1, 1, -1, 1).OuterWire
+        wire.translate(FreeCAD.Vector(0, 0, 5))
+        cylinder = Part.Cylinder()
+        cylinder.Radius = 2
+        reversedWire = cylinder.toShape(0, 2 * math.pi, -1, 1).OuterWire
+        reversedWire.reverse()
+        for surface, boundary in ((plane, wire), (cylinder, reversedWire)):
+            with self.subTest(surface=surface):
+                try:
+                    face = Part.Face(surface, boundary)
+                except (Part.OCCError, RuntimeError, ValueError):
+                    pass
+                else:
+                    self.assertIsInstance(face, Part.Face)
+                    # Validity checking must also remain safe for an inconsistent face.
+                    self.assertIsInstance(face.isValid(), bool)
+                try:
+                    fix = Part.ShapeFix.Face(surface, 1e-7, True)
+                    fix.add(boundary)
+                    fix.perform()
+                    face = fix.face()
+                except (Part.OCCError, RuntimeError, ValueError):
+                    pass
+                else:
+                    self.assertIsInstance(face, Part.Shape)
+                    self.assertIsInstance(face.isValid(), bool)
+        self.assertTrue(Part.Face(plane, plane.toShape(-1, 1, -1, 1).OuterWire).isValid())
+
+    def testShapeFix_FaceOperationsWithoutSurfaceAreRejected(self):
+        for method, args in (
+                ("perform", ()), ("fixOrientation", ()), ("fixAddNaturalBound", ()),
+                ("fixMissingSeam", ()), ("fixSmallAreaWire", (False,)),
+                ("fixLoopWire", ()), ("fixIntersectingWires", ()),
+                ("fixWiresTwoCoincidentEdges", ()), ("fixPeriodicDegenerated", ())):
+            with self.subTest(method=method):
+                fix = Part.ShapeFix.Face()
+                with self.assertRaises(ValueError):
+                    getattr(fix, method)(*args)
+                fix.init(Part.Plane().toShape(-1, 1, -1, 1))
+                fix.perform()
+                self.assertTrue(fix.face().isValid())
+
+    def testShapeFix_FaceNullIsRejected(self):
+        with self.assertRaises(ValueError):
+            Part.ShapeFix.Face(Part.Face())
+
+    def testShapeFix_FaceInitNullIsRejected(self):
+        surface = Part.Plane()
+        face = surface.toShape(-1, 1, -1, 1)
+        fix = Part.ShapeFix.Face(face)
+        with self.assertRaises(ValueError):
+            fix.init(Part.Face())
+        fix.perform()
+        self.assertTrue(fix.face().isValid())
+
+    def testShapeFix_FaceNullWireIsRejectedAndRecovers(self):
+        face = Part.Plane().toShape(-1, 1, -1, 1)
+        fix = Part.ShapeFix.Face(face)
+        with self.assertRaisesRegex(ValueError, "non-null wire"):
+            fix.add(Part.Wire())
+        fix.perform()
+        self.assertTrue(fix.face().isValid())
+
+    def testShapeFix_FaceAddWithoutSurfaceIsRejected(self):
+        fix = Part.ShapeFix.Face()
+        wire = Part.makePolygon([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0)])
+        with self.assertRaises(ValueError):
+            fix.add(wire)
+
     def testShapeFix_Shell(self):
         surface = Part.Plane()
         face = surface.toShape(-1, 1, -1, 1)

@@ -26796,7 +26796,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
-      "line": 975,
+      "line": 976,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
