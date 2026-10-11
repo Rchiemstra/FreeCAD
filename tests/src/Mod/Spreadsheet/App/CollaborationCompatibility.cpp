@@ -242,6 +242,8 @@ protected:
             "    clear_address = 'A1'\n"
             "    capture_derived = False\n"
             "    derived_snapshot = ()\n"
+            "    denial_snapshot = ()\n"
+            "    denial_snapshots = 0\n"
             "    derived_input = '=6+7'\n"
             "    require_derived_success = False\n"
             "    def execute(self, obj):\n"
@@ -264,6 +266,13 @@ protected:
             "            obj.Target.set('A2', self.derived_input)\n"
             "        refreshed = obj.Target.recompute()\n"
             "        if self.require_derived_success and not refreshed:\n"
+            "            self.denial_snapshot = (refreshed,\n"
+            "                'A2' in obj.Target.PropertiesList,\n"
+            "                getattr(obj.Target, 'A2', None), obj.Target.getContents('A2'),\n"
+            "                obj.Document.Recomputing, 'Recompute' in obj.State,\n"
+            "                'Recompute' in obj.Target.State, obj.Target.isValid(),\n"
+            "                obj.Target.getStatusString())\n"
+            "            self.denial_snapshots += 1\n"
             "            raise RuntimeError('native derived cache refresh was denied')\n"
             "        if self.capture_derived:\n"
             "            self.derived_snapshot = (getattr(obj.Target, 'A1', None),\n"
@@ -402,68 +411,6 @@ protected:
         ASSERT_FALSE(_document->mustExecute());
         _cursor = _document->collaborationRevisions().pollPublications(_cursor).nextCursor;
 
-        int snapshots = 0;
-        long observedValue = -1;
-        bool observedOwnership = true;
-        bool derivedPhaseProven = false;
-        // cellUpdated is the existing synchronous native signal. On success
-        // it follows the setter; on rejection execute's error path emits it.
-        // Capture the FIRST A2 observation while the producer is still inside
-        // target.recompute(), before producer return, rollback, or observers.
-        fastsignals::scoped_connection connection = _sheet->cellUpdated.connect(
-            [&](App::CellAddress address) {
-                if (address != App::CellAddress("A2") || snapshots != 0) {
-                    return;
-                }
-                ASSERT_FALSE(_document->testStatus(App::Document::TempDoc));
-                ASSERT_TRUE(_document->hasPendingTransaction());
-                ASSERT_TRUE(_document->testStatus(App::Document::Recomputing));
-                ASSERT_TRUE(producer->testStatus(App::ObjectStatus::Recompute));
-                ASSERT_FALSE(_sheet->testStatus(App::ObjectStatus::Recompute));
-                // This exact public denial comes only from the live derived
-                // adapter, not an ordinary execute or a temporary worker.
-                try {
-                    _sheet->recomputeCells(App::Range("Z99:Z99"));
-                }
-                catch (const Base::Exception& error) {
-                    derivedPhaseProven = std::strcmp(error.what(),
-                        "spreadsheet derived cache callbacks cannot recompute cells") == 0;
-                }
-                ASSERT_TRUE(derivedPhaseProven) << "A2 observation missed the native derived adapter";
-                ++snapshots;
-                EXPECT_TRUE(_document->collaborationRevisions()
-                                .pollPublications(_cursor).events.empty());
-                auto* current = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
-                EXPECT_EQ(current, raw);
-                // Resolve the raw canonical pointer before any lifetime/type
-                // dereference, including a callback after a failed operation.
-                if (current != raw) {
-                    return;
-                }
-                EXPECT_EQ(current->getID(), propertyId);
-                EXPECT_EQ(current->getTypeId(), propertyType);
-                EXPECT_EQ(current->getContainer(), _sheet);
-                EXPECT_STREQ(current->getName(), "A2");
-                if (current->getTypeId() != App::PropertyInteger::getClassTypeId()) {
-                    return;
-                }
-                observedValue = static_cast<App::PropertyInteger*>(current)->getValue();
-                observedOwnership = _sheet->getCellAddress(current, mapped);
-                EXPECT_EQ(observedValue, initialValue);
-                EXPECT_FALSE(observedOwnership);
-                auto* input = _sheet->getCell(App::CellAddress("A2"));
-                ASSERT_NE(input, nullptr);
-                std::string content;
-                input->getStringContent(content);
-                EXPECT_EQ(content, "13");
-                EXPECT_THROW(_sheet->addDynamicProperty("App::PropertyString", "Borrowed",
-                    nullptr, nullptr, App::Prop_NoPersist), Base::Exception);
-                EXPECT_THROW(raw->setStatus(App::Property::Hidden, true), Base::Exception);
-                EXPECT_THROW(_sheet->clear(App::CellAddress("A1")), Base::Exception);
-                EXPECT_THROW(_document->recomputeFeature(_sheet), Base::Exception);
-                EXPECT_THROW(_document->recomputeFeature(producer), Base::Exception);
-                EXPECT_THROW(_document->recompute(), Base::Exception);
-            });
         armCellClearProducer(producer);
         producer->touch();
         _cursor = _document->collaborationRevisions().pollPublications(_cursor).nextCursor;
@@ -471,12 +418,49 @@ protected:
         // The int return counts executions; hasError reports failure separately.
         static_cast<void>(_document->recompute({}, false, &hasError)); // ONE public call.
         EXPECT_TRUE(hasError);
-        EXPECT_TRUE(derivedPhaseProven);
-        EXPECT_EQ(snapshots, 1);
-        EXPECT_EQ(observedValue, initialValue);
-        EXPECT_FALSE(observedOwnership);
+        {
+            Base::PyGILStateLocker gil;
+            PyObjectRef object(producer->getPyObject());
+            PyObjectRef proxy(PyObject_GetAttrString(object.get(), "Proxy"));
+            ASSERT_NE(proxy.get(), nullptr);
+            PyObjectRef count(PyObject_GetAttrString(proxy.get(), "denial_snapshots"));
+            ASSERT_NE(count.get(), nullptr);
+            ASSERT_TRUE(PyLong_Check(count.get()));
+            EXPECT_EQ(PyLong_AsLong(count.get()), 1);
+            PyObjectRef snapshot(PyObject_GetAttrString(proxy.get(), "denial_snapshot"));
+            ASSERT_NE(snapshot.get(), nullptr);
+            ASSERT_TRUE(PyTuple_Check(snapshot.get()));
+            ASSERT_EQ(PyTuple_Size(snapshot.get()), 9);
+            // Captured immediately AFTER target.recompute() returned false,
+            // before the producer raises or returns and before continuation
+            // or observers. The private derived ScopeGuard has CLOSED here.
+            // False plus this exact private diagnostic proves adapter entry;
+            // the coordinator's unsupported nested recompute returns true.
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 0)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 0), Py_False);
+            ASSERT_TRUE(PyUnicode_Check(PyTuple_GetItem(snapshot.get(), 8)));
+            EXPECT_STREQ(PyUnicode_AsUTF8(PyTuple_GetItem(snapshot.get(), 8)),
+                "native spreadsheet cache reuse requires its exact owned native entry");
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 1)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 1), Py_True);
+            ASSERT_TRUE(PyLong_Check(PyTuple_GetItem(snapshot.get(), 2)));
+            EXPECT_EQ(PyLong_AsLong(PyTuple_GetItem(snapshot.get(), 2)), initialValue);
+            ASSERT_TRUE(PyUnicode_Check(PyTuple_GetItem(snapshot.get(), 3)));
+            EXPECT_STREQ(PyUnicode_AsUTF8(PyTuple_GetItem(snapshot.get(), 3)), "13");
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 4)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 4), Py_True);
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 5)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 5), Py_True);
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 6)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 6), Py_False);
+            ASSERT_TRUE(PyBool_Check(PyTuple_GetItem(snapshot.get(), 7)));
+            EXPECT_EQ(PyTuple_GetItem(snapshot.get(), 7), Py_False);
+            EXPECT_FALSE(PyErr_Occurred());
+        }
         // Public recompute commits modelling failures and reports hasError;
         // unlike an eager compatibility edit it does not roll back cell input.
+        // Python has no raw address-map hook: native identity and ownership
+        // below are FINAL observations, not snapshots of the live derived scope.
         EXPECT_TRUE(producer->isError());
         auto* retained = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
         ASSERT_EQ(retained, raw);

@@ -163,6 +163,16 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
             section.ViewObject.DisplayHeight = 700
             self._wait_section_dimensions(section)
             recompute_document(self.document)
+            evidence["dimension_phases"] = [dict(
+                phase="pre-save", model=(section.PlaneLength.Value, section.PlaneHeight.Value),
+                view=(section.ViewObject.DisplayLength.Value, section.ViewObject.DisplayHeight.Value),
+                revision=section.PlaneDimensionsRevision, area=section.Shape.Area)]
+            self.assertEqual(evidence["dimension_phases"][-1]["model"], (1200, 700),
+                             str(evidence["dimension_phases"][-1]))
+            self.assertEqual(evidence["dimension_phases"][-1]["view"], (1200, 700),
+                             str(evidence["dimension_phases"][-1]))
+            self.assertAlmostEqual(section.Shape.Area, 840000,
+                                   msg=str(evidence["dimension_phases"][-1]))
             name, original = section.Name, self.document.Name
             old_instance = self.document.collaborationIdentity()["instance_id"]
             with tempfile.NamedTemporaryFile(suffix=".FCStd", delete=False) as file:
@@ -182,6 +192,14 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
                 restored = reopened.getObject(name)
                 self.assertIsNotNone(restored)
                 self._wait_section_dimensions(restored)
+                evidence["dimension_phases"].append(dict(
+                    phase="restored-inputs", model=(restored.PlaneLength.Value, restored.PlaneHeight.Value),
+                    view=(restored.ViewObject.DisplayLength.Value, restored.ViewObject.DisplayHeight.Value),
+                    revision=restored.PlaneDimensionsRevision))
+                self.assertEqual(evidence["dimension_phases"][-1]["model"], (1200, 700),
+                                 str(evidence["dimension_phases"][-1]))
+                self.assertEqual(evidence["dimension_phases"][-1]["view"], (1200, 700),
+                                 str(evidence["dimension_phases"][-1]))
                 touch_on_owner_thread(reopened, restored)
                 recompute_document(reopened)
                 self.assertAlmostEqual(restored.Shape.Area, 840000)
@@ -219,7 +237,9 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
                              name=None, state=[], instance_id=None, native=False, error=None)
                 try:
                     entry.update(name=obj.Name, state=list(obj.State),
-                                 instance_id=obj.Document.collaborationIdentity()["instance_id"])
+                                 instance_id=obj.Document.collaborationIdentity()["instance_id"],
+                                 plane_length=obj.PlaneLength.Value, plane_height=obj.PlaneHeight.Value,
+                                 dimension_revision=obj.PlaneDimensionsRevision)
                     entry["native"] = ("Recompute" in entry["state"]
                                        and entry["thread"] != main_thread)
                 except BaseException as exc:

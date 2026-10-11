@@ -398,10 +398,26 @@ class _ArchReportDocObserver:
     def __init__(self, doc, report):
         self.doc = doc
         self.report = report
+        self._execute_succeeded = False
+        self._report_recomputed = False
+
+    def slotBeforeRecomputeDocument(self, doc):
+        if doc == self.doc:
+            self._report_recomputed = False
+            # Native execution may precede this queued notification. Keep its
+            # success until the matching object-recomputed notification.
+
+    def slotRecomputedObject(self, obj):
+        if obj == self.report:
+            self._report_recomputed = self._execute_succeeded and "Invalid" not in obj.State
+            self._execute_succeeded = False
 
     def slotRecomputedDocument(self, doc):
         if doc != self.doc:
             return
+        report_recomputed = self._report_recomputed
+        self._report_recomputed = False
+        self._execute_succeeded = False
         # Guard against executing after the Report object has been removed.
         # During deletion the observer may not yet be unregistered when the
         # post-removal recompute fires.
@@ -412,19 +428,21 @@ class _ArchReportDocObserver:
         except RuntimeError:
             FreeCAD.removeDocumentObserver(self)
             return
+        if report_recomputed and "Invalid" not in self.report.State:
+            return
         self.report.Proxy.execute(self.report)
 
 
 class _ArchReport:
 
     def __init__(self, obj):
+        self.docObserver = None
         self.setProperties(obj)
         # Keep a reference to the host object so helper methods can persist data
         self.obj = obj
         obj.Proxy = self
         self.Type = "ArchReport"
         self.spreadsheet = None
-        self.docObserver = None
         self.spreadsheet_current_row = 1  # Internal state for multi-statement reports
         # This list holds the "live" ReportStatement objects for runtime use (UI, execute)
         self.live_statements = []
@@ -696,6 +714,15 @@ class _ArchReport:
 
     def execute(self, obj):
         """Executes all statements and writes the results to the target spreadsheet."""
+        observer = getattr(self, "docObserver", None)
+        native_execution = (
+            observer is not None
+            and obj.Document == observer.doc
+            and obj.Document.Recomputing
+            and "Recompute" in obj.State
+        )
+        if native_execution:
+            observer._execute_succeeded = False
         if not getattr(obj, "AutoUpdate", True):
             return
         if not self.live_statements:
@@ -744,8 +771,10 @@ class _ArchReport:
 
         for col, width in saved_widths.items():
             sp.setColumnWidth(col, width)
-        sp.recompute()
+        recomputed = sp.recompute()
         sp.purgeTouched()
+        if native_execution and recomputed:
+            observer._execute_succeeded = True
 
     def __repr__(self):
         """Provides an unambiguous representation for developers."""

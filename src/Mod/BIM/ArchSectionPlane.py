@@ -1536,8 +1536,9 @@ class _ViewProviderSectionPlane:
             # work while mirroring those inputs back to the legacy view editor.
             requested = getattr(obj.Proxy, "_dimension_request", None)
             status = getattr(obj.Proxy, "_dimension_request_status", None)
-            pending = (requested and status == (requested, "pending")
-                       and requested[-1] != obj.PlaneDimensionsRevision)
+            pending = (getattr(self, "_dimension_input_pending", False)
+                       or (requested and status == (requested, "pending")
+                           and requested[-1] != obj.PlaneDimensionsRevision))
             self._presenting_dimensions = True
             try:
                 if (prop in ["PlaneLength", "PlaneHeight", "PlaneDimensionsRevision"] and not pending
@@ -1567,6 +1568,7 @@ class _ViewProviderSectionPlane:
 
     def _submitDimensionInputs(self, vobj):
         """Enqueue an owner input command without waiting on GUI main."""
+        self._dimension_input_pending = False
         if getattr(self, "_initializing_view", False):
             return
         import threading
@@ -1727,6 +1729,8 @@ class _ViewProviderSectionPlane:
             raise first_error
 
     def dimensionCommandsDone(self):
+        if getattr(self, "_dimension_input_pending", False):
+            return False
         if not hasattr(self, "_dimension_lock"):
             return True
         with self._dimension_lock:
@@ -1737,6 +1741,29 @@ class _ViewProviderSectionPlane:
             with self._dimension_lock:
                 if self._dimension_errors:
                     raise self._dimension_errors[0]
+
+    def onBeforeChange(self, vobj, prop):
+        # Native onChanged can be deferred while the owner lane is busy.
+        # Capture explicit editor intent before that gate, then submit the
+        # completed view pair on GUI main after the assignment returns.
+        if (prop not in ["DisplayLength", "DisplayHeight", "DisplaySize"]
+                or getattr(self, "_initializing_view", False)
+                or getattr(self, "_presenting_dimensions", False)):
+            return
+        if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+            return
+        doc = self.Object.Document
+        if doc.Transacting or doc.Restoring:
+            return
+        if getattr(self, "_dimension_input_pending", False):
+            return
+        self._dimension_input_pending = True
+
+        def submit():
+            if self._dimension_input_pending:
+                self._submitDimensionInputs(vobj)
+
+        QtCore.QTimer.singleShot(0, submit)
 
     def onChanged(self, vobj, prop):
 
