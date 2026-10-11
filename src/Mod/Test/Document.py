@@ -3097,3 +3097,59 @@ class DocumentCompatibilityReplacementCases(unittest.TestCase):
         self.assertEqual(self.original.Integer, self.originalInteger)
         # The refusal names the object so the caller can fix the operation.
         self.assertIn("'RouterCase'", result["message"])
+
+
+class DocumentLifecycleDuringCommit(unittest.TestCase):
+    """Lifecycle refusals leave the application and commit coordinator usable."""
+
+    def setUp(self):
+        self.doc = FreeCAD.newDocument("LifecycleHost")
+        self.other = FreeCAD.newDocument("LifecycleOther")
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tempdir.name, "LifecycleSaved.FCStd")
+        self.other.saveAs(self.path)
+
+    def tearDown(self):
+        for name in list(FreeCAD.listDocuments()):
+            if name.startswith("Lifecycle"):
+                FreeCAD.closeDocument(name)
+        self.tempdir.cleanup()
+
+    def testLifecycleOutsideCommitWorks(self):
+        created = FreeCAD.newDocument("LifecycleCreated")
+        FreeCAD.setActiveDocument(created.Name)
+        self.assertEqual(FreeCAD.ActiveDocument.Name, created.Name)
+        FreeCAD.closeDocument(created.Name)
+        opened = FreeCAD.openDocument(self.path)
+        self.assertIn(opened.Name, FreeCAD.listDocuments())
+        FreeCAD.setActiveDocument(self.doc.Name)
+        self.assertEqual(FreeCAD.ActiveDocument.Name, self.doc.Name)
+        FreeCAD.closeDocument(opened.Name)
+        self.assertIn(self.doc.Name, FreeCAD.listDocuments())
+
+    def testLifecycleInsideCommitRaisesAndRecovers(self):
+        calls = {
+            "create": lambda: FreeCAD.newDocument("LifecycleCreated"),
+            "open": lambda: FreeCAD.openDocument(self.path),
+            "activate": lambda: FreeCAD.setActiveDocument(self.other.Name),
+            "closeHost": lambda: FreeCAD.closeDocument(self.doc.Name),
+            "closeOther": lambda: FreeCAD.closeDocument(self.other.Name),
+            "closeByObject": lambda: FreeCAD.closeDocument(self.other),
+        }
+        before = set(FreeCAD.listDocuments())
+        for operation, call in calls.items():
+            with self.subTest(operation=operation):
+                def attempt():
+                    with self.assertRaisesRegex(Exception, "document lifecycle.*unavailable"):
+                        call()
+                result = self.doc.commitCompatibilityMutation(
+                    attempt, structural=True, recompute=False)
+                self.assertTrue(result["committed"], result)
+                self.assertEqual(set(FreeCAD.listDocuments()), before)
+
+                def normalChange():
+                    self.doc.addObject("App::FeaturePython", "After_" + operation)
+                result = self.doc.commitCompatibilityMutation(
+                    normalChange, structural=True, recompute=False)
+                self.assertTrue(result["committed"], result)
+                self.assertIsNotNone(self.doc.getObject("After_" + operation))

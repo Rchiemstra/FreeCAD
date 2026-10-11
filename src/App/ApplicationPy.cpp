@@ -45,6 +45,7 @@
 #include "DocumentWouldBlock.h"
 #include "DocumentPy.h"
 #include "MainThreadSignal.h"
+#include "MutationClassification.h"
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
 #include "RecoverySnapshot.h"
@@ -234,6 +235,15 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             PyErr_Format(PyExc_RuntimeError, "Invalid document");
             return nullptr;
         }
+        // Refuse lifecycle changes before entering the asynchronous close path.
+        // The guard must be translated at this Python boundary too.
+        try {
+            enforceCollaborationLifecycleMutationAllowed();
+        }
+        catch (const Base::Exception& exception) {
+            exception.setPyException();
+            return nullptr;
+        }
         if (!doc->isClosable()) {
             PyErr_Format(
                 PyExc_RuntimeError,
@@ -300,9 +310,15 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             }
             Py_Return;
         }
-        if (!GetApplication().closeDocument(doc)) {
-            PyErr_Format(
-                PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
+        try {
+            if (!GetApplication().closeDocument(doc)) {
+                PyErr_Format(
+                    PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
+                return nullptr;
+            }
+        }
+        catch (const Base::Exception& exception) {
+            exception.setPyException();
             return nullptr;
         }
         Py_Return;
