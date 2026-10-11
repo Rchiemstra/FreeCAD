@@ -55,6 +55,11 @@ class Document;
 class DocumentObjectGroup;
 class DocumentObjectPy;
 class Expression;
+namespace Internal
+{
+class SpreadsheetCellClearOperation;
+class SpreadsheetCellRemovalPhysical;
+}
 
 // clang-format off
 /// Defines the position of the status bits for document objects.
@@ -1513,6 +1518,11 @@ protected:
     void onPropertyStatusChanged(const Property& prop, unsigned long oldStatus) override;
 
 private:
+    friend class Internal::SpreadsheetCellClearOperation;
+    bool removeDynamicPropertyForCellClear(Internal::SpreadsheetCellClearOperation& operation);
+    bool removeDynamicPropertyImpl(const char* name, Property& property,
+                                  Internal::SpreadsheetCellRemovalPhysical* capability);
+
     void moveExpressionTargetingProp(Property* prop, Property* newProp,
                                      DocumentObject* targetObj);
     void arrangeMoveProperty(Property* toBeMovedProp,

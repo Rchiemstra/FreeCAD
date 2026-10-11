@@ -917,30 +917,45 @@ bool DocumentObject::removeDynamicProperty(const char* name)
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
-
     if (prop->testStatus(App::Property::LockDynamic)) {
         return false;
     }
+    return removeDynamicPropertyImpl(name, *prop, nullptr);
+}
 
+bool DocumentObject::removeDynamicPropertyForCellClear(
+    Internal::SpreadsheetCellClearOperation& operation)
+{
+    if (&operation._object != this) {
+        throw Base::RuntimeError("spreadsheet cell removal Entry owner mismatch");
+    }
+    Internal::SpreadsheetCellRemovalPhysical capability(operation);
+    return removeDynamicPropertyImpl(operation._name.c_str(), *operation._property, &capability);
+}
+
+bool DocumentObject::removeDynamicPropertyImpl(
+    const char* name, Property& property,
+    Internal::SpreadsheetCellRemovalPhysical* capability)
+{
+    auto* prop = &property;
     if (prop->isDerivedFrom<PropertyLinkBase>()) {
         clearOutListCache();
     }
-
     _pDoc->addOrRemovePropertyOfObject(this, prop, false);
 
     auto expressions = ExpressionEngine.getExpressions();
     std::vector<App::ObjectIdentifier> removeExpr;
-
     for (const auto& it : expressions) {
         if (it.first.getProperty() == prop) {
             removeExpr.push_back(it.first);
         }
     }
-
     for (const auto& it : removeExpr) {
         ExpressionEngine.setValue(it, std::shared_ptr<Expression>());
     }
-
+    if (capability) {
+        return dynamicProps.removeDynamicPropertyForCellClear(name, *capability);
+    }
     return TransactionalObject::removeDynamicProperty(name);
 }
 

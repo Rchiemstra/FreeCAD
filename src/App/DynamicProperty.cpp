@@ -404,16 +404,36 @@ bool DynamicProperty::removeProperty(const Property* prop)
 
 bool DynamicProperty::removeDynamicProperty(const char* name)
 {
+    return removeDynamicPropertyImpl(name, nullptr);
+}
+
+bool DynamicProperty::removeDynamicPropertyForCellClear(
+    const char* name, Internal::SpreadsheetCellRemovalPhysical& capability)
+{
+    return removeDynamicPropertyImpl(name, &capability);
+}
+
+bool DynamicProperty::removeDynamicPropertyImpl(
+    const char* name, Internal::SpreadsheetCellRemovalPhysical* capability)
+{
     auto& index = impl->props.get<0>();
     auto it = index.find(name);
     if (it != index.end()) {
-        if (PropertyContainer* container = it->property->getContainer()) {
-            enforceStructuralPropertyMutation(*container, name);
-            if (Document* document = documentFromPropertyContainer(container)) {
-                Internal::CollaborationStructuralMutationRecorder::
-                    ensureDynamicPropertyRemovalAllowed(
-                        *document, *container, it->property);
+        auto* gateContainer = it->property->getContainer();
+        auto* gateDocument = documentFromPropertyContainer(gateContainer);
+        if (gateContainer) {
+            enforceStructuralPropertyMutation(*gateContainer, name);
+        }
+        if (capability) {
+            if (!gateContainer || !gateDocument) {
+                throw Base::RuntimeError("spreadsheet cell removal Physical is detached");
             }
+            Internal::CollaborationStructuralMutationRecorder::consumeCellClearPhysical(
+                *capability, *gateDocument, *gateContainer, it->property, name);
+        }
+        else if (gateDocument) {
+            Internal::CollaborationStructuralMutationRecorder::ensureDynamicPropertyRemovalAllowed(
+                *gateDocument, *gateContainer, it->property);
         }
         if (it->property->testStatus(Property::LockDynamic)) {
             throw Base::RuntimeError("property is locked");
@@ -490,6 +510,9 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
             removed = true;
         }
         if (removed && container) {
+            if (capability) {
+                Internal::CollaborationStructuralMutationRecorder::recordCellClearRemoval(*capability);
+            }
             publishStructuralPropertyMutation(*container);
         }
         return true;

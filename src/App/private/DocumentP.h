@@ -308,6 +308,9 @@ struct DocumentP
     std::vector<DocumentRevisionPublicationRequest> collaborationObservedStructuralEffects;
     std::shared_ptr<Internal::CollaborationImportReplay> collaborationActiveImportReplay;
     const DocumentObject* collaborationSpreadsheetRecomputeSchemaObject {nullptr};
+    // A ledger/reentry guard only. Public mutation gates must never treat this
+    // as a grant; the removal handoff is a private, consumed stack value.
+    const Internal::SpreadsheetCellClearOperation* collaborationSpreadsheetCellClear {nullptr};
     std::list<Transaction*> collaborationPreparedUndoSlot;
 
     StringHasherRef Hasher {new StringHasher};

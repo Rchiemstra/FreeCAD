@@ -24,6 +24,7 @@
 
 #include <boost/tokenizer.hpp>
 #include <boost/regex.hpp>
+#include <algorithm>
 #include <deque>
 #include <memory>
 #include <sstream>
@@ -42,6 +43,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DynamicProperty.h>
+#include <App/private/CollaborationStructuralMutationRecorder.h>
 #include <App/ExpressionParser.h>
 #include <App/FeaturePythonPyImp.h>
 #include <Base/Exception.h>
@@ -1276,20 +1278,62 @@ short Sheet::mustExecute() const
 
 void Sheet::clear(CellAddress address, bool /*all*/)
 {
-    if (auto cell = getCell(address)) {
-        // Remove alias, if defined
-        std::string aliasStr;
-        if (cell->getAlias(aliasStr)) {
-            this->removeDynamicProperty(aliasStr.c_str());
+    if (!App::Internal::SpreadsheetCellClearOperation::requiresBoundary(getDocument())) {
+        if (auto cell = getCell(address)) {
+            // Remove alias, if defined
+            std::string aliasStr;
+            if (cell->getAlias(aliasStr)) {
+                this->removeDynamicProperty(aliasStr.c_str());
+            }
+            cells.clear(address);
         }
-        cells.clear(address);
+
+        std::string addr = address.toString();
+        if (auto prop = props.getDynamicPropertyByName(addr.c_str())) {
+            propAddress.erase(prop);
+            this->removeDynamicProperty(addr.c_str());
+        }
+        return;
     }
 
-    std::string addr = address.toString();
-    if (auto prop = props.getDynamicPropertyByName(addr.c_str())) {
-        propAddress.erase(prop);
-        this->removeDynamicProperty(addr.c_str());
+    // Only the collaboration-boundary path preflights and retires the exact
+    // canonical cache before stored-cell callbacks. Ordinary ordering above
+    // remains unchanged, including detached and LockDynamic behavior.
+    const std::string name = address.toString(CellAddress::Cell::ShowRowColumn);
+    auto* property = props.getDynamicPropertyByName(name.c_str());
+    std::optional<CellAddress> mappedAddress;
+    if (property) {
+        const auto mapping = propAddress.find(property);
+        if (mapping != propAddress.end()) {
+            mappedAddress = mapping->second;
+        }
     }
+    if (!property && std::ranges::any_of(propAddress, [address](const auto& entry) {
+            return entry.second == address;
+        })) {
+        throw Base::RuntimeError("spreadsheet cell clear has a noncanonical address mapping");
+    }
+    // Native aliases resolve to the same canonical property; they are not a
+    // second removable schema entry. Never remove an unrelated raw alias name.
+    if (auto* cell = getCell(address)) {
+        std::string alias;
+        if (cell->getAlias(alias)) {
+            auto* rawAlias = props.getDynamicPropertyByName(alias.c_str());
+            if ((rawAlias && rawAlias != property)
+                || getDynamicPropertyByName(alias.c_str()) != property) {
+                throw Base::RuntimeError("spreadsheet cell clear alias is not its canonical cache");
+            }
+        }
+    }
+    App::Internal::SpreadsheetCellClearOperation operation(
+        *this, property, address, mappedAddress, propAddress);
+    operation.removeCache();
+    // Both Entry and Physical have been consumed. Only the non-granting
+    // reentry/ledger guard spans cells.clear() and its onChanged callbacks.
+    if (property) {
+        propAddress.erase(property);
+    }
+    cells.clear(address);
 }
 
 /**

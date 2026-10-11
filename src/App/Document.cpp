@@ -1105,6 +1105,9 @@ void Document::ensureCollaborationStructuralMutationAllowed(
     CollaborationStructuralMutationKind kind,
     const char* mutation) const
 {
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     enforceAtomicPresentationMutationTarget(*this);
     if (d->rollback) {
         return;
@@ -1173,6 +1176,9 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
     const DocumentObject& object,
     short propertyType) const
 {
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     const bool spreadsheetTransientSchema =
         d->collaborationSpreadsheetRecomputeSchemaObject == &object
         && (propertyType & Prop_NoPersist) != 0;
@@ -1213,6 +1219,9 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
     const DocumentObject& object,
     const Property* property) const
 {
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     const bool spreadsheetTransientSchema = property
         && d->collaborationSpreadsheetRecomputeSchemaObject == &object
         && (property->getType() & Prop_NoPersist) != 0;

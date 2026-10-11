@@ -21,6 +21,10 @@
 
 """Unit tests for the ArchReport and ArchSql modules."""
 
+import json
+import traceback
+from pathlib import Path
+
 import FreeCAD
 import Arch
 import Draft
@@ -31,11 +35,86 @@ from bimtests import TestArchBase
 from bimtests.fixtures.BimFixtures import create_test_model
 
 
+App = FreeCAD
+_CELL_CLEAR_EVENTS = []
+_CELL_CLEAR_ADDRESSES = ("A1", "A2", "A3")
+
+
+def _cell_clear_read(call):
+    try:
+        return call()
+    except Exception as exc:
+        return {"read_error": type(exc).__name__, "message": str(exc)}
+
+
+def _cell_clear_value(obj, name):
+    v = obj.getPropertyByName(name)
+    return v.Value if hasattr(v, "Value") else v
+
+
+def _cell_clear_sheet_state(sheet):
+    props = list(sheet.PropertiesList)
+    return {"properties": props, "state": list(sheet.State),
+            "status": _cell_clear_read(sheet.getStatusString),
+            "used_range": _cell_clear_read(sheet.getUsedRange), "used_cells": _cell_clear_read(sheet.getUsedCells),
+            "in_list": [o.Name for o in sheet.InList],
+            "out_list": [o.Name for o in sheet.OutList],
+            "expressions": _cell_clear_read(lambda: repr(sheet.ExpressionEngine)),
+            "cells": {c: {"input": _cell_clear_read(lambda: sheet.getContents(c)),
+                          "alias": _cell_clear_read(lambda: sheet.getAlias(c)),
+                          "present": c in props,
+                          "cached": _cell_clear_read(lambda: _cell_clear_value(sheet, c)) if c in props else None,
+                          "type": _cell_clear_read(lambda: sheet.getTypeIdOfProperty(c)) if c in props else None}
+                      for c in _CELL_CLEAR_ADDRESSES}}
+
+
+def _cell_clear_snapshot(case):
+    return {"report_state": list(case.report.State),
+            "report_status": _cell_clear_read(case.report.getStatusString),
+            "source_amount": case.source.Amount,
+            "target": _cell_clear_sheet_state(case.sheet), "dependent": _cell_clear_sheet_state(case.dep)}
+
+
+def _cell_clear_emit(event):
+    _CELL_CLEAR_EVENTS.append(event)
+
+
+def _cell_clear_install_capture(case):
+    original = case.report.Proxy.execute
+
+    def execute(obj):
+        stack = traceback.extract_stack()
+        observer = any(f.name == "slotRecomputedDocument" and
+                       Path(f.filename).name == "ArchReport.py" for f in stack)
+        phase = "observer" if observer else ("native" if "Recompute" in obj.State else "unknown")
+        event = {"test": case.id(), "stage": case.stage, "phase": phase,
+                 "callpath": [{"file": f.filename, "line": f.lineno, "name": f.name}
+                              for f in stack[-8:]], "entry": _cell_clear_read(lambda: _cell_clear_snapshot(case))}
+        _cell_clear_emit(event)  # Record entry before the original execute can fail.
+        try:
+            result = original(obj)
+        except Exception as exc:
+            event.update(error_type=type(exc).__name__, error=str(exc),
+                         error_snapshot=_cell_clear_read(lambda: _cell_clear_snapshot(case)))
+            _cell_clear_emit(dict(event, checkpoint="error"))  # Before native/observer handling.
+            raise
+        event["post"] = _cell_clear_read(lambda: _cell_clear_snapshot(case))
+        _cell_clear_emit(dict(event, checkpoint="post"))
+        return result
+
+    case.original = original
+    case.report.Proxy.execute = execute
+    case.report.Proxy = case.report.Proxy  # Public setter refreshes the native cached execute.
+
+
 class TestArchReport(TestArchBase.TestArchBase):
 
     def setUp(self):
         super().setUp()
         self.doc = self.document
+        if self._testMethodName.startswith("test_cell_clear_"):
+            self._setup_cell_clear_fixture()
+            return
 
         self.wall_ext = Arch.makeWall(length=1000, name="Exterior Wall")
         self.wall_ext.IfcType = "Wall"
@@ -74,6 +153,175 @@ class TestArchReport(TestArchBase.TestArchBase):
         # We create the spreadsheet here, but it's part of the test setup, not a queryable object
         self.spreadsheet = self.doc.addObject("Spreadsheet::Sheet", "ReportTarget")
         self.doc.recompute()
+
+    def tearDown(self):
+        try:
+            if hasattr(self, "original"):
+                self.report.Proxy.execute = self.original
+                self.report.Proxy = self.report.Proxy
+        finally:
+            super().tearDown()
+
+    def _setup_cell_clear_fixture(self):
+        self._cell_clear_events_start = len(_CELL_CLEAR_EVENTS)
+        self.stage = "fixture"
+        self.source = self.doc.addObject("App::FeaturePython", "Source")
+        self.source.addProperty("App::PropertyFloat", "Amount")
+        self.source.Amount = 7
+        self.report = Arch.makeReport()
+        self.assertIsNotNone(self.report)
+        self.report.AutoUpdate = False
+        self.sheet = self.report.Target
+        self.assertEqual(self.sheet.Name, "ReportResult")
+        self.dep = self.doc.addObject("Spreadsheet::Sheet", "Dependent")
+        self.dep.addProperty("App::PropertyLink", "ReportAnchor")
+        self.dep.ReportAnchor = self.report
+        _cell_clear_install_capture(self)
+        stmt = self.report.Proxy.live_statements[0]
+        stmt.query_string = "SELECT Amount AS Amount FROM document WHERE Name = 'Source'"
+        stmt.include_column_names = True
+        stmt.use_description_as_header = stmt.add_empty_row_after = False
+        self.report.Proxy.commit_statements()
+        headers, rows = Arch.select(stmt.query_string)
+        self.assertEqual(headers, ["Amount"])
+        self.assertEqual(rows, [[7]])
+        # Same public writer as normal execute, with AutoUpdate disabled.
+        self.report.Proxy.setSpreadsheetData(self.report, headers, rows, start_row=1)
+        self.sheet.set("A3", "'obsolete")
+        self.sheet.addProperty("App::PropertyString", "UserNote")
+        self.sheet.UserNote = "retain"
+        self.dep.set("A1", "=ReportResult.A2*2")
+        self.doc.recompute()  # Fixture only; no report clearing while disabled.
+        self._cell_clear_assert_seed(7, 14)
+        self.assertEqual(set(self.sheet.getUsedCells()), set(_CELL_CLEAR_ADDRESSES))
+        self.assertIn(self.sheet, self.dep.OutList)
+        self.assertFalse(self._cell_clear_errors())
+        self._cell_clear_clean_states()
+        _cell_clear_emit({"test": self.id(), "stage": "fixture_ready", "snapshot": _cell_clear_snapshot(self)})
+
+    def _cell_clear_errors(self):
+        return [e for e in _CELL_CLEAR_EVENTS[self._cell_clear_events_start:] if e.get("test") == self.id() and "error" in e
+                and "checkpoint" not in e]
+
+    def _cell_clear_clean_states(self):
+        for obj in (self.report, self.sheet, self.dep):
+            self.assertNotIn("Invalid", obj.State, obj.getStatusString())
+
+    def _cell_clear_assert_seed(self, amount, dependent):
+        self.assertEqual(_cell_clear_value(self.sheet, "A1"), "Amount")
+        self.assertEqual(_cell_clear_value(self.sheet, "A2"), amount)
+        self.assertEqual(_cell_clear_value(self.dep, "A1"), dependent)
+        self.assertEqual(self.dep.getContents("A1").replace(" ", ""), "=ReportResult.A2*2")
+
+    def test_cell_clear_disabled_preserves_output(self):
+        before = _cell_clear_sheet_state(self.sheet)
+        self.stage = "disabled_trigger"
+        self.source.Amount = 13
+        self.doc.recompute()  # Exactly one triggering public call.
+        _cell_clear_emit({"test": self.id(), "stage": self.stage, "final": _cell_clear_snapshot(self)})
+        after = _cell_clear_sheet_state(self.sheet)
+        for key in ("cells", "properties", "used_range", "used_cells", "expressions"):
+            self.assertEqual(after[key], before[key], key)
+        self._cell_clear_assert_seed(7, 14)
+        self.assertFalse(self._cell_clear_errors())
+        self._cell_clear_clean_states()
+
+    def test_cell_clear_public_clear_with_native_alias(self):
+        self.sheet.setAlias("A3", "ObsoleteCell")  # SQL AS is only a header.
+        self.sheet.recompute()
+        self.assertEqual(self.sheet.getCellFromAlias("ObsoleteCell"), "A3")
+        self.assertEqual(_cell_clear_value(self.sheet, "ObsoleteCell"), "obsolete")
+        before = _cell_clear_snapshot(self)
+        self.stage = "ordinary_public_clear"
+        self.sheet.clear("A1:A3")  # Outside report execution; no recompute needed.
+        after = _cell_clear_snapshot(self)
+        _cell_clear_emit({"test": self.id(), "stage": self.stage, "before": before, "after": after})
+        for c in _CELL_CLEAR_ADDRESSES:
+            self.assertEqual(self.sheet.getContents(c), "")
+            self.assertNotIn(c, self.sheet.PropertiesList)
+            self.assertFalse(self.sheet.getAlias(c))
+        self.assertFalse(self.sheet.getUsedRange())
+        self.assertEqual(self.sheet.getUsedCells(), [])
+        self.assertFalse(self.sheet.getCellFromAlias("ObsoleteCell"))
+        self.assertNotIn("ObsoleteCell", self.sheet.PropertiesList)
+        self.assertEqual(self.sheet.UserNote, "retain")
+        self.assertEqual(self.dep.getContents("A1").replace(" ", ""), "=ReportResult.A2*2")
+        self.assertFalse(self._cell_clear_errors())
+
+    def test_cell_clear_enabled_regenerates_without_intermediate_restriction(self):
+        self.stage = "enabled_trigger"
+        self.source.Amount = 13
+        self.report.AutoUpdate = True
+        _cell_clear_emit({"test": self.id(), "stage": "before_trigger", "snapshot": _cell_clear_snapshot(self)})
+        recompute_result = _cell_clear_read(self.doc.recompute)  # ONE call; never retry/settle.
+        final = _cell_clear_snapshot(self)
+        calls = [e for e in _CELL_CLEAR_EVENTS[self._cell_clear_events_start:] if e.get("test") == self.id()
+                 and e.get("stage") == self.stage and "checkpoint" not in e and "entry" in e]
+        matching = [e for e in calls if e.get("error_type") == "ValueError"
+                    and all(s in e.get("error", "") for s in
+                            ("collaboration stable boundary", "kind=Restricted",
+                             "removeDynamicProperty on ReportResult.A1"))]
+        partial = None
+        if matching:
+            err = matching[0]["error_snapshot"]
+            if "target" in err:
+                cell = err["target"]["cells"]["A1"]
+                partial = {"input_empty": cell["input"] == "", "property_retained": cell["present"],
+                           "cache_retained": cell["cached"] == "Amount"}
+        _cell_clear_emit({"test": self.id(), "stage": "first_call_result", "return": recompute_result,
+              "final": final, "counts": {p: sum(e["phase"] == p for e in calls)
+                                         for p in ("native", "observer", "unknown")},
+              "first_restricted": matching[0] if matching else None,
+              "observed_partial_clear": partial,
+              "canonical_removal_counts": "unknown; no supported removal hook"})
+        self.first_cycle = final
+        # Healthy expectations stay RED even if a later observer repairs visible cells.
+        with self.subTest("first_execution"):
+            self.assertTrue(calls, "Fixture did not execute the report")
+            self.assertTrue(any(e["phase"] == "native" for e in calls), "Native execute unobserved; review fixture/callpath")
+            self.assertFalse(self._cell_clear_errors(), json.dumps(self._cell_clear_errors(), default=str))
+            self.assertFalse(isinstance(recompute_result, dict), recompute_result)
+        with self.subTest("first_native_output"):
+            native_calls = [e for e in calls if e["phase"] == "native"]
+            self.assertTrue(native_calls)
+            post = native_calls[0].get("post")
+            self.assertIsNotNone(post, native_calls[0])
+            self.assertEqual(post["target"]["cells"]["A2"]["cached"], 13)
+            self.assertEqual(float(post["target"]["cells"]["A2"]["input"]), 13)
+            self.assertFalse(post["target"]["cells"]["A3"]["present"])
+            self.assertEqual(post["target"]["cells"]["A3"]["input"], "")
+        with self.subTest("fresh_values_and_dependency"):
+            self._cell_clear_assert_seed(13, 26)
+            self.assertIn(self.sheet, self.dep.OutList)
+            self.assertIn(self.dep, self.sheet.InList)
+        with self.subTest("canonical_output"):
+            self.assertEqual(set(self.sheet.getUsedCells()), {"A1", "A2"})
+            self.assertEqual(self.sheet.getUsedRange(), ("A1", "A2"))
+            self.assertEqual(self.sheet.getContents("A3"), "")
+            self.assertNotIn("A3", self.sheet.PropertiesList)
+            self.assertEqual(float(self.sheet.getContents("A2")), 13)
+            for c in ("A1", "A2"):
+                self.assertIn(c, self.sheet.PropertiesList)
+                self.assertFalse(self.sheet.getAlias(c))
+            self.assertEqual(self.sheet.UserNote, "retain")
+            self._cell_clear_clean_states()
+
+        with self.subTest("first_stable_status"):
+            for obj in (self.report, self.sheet, self.dep):
+                self.assertEqual(obj.getStatusString(), "Valid")
+                self.assertNotIn("Touched", obj.State)
+        # Settling is counted separately and cannot excuse any first-cycle
+        # error, partial cache, or stale dependent asserted above.
+        if not self._cell_clear_errors():
+            self.stage = "enabled_settling"
+            self.doc.recompute()
+            self.settling_cycle = _cell_clear_snapshot(self)
+            _cell_clear_emit({"test": self.id(), "stage": "bounded_settling_result",
+                  "final": self.settling_cycle})
+            with self.subTest("bounded_settling"):
+                self.assertFalse(self._cell_clear_errors())
+                self._cell_clear_assert_seed(13, 26)
+                self._cell_clear_clean_states()
 
     def _run_query_for_objects(self, query_string):
         """
