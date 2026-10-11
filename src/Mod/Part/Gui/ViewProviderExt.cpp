@@ -27,7 +27,6 @@
 #include <BRepTools.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
-#include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <gp_Trsf.hxx>
@@ -1535,9 +1534,6 @@ void ViewProviderPartExt::setupCoinGeometry(
             if (BRep_Tool::Surface(TopoDS::Face(faces.Current())).IsNull()) {
                 throw Standard_Failure("Face has no surface");
             }
-        }
-        if (!Part::Tools::isShapeEmpty(shape) && !BRepCheck_Analyzer(shape).IsValid()) {
-            throw Standard_Failure("Invalid shape");
         }
         setupCoinGeometryUnchecked(
             shape, coords, faceset, norm, lineset, nodeset,
