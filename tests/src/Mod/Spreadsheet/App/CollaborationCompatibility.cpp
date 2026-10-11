@@ -162,7 +162,7 @@ protected:
             std::move(mutation), [this, address, value] { _sheet->setCell(address, value); });
     }
 
-    void expectSingleSpreadsheetPublication()
+    void expectSingleSpreadsheetPublication(bool expectedDocumentStructure = false)
     {
         const auto poll = _document->collaborationRevisions().pollPublications(_cursor);
         ASSERT_EQ(poll.events.size(), 1U);
@@ -173,7 +173,8 @@ protected:
                          << ",propertyName=" << change.key.propertyName
                          << ",stableIDpresent=" << change.stableObjectIdentity.has_value() << "; ";
         }
-        ASSERT_EQ(poll.events.front().changes.size(), 2U) << revisionKeys.str();
+        ASSERT_EQ(poll.events.front().changes.size(), expectedDocumentStructure ? 3U : 2U)
+            << revisionKeys.str();
 
         const auto& changes = poll.events.front().changes;
         const auto find = [&](const App::DocumentRevisionKey& key) {
@@ -186,7 +187,29 @@ protected:
             find(App::DocumentRevisionKey::objectStructure(_sheet->getNameInDocument()));
         ASSERT_NE(wildcard, changes.end());
         ASSERT_NE(structure, changes.end());
+        const auto count = [&](const App::DocumentRevisionKey& key) {
+            return std::ranges::count_if(changes, [&](const auto& change) {
+                return change.key == key;
+            });
+        };
+        EXPECT_EQ(count(wildcard->key), 1);
+        EXPECT_EQ(count(structure->key), 1);
+        EXPECT_TRUE(wildcard->key.subject.empty());
+        EXPECT_TRUE(wildcard->key.propertyName.empty());
+        EXPECT_TRUE(structure->key.propertyName.empty());
         EXPECT_FALSE(wildcard->stableObjectIdentity.has_value());
+        const auto documentKey = App::DocumentRevisionKey::documentStructure();
+        if (expectedDocumentStructure) {
+            const auto documentStructure = find(documentKey);
+            ASSERT_NE(documentStructure, changes.end());
+            EXPECT_EQ(count(documentKey), 1);
+            EXPECT_TRUE(documentStructure->key.subject.empty());
+            EXPECT_TRUE(documentStructure->key.propertyName.empty());
+            EXPECT_FALSE(documentStructure->stableObjectIdentity.has_value());
+        }
+        else {
+            EXPECT_EQ(count(documentKey), 0);
+        }
         EXPECT_EQ(structure->stableObjectIdentity,
                   _document->collaborationObjectIdentity(*_sheet));
         _cursor = poll.nextCursor;
@@ -195,7 +218,8 @@ protected:
 
     // A supported public FeaturePython producer executes on a different object
     // from its target sheet, just as ArchReport does. No private grant is used.
-    App::DocumentObject* makeCellClearProducer(bool captureDerived = false)
+    App::DocumentObject* makeCellClearProducer(bool captureDerived = false,
+                                               bool requireDerivedSuccess = false)
     {
         auto* producer = _document->addObject("App::FeaturePython", "CellClearProducer");
         auto* target = static_cast<App::PropertyLink*>(
@@ -219,6 +243,7 @@ protected:
             "    capture_derived = False\n"
             "    derived_snapshot = ()\n"
             "    derived_input = '=6+7'\n"
+            "    require_derived_success = False\n"
             "    def execute(self, obj):\n"
             "        if not self.armed:\n"
             "            return\n"
@@ -237,7 +262,9 @@ protected:
             "        if self.capture_derived:\n"
             "            obj.Target.set('A1', 'Amount')\n"
             "            obj.Target.set('A2', self.derived_input)\n"
-            "        obj.Target.recompute()\n"
+            "        refreshed = obj.Target.recompute()\n"
+            "        if self.require_derived_success and not refreshed:\n"
+            "            raise RuntimeError('native derived cache refresh was denied')\n"
             "        if self.capture_derived:\n"
             "            self.derived_snapshot = (getattr(obj.Target, 'A1', None),\n"
             "                getattr(obj.Target, 'A2', None),\n"
@@ -254,6 +281,13 @@ protected:
             if (!proxy.get()
                 || PyObject_SetAttrString(proxy.get(), "capture_derived", Py_True) != 0) {
                 throw std::runtime_error("could not enable derived cache capture");
+            }
+        }
+        if (requireDerivedSuccess) {
+            PyObjectRef proxy(PyObject_GetAttrString(object.get(), "Proxy"));
+            if (!proxy.get()
+                || PyObject_SetAttrString(proxy.get(), "require_derived_success", Py_True) != 0) {
+                throw std::runtime_error("could not require derived cache success");
             }
         }
         _document->recompute();
@@ -343,7 +377,7 @@ protected:
         // A1 is seeded/cleared; clearing A2 would test the old removal gate.
         _sheet->setCell("A1", "7");
         ASSERT_TRUE(_document->recompute());
-        auto* producer = makeCellClearProducer(true);
+        auto* producer = makeCellClearProducer(true, true);
         useLiteralDerivedInput(producer);
         ASSERT_EQ(_sheet->getPropertyByName("A2"), nullptr);
         ASSERT_EQ(_sheet->getCell(App::CellAddress("A2")), nullptr);
@@ -353,27 +387,52 @@ protected:
         static_cast<App::PropertyInteger*>(raw)->setValue(initialValue);
         const auto propertyId = raw->getID();
         const auto propertyType = raw->getTypeId();
+        ASSERT_EQ(propertyType, App::PropertyInteger::getClassTypeId());
+        ASSERT_EQ(_sheet->App::PropertyContainer::getDynamicPropertyByName("A2"), raw);
+        ASSERT_EQ(raw->getContainer(), _sheet);
+        ASSERT_STREQ(raw->getName(), "A2");
+        ASSERT_EQ(static_cast<App::PropertyInteger*>(raw)->getValue(), initialValue);
         App::CellAddress mapped;
         ASSERT_FALSE(_sheet->getCellAddress(raw, mapped));
+        // The raw setter touched the sheet, but there is no A2 cell input yet.
+        // Exclude that setup touch so no ordinary execute can adopt the raw
+        // property before the producer's authoritative nested refresh.
+        _sheet->purgeTouched();
+        ASSERT_EQ(_sheet->mustRecompute(), 0);
+        ASSERT_FALSE(_document->mustExecute());
         _cursor = _document->collaborationRevisions().pollPublications(_cursor).nextCursor;
 
         int snapshots = 0;
         long observedValue = -1;
         bool observedOwnership = true;
+        bool derivedPhaseProven = false;
         // cellUpdated is the existing synchronous native signal. On success
         // it follows the setter; on rejection execute's error path emits it.
         // Capture the FIRST A2 observation while the producer is still inside
         // target.recompute(), before producer return, rollback, or observers.
         fastsignals::scoped_connection connection = _sheet->cellUpdated.connect(
             [&](App::CellAddress address) {
-                if (address != App::CellAddress("A2") || snapshots != 0
-                    || !producer->testStatus(App::ObjectStatus::Recompute)) {
+                if (address != App::CellAddress("A2") || snapshots != 0) {
                     return;
                 }
+                ASSERT_FALSE(_document->testStatus(App::Document::TempDoc));
+                ASSERT_TRUE(_document->hasPendingTransaction());
+                ASSERT_TRUE(_document->testStatus(App::Document::Recomputing));
+                ASSERT_TRUE(producer->testStatus(App::ObjectStatus::Recompute));
+                ASSERT_FALSE(_sheet->testStatus(App::ObjectStatus::Recompute));
+                // This exact public denial comes only from the live derived
+                // adapter, not an ordinary execute or a temporary worker.
+                try {
+                    _sheet->recomputeCells(App::Range("Z99:Z99"));
+                }
+                catch (const Base::Exception& error) {
+                    derivedPhaseProven = std::strcmp(error.what(),
+                        "spreadsheet derived cache callbacks cannot recompute cells") == 0;
+                }
+                ASSERT_TRUE(derivedPhaseProven) << "A2 observation missed the native derived adapter";
                 ++snapshots;
-                EXPECT_TRUE(_document->hasPendingTransaction());
-                EXPECT_TRUE(_document->testStatus(App::Document::Recomputing));
-                EXPECT_FALSE(_sheet->testStatus(App::ObjectStatus::Recompute));
+                EXPECT_TRUE(_document->collaborationRevisions()
+                                .pollPublications(_cursor).events.empty());
                 auto* current = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
                 EXPECT_EQ(current, raw);
                 // Resolve the raw canonical pointer before any lifetime/type
@@ -392,13 +451,33 @@ protected:
                 observedOwnership = _sheet->getCellAddress(current, mapped);
                 EXPECT_EQ(observedValue, initialValue);
                 EXPECT_FALSE(observedOwnership);
+                auto* input = _sheet->getCell(App::CellAddress("A2"));
+                ASSERT_NE(input, nullptr);
+                std::string content;
+                input->getStringContent(content);
+                EXPECT_EQ(content, "13");
+                EXPECT_THROW(_sheet->addDynamicProperty("App::PropertyString", "Borrowed",
+                    nullptr, nullptr, App::Prop_NoPersist), Base::Exception);
+                EXPECT_THROW(raw->setStatus(App::Property::Hidden, true), Base::Exception);
+                EXPECT_THROW(_sheet->clear(App::CellAddress("A1")), Base::Exception);
+                EXPECT_THROW(_document->recomputeFeature(_sheet), Base::Exception);
+                EXPECT_THROW(_document->recomputeFeature(producer), Base::Exception);
+                EXPECT_THROW(_document->recompute(), Base::Exception);
             });
-        const auto result = commitProducer(producer);
-        EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed) << result.message;
+        armCellClearProducer(producer);
+        producer->touch();
+        _cursor = _document->collaborationRevisions().pollPublications(_cursor).nextCursor;
+        bool hasError = false;
+        // The int return counts executions; hasError reports failure separately.
+        static_cast<void>(_document->recompute({}, false, &hasError)); // ONE public call.
+        EXPECT_TRUE(hasError);
+        EXPECT_TRUE(derivedPhaseProven);
         EXPECT_EQ(snapshots, 1);
         EXPECT_EQ(observedValue, initialValue);
         EXPECT_FALSE(observedOwnership);
-        EXPECT_TRUE(_document->collaborationRevisions().pollPublications(_cursor).events.empty());
+        // Public recompute commits modelling failures and reports hasError;
+        // unlike an eager compatibility edit it does not roll back cell input.
+        EXPECT_TRUE(producer->isError());
         auto* retained = _sheet->App::PropertyContainer::getDynamicPropertyByName("A2");
         ASSERT_EQ(retained, raw);
         ASSERT_NE(retained, nullptr);
@@ -408,6 +487,13 @@ protected:
         EXPECT_STREQ(retained->getName(), "A2");
         EXPECT_EQ(static_cast<App::PropertyInteger*>(retained)->getValue(), initialValue);
         EXPECT_FALSE(_sheet->getCellAddress(retained, mapped));
+        EXPECT_EQ(_sheet->getPropertyByName("Borrowed"), nullptr);
+        auto* retainedInput = _sheet->getCell(App::CellAddress("A2"));
+        ASSERT_NE(retainedInput, nullptr);
+        std::string content;
+        retainedInput->getStringContent(content);
+        EXPECT_EQ(content, "13");
+        EXPECT_FALSE(_document->hasPendingTransaction());
     }
 
     void expectAdoptedDerivedReuseRefreshes(bool persistent)
@@ -437,8 +523,11 @@ protected:
         EXPECT_EQ(static_cast<App::PropertyInteger*>(adopted)->getValue(), 7);
         EXPECT_EQ(adopted->getType() & App::Prop_NoPersist,
                   persistent ? 0 : App::Prop_NoPersist);
-        EXPECT_EQ(adopted->testStatus(App::Property::ReadOnly), !persistent);
-        EXPECT_EQ(adopted->testStatus(App::Property::Hidden), !persistent);
+        // Static type flags and runtime editor statuses are distinct. Preserve
+        // the measured native/adopted state instead of guessing either status.
+        const auto propertyFlags = adopted->getType();
+        const bool readOnly = adopted->testStatus(App::Property::ReadOnly);
+        const bool hidden = adopted->testStatus(App::Property::Hidden);
         auto* producer = makeCellClearProducer(true);
         useLiteralDerivedInput(producer);
         auto* dependent = freecad_cast<Spreadsheet::Sheet*>(
@@ -466,6 +555,11 @@ protected:
                 }
                 EXPECT_EQ(current->getID(), propertyId);
                 EXPECT_EQ(current->getTypeId(), propertyType);
+                EXPECT_EQ(current->getContainer(), _sheet);
+                EXPECT_STREQ(current->getName(), "A2");
+                EXPECT_EQ(current->getType(), propertyFlags);
+                EXPECT_EQ(current->testStatus(App::Property::ReadOnly), readOnly);
+                EXPECT_EQ(current->testStatus(App::Property::Hidden), hidden);
                 EXPECT_EQ(static_cast<App::PropertyInteger*>(current)->getValue(), 13);
                 EXPECT_TRUE(_sheet->getCellAddress(current, mapped));
                 EXPECT_EQ(mapped, App::CellAddress("A2"));
@@ -478,6 +572,11 @@ protected:
         ASSERT_EQ(current, adopted);
         EXPECT_EQ(current->getID(), propertyId);
         EXPECT_EQ(current->getTypeId(), propertyType);
+        EXPECT_EQ(current->getContainer(), _sheet);
+        EXPECT_STREQ(current->getName(), "A2");
+        EXPECT_EQ(current->getType(), propertyFlags);
+        EXPECT_EQ(current->testStatus(App::Property::ReadOnly), readOnly);
+        EXPECT_EQ(current->testStatus(App::Property::Hidden), hidden);
         EXPECT_EQ(static_cast<App::PropertyInteger*>(current)->getValue(), 13);
         ASSERT_TRUE(_sheet->getCellAddress(current, mapped));
         EXPECT_EQ(mapped, App::CellAddress("A2"));
@@ -1436,6 +1535,10 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
             // missing cell within the same execute, without another schema scope.
             _sheet->recomputeCells(App::Range("A1:A1"));
         });
+    const auto sheetKey = App::DocumentRevisionKey::objectStructure(_sheet->getNameInDocument());
+    const auto documentKey = App::DocumentRevisionKey::documentStructure();
+    const auto sheetRevision = _document->collaborationRevisions().current(sheetKey);
+    const auto documentRevision = _document->collaborationRevisions().current(documentKey);
     const auto result = commitCell("C1", "11");
     ASSERT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
     EXPECT_EQ(executeCallbacks, 1);
@@ -1450,7 +1553,10 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     EXPECT_FALSE(sibling->testStatus(App::Property::LockDynamic));
     EXPECT_EQ(static_cast<App::PropertyInteger*>(sibling)->getValue(), 9);
     EXPECT_FALSE(_document->mustExecute());
-    expectSingleSpreadsheetPublication();
+    // PropertySheet's native link effects add DocumentStructure for this graph.
+    expectSingleSpreadsheetPublication(true);
+    EXPECT_EQ(_document->collaborationRevisions().current(sheetKey), sheetRevision + 1);
+    EXPECT_EQ(_document->collaborationRevisions().current(documentKey), documentRevision + 1);
 }
 
 }  // namespace
