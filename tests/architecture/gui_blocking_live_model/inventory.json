@@ -6236,7 +6236,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1532,
+      "line": 1537,
       "category": "update-data-provider",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6244,7 +6244,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 1692,
+      "line": 1697,
       "category": "thread-waits",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6252,7 +6252,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2072,
+      "line": 2077,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6260,7 +6260,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2116,
+      "line": 2121,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6268,7 +6268,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2116,
+      "line": 2121,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6276,7 +6276,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2116,
+      "line": 2121,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6284,7 +6284,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2121,
+      "line": 2126,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -6292,7 +6292,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2121,
+      "line": 2126,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -6300,7 +6300,7 @@
     },
     {
       "path": "src/Mod/BIM/ArchSectionPlane.py",
-      "line": 2121,
+      "line": 2126,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",

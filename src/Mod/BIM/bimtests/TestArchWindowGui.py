@@ -134,6 +134,7 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
             from Test.GuiRecompute import touch_on_owner_thread
             section = Arch.makeSectionPlane()
             self._wait_section_dimensions(section)
+            self.assertGreater(section.PlaneDimensionsRevision, 0)
             view = section.ViewObject
             for size, expected in ((700, 700), (0, 1000)):
                 # Exercise the existing legacy restore adapter directly, then
@@ -145,6 +146,10 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
                 view.DisplaySize = size
                 view.Proxy.onDocumentRestored(view)
                 self._wait_section_dimensions(section)
+                self.assertEqual((view.DisplayLength.Value, view.DisplayHeight.Value),
+                                 (expected, expected))
+                self.assertEqual((section.PlaneLength.Value, section.PlaneHeight.Value),
+                                 (expected, expected))
                 touch_on_owner_thread(self.document, section)
                 recompute_document(self.document)
                 self.assertNotIn("DisplaySize", view.PropertiesList)

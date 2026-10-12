@@ -1369,8 +1369,13 @@ class _ViewProviderSectionPlane:
 
     def onDocumentRestored(self, vobj):
 
+        # A legacy view schema still supplies dimension inputs, even when
+        # this model already has a committed revision. Capture the schema
+        # before setProperties removes DisplaySize; mirroring first would
+        # discard the migrated values.
+        legacy_dimensions = "DisplaySize" in vobj.PropertiesList
         self.setProperties(vobj)
-        if vobj.Object.PlaneDimensionsRevision:
+        if vobj.Object.PlaneDimensionsRevision and not legacy_dimensions:
             self.updateData(vobj.Object, "PlaneDimensionsRevision")
         else:
             self._submitDimensionInputs(vobj)  # Migrate legacy view dimensions.
