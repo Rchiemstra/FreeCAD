@@ -1008,6 +1008,7 @@ SET(Viewprovider_CPP_SRCS
 )
 SET(Viewprovider_SRCS
     ${Viewprovider_CPP_SRCS}
+    SyntheticPropertyReplay.h
     ViewProvider.h
     ViewProviderExtension.h
     ViewProviderGroupExtension.h

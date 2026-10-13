@@ -3236,7 +3236,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 637,
+      "line": 664,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -3244,7 +3244,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 813,
+      "line": 840,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -26804,7 +26804,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
-      "line": 975,
+      "line": 983,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -27740,7 +27740,15 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 104,
+      "line": 101,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "m_MaterialConn = doc->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
+      "line": 119,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -27748,7 +27756,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 323,
+      "line": 338,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -27756,7 +27764,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 327,
+      "line": 342,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",

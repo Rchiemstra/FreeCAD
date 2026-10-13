@@ -51,6 +51,7 @@
 #include "Tree.h"
 #include "ViewParams.h"
 #include "ViewProviderDocumentObject.h"
+#include "SyntheticPropertyReplay.h"
 #include "ViewProviderExtension.h"
 #include "TaskView/TaskAppearance.h"
 
@@ -59,6 +60,31 @@ FC_LOG_LEVEL_INIT("Gui", true, true)
 
 using namespace Gui;
 
+
+thread_local SyntheticPropertyReplay* SyntheticPropertyReplay::current = nullptr;
+
+SyntheticPropertyReplay::SyntheticPropertyReplay(
+    const ViewProvider* provider, const App::Property* property)
+    : previous(current), provider(provider), property(property)
+{
+    current = this;
+}
+
+SyntheticPropertyReplay::~SyntheticPropertyReplay()
+{
+    current = previous;
+}
+
+bool SyntheticPropertyReplay::consume(
+    const ViewProvider* provider, const App::Property* property)
+{
+    if (!current || current->consumed || current->provider != provider
+        || current->property != property) {
+        return false;
+    }
+    current->consumed = true;
+    return true;
+}
 
 PROPERTY_SOURCE(Gui::ViewProviderDocumentObject, Gui::ViewProvider)
 
@@ -531,6 +557,7 @@ void ViewProviderDocumentObject::updateView()
         ViewProvider::hide();
     }
     for (const auto& it : Map) {
+        SyntheticPropertyReplay replay(this, it.second);
         updateData(it.second);
     }
     if (vis && Visibility.getValue()) {

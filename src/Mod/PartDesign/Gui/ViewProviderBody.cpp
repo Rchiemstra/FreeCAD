@@ -25,6 +25,9 @@
 
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <QMenu>
+#include <optional>
+
+#include <Gui/SyntheticPropertyReplay.h>
 
 #include <App/Document.h>
 #include <App/GeoFeature.h>
@@ -95,6 +98,18 @@ void ViewProviderBody::attach(App::DocumentObject* pcFeat)
     onChanged(&DisplayModeBody);
 
     if (App::Document* doc = pcFeat->getDocument()) {
+        m_MaterialConn = doc->signalChangedObject.connect(
+            [this](const App::DocumentObject& object, const App::Property& property) {
+                if (&object == getObject() && property.getName()
+                    && std::string_view(property.getName()) == "ShapeMaterial"
+                    && getDocument()->deferLivePresentationUpdates()) {
+                    // Only record intent here: stable notifications cannot touch
+                    // Coin. Retain it until material delivery succeeds, even if
+                    // an earlier visibility callback interrupts the refresh.
+                    pendingMaterialAssignment = true;
+                }
+            }
+        );
         m_RecomputedConn = doc->signalRecomputed.connect(
             [this](const App::Document& doc, const std::vector<App::DocumentObject*>& recomputedObjs) {
                 this->afterRecompute(doc, recomputedObjs);
@@ -326,7 +341,26 @@ bool ViewProviderBody::onDelete(const std::vector<std::string>&)
 
 void ViewProviderBody::updateData(const App::Property* prop)
 {
+    const bool synthetic = Gui::SyntheticPropertyReplay::consume(this, prop);
+    // A genuine update can arrive from the setter's before-change observer,
+    // before the outer ShapeAppearance handler consumes its marker. Mask
+    // that marker for this invocation and restore it on return.
+    Gui::SyntheticPropertyReplay notificationBoundary(this, nullptr);
     PartDesign::Body* body = getObject<PartDesign::Body>();
+    const bool materialUpdate = prop->getName()
+        && std::string_view(prop->getName()) == "ShapeMaterial";
+    std::optional<Gui::SyntheticPropertyReplay> materialReplay;
+    if (synthetic && materialUpdate && !pendingMaterialAssignment
+        && ShapeAppearance.getSize() == 1) {
+        auto appearance = ShapeAppearance[0];
+        auto material = body->getMaterialAppearance();
+        const bool sameUuid = appearance.uuid == material.uuid;
+        appearance.uuid.clear();
+        material.uuid.clear();
+        if (sameUuid && appearance == material) {
+            materialReplay.emplace(this, &ShapeAppearance);
+        }
+    }
 
     if (prop == &body->Group || prop == &body->BaseFeature) {
         // ensure all model features are in visual body mode
@@ -349,10 +383,25 @@ void ViewProviderBody::updateData(const App::Property* prop)
     }
 
     PartGui::ViewProviderPart::updateData(prop);
+    if (materialUpdate) {
+        pendingMaterialAssignment = false;
+    }
+}
+
+void ViewProviderBody::onBeforeChange(const App::Property* prop)
+{
+    // Before-change observers may assign view properties directly. Mask
+    // the outer replay marker until those genuine notifications return.
+    Gui::SyntheticPropertyReplay notificationBoundary(this, nullptr);
+    PartGui::ViewProviderPart::onBeforeChange(prop);
 }
 
 void ViewProviderBody::onChanged(const App::Property* prop)
 {
+    // Consume before calling any observer or base handler. A nested, genuine
+    // equal assignment must still propagate its material to every feature.
+    const bool syntheticMaterial = prop == &ShapeAppearance
+        && Gui::SyntheticPropertyReplay::consume(this, prop);
 
     if (prop == &DisplayModeBody) {
         auto body = getObject<PartDesign::Body>();
@@ -386,7 +435,7 @@ void ViewProviderBody::onChanged(const App::Property* prop)
         // #0002559: Body becomes visible upon changing DisplayModeBody
         Visibility.touch();
     }
-    else {
+    else if (!syntheticMaterial) {
         unifyVisualProperty(prop);
     }
 

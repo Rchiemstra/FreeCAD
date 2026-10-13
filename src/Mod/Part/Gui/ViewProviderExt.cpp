@@ -52,6 +52,8 @@
 #include <QMenu>
 #include <sstream>
 
+#include <Gui/SyntheticPropertyReplay.h>
+
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/details/SoFaceDetail.h>
 #include <Inventor/details/SoLineDetail.h>
@@ -453,7 +455,13 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
                 &ShapeAppearance
             );
             // The material has to be checked again (#0001736)
-            onChanged(&ShapeAppearance);
+            {
+                // This rechecks the existing appearance without assigning it.
+                // Keep virtual dispatch; only a Body's synthetic feature copy
+                // needs to be suppressed, including reentrant notifications.
+                Gui::SyntheticPropertyReplay replay(this, &ShapeAppearance);
+                onChanged(&ShapeAppearance);
+            }
             onChanged(&ShowPlacement);
         }
     }

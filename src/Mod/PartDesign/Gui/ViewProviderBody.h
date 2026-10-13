@@ -75,6 +75,7 @@ public:
 
     /// Update the children's highlighting when triggered
     void updateData(const App::Property* prop) override;
+    void onBeforeChange(const App::Property* prop) override;
     /// unify children visuals
     void onChanged(const App::Property* prop) override;
 
@@ -118,6 +119,8 @@ private:
     fastsignals::scoped_connection m_RecomputedConn;
     void onChangedObject(const Gui::ViewProvider& vp, const App::Property& prop);
     fastsignals::scoped_connection m_ChangedConn;
+    fastsignals::scoped_connection m_MaterialConn;
+    bool pendingMaterialAssignment {false};
     void refreshOverlays();
 };
 
