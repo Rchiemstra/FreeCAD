@@ -32,6 +32,7 @@
 # @{
 import FreeCAD as App
 from draftobjects.wpproxy import WorkingPlaneProxy
+from draftutils import gui_utils
 from freecad.deprecation import deprecated
 
 if App.GuiUp:
@@ -51,7 +52,7 @@ def make_working_plane_proxy(placement):
     if App.ActiveDocument:
         obj = App.ActiveDocument.addObject("App::FeaturePython", "WPProxy")
         WorkingPlaneProxy(obj)
-        if App.GuiUp:
+        if gui_utils.gui_available():
             ViewProviderWorkingPlaneProxy(obj.ViewObject)
             obj.ViewObject.Proxy.writeCamera()
             obj.ViewObject.Proxy.writeState()

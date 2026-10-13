@@ -100,7 +100,7 @@ def make_bez_curve(pointslist, closed=False, placement=None, face=None, support=
     obj.Proxy.resetcontinuity(obj)
     if placement:
         obj.Placement = placement
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderBezCurve(obj.ViewObject)
         #        if not face: obj.ViewObject.DisplayMode = "Wireframe"
         #        obj.ViewObject.DisplayMode = "Wireframe"

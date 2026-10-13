@@ -370,7 +370,7 @@ class LinearDimension(DimensionBase):
 
         # The lines and text are created in the viewprovider, so we should
         # update it whenever the object is recomputed
-        if App.GuiUp and obj.ViewObject:
+        if gui_utils.gui_available() and obj.ViewObject:
             obj.ViewObject.update()
 
 

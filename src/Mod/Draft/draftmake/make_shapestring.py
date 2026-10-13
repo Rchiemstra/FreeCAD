@@ -61,7 +61,7 @@ def make_shape_string(string, fontfile, size=100, tracking=0):
     obj.Size = size
     obj.Tracking = tracking
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderShapeString(obj.ViewObject)
         gui_utils.format_object(obj)
         obrep = obj.ViewObject

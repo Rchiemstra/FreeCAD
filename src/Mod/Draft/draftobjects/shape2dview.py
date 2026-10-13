@@ -232,7 +232,7 @@ class Shape2DView(DraftObject):
                     objs = obj.Base.Group
                     cutplane = Part.makePlane(1000, 1000, App.Vector(-500, -500, 0))
                     m = 1
-                    if obj.Base.ViewObject and hasattr(obj.Base.ViewObject, "CutMargin"):
+                    if gui_utils.gui_available() and obj.Base.ViewObject and hasattr(obj.Base.ViewObject, "CutMargin"):
                         m = obj.Base.ViewObject.CutMargin.Value
                     cutplane.translate(App.Vector(0, 0, m))
                     cutplane.Placement = cutplane.Placement.multiply(obj.Base.Placement)

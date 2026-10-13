@@ -107,7 +107,7 @@ def make_bspline(pointslist, closed=False, placement=None, face=None, support=No
         obj.MakeFace = face
     if placement:
         obj.Placement = placement
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderBSpline(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)

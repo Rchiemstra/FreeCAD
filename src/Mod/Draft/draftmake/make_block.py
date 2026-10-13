@@ -57,7 +57,7 @@ def make_block(objectslist):
     obj.addExtension("Part::AttachExtensionPython")
     Block(obj)
     obj.Components = objectslist
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderDraftPart(obj.ViewObject)
         for o in objectslist:
             o.ViewObject.Visibility = False

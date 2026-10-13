@@ -74,6 +74,16 @@ def on_gui_thread():
     return QtCore.QThread.currentThread() == app.thread()
 
 
+def gui_available():
+    """Whether presentation is available to this caller.
+
+    A document owner creates model objects with their default view providers.
+    Draft customization, selection, active-view queries and timers belong to
+    the main thread, even when the application has a GUI.
+    """
+    return App.GuiUp and on_gui_thread()
+
+
 def get_3d_view():
     """Return the current 3D view.
 
@@ -125,6 +135,8 @@ def autogroup(obj):
     obj: App::DocumentObject
         Any type of object that will be stored in the group.
     """
+    if not gui_available():
+        return None
 
     # check for required conditions for autogroup to work
     if not App.GuiUp:
@@ -362,6 +374,8 @@ def remove_hidden(objectslist):
         If the graphical interface is not loaded
         the returned list is just a copy of the input list.
     """
+    if not gui_available():
+        return objectslist[:]
     newlist = objectslist[:]
     for obj in objectslist:
         if obj.ViewObject:
@@ -390,6 +404,8 @@ def get_diffuse_color(objs):
     list of tuples
         The list will be empty if no valid object is found.
     """
+    if not gui_available():
+        return []
 
     def _get_color(obj):
         if hasattr(obj, "ColoredElements"):
@@ -489,6 +505,8 @@ def apply_current_style(objs):
     ----------
     objs: a single object or an iterable with objects.
     """
+    if not gui_available():
+        return None
     if not isinstance(objs, list):
         objs = [objs]
     anno_style = utils.get_default_annotation_style()
@@ -531,6 +549,8 @@ def restore_view_object(obj, vp_module, vp_class, format=True, format_ref=None):
         Defaults to `None`.
         Reference object to copy ViewObject properties from.
     """
+    if not gui_available():
+        return None
     if not getattr(obj, "ViewObject", None):
         return
     vobj = obj.ViewObject
@@ -568,6 +588,8 @@ def format_object(target, origin=None, ignore_construction=False):
         Defaults to `False`.
         Set to `True` to ignore construction mode.
     """
+    if not gui_available():
+        return None
     if not target:
         return
     if not App.GuiUp:
@@ -673,7 +695,7 @@ def get_selection(gui=App.GuiUp):
 
         If the interface is not available, it returns `None`.
     """
-    if gui:
+    if gui and gui_available():
         return Gui.Selection.getSelection()
     return None
 
@@ -721,7 +743,7 @@ def get_selection_ex(gui=App.GuiUp):
     `SubObjects` and `SubElementNames` should be empty tuples
     if `HasSubObjects` is `False`.
     """
-    if gui:
+    if gui and gui_available():
         return Gui.Selection.getSelectionEx()
     return None
 
@@ -751,7 +773,7 @@ def select(objs=None, gui=App.GuiUp):
         This value can be set to `False` to simulate
         when the interface is not available.
     """
-    if gui:
+    if gui and gui_available():
         Gui.Selection.clearSelection()
         if objs is not None:
             if not isinstance(objs, list):
@@ -816,7 +838,7 @@ def load_texture(filename, size=None, gui=App.GuiUp):
         It returns `None` if the interface is not available,
         or if there is a problem creating the image.
     """
-    if gui:
+    if gui and gui_available():
         # from pivy import coin
         # from PySide import QtGui, QtSvg
         try:

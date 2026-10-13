@@ -136,7 +136,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
     flip_text = False
     override = ""
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         # invert the normal if we are viewing it from the back
         vnorm = gui_utils.get3DView().getViewDirection()
         if vnorm.getAngle(normal) < math.pi / 2:
@@ -153,7 +153,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
             p3.multiply(0.5)
             p3 = p1.add(p3)
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(p1, p2, wp, normal)
 
     elif isinstance(p2, int) and isinstance(p3, int):
@@ -175,7 +175,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
             p3.multiply(0.5)
             p3 = v1.add(p3)
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(v1, v2, wp, normal)
 
     elif isinstance(p3, str):
@@ -201,7 +201,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
         if not p3:
             p3 = cen.add(App.Vector(1, 0, 0))
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(cen, p3, wp, normal)
 
     # This p3 is the point through which the dimension line will pass,
@@ -209,7 +209,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
     # depending on the first three parameter values
     new_obj.Dimline = p3
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderLinearDimension(new_obj.ViewObject)
         new_obj.ViewObject.FlipText = flip_text
         new_obj.ViewObject.Override = override
@@ -649,7 +649,7 @@ def make_angular_dimension(
     new_obj = App.ActiveDocument.addObject("App::FeaturePython", "Dimension")
     AngularDimension(new_obj)
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderAngularDimension(new_obj.ViewObject)
 
         # Invert the normal if we are viewing it from the back.
@@ -665,7 +665,7 @@ def make_angular_dimension(
     new_obj.Dimline = dim_line
     new_obj.Normal = normal
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         new_obj.ViewObject.FlipText = _get_flip_text_ang(center, angles[0], angles[1], normal)
         gui_utils.format_object(new_obj)
         gui_utils.select(new_obj)

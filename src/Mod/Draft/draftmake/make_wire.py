@@ -122,7 +122,7 @@ def make_wire(pointslist, closed=False, placement=None, face=None, support=None,
     if placement:
         obj.Placement = placement
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderWire(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)

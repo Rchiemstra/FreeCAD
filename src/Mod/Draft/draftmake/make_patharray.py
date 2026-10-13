@@ -279,7 +279,7 @@ def make_path_array(
     if use_link:
         # The PathArray class must be called in this special way
         # to make it a PathLinkArray
-        new_obj = doc.addObject("Part::FeaturePython", "PathArray", PathArray(None), None, True)
+        new_obj = PathArray(None).create(doc, "PathArray")
     else:
         new_obj = doc.addObject("Part::FeaturePython", "PathArray")
         PathArray(new_obj)
@@ -297,7 +297,7 @@ def make_path_array(
     new_obj.StartOffset = start_offset
     new_obj.EndOffset = end_offset
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:
@@ -359,9 +359,7 @@ def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25,
     if use_link:
         # The PathTwistedArray class must be called in this special way
         # to make it a PathTwistLinkArray
-        new_obj = doc.addObject(
-            "Part::FeaturePython", "PathTwistedArray", PathTwistedArray(None), None, True
-        )
+        new_obj = PathTwistedArray(None).create(doc, "PathTwistedArray")
     else:
         new_obj = doc.addObject("Part::FeaturePython", "PathTwistedArray")
         PathTwistedArray(new_obj)
@@ -371,7 +369,7 @@ def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25,
     new_obj.Count = count
     new_obj.RotationFactor = rot_factor
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:

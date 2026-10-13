@@ -124,7 +124,7 @@ def make_text(string, placement=None, screen=False, height=None, line_spacing=1)
     new_obj.Text = string
     new_obj.Placement = placement
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderText(new_obj.ViewObject)
 
         if screen is None:

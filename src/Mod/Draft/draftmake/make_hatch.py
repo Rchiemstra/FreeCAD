@@ -84,7 +84,7 @@ def make_hatch(selection, filename, pattern, scale, rotation, translate=True):
     obj.Rotation = rotation
     obj.Translate = translate
     obj.Proxy.add_faces(obj, selection)
-    if FreeCAD.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderDraftHatch(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)

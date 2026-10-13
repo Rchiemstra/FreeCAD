@@ -69,6 +69,7 @@ SET(Draft_tests
     drafttests/test_grid_settings.py
     drafttests/test_import.py
     drafttests/test_import_gui.py
+    drafttests/test_owner_thread_gui.py
     drafttests/test_import_tools.py
     drafttests/test_lines_gui.py
     drafttests/test_manual_input_gui.py

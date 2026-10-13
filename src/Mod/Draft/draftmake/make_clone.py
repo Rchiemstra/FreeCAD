@@ -44,6 +44,11 @@ if App.GuiUp:
 
 def _make_bim_clone(selected_base):
 
+    # BIM factories import GUI integrations and customize view providers. Use
+    # make_clone's existing Draft geometry fallback on the document owner.
+    if App.GuiUp and not gui_utils.on_gui_thread():
+        return None
+
     try:
         import Arch
     except:
@@ -78,7 +83,7 @@ def _make_bim_clone(selected_base):
             setattr(cl, prop, getattr(base, prop))
         except Exception:
             pass
-    if App.GuiUp:
+    if gui_utils.gui_available():
         # Shape of clone may not yet be available (v1.1 regression). See below.
         QtCore.QTimer.singleShot(0, lambda: gui_utils.format_object(cl, base))
     return cl
@@ -90,6 +95,9 @@ def make_clone(obj, delta=None, forcedraft=False):
     Makes a clone of the given object(s).
     The clone is an exact, linked copy of the given object. If the original
     object changes, the final object changes too.
+
+    On a document owner thread BIM objects use the Draft geometry clone
+    fallback, as BIM factories require the GUI thread.
 
     Parameters
     ----------
@@ -131,7 +139,7 @@ def make_clone(obj, delta=None, forcedraft=False):
         # arch objects can be clones
         cl = _make_bim_clone(obj[0])
         if cl is not None:
-            if App.GuiUp:
+            if gui_utils.gui_available():
                 # Delay required in case a stairs with railings is cloned:
                 QtCore.QTimer.singleShot(0, lambda: gui_utils.select(cl))
             return cl
@@ -149,7 +157,7 @@ def make_clone(obj, delta=None, forcedraft=False):
         cl.Placement = obj[0].Placement
     if hasattr(cl, "LongName") and hasattr(obj[0], "LongName"):
         cl.LongName = obj[0].LongName
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderClone(cl.ViewObject)
         # Shape of clone may not yet be available (v1.1 regression). We need to delay
         # `format_object()` as that function requires the correct number of faces.

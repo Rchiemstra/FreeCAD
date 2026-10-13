@@ -88,7 +88,7 @@ def make_array(base_object, arg1, arg2, arg3, arg4=None, arg5=None, arg6=None, u
     if use_link:
         # The Array class must be called in this special way
         # to make it a LinkArray
-        new_obj = doc.addObject("Part::FeaturePython", "Array", Array(None), None, True)
+        new_obj = Array(None).create(doc, "Array")
     else:
         new_obj = doc.addObject("Part::FeaturePython", "Array")
         Array(new_obj)
@@ -123,7 +123,7 @@ def make_array(base_object, arg1, arg2, arg3, arg4=None, arg5=None, arg6=None, u
         new_obj.Angle = arg2
         new_obj.NumberPolar = arg3
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:

@@ -134,7 +134,7 @@ def make_fillet(objs, radius=100, chamfer=False, delete=False):
         for del_obj in del_objs:
             doc.removeObject(del_obj.Name)
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         view_fillet.ViewProviderFillet(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)

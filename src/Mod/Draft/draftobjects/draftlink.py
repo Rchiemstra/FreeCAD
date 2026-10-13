@@ -85,6 +85,22 @@ class DraftLink(DraftObject):
             obj.addExtension("App::LinkExtensionPython")
             self.linkSetup(obj)
 
+    def create(self, doc, name):
+        """Create a Link array without the GUI part of addObject's proxy API.
+
+        That API installs a ViewObject.Proxy as well as the model proxy. The
+        document owner instead requests the native Link view provider and sets
+        up only the model. Keep the existing attachment path on the GUI thread.
+        """
+        if not App.GuiUp or gui_utils.on_gui_thread():
+            return doc.addObject("Part::FeaturePython", name, self, None, True)
+        obj = doc.addObject(
+            "Part::FeaturePython", name, viewType=self.getViewProviderName(None)
+        )
+        obj.Proxy = self
+        self.attach(obj)
+        return obj
+
     def canLinkProperties(self, _obj):
         """Link properties.
 

@@ -72,7 +72,7 @@ class DraftGuiImport(test_base.DraftTestCaseNoDoc):
 
 
 class DraftHatchImportIsolation(unittest.TestCase):
-    """Loading a model view provider must not register GUI commands."""
+    """Register Hatch on the GUI thread while keeping owner imports isolated."""
 
     def _load_view_provider(self, importer):
         import importlib.util
@@ -88,6 +88,7 @@ class DraftHatchImportIsolation(unittest.TestCase):
 
     def test_import_does_not_load_gui_commands(self):
         import builtins
+        from unittest.mock import patch
 
         original = builtins.__import__
 
@@ -96,8 +97,69 @@ class DraftHatchImportIsolation(unittest.TestCase):
                 raise RuntimeError("model import attempted GUI command registration")
             return original(name, *args, **kwargs)
 
-        module = self._load_view_provider(guarded_import)
+        with patch("draftutils.gui_utils.on_gui_thread", return_value=False):
+            module = self._load_view_provider(guarded_import)
         self.assertTrue(callable(module.ViewProviderDraftHatch))
+
+    def test_fresh_main_thread_draft_import_registers_hatch(self):
+        import importlib
+        import sys
+        import FreeCADGui as Gui
+        from unittest.mock import patch
+
+        names = ("Draft", "draftmake.make_hatch", "draftviewproviders.view_hatch",
+                 "draftguitools.gui_hatch")
+        saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+        commands = set(Gui.listCommands())
+        native_register = Gui.addCommand
+
+        def register_if_new(name, command):
+            # Other GUI tests may already have registered Hatch. In a clean
+            # process exercise native registration; avoid duplicate diagnostics
+            # when probing a fresh import in an existing GUI session.
+            if name not in commands:
+                native_register(name, command)
+
+        try:
+            with patch.object(Gui, "addCommand", side_effect=register_if_new) as register:
+                importlib.import_module("Draft")
+            self.assertIn("Draft_Hatch", [call.args[0] for call in register.call_args_list])
+            self.assertIn("Draft_Hatch", Gui.listCommands())
+        finally:
+            # Keep newly imported main-thread modules cached, just as a macro
+            # would. Removing them would register commands again on activation.
+            sys.modules.update(saved)
+
+    def test_fresh_owner_thread_draft_import_does_not_register_commands(self):
+        import importlib
+        import sys
+        import threading
+        import FreeCADGui as Gui
+        from unittest.mock import patch
+
+        names = ("Draft", "draftmake.make_hatch", "draftviewproviders.view_hatch",
+                 "draftguitools.gui_hatch")
+        saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+        errors = []
+
+        def worker():
+            try:
+                importlib.import_module("Draft")
+            except BaseException as exc:
+                errors.append(exc)
+
+        try:
+            with patch.object(Gui, "addCommand", side_effect=AssertionError("owner registered GUI command")) as register:
+                thread = threading.Thread(target=worker)
+                thread.start()
+                thread.join(timeout=30)
+                self.assertFalse(thread.is_alive())
+                self.assertFalse(errors, errors)
+                register.assert_not_called()
+        finally:
+            for name in names:
+                sys.modules.pop(name, None)
+            sys.modules.update(saved)
 
     def test_edit_loads_task_panel_and_shows_dialog(self):
         import builtins

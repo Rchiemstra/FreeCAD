@@ -61,7 +61,7 @@ class WorkingPlaneProxy:
         import Part
 
         l = 1
-        if obj.ViewObject:
+        if gui_utils.gui_available() and obj.ViewObject:
             if hasattr(obj.ViewObject, "DisplaySize"):
                 l = obj.ViewObject.DisplaySize.Value
         p = Part.makePlane(l, l, App.Vector(l / 2, -l / 2, 0), App.Vector(0, 0, -1))

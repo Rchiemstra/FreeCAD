@@ -80,7 +80,7 @@ def make_point(X=0, Y=0, Z=0, color=None, name="Point", point_size=5):
     Point(obj, X, Y, Z)
     obj.Placement.Base = App.Vector(X, Y, Z)
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderPoint(obj.ViewObject)
         gui_utils.formatObject(obj)
         if color is not None:

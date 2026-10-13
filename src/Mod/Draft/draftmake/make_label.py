@@ -357,7 +357,7 @@ def make_label(
             _wrn(translate("draft", "Direction is not 'Custom'; points won't be used."))
         new_obj.Points = points
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderLabel(new_obj.ViewObject)
         h = params.get_param("textheight")
         new_obj.ViewObject.FontSize = h
