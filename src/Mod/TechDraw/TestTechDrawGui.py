@@ -62,12 +62,20 @@ class SVGTemplateRedrawTest(unittest.TestCase):
             self.template.Template = self.template_path
         self.page.Template = self.template
         recompute_document(self.doc)
+        self._show_page()
+
+    def _show_page(self):
+        self.page.ViewObject.show()
+        QtCore.QCoreApplication.processEvents()
+        views = Gui.getDocument(self.doc.Name).mdiViewsOfType("TechDrawGui::MDIViewPage")
+        self.assertEqual(len(views), 1, "The drawing page must actually be open")
 
     def _assert_quiet_redraws(self):
         for scale in (1.1, 1.2, 1.0):
             self.page.Scale = scale
             recompute_document(self.doc)
-            QtCore.QCoreApplication.processEvents()
+            self.page.ViewObject.hide()
+            self._show_page()  # Recreate the scene and force SVG template draw().
         text = self.report.toPlainText()[self.report_start:]
         self.assertNotIn("QGISVGTemplate::createClickHandles - xml loading error", text)
 
