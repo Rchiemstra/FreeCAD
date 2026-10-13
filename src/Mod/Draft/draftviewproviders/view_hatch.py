@@ -30,7 +30,6 @@ import PySide.QtGui as QtGui
 
 import FreeCADGui as Gui
 
-from draftguitools.gui_hatch import Draft_Hatch_TaskPanel
 from draftutils.translate import translate
 
 
@@ -64,6 +63,10 @@ class ViewProviderDraftHatch:
 
         if mode == 1 or mode == 2:
             return None
+
+        # Model-side imports can run on a document owner thread. GUI command
+        # registration belongs to the GUI edit path, on the main thread.
+        from draftguitools.gui_hatch import Draft_Hatch_TaskPanel
 
         self.taskd = Draft_Hatch_TaskPanel(vobj.Object)
         self.taskd.form.File.setFileName(vobj.Object.File)

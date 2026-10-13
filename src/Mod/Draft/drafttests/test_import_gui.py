@@ -34,6 +34,8 @@
 ## \addtogroup drafttests
 # @{
 
+import unittest
+
 from drafttests import auxiliary as aux
 from drafttests import test_base
 
@@ -67,3 +69,97 @@ class DraftGuiImport(test_base.DraftTestCaseNoDoc):
 
 
 ## @}
+
+
+class DraftHatchImportIsolation(unittest.TestCase):
+    """Loading a model view provider must not register GUI commands."""
+
+    def _load_view_provider(self, importer):
+        import importlib.util
+        from pathlib import Path
+        from unittest.mock import patch
+
+        path = Path(__file__).resolve().parents[1] / "draftviewproviders" / "view_hatch.py"
+        spec = importlib.util.spec_from_file_location("_draft_hatch_import_probe", path)
+        module = importlib.util.module_from_spec(spec)
+        with patch("builtins.__import__", side_effect=importer):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_import_does_not_load_gui_commands(self):
+        import builtins
+
+        original = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.startswith("draftguitools"):
+                raise RuntimeError("model import attempted GUI command registration")
+            return original(name, *args, **kwargs)
+
+        module = self._load_view_provider(guarded_import)
+        self.assertTrue(callable(module.ViewProviderDraftHatch))
+
+    def test_edit_loads_task_panel_and_shows_dialog(self):
+        import builtins
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        panel = SimpleNamespace(form=SimpleNamespace(
+            File=Mock(), Pattern=Mock(), Scale=Mock(), Rotation=Mock(), Translate=Mock()))
+        factory = Mock(return_value=panel)
+        original = builtins.__import__
+
+        def panel_import(name, *args, **kwargs):
+            if name == "draftguitools.gui_hatch":
+                return SimpleNamespace(Draft_Hatch_TaskPanel=factory)
+            return original(name, *args, **kwargs)
+
+        module = self._load_view_provider(panel_import)
+        obj = SimpleNamespace(File="pattern.svg", Pattern="Lines", Scale=2, Rotation=30, Translate=True)
+        vobj = SimpleNamespace(Object=obj)
+        provider = module.ViewProviderDraftHatch(vobj)
+        with patch("builtins.__import__", side_effect=panel_import), patch.object(module, "Gui") as gui:
+            self.assertTrue(provider.setEdit(vobj, 0))
+            gui.Control.showDialog.assert_called_once_with(panel)
+        factory.assert_called_once_with(obj)
+        panel.form.File.setFileName.assert_called_once_with("pattern.svg")
+        self.assertIsNone(provider.setEdit(vobj, 1))
+
+    def _check_factory_presentation(self, on_gui_thread):
+        import importlib
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        class OwnerObject:
+            @property
+            def ViewObject(self):
+                raise RuntimeError("ViewObject accessed off the GUI thread")
+
+        for name, proxy, view, args in (
+            ("rectangle", "Rectangle", "ViewProviderRectangle", (20, 10)),
+        ):
+            with self.subTest(factory=name):
+                module = importlib.import_module("draftmake.make_" + name)
+                obj = SimpleNamespace(ViewObject=object()) if on_gui_thread else OwnerObject()
+                app = SimpleNamespace(GuiUp=True, ActiveDocument=Mock())
+                app.ActiveDocument.addObject.return_value = obj
+                with patch.object(module, "App", app), patch.object(module, proxy), \
+                        patch.object(module, view) as provider, \
+                        patch.object(module.gui_utils, "on_gui_thread", return_value=on_gui_thread), \
+                        patch.object(module.gui_utils, "format_object") as formatter, \
+                        patch.object(module.gui_utils, "select") as selector:
+                    self.assertIs(getattr(module, "make_" + name)(*args), obj)
+                    if on_gui_thread:
+                        provider.assert_called_once_with(obj.ViewObject)
+                        formatter.assert_called_once_with(obj)
+                        selector.assert_called_once_with(obj)
+                    else:
+                        provider.assert_not_called()
+                        formatter.assert_not_called()
+                        selector.assert_not_called()
+
+    def test_factories_preserve_gui_presentation_on_main_thread(self):
+        self._check_factory_presentation(True)
+
+    def test_factories_do_not_access_view_objects_on_owner_thread(self):
+        self._check_factory_presentation(False)

@@ -46,6 +46,9 @@ def make_rectangle(length, height=0, placement=None, face=None, support=None):
     Creates a Rectangle object with length in X direction and height in Y
     direction.
 
+    On a document owner thread this creates model geometry using the default
+    view provider. Draft view customization and selection require the GUI thread.
+
     Parameters
     ----------
     length, height : dimensions of the rectangle
@@ -93,7 +96,9 @@ def make_rectangle(length, height=0, placement=None, face=None, support=None):
     if placement:
         obj.Placement = placement
 
-    if App.GuiUp:
+    # Document owner threads create model geometry; GUI customization and
+    # selection are only available to callers on the main thread.
+    if App.GuiUp and gui_utils.on_gui_thread():
         ViewProviderRectangle(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)
