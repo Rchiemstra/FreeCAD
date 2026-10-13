@@ -279,9 +279,16 @@ void QGISVGTemplate::draw()
     drawPageRectangle();
 
     QString templateSvg = tmplte->processTemplate();
-    load(templateSvg.toUtf8());
-
     clearClickHandles();
+    if (templateSvg.isEmpty()) {
+        // A new or restoring template has no embedded SVG yet. Keep the
+        // blank page visible without parsing empty XML on every redraw.
+        m_svgItem->hide();
+        return;
+    }
+
+    m_svgItem->show();
+    load(templateSvg.toUtf8());
     createClickHandles();
 }
 

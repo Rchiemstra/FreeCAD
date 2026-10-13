@@ -19204,7 +19204,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_rectangle.py",
-      "line": 67,
+      "line": 70,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19212,7 +19212,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_rectangle.py",
-      "line": 83,
+      "line": 86,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
