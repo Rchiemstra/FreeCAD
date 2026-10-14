@@ -8,6 +8,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/FeatureTest.h>
 #include <App/MainThreadSignal.h>
 #include <Base/Interpreter.h>
@@ -97,6 +98,19 @@ public:
     }
 private:
     RetirementProbe& probe;
+};
+
+// Exercise the production owner-lane recompute and deferred deletion replay.
+class PersonalSelectionReplacementFeature: public App::FeatureTest
+{
+public:
+    std::function<void()> replace;
+    bool canRecomputeOnWorker() const override { return false; }
+    App::DocumentObjectExecReturn* execute() override
+    {
+        replace();
+        return App::DocumentObject::StdReturn;
+    }
 };
 
 class SelectionRecomputeDeletionTest: public ::testing::Test
@@ -430,4 +444,150 @@ TEST_F(SelectionRecomputeDeletionTest, personalSelectionRetiredByDeletionAndHist
     expectRetired();
     doc->addObject("App::FeatureTest", "Target");
     expectRetired();
+}
+
+TEST_F(SelectionRecomputeDeletionTest, personalQualifiedSelectionRetiredByDeletion)
+{
+    doc->addObject("App::FeatureTest", "Target");
+    doc->addObject("App::FeatureTest", "Other");
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    const std::string qualified = std::string(doc->getName()) + "#Target";
+    Gui::PersonalViewContext context;
+    context.camera = "retain camera";
+    context.selectionPaths = {qualified, qualified + ".Face1", "Other", "Foreign#Target.Face1"};
+    context.preselectionPath = qualified + ".Edge1";
+    guiDoc->storePersonalViewContext("actor-a", context);
+    Gui::PersonalViewContext other;
+    other.selectionPaths = {"Other"};
+    other.preselectionPath = "Other.Face1";
+    guiDoc->storePersonalViewContext("actor-b", other);
+    ASSERT_TRUE(Gui::Selection().addSelection(doc->getName(), "Other"));
+    doc->removeObject("Target");
+    context.selectionPaths = {"Other", "Foreign#Target.Face1"};
+    context.preselectionPath.reset();
+    EXPECT_EQ(guiDoc->personalViewContext("actor-a"), context);
+    EXPECT_EQ(guiDoc->personalViewContext("actor-b"), other);
+    EXPECT_TRUE(Gui::Selection().isSelected(doc->getName(), "Other"));
+}
+
+TEST_F(SelectionRecomputeDeletionTest, personalReplacementSelectionSurvivesDeferredDeletion)
+{
+    auto* original = doc->addObject("App::FeatureTest", "Target");
+    original->purgeTouched();
+    doc->addObject("App::FeatureTest", "Other")->purgeTouched();
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    Gui::PersonalViewContext stale;
+    stale.selectionPaths = {"Target", "Target.Face1", "Other"};
+    stale.preselectionPath = "Target.Edge1";
+    guiDoc->storePersonalViewContext("actor-old", stale);
+    Gui::PersonalViewContext replacement;
+    replacement.selectionPaths = {std::string(doc->getName()) + "#Target.Face1", "Target"};
+    replacement.preselectionPath = "Target.Edge1";
+    Gui::PersonalViewContext other;
+    other.selectionPaths = {"Other"};
+    guiDoc->storePersonalViewContext("actor-other", other);
+    ASSERT_TRUE(Gui::Selection().addSelection(doc->getName(), "Other"));
+    std::atomic<bool> replaced {false};
+    bool replayed = false;
+    fastsignals::scoped_connection deletion = doc->signalDeletedObject.connect(
+        [&](const App::DocumentObject& object) {
+            if (&object == original) {
+                EXPECT_TRUE(isDeletionMainThread());
+                EXPECT_TRUE(replaced.load());
+                EXPECT_NE(doc->getObject("Target"), original);
+                replayed = true;
+            }
+        });
+    auto* remover = new PersonalSelectionReplacementFeature;
+    remover->replace = [&] {
+        EXPECT_FALSE(isDeletionMainThread());
+        doc->removeObject("Target");
+        auto* target = doc->addObject("App::FeatureTest", "Target");
+        EXPECT_NE(target, original);
+        target->purgeTouched();
+        // Store before the deleted original's GUI notification is replayed.
+        guiDoc->storePersonalViewContext("actor-new", replacement);
+        replaced = true;
+    };
+    doc->addObject(remover, "Remover");
+    remover->touch();
+    bool error = false;
+    static_cast<void>(doc->recompute({remover}, true, &error));
+    ASSERT_FALSE(error);
+    ASSERT_TRUE(replayed);
+    EXPECT_EQ(guiDoc->personalViewContext("actor-new"), replacement);
+    stale.selectionPaths = {"Other"};
+    stale.preselectionPath.reset();
+    EXPECT_EQ(guiDoc->personalViewContext("actor-old"), stale);
+    EXPECT_EQ(guiDoc->personalViewContext("actor-other"), other);
+    EXPECT_TRUE(Gui::Selection().isSelected(doc->getName(), "Other"));
+}
+
+TEST_F(SelectionRecomputeDeletionTest, personalNestedSubshapeRetiredByResolvedObjectDeletion)
+{
+    {
+        Base::PyGILStateLocker gil;
+        Base::Interpreter().runString("import Part");
+    }
+    auto* target = doc->addObject("Part::Box", "Target");
+    auto* other = doc->addObject("Part::Box", "Other");
+    auto* group = static_cast<App::DocumentObjectGroup*>(
+        doc->addObject("App::DocumentObjectGroup", "Group"));
+    group->addObject(target);
+    group->addObject(other);
+    static_cast<void>(doc->recompute());
+    ASSERT_EQ(group->getSubObject("Target.Face1"), target);
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    Gui::PersonalViewContext context;
+    context.selectionPaths = {"Group.Target.Face1", std::string(doc->getName()) + "#Group.Target.Edge1",
+                              "Group.Other.Face1", "Group"};
+    context.preselectionPath = "Group.Target.Face2";
+    guiDoc->storePersonalViewContext("actor", context);
+    Gui::PersonalViewContext otherActor;
+    otherActor.selectionPaths = {"Group.Other.Face1"};
+    guiDoc->storePersonalViewContext("other-actor", otherActor);
+    ASSERT_TRUE(Gui::Selection().addSelection(doc->getName(), "Group", "Target.Face1"));
+    ASSERT_TRUE(Gui::Selection().addSelection(doc->getName(), "Group", "Other.Face1"));
+    doc->removeObject("Target");
+    context.selectionPaths = {"Group.Other.Face1", "Group"};
+    context.preselectionPath.reset();
+    EXPECT_EQ(guiDoc->personalViewContext("actor"), context);
+    EXPECT_EQ(guiDoc->personalViewContext("other-actor"), otherActor);
+    EXPECT_FALSE(Gui::Selection().isSelected(doc->getName(), "Group", "Target.Face1"));
+    EXPECT_TRUE(Gui::Selection().isSelected(doc->getName(), "Group", "Other.Face1"));
+    // Root identity must also be tracked for paths resolved to a surviving child.
+    doc->removeObject("Group");
+    context.selectionPaths.clear();
+    otherActor.selectionPaths.clear();
+    EXPECT_EQ(guiDoc->personalViewContext("actor"), context);
+    EXPECT_EQ(guiDoc->personalViewContext("other-actor"), otherActor);
+}
+
+TEST_F(SelectionRecomputeDeletionTest, personalSelectionsDiscardedOnDocumentCloseAndReopen)
+{
+    doc->addObject("App::FeatureTest", "Target");
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    Gui::PersonalViewContext context;
+    context.selectionPaths = {"Target", std::string(doc->getName()) + "#Target.Face1"};
+    context.preselectionPath = "Target.Edge1";
+    guiDoc->storePersonalViewContext("actor", context);
+    const std::string name = doc->getName();
+    App::GetApplication().closeDocument(name.c_str());
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    doc = App::GetApplication().newDocument(name.c_str(), "testUser", flags);
+    doc->addObject("App::FeatureTest", "Target");
+    guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    EXPECT_FALSE(guiDoc->personalViewContext("actor"));
+    guiDoc->storePersonalViewContext("actor", context);
+    EXPECT_EQ(guiDoc->personalViewContext("actor"), context);
+    doc->removeObject("Target");
+    context.selectionPaths.clear();
+    context.preselectionPath.reset();
+    EXPECT_EQ(guiDoc->personalViewContext("actor"), context);
 }
