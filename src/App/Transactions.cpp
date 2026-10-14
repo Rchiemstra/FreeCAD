@@ -134,6 +134,11 @@ bool Transaction::isEmpty() const
 
 void Transaction::mergeInto(Transaction& parent)
 {
+    mergeInto(parent, false);
+}
+
+void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
+{
     if (&parent == this) {
         return;
     }
@@ -218,14 +223,18 @@ void Transaction::mergeInto(Transaction& parent)
                 // nested record here would orphan the detached object.
                 if (target->status == TransactionObject::Del) {
                     // The parent added it and the nested transaction removed
-                    // it again: the merged step does neither, and nothing is
-                    // left to own the detached object. Destroy it exactly as
-                    // Transaction::addObjectNew() does for this pair inside a
-                    // single transaction.
+                    // it again: remove the parent's undo action. During
+                    // deferred replay the nested removal record must keep
+                    // owning the detached object until GUI cleanup finishes.
+                    // Ordinary merges still destroy it here.
                     const auto* object = entry->first;
                     parentIndex.erase(parentPos);
                     delete target;
                     if (!object->isAttachedToDocument()) {
+                        if (retainCancelledObjects) {
+                            ++entry;
+                            continue;
+                        }
                         if (object->isDerivedFrom<DocumentObject>()) {
                             // #0003323: suppress backlink teardown through
                             // dangling peers.

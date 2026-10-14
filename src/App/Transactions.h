@@ -211,6 +211,10 @@ public:
      */
     void mergeInto(Transaction& parent);
 
+    /** Fold records into parent, leaving cancelled detached objects owned by
+     * this transaction when replay must precede their destruction. */
+    void mergeInto(Transaction& parent, bool retainCancelledObjects);
+
 private:
     void applyImpl(Document& doc, bool forward, bool propagateErrors);
 

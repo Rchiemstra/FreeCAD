@@ -2652,7 +2652,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 198,
+      "line": 201,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2660,15 +2660,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 223,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);"
-    },
-    {
-      "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 259,
+      "line": 257,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2676,7 +2668,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 275,
+      "line": 273,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2684,7 +2676,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 304,
+      "line": 302,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2692,7 +2684,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 338,
+      "line": 336,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2700,7 +2692,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 557,
+      "line": 555,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2708,7 +2700,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 585,
+      "line": 583,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",

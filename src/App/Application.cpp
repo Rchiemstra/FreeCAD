@@ -2110,7 +2110,27 @@ void Application::slotNewObject(const DocumentObject& obj)
 
 void Application::slotDeletedObject(const DocumentObject& obj)
 {
-    this->signalDeletedObject(obj);
+    if (obj.getDocument() && obj.getDocument()->collaborationNotificationsReplaying()) {
+        // The document isolates its replay subscribers, but this relay must
+        // also isolate its own subscribers so Selection and all GUI observers
+        // see the deletion before the document releases the retired object.
+        this->signalDeletedObject.emit_resilient(
+            [](std::exception_ptr failure) {
+                try {
+                    std::rethrow_exception(failure);
+                }
+                catch (const std::exception& exception) {
+                    FC_WARN("Deferred application deletion observer failed: " << exception.what());
+                }
+                catch (...) {
+                    FC_WARN("Deferred application deletion observer failed with unknown exception");
+                }
+            },
+            obj);
+    }
+    else {
+        this->signalDeletedObject(obj);
+    }
     _objCount = -1;
 }
 

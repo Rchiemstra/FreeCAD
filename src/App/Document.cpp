@@ -1856,6 +1856,37 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                                               << " notification failed with unknown exception");
         }
     };
+    // Deletion replay is irrevocable: a failing extension must not skip
+    // Selection, view-provider teardown, or later deletion observers. Keep
+    // ordinary signal delivery unchanged and marshal the entire resilient
+    // delivery synchronously before releasing retirement ownership.
+    const auto emitDeletion = [&](auto& signal, auto&&... args) {
+        auto deliver = [&] {
+            signal.underlying().emit_resilient(
+                [&](std::exception_ptr failure) {
+                    try {
+                        std::rethrow_exception(failure);
+                    }
+                    catch (const std::exception& exception) {
+                        reportNotificationFailure("deletion observer", &exception);
+                    }
+                    catch (...) {
+                        reportNotificationFailure("deletion observer", nullptr);
+                    }
+                },
+                args...);
+        };
+        if (MainThreadSignalConfig::isMainThread()) {
+            deliver();
+        }
+        else {
+            std::optional<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) {
+                release.emplace();
+            }
+            MainThreadSignalConfig::invoke(std::move(deliver), /*blocking=*/true);
+        }
+    };
     const auto emit = [&](const CollaborationDeferredNotification& notification) {
         // An object can leave the document inside the barrier: a Draft link
         // array rebuilds its elements from execute(), which the coordinator
@@ -2000,7 +2031,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                     notification.object->pcNameInDocument = &notification.text;
                 }
                 try {
-                    signalDeletedObject(*notification.object);
+                    emitDeletion(signalDeletedObject, *notification.object);
                 }
                 catch (...) {
                     notification.object->pcNameInDocument = previousName;
@@ -2018,7 +2049,8 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                     notification.object->pcNameInDocument = &notification.text;
                 }
                 try {
-                    signalTransactionRemove(*notification.object, notification.transaction);
+                    emitDeletion(signalTransactionRemove, *notification.object,
+                                 notification.transaction);
                 }
                 catch (...) {
                     notification.object->pcNameInDocument = previousName;
@@ -3089,8 +3121,23 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                     discardTransactionFileState(id);
                     retargetCollaborationTransactionNotifications(
                         d->activeUndoTransaction, d->parkedNestedTransaction);
-                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-                    delete d->activeUndoTransaction;
+                    const bool retainCancelledObjects =
+                        d->collaborationCommitNotificationBarrier;
+                    if (retainCancelledObjects && d->collaborationPreparedUndoSlot.empty()) {
+                        throw Base::RuntimeError(
+                            "collaboration commit finalization was not prepared");
+                    }
+                    d->activeUndoTransaction->mergeInto(
+                        *d->parkedNestedTransaction, retainCancelledObjects);
+                    if (retainCancelledObjects && !d->activeUndoTransaction->isEmpty()) {
+                        // Only cancelled removals remain in the nested record.
+                        // Retire them with the same owner as a non-history
+                        // recompute, after deletion replay has cleared the GUI.
+                        d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                    }
+                    else {
+                        delete d->activeUndoTransaction;
+                    }
                 }
                 else if (!d->activeUndoTransaction->isEmpty()) {
                     // Nothing to fold into: the caller only had a booking, so
