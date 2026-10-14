@@ -21,6 +21,7 @@
 #include <Gui/Camera.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Tree.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderDocumentObject.h>
@@ -598,6 +599,62 @@ TEST_F(CollaborationResponsivenessTest,
         });
         App::enforceAtomicPresentationMutationTarget(*_document);
     }));
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       treeStatusRefreshKeepsNewOwnerAdmissionOutUntilRefreshEnds)
+{
+    Gui::TreeWidget tree("tree-status-admission-probe");
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto name = App::GetApplication().getUniqueDocumentName("treeRefresh");
+    auto* document = App::GetApplication().newDocument(name.c_str(), "tree refresh", flags);
+    const auto close = qScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* gui = Gui::Application::Instance->getDocument(document);
+    ASSERT_NE(gui, nullptr);
+    auto* object = document->addObject("App::DocumentObject", "RefreshProbe");
+    auto ownedProvider = std::make_unique<LivePresentationProbe>();
+    ownedProvider->attach(object);
+    gui->addViewProvider(ownedProvider.get());
+    auto* provider = ownedProvider.release();
+    gui->signalNewObject(*provider);
+    Gui::Test::recomputeWithoutBlockingGui(*document, "tree-refresh-setup");
+    Gui::TreeWidget::updateStatus(false);
+    QApplication::processEvents();
+
+    std::atomic_bool refreshing {true};
+    OwnerAdmissionAttempt attempt(*document, refreshing);
+    bool attemptReturned = false;
+    bool appWriteRejected = false;
+    int probeCalls = 0;
+    const auto connection = QObject::connect(
+        &tree, &QTreeWidget::itemChanged,
+        [&](QTreeWidgetItem* item, int) {
+            if (probeCalls || item->text(0) != QStringLiteral("RefreshProbe")) {
+                return;
+            }
+            ++probeCalls;
+            const auto release = qScopeGuard([&] { attempt.release(); });
+            // Icon/status changes run after the tree's idle checks. Admission
+            // here recreates the live source-close/delete check/use race.
+            attemptReturned = attempt.startAndWait();
+            try {
+                provider->getObject()->Label.setValue("Tree-refreshed");
+            }
+            catch (const Base::RuntimeError&) {
+                appWriteRejected = true;
+            }
+        });
+    const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
+    provider->getObject()->touch();
+    EXPECT_NO_THROW(QMetaObject::invokeMethod(&tree, "onUpdateStatus", Qt::DirectConnection));
+    attempt.releaseAndJoin();
+    ASSERT_EQ(probeCalls, 1);
+    ASSERT_TRUE(attemptReturned);
+    ASSERT_EQ(attempt.failure, nullptr);
+    EXPECT_FALSE(attempt.acceptedDuringRefresh);
+    EXPECT_FALSE(appWriteRejected);
+    EXPECT_EQ(provider->getObject()->Label.getStrValue(), "Tree-refreshed");
 }
 
 TEST_F(CollaborationResponsivenessTest,

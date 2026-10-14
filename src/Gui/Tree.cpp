@@ -53,6 +53,7 @@
 #include <App/AutoTransaction.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/Link.h>
+#include <App/MutationClassification.h>
 #include <App/SuppressibleExtension.h>
 
 #include "Tree.h"
@@ -3611,6 +3612,15 @@ void TreeWidget::onUpdateStatus()
             _updateStatus();
             return;
         }
+    }
+
+    // Reserve live tree refresh after the idle checks. Item status/icon
+    // callbacks can update App expansion bits; new owner admission must wait
+    // until all of those GUI callbacks have returned.
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired()) {
+        _updateStatus();
+        return;
     }
 
     FC_LOG("begin update status");

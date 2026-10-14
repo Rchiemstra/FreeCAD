@@ -4739,13 +4739,21 @@ std::set<Document*> App::externalSourceDependentDocuments(
                 continue;
             }
             for (auto* owner : document->getObjects()) {
-                for (const auto& binding : owner->ExpressionEngine.getExpressions()) {
-                    if (!binding.second) {
+                std::vector<Property*> properties;
+                owner->getPropertyList(properties);
+                for (auto* property : properties) {
+                    auto* container = dynamic_cast<PropertyExpressionContainer*>(property);
+                    if (!container) {
                         continue;
                     }
-                    for (const auto& identifier : binding.second->getIdentifiers()) {
-                        if (identifier.first.getDocument() == &source) {
-                            dependents.insert(document);
+                    for (const auto& binding : container->getExpressions()) {
+                        if (!binding.second) {
+                            continue;
+                        }
+                        for (const auto& identifier : binding.second->getIdentifiers()) {
+                            if (identifier.first.getDocument() == &source) {
+                                dependents.insert(document);
+                            }
                         }
                     }
                 }
@@ -6033,7 +6041,7 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
         // Ordinary native deletion keeps the historical transaction capture
         // and notifications below. Atomic deletion cannot grant foreign
         // callbacks authority to edit either document.
-        if (this == &owner->ExpressionEngine
+        if (dynamic_cast<PropertyExpressionContainer*>(this)
             && obj->getDocument() != owner->getDocument()
             && obj->testStatus(ObjectStatus::Remove)
             && atomicPresentationMutationAdmissionHeldFor(*obj->getDocument())) {

@@ -62,6 +62,44 @@ PropertyExpressionContainer::PropertyExpressionContainer()
             PropertyExpressionContainer::slotRenameDynamicProperty);
         GetApplication().signalMoveDynamicProperty.connect(
             PropertyExpressionContainer::slotMoveDynamicProperty);
+        GetApplication().signalUndoDocument.connect([](const Document& source) {
+            // Engines rebuild their property-specific and hidden edges below.
+            // Other expression containers (notably Spreadsheet Cells) need
+            // the same restoration, with their own runtime dependency hooks.
+            for (auto* container : _ExprContainers) {
+                if (dynamic_cast<PropertyExpressionEngine*>(container)) {
+                    continue;
+                }
+                auto* owner = dynamic_cast<DocumentObject*>(container->getContainer());
+                if (!owner || !owner->isAttachedToDocument()
+                    || owner->getDocument() == &source) {
+                    continue;
+                }
+                const auto expressions = container->getExpressions();
+                bool affected = false;
+                for (const auto& binding : expressions) {
+                    if (!binding.second) {
+                        continue;
+                    }
+                    for (const auto& identifier : binding.second->getIdentifiers()) {
+                        affected |= identifier.first.getDocument() == &source;
+                    }
+                }
+                if (affected) {
+                    std::map<DocumentObject*, bool> deps;
+                    std::vector<std::string> labels;
+                    for (const auto& binding : expressions) {
+                        if (binding.second) {
+                            binding.second->getDepObjects(deps, &labels);
+                        }
+                    }
+                    container->registerLabelReferences(std::move(labels));
+                    container->updateDeps(std::move(deps));
+                    owner->clearOutListCache();
+                    container->StatusBits.set(Property::Touched);
+                }
+            }
+        });
     }
     _ExprContainers.insert(this);
 }

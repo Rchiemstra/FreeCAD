@@ -9,6 +9,7 @@
 #include <string>
 
 #include "Base/Quantity.h"
+#include "Base/Interpreter.h"
 
 #include "App/Application.h"
 #include "App/Document.h"
@@ -250,6 +251,156 @@ TEST_F(CrossDocumentExpressionRecomputeTest, deletionUndoRedoRestoresForeignDepe
     static_cast<void>(_driven->recompute());
     EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 23.0);
 }
+
+// Spreadsheet Cells is a second PropertyExpressionContainer, independent of
+// the object's built-in ExpressionEngine. Keep both in the lifecycle repro.
+class CrossDocumentSpreadsheetLifecycleTest:
+    public CrossDocumentExpressionRecomputeTest,
+    public ::testing::WithParamInterface<bool>
+{
+protected:
+    void addSheet()
+    {
+        Base::PyGILStateLocker gil;
+        PyObject* module = PyImport_ImportModule("Spreadsheet");
+        if (!module) { PyErr_Print(); }
+        ASSERT_NE(module, nullptr);
+        Py_DECREF(module);
+        sheet = _driven->addObject("Spreadsheet::Sheet", "Bridge");
+        ASSERT_NE(sheet, nullptr);
+        setCell("=" + _sourceName + "#Dims.Float");
+    }
+
+    void setCell(const std::string& value)
+    {
+        Base::PyGILStateLocker gil;
+        Py::Object object(sheet->getPyObject(), true);
+        PyObject* result = PyObject_CallMethod(object.ptr(), "set", "ss", "A1", value.c_str());
+        if (!result) { PyErr_Print(); }
+        ASSERT_NE(result, nullptr);
+        Py_DECREF(result);
+    }
+
+    App::DocumentObject* sheet {};
+};
+
+TEST_P(CrossDocumentSpreadsheetLifecycleTest, atomicDeletionRetiresEveryExpressionContainer)
+{
+    if (GetParam()) { addSheet(); }
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_driven->mustExecute());
+    if (sheet) {
+        ASSERT_FALSE(sheet->getOutList().empty());
+        static_cast<void>(sheet->getOutListProp());
+    }
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::Structural;
+    auto result = _source->collaborationService().commitCompatibilityMutationWithPolicy(
+        mutation, [&] { _source->removeObject("Dims"); },
+        App::CollaborationCompatibilityRecomputePolicy::Deferred);
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_EQ(_source->getObject("Dims"), nullptr);
+    EXPECT_TRUE(_drivenObject->getOutList().empty());
+    if (sheet) {
+        EXPECT_TRUE(sheet->getOutList().empty());
+        EXPECT_TRUE(sheet->getOutListProp().empty());
+    }
+    ASSERT_TRUE(_source->undo());
+    ASSERT_EQ(_source->getObject("Dims"), _sourceObject);
+    if (sheet) { EXPECT_FALSE(sheet->getOutList().empty()); }
+    _sourceObject->Float.setValue(18);
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 18);
+    if (sheet) {
+        Base::PyGILStateLocker gil;
+        Py::Object object(sheet->getPyObject(), true);
+        Py::Object value(PyObject_GetAttrString(object.ptr(), "A1"), true);
+        ASSERT_FALSE(value.isNull());
+        EXPECT_DOUBLE_EQ(PyFloat_AsDouble(value.ptr()), 18);
+        ASSERT_FALSE(PyErr_Occurred());
+    }
+    ASSERT_TRUE(_source->redo());
+    ASSERT_EQ(_source->getObject("Dims"), nullptr);
+    if (sheet) { EXPECT_TRUE(sheet->getOutList().empty()); }
+}
+
+TEST_P(CrossDocumentSpreadsheetLifecycleTest, terminalSheetErrorAllowsExpressionRepair)
+{
+    addSheet();
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_driven->mustExecute());
+    ASSERT_TRUE(_driven->save());
+    if (GetParam()) {
+        App::GetApplication().closeDocument(_sourceName.c_str());
+        _source = nullptr;
+        _sourceObject = nullptr;
+        bool error = false;
+        _driven->recompute({}, true, &error);
+        ASSERT_TRUE(error);
+        ASSERT_TRUE(sheet->isError());
+        ASSERT_FALSE(_driven->recomputeCoordinator().hasPendingWork());
+    }
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = _drivenObject->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*_drivenObject);
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] {
+            _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
+            _drivenObject->Float.setValue(21);
+        });
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_FALSE(_driven->getMutationReadiness().quarantined);
+    EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 21);
+    mutation.objectName = sheet->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*sheet);
+    const auto repaired = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] { setCell("24"); });
+    EXPECT_TRUE(repaired.committed()) << repaired.message;
+    EXPECT_FALSE(sheet->isError());
+    EXPECT_FALSE(_driven->mustExecute());
+}
+
+TEST_P(CrossDocumentSpreadsheetLifecycleTest, sheetOnlyUndoAdmissionRetainsHistory)
+{
+    _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
+    addSheet();
+    if (GetParam()) { setCell("=hiddenref(" + _sourceName + "#Dims.Float)"); }
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::Structural;
+    auto result = _source->collaborationService().commitCompatibilityMutationWithPolicy(
+        mutation, [&] { _source->removeObject("Dims"); },
+        App::CollaborationCompatibilityRecomputePolicy::Deferred);
+    ASSERT_TRUE(result.committed()) << result.message;
+    const auto undos = _source->getAvailableUndoNames();
+    const auto redos = _source->getAvailableRedoNames();
+    _driven->setStatus(App::Document::Recomputing, true);
+    bool refused = false;
+    try { refused = !_source->undo(); }
+    catch (const Base::Exception& error) {
+        refused = true;
+        EXPECT_NE(std::string(error.what()).find("dependent document"), std::string::npos);
+    }
+    _driven->setStatus(App::Document::Recomputing, false);
+    EXPECT_TRUE(refused);
+    EXPECT_EQ(_source->getAvailableUndoNames(), undos);
+    EXPECT_EQ(_source->getAvailableRedoNames(), redos);
+    ASSERT_EQ(_source->getObject("Dims"), nullptr);
+    ASSERT_TRUE(_source->undo());
+    std::vector<App::DocumentObject*> links;
+    auto* cells = dynamic_cast<App::PropertyLinkBase*>(sheet->getPropertyByName("cells"));
+    ASSERT_NE(cells, nullptr);
+    cells->getLinks(links, true);
+    EXPECT_EQ(links, std::vector<App::DocumentObject*>({_sourceObject}));
+}
+
+INSTANTIATE_TEST_SUITE_P(Round25, CrossDocumentSpreadsheetLifecycleTest, ::testing::Bool(),
+    [](const auto& info) { return info.param ? "Defect" : "Happy"; });
 
 class CrossDocumentReplayAdmissionTest:
     public CrossDocumentExpressionRecomputeTest,

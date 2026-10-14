@@ -7387,7 +7387,6 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         activeSubmissions.erase(this);
     };
 
-    d->clearRecomputeLog();
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::BeforeRecompute});
@@ -7432,6 +7431,10 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (object && object->isAttachedToDocument() && object->getDocument() == this
             && scheduled.contains(object)) {
+            // A partial recompute must retain diagnostics for native error
+            // objects outside its plan, so unrelated compatibility repairs
+            // preserve the same terminal error boundary.
+            d->clearRecomputeLog(object);
             selected.push_back(object);
         }
     }

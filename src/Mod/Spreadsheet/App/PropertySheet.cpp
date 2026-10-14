@@ -42,6 +42,7 @@
 #include <Base/Writer.h>
 
 #include "PropertySheet.h"
+#include <App/MutationClassification.h>
 #include "PropertySheetPy.h"
 #include "Sheet.h"
 
@@ -1607,6 +1608,23 @@ void PropertySheet::recomputeDependants(const App::DocumentObject* owner, const 
 
 void PropertySheet::breakLink(App::DocumentObject* obj, bool clear)
 {
+    if (obj && owner && obj != owner && obj->isAttachedToDocument()
+        && obj->getDocument() != owner->getDocument()
+        && obj->testStatus(App::ObjectStatus::Remove)
+        && App::atomicPresentationMutationAdmissionHeldFor(*obj->getDocument())) {
+        // Source removal admission pins and serializes this dependent. Retire
+        // runtime state without entering a foreign property change callback.
+        // Cell text stays intact for missing-source reporting and undo repair.
+        PropertyExpressionContainer::breakLink(obj, clear);
+        depConnections.erase(obj);
+        auto cells = documentObjectToCellMap.find(obj->getFullName());
+        if (cells != documentObjectToCellMap.end()) {
+            for (const auto& address : cells->second) {
+                setDirty(address);
+            }
+        }
+        return;
+    }
     AtomicPropertyChange signaller(*this, false);
     PropertyExpressionContainer::breakLink(obj, clear);
 }

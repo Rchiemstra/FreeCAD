@@ -10,6 +10,7 @@
 #include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
 #include "GenericIsolatedRecompute.h"
+#include "NativeRecomputeErrors.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 
@@ -1767,7 +1768,9 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                     "compatibility mutation object changed during recompute settlement");
             }
         }
-        if (_document.mustExecute()) {
+        if (_document.mustExecute()
+            && !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, Internal::captureNativeRecomputeErrors(_document))) {
             return rejectedCompatibilityCommit(
                 DocumentCommitStatus::Busy,
                 rejectedOperationId,

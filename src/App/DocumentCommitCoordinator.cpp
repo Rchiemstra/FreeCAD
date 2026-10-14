@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "DocumentCommitCoordinator.h"
+#include "NativeRecomputeErrors.h"
+#include "Transactions.h"
 
 #include "CollaborativeOperation.h"
 #include "Document.h"
@@ -171,7 +173,9 @@ bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
 }
 
 std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
-    App::Document& document)
+    App::Document& document,
+    const App::Internal::NativeRecomputeErrors* baseline = nullptr,
+    const App::Transaction* transaction = nullptr)
 {
     const auto objects = document.getObjects();
     std::unordered_set<App::DocumentObject*> selected;
@@ -181,6 +185,13 @@ std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
         if (object
             && (object->isTouched()
                 || document.collaborationTransactionOwnsNewObject(*object))) {
+            // Retain only error work that was already dirty before apply.
+            // A newly touched error target or a transaction-owned change must
+            // still recompute and fail if its missing input remains unresolved.
+            if (baseline && baseline->contains(object) && transaction
+                && !transaction->hasObject(object)) {
+                continue;
+            }
             pending.push_back(object);
         }
     }
@@ -955,7 +966,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         // leftover mustExecute and fail closed. Compatibility and typed native
         // RPC paths settle on the owner thread here so a caller-side recompute
         // hop from another thread cannot race the lane boundary.
-        if (!requireDetachedPreparationSupport) {
+        if (!requireDetachedPreparationSupport
+            && !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, Internal::captureNativeRecomputeErrors(_document))) {
             try {
                 bool recomputeError = false;
                 for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
@@ -979,7 +992,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                         exception.what()));
             }
         }
-        if (_document.mustExecute()) {
+        if (_document.mustExecute()
+            && (requireDetachedPreparationSupport
+                || !Internal::pendingRecomputeMatchesNativeErrors(
+                    _document, Internal::captureNativeRecomputeErrors(_document)))) {
             return makeResult(DocumentCommitStatus::Busy,
                               edit,
                               "document has pending recompute work outside the prepared operation");
@@ -1109,13 +1125,15 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     // Native expression failures (for example a closed external source) are
     // part of the pre-commit boundary. An exact rollback to that same error
     // is repairable, rather than evidence of escaped Python Proxy state.
-    std::unordered_map<App::DocumentObject*, std::string> preexistingNativeErrors;
+    const auto preexistingNativeErrors = Internal::captureNativeRecomputeErrors(_document);
+    Internal::NativeRecomputeErrors preexistingTouchedNativeErrors;
     std::unordered_set<App::DocumentObject*> preexistingObjects;
     for (auto* object : _document.getObjects()) {
         preexistingObjects.insert(object);
-        if (object->isError() && object->getPropertyByName("Proxy") == nullptr) {
-            if (const char* error = _document.getErrorDescription(object); error && *error) {
-                preexistingNativeErrors.emplace(object, error);
+        if (object->isTouched()) {
+            const auto error = preexistingNativeErrors.find(object);
+            if (error != preexistingNativeErrors.end()) {
+                preexistingTouchedNativeErrors.insert(*error);
             }
         }
     }
@@ -1261,7 +1279,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool recomputeHasError = false;
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager) {
         try {
-            auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
+            auto recomputeTargets = pendingTransactionRecomputeTargets(
+                _document,
+                requireDetachedPreparationSupport ? nullptr : &preexistingTouchedNativeErrors,
+                _document.d->activeUndoTransaction);
             if (recomputeTargets.empty()) {
                 _document.finalizeEmptyDetachedRecompute();
             }
@@ -1309,7 +1330,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                                 detail.str()));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
-        && _document.mustExecute()) {
+        && _document.mustExecute()
+        && (requireDetachedPreparationSupport
+            || !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, preexistingNativeErrors))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::RecomputeFailed,
             edit,
@@ -1362,7 +1386,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "postcondition attempted to mutate document state"));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
-        && _document.mustExecute()) {
+        && _document.mustExecute()
+        && (requireDetachedPreparationSupport
+            || !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, preexistingNativeErrors))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::PostconditionFailed,
             edit,
