@@ -84,6 +84,87 @@ def gui_available():
     return App.GuiUp and on_gui_thread()
 
 
+# Retain callbacks and their factory arguments until Qt can install presentation.
+# They are process-local intent, never serialized into a document or a model proxy.
+_pending_gui_setups = set()
+
+
+if App.GuiUp:
+    class _GuiSetup(QtCore.QObject):
+        wake = QtCore.Signal()
+
+        def __init__(self, obj, callback):
+            super().__init__()
+            self.obj = obj
+            self.document = obj.Document
+            self.name = obj.Name
+            self.callback = callback
+            self.moveToThread(QtCore.QCoreApplication.instance().thread())
+            self.wake.connect(self.run, QtCore.Qt.QueuedConnection)
+
+        @QtCore.Slot()
+        def run(self):
+            # The native reservation closes the race between checking document
+            # readiness and installing providers or writing their properties.
+            if not Gui.tryRunPresentationCallback(self.apply):
+                QtCore.QTimer.singleShot(10, self.run)
+
+        def apply(self):
+            try:
+                readiness = self.document.getMutationReadiness()
+                busy = ("recomputing", "commit_barrier", "notification_replay", "pending_removal")
+                if any(readiness.get(flag) for flag in busy):
+                    QtCore.QTimer.singleShot(10, self.run)
+                    return
+                # Closing, removing or rolling back the object cancels its intent.
+                if self.document.getObject(self.name) is not self.obj:
+                    self.finish()
+                    return
+                if not self.obj.ViewObject:
+                    QtCore.QTimer.singleShot(10, self.run)
+                    return
+                self.callback()
+            except ReferenceError:
+                pass  # A deleted document/object has no presentation to apply.
+            except Exception:
+                import traceback
+                _err(traceback.format_exc())
+            self.finish()
+
+        def finish(self):
+            self.callback = None
+            self.obj = None
+            self.document = None
+            _pending_gui_setups.discard(self)
+            self.deleteLater()
+
+
+def run_gui_setup(obj, callback):
+    """Apply presentation now on Qt's main thread, or retain it for GUI catch-up.
+
+    Owner callers never inspect ViewObject or start a GUI timer. A queued Qt
+    signal delivers the callback to a receiver on the main thread, after commit,
+    notification replay and view-provider attachment. Factory closures keep
+    explicit arguments and the original presentation order. Main-thread calls remain
+    synchronous; headless calls have no presentation.
+    """
+    if not App.GuiUp:
+        return
+    if on_gui_thread():
+        return callback()
+    setup = _GuiSetup(obj, callback)
+    _pending_gui_setups.add(setup)
+    setup.wake.emit()
+
+
+def defer_gui_setup(obj, callback):
+    """Return True if a GUI-only restore callback cannot run in this caller."""
+    if gui_available():
+        return False
+    run_gui_setup(obj, callback)
+    return True
+
+
 def get_3d_view():
     """Return the current 3D view.
 
@@ -549,7 +630,9 @@ def restore_view_object(obj, vp_module, vp_class, format=True, format_ref=None):
         Defaults to `None`.
         Reference object to copy ViewObject properties from.
     """
-    if not gui_available():
+    if defer_gui_setup(
+        obj, lambda: restore_view_object(obj, vp_module, vp_class, format, format_ref)
+    ):
         return None
     if not getattr(obj, "ViewObject", None):
         return

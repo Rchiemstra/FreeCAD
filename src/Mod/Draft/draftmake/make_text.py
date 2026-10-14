@@ -124,7 +124,7 @@ def make_text(string, placement=None, screen=False, height=None, line_spacing=1)
     new_obj.Text = string
     new_obj.Placement = placement
 
-    if gui_utils.gui_available():
+    def setup_view():
         ViewProviderText(new_obj.ViewObject)
 
         if screen is None:
@@ -143,6 +143,8 @@ def make_text(string, placement=None, screen=False, height=None, line_spacing=1)
 
         gui_utils.format_object(new_obj)
         gui_utils.select(new_obj)
+
+    gui_utils.run_gui_setup(new_obj, setup_view)
 
     return new_obj
 

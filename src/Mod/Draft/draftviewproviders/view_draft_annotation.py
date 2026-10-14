@@ -63,8 +63,12 @@ class ViewProviderDraftAnnotation(object):
     for example, `Text`, `LinearDimension`, `RadialDimension`, and `Label`.
     """
 
-    def __init__(self, vobj):
+    def __init__(self, vobj, **view_properties):
         self.set_properties(vobj)
+        # Apply deferred factory intent before attaching, so updateData cannot
+        # react to temporary defaults by synchronously recomputing the model.
+        for prop, value in view_properties.items():
+            setattr(vobj, prop, value)
         self.Object = vobj.Object
         vobj.Proxy = self
 

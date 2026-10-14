@@ -297,7 +297,7 @@ def make_path_array(
     new_obj.StartOffset = start_offset
     new_obj.EndOffset = end_offset
 
-    if gui_utils.gui_available():
+    def setup_view():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:
@@ -306,6 +306,8 @@ def make_path_array(
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
         new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
+
+    gui_utils.run_gui_setup(new_obj, setup_view)
 
     return new_obj
 
@@ -369,7 +371,7 @@ def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25,
     new_obj.Count = count
     new_obj.RotationFactor = rot_factor
 
-    if gui_utils.gui_available():
+    def setup_view():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:
@@ -378,6 +380,8 @@ def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25,
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
         new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
+
+    gui_utils.run_gui_setup(new_obj, setup_view)
 
     return new_obj
 

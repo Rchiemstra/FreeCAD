@@ -209,16 +209,25 @@ class DraftHatchImportIsolation(unittest.TestCase):
                         patch.object(module, view) as provider, \
                         patch.object(module.gui_utils, "on_gui_thread", return_value=on_gui_thread), \
                         patch.object(module.gui_utils, "format_object") as formatter, \
-                        patch.object(module.gui_utils, "select") as selector:
+                        patch.object(module.gui_utils, "select") as selector, \
+                        patch.object(module.gui_utils, "_GuiSetup") as queued, \
+                        patch.object(module.gui_utils, "_pending_gui_setups", set()):
                     self.assertIs(getattr(module, "make_" + name)(*args), obj)
                     if on_gui_thread:
                         provider.assert_called_once_with(obj.ViewObject)
                         formatter.assert_called_once_with(obj)
                         selector.assert_called_once_with(obj)
+                        queued.assert_not_called()
                     else:
                         provider.assert_not_called()
                         formatter.assert_not_called()
                         selector.assert_not_called()
+                        # This import control uses a fake model object; the real
+                        # owner-thread tests exercise Qt delivery and catch-up.
+                        queued.assert_called_once()
+                        self.assertIs(queued.call_args.args[0], obj)
+                        self.assertTrue(callable(queued.call_args.args[1]))
+                        queued.return_value.wake.emit.assert_called_once_with()
 
     def test_factories_preserve_gui_presentation_on_main_thread(self):
         self._check_factory_presentation(True)

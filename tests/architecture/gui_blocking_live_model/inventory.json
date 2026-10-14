@@ -516,7 +516,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1129,
+      "line": 1158,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -524,7 +524,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1923,
+      "line": 1952,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -18956,7 +18956,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_clone.py",
-      "line": 132,
+      "line": 135,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18964,7 +18964,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_clone.py",
-      "line": 149,
+      "line": 154,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19020,7 +19020,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_dimension.py",
-      "line": 265,
+      "line": 282,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19028,7 +19028,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_dimension.py",
-      "line": 354,
+      "line": 371,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19036,7 +19036,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_dimension.py",
-      "line": 482,
+      "line": 499,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19044,7 +19044,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_dimension.py",
-      "line": 603,
+      "line": 620,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19052,7 +19052,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_dimension.py",
-      "line": 649,
+      "line": 666,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19132,7 +19132,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_layer.py",
-      "line": 148,
+      "line": 150,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19148,7 +19148,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_patharray.py",
-      "line": 337,
+      "line": 339,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19252,7 +19252,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_shapestring.py",
-      "line": 71,
+      "line": 73,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -19284,7 +19284,7 @@
     },
     {
       "path": "src/Mod/Draft/draftmake/make_text.py",
-      "line": 179,
+      "line": 181,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19380,7 +19380,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 153,
+      "line": 234,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19388,7 +19388,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 160,
+      "line": 241,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19396,7 +19396,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 651,
+      "line": 734,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19404,7 +19404,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 790,
+      "line": 873,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19412,7 +19412,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 928,
+      "line": 1011,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19420,7 +19420,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 964,
+      "line": 1047,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19428,7 +19428,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1049,
+      "line": 1132,
       "category": "process-events-polling",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19580,7 +19580,7 @@
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_draft_annotation.py",
-      "line": 194,
+      "line": 198,
       "category": "update-data-provider",
       "subsystem": "Draft",
       "disposition": "migrate",

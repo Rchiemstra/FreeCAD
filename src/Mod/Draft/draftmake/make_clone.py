@@ -83,9 +83,12 @@ def _make_bim_clone(selected_base):
             setattr(cl, prop, getattr(base, prop))
         except Exception:
             pass
-    if gui_utils.gui_available():
+
+    def setup_view():
         # Shape of clone may not yet be available (v1.1 regression). See below.
         QtCore.QTimer.singleShot(0, lambda: gui_utils.format_object(cl, base))
+
+    gui_utils.run_gui_setup(cl, setup_view)
     return cl
 
 
@@ -139,9 +142,11 @@ def make_clone(obj, delta=None, forcedraft=False):
         # arch objects can be clones
         cl = _make_bim_clone(obj[0])
         if cl is not None:
-            if gui_utils.gui_available():
+            def setup_view():
                 # Delay required in case a stairs with railings is cloned:
                 QtCore.QTimer.singleShot(0, lambda: gui_utils.select(cl))
+
+            gui_utils.run_gui_setup(cl, setup_view)
             return cl
 
     # fall back to Draft clone mode
@@ -157,13 +162,16 @@ def make_clone(obj, delta=None, forcedraft=False):
         cl.Placement = obj[0].Placement
     if hasattr(cl, "LongName") and hasattr(obj[0], "LongName"):
         cl.LongName = obj[0].LongName
-    if gui_utils.gui_available():
+
+    def setup_view():
         ViewProviderClone(cl.ViewObject)
         # Shape of clone may not yet be available (v1.1 regression). We need to delay
         # `format_object()` as that function requires the correct number of faces.
         # https://github.com/FreeCAD/FreeCAD/issues/27958
         QtCore.QTimer.singleShot(0, lambda: gui_utils.format_object(cl, obj[0]))
         gui_utils.select(cl)
+
+    gui_utils.run_gui_setup(cl, setup_view)
     return cl
 
 

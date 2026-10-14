@@ -57,11 +57,14 @@ def make_block(objectslist):
     obj.addExtension("Part::AttachExtensionPython")
     Block(obj)
     obj.Components = objectslist
-    if gui_utils.gui_available():
+
+    def setup_view():
         ViewProviderDraftPart(obj.ViewObject)
         for o in objectslist:
             o.ViewObject.Visibility = False
         gui_utils.select(obj)
+
+    gui_utils.run_gui_setup(obj, setup_view)
     return obj
 
 

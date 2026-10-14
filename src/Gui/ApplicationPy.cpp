@@ -48,6 +48,7 @@
 #include <App/Application.h>
 #include <App/DocumentObjectPy.h>
 #include <App/DocumentPy.h>
+#include <App/MutationClassification.h>
 #include <App/PropertyFile.h>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
@@ -688,6 +689,34 @@ PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
 
     PyErr_SetString(PyExc_TypeError, "Either string or App.Document expected");
     return nullptr;
+}
+
+PyObject* ApplicationPy::sTryRunPresentationCallback(PyObject* /*self*/, PyObject* args)
+{
+    if (!requirePythonMainThread("FreeCADGui.tryRunPresentationCallback")) {
+        return nullptr;
+    }
+    PyObject* callback = nullptr;
+    if (!PyArg_ParseTuple(args, "O", &callback)) {
+        return nullptr;
+    }
+    if (!PyCallable_Check(callback)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a callable presentation callback");
+        return nullptr;
+    }
+
+    // Match Document's live catch-up reservation. Checking idle flags alone
+    // leaves a gap in which an owner can admit an atomic presentation mutation.
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired()) {
+        Py_RETURN_FALSE;
+    }
+    PyObject* result = PyObject_CallNoArgs(callback);
+    if (!result) {
+        return nullptr;
+    }
+    Py_DECREF(result);
+    Py_RETURN_TRUE;
 }
 
 PyObject* ApplicationPy::sStorePersonalViewContext(PyObject* /*self*/, PyObject* args)

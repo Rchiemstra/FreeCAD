@@ -96,13 +96,12 @@ def make_rectangle(length, height=0, placement=None, face=None, support=None):
     if placement:
         obj.Placement = placement
 
-    # Document owner threads create model geometry; GUI customization and
-    # selection are only available to callers on the main thread.
-    if App.GuiUp and gui_utils.on_gui_thread():
+    def setup_view():
         ViewProviderRectangle(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)
 
+    gui_utils.run_gui_setup(obj, setup_view)
     return obj
 
 

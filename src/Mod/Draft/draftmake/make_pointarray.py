@@ -137,7 +137,7 @@ def make_point_array(base_object, point_object, extra=None, use_link=True):
     new_obj.PointObject = point_object
     new_obj.ExtraPlacement = extra
 
-    if gui_utils.gui_available():
+    def setup_view():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:
@@ -149,6 +149,8 @@ def make_point_array(base_object, point_object, extra=None, use_link=True):
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
         new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
+
+    gui_utils.run_gui_setup(new_obj, setup_view)
 
     return new_obj
 

@@ -52,10 +52,13 @@ def make_working_plane_proxy(placement):
     if App.ActiveDocument:
         obj = App.ActiveDocument.addObject("App::FeaturePython", "WPProxy")
         WorkingPlaneProxy(obj)
-        if gui_utils.gui_available():
+
+        def setup_view():
             ViewProviderWorkingPlaneProxy(obj.ViewObject)
             obj.ViewObject.Proxy.writeCamera()
             obj.ViewObject.Proxy.writeState()
+
+        gui_utils.run_gui_setup(obj, setup_view)
         obj.Placement = placement
         return obj
 

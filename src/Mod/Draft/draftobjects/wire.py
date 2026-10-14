@@ -94,6 +94,10 @@ class Wire(DraftObject):
 
     def onDocumentRestored(self, obj):
         super().onDocumentRestored(obj)
+        gui_utils.run_gui_setup(obj, lambda: self.restore_gui(obj))
+
+    def restore_gui(self, obj):
+        """Restore the wire provider and migrate its presentation on Qt."""
         gui_utils.restore_view_object(obj, vp_module="view_wire", vp_class="ViewProviderWire")
 
         vobj = getattr(obj, "ViewObject", None)

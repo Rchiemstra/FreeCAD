@@ -61,7 +61,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraftAlt` | 592 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderAngularDimension` | 901 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderLinearDimension` | 324 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_draft_annotation.py` | `ViewProviderDraftAnnotation` | 194 | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_draft_annotation.py` | `ViewProviderDraftAnnotation` | 198 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_draftlink.py` | `ViewProviderDraftLink` | 59 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_label.py` | `ViewProviderLabel` | 209 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_layer.py` | `ViewProviderLayer` | 206 | unsupported |

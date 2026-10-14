@@ -59,8 +59,11 @@ def make_facebinder(selectionset, name="Facebinder"):
         selectionset = [selectionset]
     fb = App.ActiveDocument.addObject("Part::FeaturePython", name)
     Facebinder(fb)
-    if gui_utils.gui_available():
+
+    def setup_view():
         ViewProviderFacebinder(fb.ViewObject)
+
+    gui_utils.run_gui_setup(fb, setup_view)
     faces = []  # unused variable?
     fb.Proxy.addSubobjects(fb, selectionset)
     gui_utils.select(fb)

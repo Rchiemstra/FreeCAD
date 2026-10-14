@@ -289,6 +289,8 @@ class LinearDimension(DimensionBase):
 
     def onDocumentRestored(self, obj):
         """Execute code when the document is restored."""
+        if gui_utils.defer_gui_setup(obj, lambda: self.onDocumentRestored(obj)):
+            return
         super().onDocumentRestored(obj)
         gui_utils.restore_view_object(
             obj, vp_module="view_dimension", vp_class="ViewProviderLinearDimension"
@@ -562,6 +564,8 @@ class AngularDimension(DimensionBase):
 
     def onDocumentRestored(self, obj):
         """Execute code when the document is restored."""
+        if gui_utils.defer_gui_setup(obj, lambda: self.onDocumentRestored(obj)):
+            return
         super().onDocumentRestored(obj)
         gui_utils.restore_view_object(
             obj, vp_module="view_dimension", vp_class="ViewProviderAngularDimension"

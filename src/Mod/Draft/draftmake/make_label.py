@@ -357,8 +357,13 @@ def make_label(
             _wrn(translate("draft", "Direction is not 'Custom'; points won't be used."))
         new_obj.Points = points
 
-    if gui_utils.gui_available():
-        ViewProviderLabel(new_obj.ViewObject)
+    deferred_presentation = App.GuiUp and not gui_utils.on_gui_thread()
+
+    def setup_view():
+        if deferred_presentation and direction == "Horizontal" and distance > 0:
+            ViewProviderLabel(new_obj.ViewObject, Justification="Right")
+        else:
+            ViewProviderLabel(new_obj.ViewObject)
         h = params.get_param("textheight")
         new_obj.ViewObject.FontSize = h
         if direction == "Horizontal" and distance > 0:
@@ -367,6 +372,8 @@ def make_label(
 
         gui_utils.format_object(new_obj)
         gui_utils.select(new_obj)
+
+    gui_utils.run_gui_setup(new_obj, setup_view)
 
     return new_obj
 
