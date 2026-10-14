@@ -120,15 +120,17 @@ std::string pendingRecomputeDetail(App::Document& document, std::string message)
     return message;
 }
 
-// The plan pendingTransactionRecomputeTargets() returns is force-executed over
-// its whole out-list closure, and settling a member enforces recompute on
-// *its* in-list (Document::settleRecomputedFeature). A dependent left outside
+// The plan pendingTransactionRecomputeTargets() returns includes the link
+// graph around dirty work. Its derived pass executes dirty members and their
+// downstream dependents; settling a member enforces recompute on its in-list
+// (Document::settleRecomputedFeature). A dependent left outside
 // the plan therefore stays touched once the authoritative recompute finishes,
 // and the postcondition guard in commitOnDocumentThreadWithOptions() rejects
 // the commit for a leftover the plan itself created. Closing the seed set
 // under both link directions to a fixed point guarantees no link crosses the
 // boundary of the selection, so settling any member can only enforce another
-// member already in the plan.
+// member already in the plan. Clean upstream inputs are admitted to the
+// selection without being forced to execute.
 void closeRecomputeSelectionUnderLinkGraph(App::Document& document,
                                            std::vector<App::DocumentObject*> pending,
                                            std::unordered_set<App::DocumentObject*>& selected)

@@ -7338,6 +7338,12 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         signalBeforeRecompute(*this);
     }
 
+    // An eager commit bypasses SkipRecompute, but must not force clean
+    // branches merely because they share a container or an upstream input
+    // with the edited object. Keep explicit force semantics for ordinary
+    // recompute callers; the derived pass selects dirty work and downstream
+    // dependents only.
+    const bool forceFeatureExecution = force && !collaborationDerivedRecomputeGranted();
     const auto ordered = getDependencyList(
         objs.empty() ? d->objectArray : objs,
         DepSort | options);
@@ -7352,7 +7358,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (!object || !object->isAttachedToDocument()
             || object->getDocument() != this
-            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
+            || (!forceFeatureExecution && !object->isTouched() && object->mustRecompute() == 0)) {
             continue;
         }
         scheduled.insert(object);
@@ -7379,7 +7385,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         "App::Document::recomputeAsync isolated compatibility facade",
         "generic-document:",
         !collaborationDerivedRecomputeGranted(),
-        force,
+        forceFeatureExecution,
         // The coordinator's own derived pass inside a structural commit is
         // still isolated: each node is a prepared edit applied through
         // commitDerivedRecomputeInActiveTransaction(), not a second legacy

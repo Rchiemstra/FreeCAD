@@ -1618,7 +1618,8 @@ std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffe
 
 std::vector<App::DocumentObject*> collectClosure(
     const App::Document& document,
-    App::DocumentObject& target)
+    App::DocumentObject& target,
+    const bool settledOwnerInputs = false)
 {
     std::vector<App::DocumentObject*> pending {&target};
     std::unordered_set<App::DocumentObject*> seen;
@@ -1653,7 +1654,15 @@ std::vector<App::DocumentObject*> collectClosure(
                 throw std::invalid_argument(
                     "generic recompute has an unresolved cross-document dependency");
             }
-            pending.push_back(dependency);
+            // Owner-thread derived execution consumes already settled
+            // in-document inputs. Re-evaluating their ancestors would pull
+            // unrelated external bindings into this commit. The target's
+            // own external inputs still fail above, and the detached worker
+            // always retains the full serializable closure.
+            if (!settledOwnerInputs || dependency->isTouched()
+                || dependency->mustRecompute()) {
+                pending.push_back(dependency);
+            }
         }
     }
     std::ranges::sort(closure, [](const auto* left, const auto* right) {
@@ -1914,10 +1923,10 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
             return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
         }
         if (derivedCoordinatorRecompute) {
-            // Cross-document links stay a refusal. The document owner can
-            // recompute them directly; this derived pass cannot.
+            // Evaluating an external binding remains a refusal. Settled
+            // local inputs need no evaluation of their external ancestors.
             try {
-                static_cast<void>(collectClosure(document, *target));
+                static_cast<void>(collectClosure(document, *target, /*settledOwnerInputs=*/true));
             }
             catch (const std::invalid_argument& error) {
                 const std::string_view text(error.what());

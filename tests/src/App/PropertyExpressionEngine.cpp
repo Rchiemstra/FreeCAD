@@ -12,6 +12,7 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/DocumentObject.h"
+#include "App/DocumentObjectGroup.h"
 #include "App/Expression.h"
 #include "App/FeatureTest.h"
 #include "App/ObjectIdentifier.h"
@@ -266,5 +267,63 @@ TEST_F(CrossDocumentExpressionRecomputeTest, closedSourceDocumentReportsUnresolv
         App::GetApplication().closeDocument(reopened->getName());
     }
 }
+
+class CrossDocumentUnrelatedMutationTest:
+    public CrossDocumentExpressionRecomputeTest,
+    public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(CrossDocumentUnrelatedMutationTest, settledBindingAllowsUnrelatedCollaborativeEdit)
+{
+    auto* source = (GetParam() ? _source : _driven)
+        ->addObject<App::FeatureTestColumn>("SourceColumn");
+    auto* driven = _driven->addObject<App::FeatureTestColumn>("DrivenColumn");
+    auto* unrelated = _driven->addObject<App::FeatureTestColumn>("UnrelatedColumn");
+    auto* group = _driven->addObject<App::DocumentObjectGroup>("Group");
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(driven, nullptr);
+    ASSERT_NE(unrelated, nullptr);
+    ASSERT_NE(group, nullptr);
+    source->Column.setValue("C");
+    const std::string expression =
+        (GetParam() ? _sourceName + "#" : "") + "SourceColumn.Column";
+    driven->setExpression(
+        App::ObjectIdentifier(driven->Column),
+        std::shared_ptr<App::Expression>(App::Expression::parse(driven, expression)));
+    ASSERT_FALSE(group->addObject(driven).empty());
+    ASSERT_FALSE(group->addObject(unrelated).empty());
+    // The shared container connects the edited and driven objects, as a
+    // PartDesign Body does for a pad and an unrelated sketch.
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_driven->mustExecute());
+    ASSERT_EQ(driven->Value.getValue(), App::decodeColumn("C"));
+    // Eager commits still settle edits when the human has disabled automatic
+    // recompute. That override must not force clean, unrelated bindings.
+    _driven->setStatus(App::Document::SkipRecompute, true);
+
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = unrelated->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*unrelated);
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] { unrelated->Column.setValue("D"); });
+
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(unrelated->Column.getStrValue(), "D");
+    EXPECT_EQ(unrelated->Value.getValue(), App::decodeColumn("D"));
+    EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("C"));
+    EXPECT_EQ(driven->ExpressionEngine.getExpressions().size(), 1U);
+    EXPECT_FALSE(_driven->mustExecute());
+    EXPECT_TRUE(_driven->testStatus(App::Document::SkipRecompute));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Round21,
+    CrossDocumentUnrelatedMutationTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+        return info.param ? "DefectCrossDocument" : "HappySameDocument";
+    });
 
 // clang-format on
