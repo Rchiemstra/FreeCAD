@@ -221,12 +221,28 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
     }
     else if (Reason.Type == SelectionChanges::RmvSelection) {
         App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);
-        App::DocumentObject* obj = doc->getObject(Reason.pObjectName);
-        getSelectionName(str, Reason.pDocName, Reason.pObjectName, Reason.pSubName, obj);
-        // remove all items
-        QList<QListWidgetItem*> l = selectionView->findItems(selObject, Qt::MatchStartsWith);
-        if (l.size() == 1) {
-            delete l[0];
+        App::DocumentObject* obj = doc ? doc->getObject(Reason.pObjectName) : nullptr;
+        if (obj) {
+            getSelectionName(str, Reason.pDocName, Reason.pObjectName, Reason.pSubName, obj);
+            // remove all items
+            QList<QListWidgetItem*> l = selectionView->findItems(selObject, Qt::MatchStartsWith);
+            if (l.size() == 1) {
+                delete l[0];
+            }
+        }
+        else {
+            // Deferred deletion replay runs after the object left the document.
+            // Its rows still carry exact document/object identities; remove all
+            // of them without resolving a label or dereferencing the retired object.
+            for (int i = selectionView->count() - 1; i >= 0; --i) {
+                auto* item = selectionView->item(i);
+                const auto identity = item->data(Qt::UserRole).toStringList();
+                if (identity.size() >= 2
+                    && identity[0] == QString::fromUtf8(Reason.pDocName)
+                    && identity[1] == QString::fromUtf8(Reason.pObjectName)) {
+                    delete item;
+                }
+            }
         }
     }
     else if (Reason.Type == SelectionChanges::SetSelection) {

@@ -1746,6 +1746,12 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         return;
     }
 
+    // The preallocated finalization slot also owns a non-history transaction
+    // retired by recompute. Its removed objects must survive the entire replay:
+    // deletion observers still hold Selection and view-provider pointers to them.
+    std::unique_ptr<Transaction> retiringTransaction(
+        d->collaborationPreparedUndoSlot.empty()
+            ? nullptr : d->collaborationPreparedUndoSlot.front());
     auto notifications = std::move(d->collaborationDeferredNotifications);
     auto externalRecomputes = std::move(d->collaborationDeferredExternalRecomputes);
     d->collaborationDeferredNotifications.clear();
@@ -1800,6 +1806,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     };
 
     if (!committed) {
+        retiringTransaction.reset();
         d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
         emitBecameStable();
         return;
@@ -2146,6 +2153,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             reportNotificationFailure("transaction-close", nullptr);
         }
     }
+    // Destroy the retiring objects only after every deletion observer has run,
+    // and before the stable notification can allow the document to be closed.
+    retiringTransaction.reset();
     d->collaborationReplayingNotifications.store(false, std::memory_order_release);
     if (mUndoTransactions.size() > d->UndoMaxStackSize) {
         discardTransactionFileState(mUndoTransactions.front()->getID());
@@ -3114,14 +3124,27 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 // Native compatibility commits eagerly create a transaction,
                 // even when the callback only reads. Keep a file-only change,
                 // but retire empty records so one undo reaches the real edit.
-                // The transaction is discarded outright, so any deferred
-                // notification still naming it would replay through freed
-                // memory once the barrier lifts.
+                // The transaction does not enter undo history. Keep deferred
+                // records from naming it after its undo-map registration is
+                // removed, whether it retires now or after replay.
                 retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
                                                               nullptr);
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
-                delete d->activeUndoTransaction;
+                if (d->collaborationCommitNotificationBarrier) {
+                    if (d->collaborationPreparedUndoSlot.empty()) {
+                        throw Base::RuntimeError(
+                            "collaboration commit finalization was not prepared");
+                    }
+                    // Recompute does not retain undo history. Keep its retiring
+                    // transaction in the prepared slot until deletion replay has
+                    // cleared Selection and the GUI's view providers instead of
+                    // destroying its removed objects here.
+                    d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                }
+                else {
+                    delete d->activeUndoTransaction;
+                }
                 d->activeUndoTransaction = nullptr;
             }
             else if (d->collaborationCommitNotificationBarrier) {

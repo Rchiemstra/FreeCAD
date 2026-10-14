@@ -2668,7 +2668,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 243,
+      "line": 259,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2676,7 +2676,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 259,
+      "line": 275,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2684,7 +2684,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 288,
+      "line": 304,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2692,7 +2692,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 322,
+      "line": 338,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2700,7 +2700,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 541,
+      "line": 557,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2708,7 +2708,7 @@
     },
     {
       "path": "src/Gui/Selection/SelectionView.cpp",
-      "line": 569,
+      "line": 585,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
