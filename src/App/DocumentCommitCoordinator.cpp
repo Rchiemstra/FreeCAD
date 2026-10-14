@@ -26,6 +26,7 @@
 #include <string_view>
 #include <type_traits>
 #include <typeinfo>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -1105,9 +1106,18 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         abortRestoreAndRethrow("unknown failure while opening native transaction");
     }
 
+    // Native expression failures (for example a closed external source) are
+    // part of the pre-commit boundary. An exact rollback to that same error
+    // is repairable, rather than evidence of escaped Python Proxy state.
+    std::unordered_map<App::DocumentObject*, std::string> preexistingNativeErrors;
     std::unordered_set<App::DocumentObject*> preexistingObjects;
     for (auto* object : _document.getObjects()) {
         preexistingObjects.insert(object);
+        if (object->isError() && object->getPropertyByName("Proxy") == nullptr) {
+            if (const char* error = _document.getErrorDescription(object); error && *error) {
+                preexistingNativeErrors.emplace(object, error);
+            }
+        }
     }
     const auto finishFailedRecompute = [&](DocumentCommitResult result) {
         // KEEP BOTH. Restore first: a recompute error whose document state
@@ -1162,6 +1172,14 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                     || !object->isAttachedToDocument()) {
                     persistent = true;
                     break;
+                }
+                if (object->isError() && object->getPropertyByName("Proxy") == nullptr) {
+                    const auto baseline = preexistingNativeErrors.find(object);
+                    const char* error = _document.getErrorDescription(object);
+                    if (baseline != preexistingNativeErrors.end() && error
+                        && baseline->second == error) {
+                        continue;
+                    }
                 }
                 const bool restoredClean =
                     object->isValid() && !object->isTouched() && !object->mustRecompute();

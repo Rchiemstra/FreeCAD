@@ -273,6 +273,59 @@ TEST_F(CrossDocumentExpressionRecomputeTest, closedSourceDocumentReportsUnresolv
     }
 }
 
+class ClosedSourceRepairTest:
+    public CrossDocumentExpressionRecomputeTest,
+    public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(ClosedSourceRepairTest, failedEditDoesNotFenceExpressionRepair)
+{
+    _driven->removeObject(_drivenObject->getNameInDocument());
+    _source->removeObject(_sourceObject->getNameInDocument());
+    auto* source = _source->addObject<App::FeatureTestColumn>("SourceColumn");
+    auto* driven = _driven->addObject<App::FeatureTestColumn>("DrivenColumn");
+    source->Column.setValue("C");
+    driven->setExpression(App::ObjectIdentifier(driven->Column),
+        std::shared_ptr<App::Expression>(App::Expression::parse(
+            driven, _sourceName + "#SourceColumn.Column")));
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_driven->mustExecute());
+    if (GetParam()) {
+        App::GetApplication().closeDocument(_sourceName.c_str());
+        _source = nullptr;
+        _sourceObject = nullptr;
+        bool error = false;
+        _driven->recompute({}, true, &error);
+        ASSERT_TRUE(error);
+        ASSERT_TRUE(driven->isError());
+        // Match the settled GUI boundary: the error persists without pending work.
+        _driven->purgeTouched();
+    }
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = driven->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*driven);
+    auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] { driven->touch(); });
+    EXPECT_EQ(result.status, GetParam() ? App::DocumentCommitStatus::RecomputeFailed
+                                       : App::DocumentCommitStatus::Committed)
+        << result.message;
+    EXPECT_FALSE(_driven->getMutationReadiness().quarantined);
+    result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] {
+            driven->setExpression(App::ObjectIdentifier(driven->Column), nullptr);
+            driven->Column.setValue("D");
+        });
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
+    EXPECT_FALSE(driven->isError());
+    EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("D"));
+}
+
+INSTANTIATE_TEST_SUITE_P(SourceLifecycle, ClosedSourceRepairTest,
+                        ::testing::Bool(),
+                        [](const auto& info) { return info.param ? "ClosedSource" : "OpenSource"; });
+
 class CrossDocumentUnrelatedMutationTest:
     public CrossDocumentExpressionRecomputeTest,
     public ::testing::WithParamInterface<bool>
