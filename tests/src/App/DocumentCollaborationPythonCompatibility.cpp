@@ -1892,6 +1892,49 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       emptyCrossDocumentMarkerSurvivesOpeningNextTransaction)
+{
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("crossDocumentUndoPeer");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    ASSERT_NE(foreign, nullptr);
+    auto* target = foreign->addObject<App::FeatureTest>("Target");
+    ASSERT_NE(target, nullptr);
+    target->Label.setValue("Before");
+    _document->clearUndos();
+    foreign->clearUndos();
+
+    // A only books the ID; B's edit creates the empty grouping marker in A.
+    const auto id = _document->openTransaction("shared edit");
+    ASSERT_NE(id, App::NullTransaction);
+    ASSERT_EQ(foreign->openTransaction("shared edit", id), id);
+    target->Label.setValue("Changed in B");
+    ASSERT_TRUE(_document->hasPendingTransaction());
+    ASSERT_EQ(_document->getTransactionID(true), id);
+    ASSERT_EQ(foreign->getTransactionID(true), id);
+
+    ASSERT_NE(_document->openTransaction("next"), App::NullTransaction);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(foreign->hasPendingTransaction());
+    EXPECT_EQ(_document->getAvailableUndos(), 1);
+    EXPECT_EQ(_document->getAvailableUndos(id), 1);
+    EXPECT_EQ(_document->getAvailableUndoNames(),
+              std::vector<std::string>({"-> shared edit"}));
+    const auto jointUndoId = _document->getTransactionID(true);
+    ASSERT_EQ(jointUndoId, id);
+    ASSERT_EQ(foreign->getAvailableUndos(jointUndoId), 1);
+
+    // App callers can undo both participants using A's preserved marker ID.
+    ASSERT_TRUE(_document->undo(jointUndoId));
+    ASSERT_TRUE(foreign->undo(jointUndoId));
+    EXPECT_STREQ(target->Label.getValue(), "Before");
+    EXPECT_STREQ(_target->Label.getValue(), "Before");
+    EXPECT_EQ(_document->getAvailableUndos(), 0);
+    EXPECT_EQ(foreign->getAvailableUndos(), 0);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
        fileOnlyCompatibilityMutationRemainsUndoable)
 {
     Base::PyGILStateLocker gil;

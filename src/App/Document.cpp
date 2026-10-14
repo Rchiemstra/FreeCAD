@@ -3108,7 +3108,8 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 d->activeUndoTransaction = nullptr;
             }
             else if (!retainUndoHistory
-                     || (d->activeUndoTransaction->isEmpty()
+                     || (d->collaborationCommitNotificationBarrier
+                         && d->activeUndoTransaction->isEmpty()
                          && !d->transactionFileChanges.contains(id))) {
                 // Native compatibility commits eagerly create a transaction,
                 // even when the callback only reads. Keep a file-only change,
