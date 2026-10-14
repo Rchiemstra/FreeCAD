@@ -2336,8 +2336,28 @@ void SelectionSingleton::destruct()
 //**************************************************************************
 // Python stuff
 
+namespace
+{
+bool requirePythonSelectionMainThread(const char* api)
+{
+    if (App::MainThreadSignalConfig::isMainThread()) {
+        return true;
+    }
+    // Selection changes notify view providers and widgets synchronously. Reject
+    // before publishing any selection: an owner-thread callback may roll back
+    // and delete its objects when it receives this error. Throwing from notify()
+    // instead leaves selected pointers to those deleted objects, and unwinds
+    // through CPython frames without translating the C++ exception.
+    PyErr_Format(PyExc_RuntimeError, "GUI API '%s' may only be used from the main thread", api);
+    return false;
+}
+}  // namespace
+
 PyObject* SelectionSingleton::sAddSelection(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.addSelection")) {
+        return nullptr;
+    }
     SelectionLogDisabler disabler(true);
     PyObject* clearPreselect = Py_True;
     char* objname;
@@ -2466,6 +2486,9 @@ PyObject* SelectionSingleton::sUpdateSelection(PyObject* /*self*/, PyObject* arg
 
 PyObject* SelectionSingleton::sRemoveSelection(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.removeSelection")) {
+        return nullptr;
+    }
     SelectionLogDisabler disabler(true);
     char *docname, *objname;
     char* subname = nullptr;
@@ -2495,6 +2518,9 @@ PyObject* SelectionSingleton::sRemoveSelection(PyObject* /*self*/, PyObject* arg
 
 PyObject* SelectionSingleton::sClearSelection(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.clearSelection")) {
+        return nullptr;
+    }
     SelectionLogDisabler disabler(true);
     PyObject* clearPreSelect = Py_True;
     char* documentName = nullptr;
