@@ -3107,7 +3107,12 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 }
                 d->activeUndoTransaction = nullptr;
             }
-            else if (!retainUndoHistory) {
+            else if (!retainUndoHistory
+                     || (d->activeUndoTransaction->isEmpty()
+                         && !d->transactionFileChanges.contains(id))) {
+                // Native compatibility commits eagerly create a transaction,
+                // even when the callback only reads. Keep a file-only change,
+                // but retire empty records so one undo reaches the real edit.
                 // The transaction is discarded outright, so any deferred
                 // notification still naming it would replay through freed
                 // memory once the barrier lifts.

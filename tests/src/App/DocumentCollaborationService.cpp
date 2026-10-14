@@ -1711,7 +1711,8 @@ TEST_F(DocumentCollaborationServiceTest,
                   .pollPublications(cursor, 0)
                   .latestSequence,
               sequenceBefore);
-    EXPECT_EQ(_document->getAvailableUndos(), undosBefore + 1);
+    // Successful admission without a change must not create an undo step.
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
     EXPECT_TRUE(_document->getMutationReadiness().ready);
 }
 

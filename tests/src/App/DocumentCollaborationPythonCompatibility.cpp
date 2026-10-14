@@ -645,6 +645,7 @@ struct CallbackProbe
     bool recomputeDocument {false};
     bool recomputeTarget {false};
     bool changeTargetLabel {false};
+    bool markAppearanceFileChange {false};
     bool attemptThreadedMutations {false};
     bool threadedTargetMutationRejected {false};
     bool threadedForeignMutationRejected {false};
@@ -991,6 +992,9 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
         }
         if (probe->changeTargetLabel && probe->target) {
             probe->target->Label.setValue("Compatibility callback");
+        }
+        if (probe->markAppearanceFileChange) {
+            probe->nativeDocument->markFileChange(App::DocumentFileChange::Appearance);
         }
         if (probe->saveAttempt != SaveAttempt::None) {
             if (!probe->nativeDocument) {
@@ -1842,12 +1846,80 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest, labelNamesTheUndoTransactio
     ASSERT_FALSE(undoNames.empty());
     EXPECT_EQ(undoNames.front(), "MCP: set_label");
 
+    // Restore the original value so the unlabelled callback records a real
+    // change rather than repeating the same property value.
+    ASSERT_TRUE(_document->undo());
     PyObjectRef unlabelled(PyObject_CallMethod(
         document.get(), "commitCompatibilityMutation", "O", callback.get()));
     ASSERT_NE(unlabelled.get(), nullptr);
     undoNames = _document->getAvailableUndoNames();
     ASSERT_FALSE(undoNames.empty());
     EXPECT_EQ(undoNames.front().rfind("Collaborative operation ", 0), 0U);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       emptyCompatibilityMutationPreservesUndoHead)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    CallbackProbe changed;
+    changed.target = _target;
+    changed.document = document.get();
+    PyObjectRef change(makeCompatibilityCallback(changed));
+    PyObjectRef committed(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", change.get()));
+    ASSERT_TRUE(pythonObjectAvailable(committed.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(committed.get(), "status")),
+                 "Committed");
+    const auto undoCount = _document->getAvailableUndos();
+    const auto undoNames = _document->getAvailableUndoNames();
+    ASSERT_GT(undoCount, 0);
+
+    // With no target the callback only returns None, like a print-only script.
+    CallbackProbe unchanged;
+    unchanged.document = document.get();
+    PyObjectRef noop(makeCompatibilityCallback(unchanged));
+    PyObjectRef result(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", noop.get()));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(_document->getAvailableUndos(), undoCount);
+    EXPECT_EQ(_document->getAvailableUndoNames(), undoNames);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_NE(_target->Label.getStrValue(), "Compatibility callback");
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       fileOnlyCompatibilityMutationRemainsUndoable)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    const auto undoCount = _document->getAvailableUndos();
+    ASSERT_FALSE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.document = document.get();
+    probe.markAppearanceFileChange = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    PyObjectRef result(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", callback.get()));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    ASSERT_EQ(_document->getAvailableUndos(), undoCount + 1);
+    EXPECT_TRUE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_TRUE(_document->redo());
+    EXPECT_TRUE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
