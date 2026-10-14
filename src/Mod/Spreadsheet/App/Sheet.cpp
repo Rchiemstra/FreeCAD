@@ -927,6 +927,20 @@ Property* Sheet::getDynamicPropertyByName(const char* name) const
     }
 }
 
+bool Sheet::removeDynamicProperty(const char* name)
+{
+    auto* property = getDynamicPropertyByName(name);
+    if (!DocumentObject::removeDynamicProperty(name)) {
+        return false;
+    }
+    // Transaction replay removes cell caches through this virtual entry point,
+    // without going through clear() or removeCellCache(). Do not leave a retired
+    // property in the address map for the following authoritative recompute.
+    // Erase only after successful removal: denied and locked removals retain it.
+    propAddress.erase(property);
+    return true;
+}
+
 void Sheet::getPropertyNamedList(std::vector<std::pair<const char*, Property*>>& List) const
 {
     DocumentObject::getPropertyNamedList(List);

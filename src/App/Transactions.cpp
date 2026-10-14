@@ -577,8 +577,11 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
             if (Document* document = object->getDocument()) {
                 for (auto& entry : _PropChangeMap) {
                     const Property* original = entry.second.propertyOrig;
+                    // Dynamic entries can refer to retired cell caches. Their
+                    // saved schema has a name; never inspect the retired original
+                    // just to classify the entry (Copy strips PropDynamic).
                     if (!original || !entry.second.property
-                        || original->testStatus(Property::PropDynamic)) {
+                        || !entry.second.name.empty()) {
                         continue;
                     }
                     document->captureInverseTransactionProperty(
@@ -697,7 +700,18 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                     // transaction state resolve it without retaining a raw
                     // pointer and prevents a same-name replacement from being
                     // mistaken for the original property.
+                    // addDynamicProperty captured the inverse addition using
+                    // the allocated ID. Rebook it under the restored ID before
+                    // Paste can capture a second value entry for this property.
+                    auto* object = freecad_cast<DocumentObject*>(pcObj);
+                    auto* document = object ? object->getDocument() : nullptr;
+                    if (document) {
+                        document->addOrRemovePropertyOfObject(pcObj, prop, false);
+                    }
                     prop->_id = v.first;
+                    if (document) {
+                        document->addOrRemovePropertyOfObject(pcObj, prop, true);
+                    }
                     prop->setStatusValue(data.property->getStatus());
                 }
             }

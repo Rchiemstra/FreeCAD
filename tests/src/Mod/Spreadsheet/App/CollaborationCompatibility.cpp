@@ -1568,3 +1568,62 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
 {
     expectAdoptedDerivedReuseRefreshes(false);
 }
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, cellClearRetiresAddressMapping)
+{
+    _sheet->setCell("A1", "40");
+    ASSERT_TRUE(_document->recompute());
+    const auto* cache = _sheet->getPropertyByName("A1");
+    ASSERT_NE(cache, nullptr);
+    App::CellAddress address;
+    ASSERT_TRUE(_sheet->getCellAddress(cache, address));
+    _sheet->clear(App::CellAddress("A1"));
+    EXPECT_FALSE(_sheet->getCellAddress(cache, address));
+    EXPECT_EQ(_sheet->getPropertyByName("A1"), nullptr);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, cellHistoryRetiresAddressMapping)
+{
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        std::move(mutation), [this] {
+            _sheet->setCell("A1", "40");
+            _sheet->setAlias(App::CellAddress("A1"), "Len");
+            _sheet->setCell("A2", "8");
+            _sheet->setAlias(App::CellAddress("A2"), "PadH");
+            _sheet->setCell("A3", "5 deg");
+            _sheet->setAlias(App::CellAddress("A3"), "BadAngle");
+        });
+    ASSERT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        const auto* cache = _sheet->getPropertyByName("A1");
+        ASSERT_NE(cache, nullptr);
+        App::CellAddress address;
+        ASSERT_TRUE(_sheet->getCellAddress(cache, address));
+        ASSERT_TRUE(_document->undo());
+        ASSERT_FALSE(_sheet->getCellAddress(cache, address));
+        ASSERT_TRUE(_document->recompute());
+        EXPECT_EQ(_sheet->getPropertyByName("A1"), nullptr);
+        EXPECT_TRUE(_sheet->isValid()) << _sheet->getStatusString();
+        for (const auto* name : {"A1", "A2", "A3"}) {
+            EXPECT_EQ(_sheet->getCell(App::CellAddress(name)), nullptr);
+        }
+        ASSERT_TRUE(_document->redo());
+        ASSERT_TRUE(_document->recompute());
+        EXPECT_TRUE(_sheet->isValid()) << _sheet->getStatusString();
+        ASSERT_NE(_sheet->getPropertyByName("A1"), nullptr);
+        ASSERT_NE(_sheet->getPropertyByName("A2"), nullptr);
+        EXPECT_EQ(static_cast<App::PropertyInteger*>(_sheet->getPropertyByName("A1"))->getValue(), 40);
+        EXPECT_EQ(static_cast<App::PropertyInteger*>(_sheet->getPropertyByName("A2"))->getValue(), 8);
+        for (const auto& [name, alias] : {std::pair {"A1", "Len"},
+                                        std::pair {"A2", "PadH"},
+                                        std::pair {"A3", "BadAngle"}}) {
+            const auto* cell = _sheet->getCell(App::CellAddress(name));
+            ASSERT_NE(cell, nullptr);
+            std::string actual;
+            ASSERT_TRUE(cell->getAlias(actual));
+            EXPECT_EQ(actual, alias);
+        }
+    }
+}

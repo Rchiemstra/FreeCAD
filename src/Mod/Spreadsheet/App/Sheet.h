@@ -221,6 +221,8 @@ public:
 
     App::Property* getDynamicPropertyByName(const char* name) const override;
 
+    bool removeDynamicProperty(const char* name) override;
+
     void getPropertyNamedList(std::vector<std::pair<const char*, App::Property*>>& List) const override;
 
     /// See PropertyContainer::visitProperties for semantics
