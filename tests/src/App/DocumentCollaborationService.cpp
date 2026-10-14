@@ -13,6 +13,7 @@
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
+#include "App/Expression.h"
 #include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
@@ -2493,4 +2494,139 @@ TEST_F(DocumentCollaborationServiceTest,
     EXPECT_NE(privateCommit->diagnostic.find("undeclared"), std::string::npos);
     EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
     EXPECT_EQ(other->Visibility.getValue(), otherBefore);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameWithoutReferencesIsOneUndoStep)
+{
+    const auto undos = _document->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_document->getAvailableUndos(), undos + 1);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameUpdatesExpressionInOneUndoStep)
+{
+    auto* dependent = _document->addObject<FeatureTest>("Dependent");
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto undos = _document->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    const auto expression = [&] {
+        return dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+            .expression->toString();
+    };
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(expression().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(_document->getAvailableUndos(), undos + 1);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(expression().find("<<Before>>"), std::string::npos);
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(expression().find("<<After>>"), std::string::npos);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameUpdatesSavedExternalExpression)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    const auto sourceFile = std::string("/tmp/") + _documentName + ".FCStd";
+    const auto dependentFile = std::string("/tmp/") + name + ".FCStd";
+    ASSERT_TRUE(_document->saveAs(sourceFile.c_str()));
+    ASSERT_TRUE(foreign->saveAs(dependentFile.c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    const auto revision = foreign->collaborationRevisions().current(
+        DocumentRevisionKey::unknownModelMutation());
+    bool observed = false;
+    auto connection = foreign->signalChangedObject.connect(
+        [&](const DocumentObject&, const Property&) { observed = true; });
+    const auto result = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("After"); }, [&] { return !observed; });
+    connection.disconnect();
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_TRUE(observed);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(foreign->collaborationRevisions().current(
+                  DocumentRevisionKey::unknownModelMutation()), revision + 1);
+    EXPECT_EQ(foreign->getTransactionID(true), _document->getTransactionID(true));
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameExternalEffectsRollbackWithSource)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelRollbackDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    ASSERT_TRUE(_document->saveAs((std::string("/tmp/") + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs((std::string("/tmp/") + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    const auto undos = foreign->getAvailableUndos();
+    const auto revision = foreign->collaborationRevisions().current(
+        DocumentRevisionKey::unknownModelMutation());
+    const auto result = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("After"); }, [] { return false; });
+    EXPECT_EQ(result.status, DocumentCommitStatus::PostconditionFailed) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Before>>"), std::string::npos);
+    EXPECT_EQ(foreign->getAvailableUndos(), undos);
+    EXPECT_EQ(foreign->collaborationRevisions().current(
+                  DocumentRevisionKey::unknownModelMutation()), revision);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameRefusesBusyExternalOwnerBeforeItsMutation)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelBusyDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    ASSERT_TRUE(_document->saveAs((std::string("/tmp/") + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs((std::string("/tmp/") + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    foreign->openTransaction("Keep this pending edit");
+    dependent->String.setValue("Pending edit");
+    const auto undos = foreign->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("has active work"), std::string::npos);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Before>>"), std::string::npos);
+    EXPECT_EQ(dependent->String.getStrValue(), "Pending edit");
+    EXPECT_EQ(foreign->getAvailableUndos(), undos);
+    foreign->abortTransaction();
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenamePreparedOperationPublishesReferenceEffects)
+{
+    auto* dependent = _document->addObject<FeatureTest>("Dependent");
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto revision = _document->collaborationRevisions().current(wildcard);
+    auto prepared = prepare("rename-with-reference", "After");
+    const auto result = _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_GT(_document->collaborationRevisions().current(wildcard), revision);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
 }
