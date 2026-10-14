@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <thread>
 #include <string>
 
 #include "Base/Quantity.h"
@@ -15,6 +16,8 @@
 #include "App/DocumentObjectGroup.h"
 #include "App/Expression.h"
 #include "App/FeatureTest.h"
+#include "App/GenericIsolatedRecompute.h"
+#include "App/RecomputeHandle.h"
 #include "App/ObjectIdentifier.h"
 #include "App/PropertyExpressionEngine.h"
 #include "App/PropertyLinks.h"
@@ -366,13 +369,179 @@ TEST_P(CrossDocumentUnrelatedMutationTest, profileEditReexecutesDirectlyBoundFea
         // Dirty external inputs still need an explicit source recompute.
         const auto unsettled = _driven->collaborationService().commitCompatibilityMutation(
             mutation, [&] { profile->Column.setValue("F"); });
-        EXPECT_FALSE(unsettled.committed()) << unsettled.message;
+        EXPECT_EQ(unsettled.status, App::DocumentCommitStatus::Busy) << unsettled.message;
+        EXPECT_NE(unsettled.message.find("document has pending recompute work outside the prepared operation"),
+                  std::string::npos) << unsettled.message;
         EXPECT_EQ(profile->Column.getStrValue(), "D");
     }
     static_cast<void>(_source->recompute());
     static_cast<void>(_driven->recompute());
     EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("E"));
     EXPECT_FALSE(_driven->mustExecute());
+}
+
+
+// Exercise both sides of the detached preparation boundary without timing
+// sleeps: a clean source at capture can change before the operation applies.
+class DerivedExternalExpressionTest: public CrossDocumentExpressionRecomputeTest
+{
+protected:
+    void SetUp() override
+    {
+        CrossDocumentExpressionRecomputeTest::SetUp();
+        source = _source->addObject<App::FeatureTestColumn>("SourceColumn");
+        profile = _driven->addObject<App::FeatureTestColumn>("Profile");
+        driven = _driven->addObject<App::FeatureTestColumn>("DrivenColumn");
+        auto* link = dynamic_cast<App::PropertyLink*>(
+            driven->addDynamicProperty("App::PropertyLink", "Profile"));
+        ASSERT_NE(link, nullptr);
+        link->setValue(profile);
+        source->Column.setValue("C");
+        driven->setExpression(App::ObjectIdentifier(driven->Column),
+            std::shared_ptr<App::Expression>(App::Expression::parse(
+                driven, _sourceName + "#SourceColumn.Column")));
+        static_cast<void>(_source->recompute());
+        static_cast<void>(_driven->recompute());
+        ASSERT_FALSE(_source->mustExecute());
+        ASSERT_FALSE(_driven->mustExecute());
+        ASSERT_TRUE(_source->save());
+    }
+
+    App::CollaborativeOperationPreparation prepare()
+    {
+        App::Internal::ensureGenericIsolatedRecomputeRegistered();
+        return App::CollaborativeOperationRegistry::instance().prepare(*_driven,
+            {std::string(App::GenericIsolatedRecomputeOperationType),
+             {{"feature", "DrivenColumn"}, {"force_execution", "1"},
+              {"owner_thread_execution", "1"}, {"derived_coordinator_recompute", "1"}}});
+    }
+
+    App::DocumentCommitResult apply(const App::CollaborativeOperation& operation)
+    {
+        App::CollaborationCompatibilityMutation mutation;
+        mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+        mutation.objectName = profile->getNameInDocument();
+        mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*profile);
+        return _driven->collaborationService().commitCompatibilityMutationWithPolicy(
+            mutation, [&] { operation.apply(*_driven); },
+            App::CollaborationCompatibilityRecomputePolicy::Deferred);
+    }
+
+    void expectRefusal(const App::DocumentCommitResult& result)
+    {
+        EXPECT_FALSE(result.committed()) << result.message;
+        EXPECT_NE(result.message.find("unresolved cross-document dependency"),
+                  std::string::npos) << result.message;
+        EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("C"));
+    }
+
+    void expectPreparationRefusal()
+    {
+        try {
+            static_cast<void>(prepare());
+            FAIL() << "accepted an unsafe external source";
+        }
+        catch (const std::invalid_argument& error) {
+            EXPECT_NE(std::string(error.what()).find("unresolved cross-document dependency"),
+                      std::string::npos) << error.what();
+        }
+    }
+
+    App::FeatureTestColumn* source {};
+    App::FeatureTestColumn* profile {};
+    App::FeatureTestColumn* driven {};
+};
+
+TEST_F(DerivedExternalExpressionTest, cleanSourceWithDirtyAncestorIsRefused)
+{
+    auto* ancestor = _source->addObject<App::FeatureTestColumn>("Ancestor");
+    ancestor->Column.setValue("C");
+    source->setExpression(App::ObjectIdentifier(source->Column),
+        std::shared_ptr<App::Expression>(App::Expression::parse(source, "Ancestor.Column")));
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ancestor->Column.setValue("E");
+    ASSERT_FALSE(source->isTouched());
+    ASSERT_EQ(source->mustRecompute(), 0);
+    ASSERT_TRUE(ancestor->isTouched());
+    expectPreparationRefusal();
+    // The compatibility preflight must also refuse this unsettled dependent.
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = "Profile";
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*profile);
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] { profile->Column.setValue("D"); });
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Busy) << result.message;
+    EXPECT_NE(result.message.find("document has pending recompute work outside the prepared operation"),
+              std::string::npos) << result.message;
+    EXPECT_EQ(profile->Column.getStrValue(), "A");
+}
+
+TEST_F(DerivedExternalExpressionTest, pendingForcedSourceRecomputeIsRefusedAtPreparation)
+{
+    auto pending = _source->recomputeAsync({source}, true, 0, App::RecomputeVenue::Isolated);
+    ASSERT_TRUE(_source->recomputeCoordinator().hasPendingWork());
+    ASSERT_FALSE(source->isTouched());
+    ASSERT_EQ(source->mustRecompute(), 0);
+    expectPreparationRefusal();
+    static_cast<void>(pending->cancel());
+}
+
+TEST_F(DerivedExternalExpressionTest, pendingForcedSourceRecomputeIsRefusedAtEvaluation)
+{
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    auto pending = _source->recomputeAsync({source}, true, 0, App::RecomputeVenue::Isolated);
+    ASSERT_TRUE(_source->recomputeCoordinator().hasPendingWork());
+    ASSERT_FALSE(source->isTouched());
+    expectRefusal(apply(*operation));
+    static_cast<void>(pending->cancel());
+}
+
+TEST_F(DerivedExternalExpressionTest, settledSourceMutationAfterPreparationIsRefused)
+{
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    source->Column.setValue("E");
+    static_cast<void>(_source->recompute());
+    ASSERT_FALSE(source->isTouched());
+    ASSERT_FALSE(_source->mustExecute());
+    expectRefusal(apply(*operation));
+}
+
+TEST_F(DerivedExternalExpressionTest, sourceCloseAfterPreparationIsRefused)
+{
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_TRUE(App::GetApplication().closeDocument(_sourceName.c_str()));
+    _source = nullptr;
+    _sourceObject = nullptr;
+    source = nullptr;
+    expectRefusal(apply(*operation));
+}
+
+TEST_F(DerivedExternalExpressionTest, sourceReloadAfterPreparationIsRefused)
+{
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    _source->restore((_directory / "qa_hole.FCStd").string().c_str());
+    static_cast<void>(_source->afterRestore());
+    static_cast<void>(_source->recompute());
+    ASSERT_FALSE(_source->mustExecute());
+    expectRefusal(apply(*operation));
+}
+
+TEST_F(DerivedExternalExpressionTest, foreignThreadSourceReadIsRefused)
+{
+    // Both documents belong to the test thread. Unsupported foreign-thread
+    // reads must be rejected before inspecting source objects or expressions.
+    std::thread foreign([&] { expectPreparationRefusal(); });
+    foreign.join();
 }
 
 // clang-format on
