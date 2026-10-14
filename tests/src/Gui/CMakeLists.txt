@@ -49,6 +49,7 @@ add_executable(Gui_tests_run
         NavigationStylePinchTest.cpp
         NavigationStyleWheelTest.cpp
         SelectionTest.cpp
+        SelectionPythonThread.cpp
         SoMouseWheelEventTest.cpp
 )
 
