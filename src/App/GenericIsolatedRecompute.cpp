@@ -1651,14 +1651,32 @@ std::vector<App::DocumentObject*> collectClosure(
         closure.push_back(object);
         for (auto* dependency : object->getOutList()) {
             if (!dependency || dependency->getDocument() != &document) {
+                // An existing expression can consume a settled external value
+                // on the owner thread when a local profile edit re-executes
+                // its feature. This does not serialize an external closure or
+                // admit a newly changed binding, dirty source, or native link.
+                if (settledOwnerInputs && dependency
+                    && dependency->isAttachedToDocument()
+                    && dependency->getDocument()
+                    && !dependency->isTouched() && !dependency->mustRecompute()
+                    && !dependency->isError()
+                    && !object->ExpressionEngine.isTouched()) {
+                    const auto nativeInputs = object->getOutListProp(
+                        App::DocumentObject::OutListNoExpression);
+                    if (std::ranges::none_of(nativeInputs, [dependency](const auto& edge) {
+                            return edge.toObj == dependency;
+                        })) {
+                        continue;
+                    }
+                }
                 throw std::invalid_argument(
                     "generic recompute has an unresolved cross-document dependency");
             }
             // Owner-thread derived execution consumes already settled
             // in-document inputs. Re-evaluating their ancestors would pull
             // unrelated external bindings into this commit. The target's
-            // own external inputs still fail above, and the detached worker
-            // always retains the full serializable closure.
+            // external native links and unsettled expression inputs still
+            // fail above; the detached worker retains the full closure.
             if (!settledOwnerInputs || dependency->isTouched()
                 || dependency->mustRecompute()) {
                 pending.push_back(dependency);
@@ -1923,8 +1941,8 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
             return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
         }
         if (derivedCoordinatorRecompute) {
-            // Evaluating an external binding remains a refusal. Settled
-            // local inputs need no evaluation of their external ancestors.
+            // Settled expression inputs may be read on the owner thread.
+            // Changed bindings and unsettled external inputs remain refusals.
             try {
                 static_cast<void>(collectClosure(document, *target, /*settledOwnerInputs=*/true));
             }

@@ -17,6 +17,7 @@
 #include "App/FeatureTest.h"
 #include "App/ObjectIdentifier.h"
 #include "App/PropertyExpressionEngine.h"
+#include "App/PropertyLinks.h"
 
 #include "src/App/InitApplication.h"
 
@@ -325,5 +326,53 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<bool>& info) {
         return info.param ? "DefectCrossDocument" : "HappySameDocument";
     });
+
+// A profile edit makes the directly bound feature dirty. A separate object
+// sharing only a group (Round21 above) leaves that feature clean.
+TEST_P(CrossDocumentUnrelatedMutationTest, profileEditReexecutesDirectlyBoundFeature)
+{
+    auto* source = (GetParam() ? _source : _driven)
+        ->addObject<App::FeatureTestColumn>("SourceColumn");
+    auto* profile = _driven->addObject<App::FeatureTestColumn>("Profile");
+    auto* driven = _driven->addObject<App::FeatureTestColumn>("DrivenColumn");
+    auto* profileLink = dynamic_cast<App::PropertyLink*>(
+        driven->addDynamicProperty("App::PropertyLink", "Profile"));
+    ASSERT_NE(profileLink, nullptr);
+    profileLink->setValue(profile);
+    source->Column.setValue("C");
+    const std::string expression =
+        (GetParam() ? _sourceName + "#" : "") + "SourceColumn.Column";
+    driven->setExpression(App::ObjectIdentifier(driven->Column),
+        std::shared_ptr<App::Expression>(App::Expression::parse(driven, expression)));
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_driven->mustExecute());
+    ASSERT_FALSE(driven->ExpressionEngine.isTouched());
+
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = profile->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*profile);
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] { profile->Column.setValue("D"); });
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(profile->Value.getValue(), App::decodeColumn("D"));
+    EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("C"));
+    EXPECT_EQ(driven->ExpressionEngine.getExpressions().size(), 1U);
+    EXPECT_FALSE(_driven->mustExecute());
+
+    source->Column.setValue("E");
+    if (GetParam()) {
+        // Dirty external inputs still need an explicit source recompute.
+        const auto unsettled = _driven->collaborationService().commitCompatibilityMutation(
+            mutation, [&] { profile->Column.setValue("F"); });
+        EXPECT_FALSE(unsettled.committed()) << unsettled.message;
+        EXPECT_EQ(profile->Column.getStrValue(), "D");
+    }
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("E"));
+    EXPECT_FALSE(_driven->mustExecute());
+}
 
 // clang-format on
