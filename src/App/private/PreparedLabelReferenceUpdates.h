@@ -3,6 +3,7 @@
 
 #include <FCGlobal.h>
 #include <memory>
+#include <atomic>
 
 namespace App
 {
@@ -12,6 +13,7 @@ class Property;
 class PropertyString;
 namespace Internal
 {
+class LabelReferenceUpdatesTestAccess;
 // Native Label reference effects join the prepared operation's rollback and
 // publication boundary. Only the coordinator can establish this context.
 class AppExport PreparedLabelReferenceUpdates final
@@ -27,6 +29,10 @@ public:
 
 private:
     friend class App::DocumentCommitCoordinator;
+    friend class App::Document;
+    friend class LabelReferenceUpdatesTestAccess;
+    static std::atomic<void (*)(Document&)> finalizationTestHook;
+    static std::atomic<void (*)()> rewriteTestHook;
     PreparedLabelReferenceUpdates(Document& source, bool retainUndoHistory);
     struct State;
     std::unique_ptr<State> state;

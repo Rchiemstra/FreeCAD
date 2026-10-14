@@ -3156,6 +3156,9 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
+            if (const auto hook = Internal::PreparedLabelReferenceUpdates::finalizationTestHook.load()) {
+                hook(*this);
+            }
             if (retainUndoHistory && d->activeTransactionFileChanges) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
             }
@@ -9113,6 +9116,9 @@ namespace
 thread_local PreparedLabelReferenceUpdates* activeLabelReferenceUpdates = nullptr;
 }
 
+std::atomic<void (*)(Document&)> PreparedLabelReferenceUpdates::finalizationTestHook {nullptr};
+std::atomic<void (*)()> PreparedLabelReferenceUpdates::rewriteTestHook {nullptr};
+
 struct PreparedLabelReferenceUpdates::State
 {
     struct Participant
@@ -9200,6 +9206,9 @@ bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
     // Observers are deferred by the participant barrier. The process target
     // remains bound and rejects writes back into the source or a third document.
     LabelReferenceMutationTarget target(source, *dependent);
+    if (const auto hook = rewriteTestHook.load()) {
+        hook();
+    }
     property.Paste(value);
     return true;
 }

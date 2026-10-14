@@ -17,6 +17,7 @@
 #include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
+#include "App/private/PreparedLabelReferenceUpdates.h"
 #include <src/App/InitApplication.h>
 
 #include <memory>
@@ -52,6 +53,15 @@ void publishPreReservationWildcard()
 
 namespace App::Internal
 {
+
+class LabelReferenceUpdatesTestAccess
+{
+public:
+    static void finalization(void (*hook)(Document&))
+    { PreparedLabelReferenceUpdates::finalizationTestHook.store(hook); }
+    static void rewrite(void (*hook)())
+    { PreparedLabelReferenceUpdates::rewriteTestHook.store(hook); }
+};
 
 class DocumentCommitCoordinatorTestAccess
 {
@@ -2629,4 +2639,152 @@ TEST_F(DocumentCollaborationServiceTest, labelRenamePreparedOperationPublishesRe
     EXPECT_GT(_document->collaborationRevisions().current(wildcard), revision);
     EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
                   .expression->toString().find("<<After>>"), std::string::npos);
+}
+
+namespace
+{
+class LabelGroupRegressionTest: public DocumentCollaborationServiceTest
+{
+protected:
+    void SetUp() override
+    {
+        DocumentCollaborationServiceTest::SetUp();
+        ASSERT_TRUE(_document->saveAs(("/tmp/" + _documentName + ".FCStd").c_str()));
+        for (int i = 0; i < 2; ++i) {
+            auto name = App::GetApplication().getUniqueDocumentName("LabelGroupDependent");
+            auto* doc = App::GetApplication().newDocument(name.c_str());
+            documents.push_back(doc);
+            ASSERT_TRUE(doc->saveAs(("/tmp/" + name + ".FCStd").c_str()));
+            auto* object = doc->addObject<FeatureTest>("Dependent");
+            for (const char* prop : {"Float", "Integer"}) {
+                object->setExpression(ObjectIdentifier::parse(object, prop),
+                    Expression::parse(object, _documentName + "#<<Before>>.Float + 1"));
+            }
+            doc->recompute();
+        }
+        documents.insert(documents.begin(), _document);
+        for (auto* doc : documents) {
+            undos.push_back(doc->getAvailableUndos());
+            redos.push_back(doc->getAvailableRedos());
+            revisions.push_back(doc->collaborationRevisions().current(
+                DocumentRevisionKey::unknownModelMutation()));
+        }
+    }
+    void TearDown() override
+    {
+        Internal::LabelReferenceUpdatesTestAccess::finalization(nullptr);
+        Internal::LabelReferenceUpdatesTestAccess::rewrite(nullptr);
+        for (std::size_t i = 1; i < documents.size(); ++i) {
+            App::GetApplication().closeDocument(documents[i]->getName());
+        }
+        DocumentCollaborationServiceTest::TearDown();
+    }
+    void expectModel(const char* label)
+    {
+        EXPECT_EQ(_target->Label.getStrValue(), label);
+        for (std::size_t i = 1; i < documents.size(); ++i) {
+            auto* object = documents[i]->getObject("Dependent");
+            for (const char* prop : {"Float", "Integer"}) {
+                EXPECT_NE(object->getExpression(ObjectIdentifier::parse(object, prop))
+                              .expression->toString().find(std::string("<<") + label + ">>"),
+                          std::string::npos);
+            }
+        }
+    }
+    void expectUnchanged()
+    {
+        expectModel("Before");
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+            EXPECT_EQ(documents[i]->collaborationRevisions().current(
+                DocumentRevisionKey::unknownModelMutation()), revisions[i]);
+        }
+    }
+    std::vector<Document*> documents;
+    std::vector<unsigned int> undos, redos;
+    std::vector<DocumentRevision> revisions;
+};
+}
+
+TEST_F(LabelGroupRegressionTest, crossDocumentRenameUndoRedoRestoresEveryHistory)
+{
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+    }
+    ASSERT_TRUE(_document->undo());
+    expectModel("Before");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+    }
+    // Start redo at a dependent: either end must find the whole group.
+    ASSERT_GT(documents.back()->getAvailableRedos(), 0);
+    ASSERT_TRUE(documents.back()->redo());
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+    }
+}
+
+TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
+{
+    documents.back()->openTransaction("Busy dependent");
+    documents.back()->getObject("Dependent")->Label.setValue("Busy");
+    bool caught = false;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            try { _target->Label.setValue("After"); }
+            catch (...) { caught = true; }
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+        });
+    EXPECT_TRUE(caught);
+    EXPECT_FALSE(result.committed());
+    documents.back()->abortTransaction();
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, caughtRewriteFailureForcesGroupRollback)
+{
+    Internal::LabelReferenceUpdatesTestAccess::rewrite([] { throw std::runtime_error("rewrite injection"); });
+    bool caught = false;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            try { _target->Label.setValue("After"); }
+            catch (...) { caught = true; }
+        });
+    EXPECT_TRUE(caught);
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, finalizationFailureRestoresAllParticipants)
+{
+    Internal::LabelReferenceUpdatesTestAccess::finalization([](Document& doc) {
+        if (std::string(doc.getName()).find("LabelGroupDependent") == 0) {
+            throw std::runtime_error("finalization injection");
+        }
+    });
+    try {
+        const auto result = _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] { _target->Label.setValue("After"); });
+        EXPECT_FALSE(result.committed());
+    }
+    catch (...) {} // Baseline throws after the source transaction has been consumed.
+    Internal::LabelReferenceUpdatesTestAccess::finalization(nullptr);
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, poisonedDependentRejectedBeforeAnyMutation)
+{
+    Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*documents.back());
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
 }
