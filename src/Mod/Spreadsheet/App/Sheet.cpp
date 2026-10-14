@@ -999,8 +999,8 @@ void Sheet::recomputeCell(CellAddress p)
 
         updateProperty(p);
 
+        cells.clearDirty(p);
         if (!cell || !cell->hasException()) {
-            cells.clearDirty(p);
             cellErrors.erase(p);
         }
     }
@@ -1015,8 +1015,13 @@ void Sheet::recomputeCell(CellAddress p)
             e.reportException();
         }
 
-        // Mark as erroneous
+        // This request reached a terminal result. Keep the diagnostic and
+        // cellErrors retry set, but consume its dirty work before callbacks
+        // can request another evaluation of the same cell. Abort stays pending.
         cellErrors.insert(p);
+        if (!e.isDerivedFrom<Base::AbortException>()) {
+            cells.clearDirty(p);
+        }
         cellUpdated(p);
 
         if (e.isDerivedFrom<Base::AbortException>()) {
@@ -1187,6 +1192,7 @@ DocumentObjectExecReturn* Sheet::execute()
             if (cell) {
                 cellErrors.insert(v.first);
                 cell->setException("Pending computation due to cyclic dependency", true);
+                cells.clearDirty(v.first);
                 cellUpdated(v.first);
             }
         }

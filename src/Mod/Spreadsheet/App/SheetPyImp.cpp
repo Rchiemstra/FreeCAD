@@ -1060,6 +1060,18 @@ PyObject* SheetPy::getRowHeight(PyObject* args)
     }
 }
 
+PyObject* SheetPy::getDirtyCells(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    Py::List result;
+    for (const auto& address : getSheetPtr()->getCells()->getDirty()) {
+        result.append(Py::String(address.toString()));
+    }
+    return Py::new_reference_to(result);
+}
+
 PyObject* SheetPy::touchCells(PyObject* args)
 {
     const char* address;

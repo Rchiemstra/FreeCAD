@@ -30,6 +30,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/NativeRecomputeErrors.h>
 #include <App/DocumentObserver.h>
 #include <App/Expression.h>
 #include <App/ExpressionParser.h>
@@ -245,6 +246,11 @@ std::tuple<CellAddress, CellAddress> PropertySheet::getNonEmptyRange() const
 
 void PropertySheet::setDirty(CellAddress address)
 {
+    // Detached copies retain owner for expression bookkeeping. Only dirty
+    // writes to the canonical cells property request work on the live sheet.
+    if (owner && getContainer() == owner && owner->getCells() == this) {
+        App::Internal::NativeRecomputeRequestCapture::record(*owner);
+    }
     /* Merged cells will automatically force an update of the top left cell
        to be consistent. */
     std::map<CellAddress, CellAddress>::const_iterator i = mergedCells.find(address);
@@ -611,7 +617,7 @@ void PropertySheet::pasteCells(XMLReader& reader, Range dstRange)
                             recomputeDependencies(dst);
                         }
                     }
-                    dirty.insert(dst);
+                    setDirty(dst);
                 }
             }
         }
@@ -944,7 +950,7 @@ void PropertySheet::clear(CellAddress address, bool toClearAlias)
     delete i->second;
 
     // Mark as dirty
-    dirty.insert(i->first);
+    setDirty(i->first);
 
     if (toClearAlias) {
         clearAlias(address);

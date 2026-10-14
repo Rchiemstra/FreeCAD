@@ -2,7 +2,6 @@
 
 #include "DocumentCommitCoordinator.h"
 #include "NativeRecomputeErrors.h"
-#include "Transactions.h"
 
 #include "CollaborativeOperation.h"
 #include "Document.h"
@@ -31,6 +30,32 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+namespace App::Internal
+{
+thread_local NativeRecomputeRequestCapture* NativeRecomputeRequestCapture::active = nullptr;
+
+NativeRecomputeRequestCapture::NativeRecomputeRequestCapture(
+    Document& document, NativeRecomputeRequests& requests)
+    : previous(active), document(document), requests(requests)
+{
+    active = this;
+}
+
+NativeRecomputeRequestCapture::~NativeRecomputeRequestCapture()
+{
+    active = previous;
+}
+
+void NativeRecomputeRequestCapture::record(const DocumentObject& object)
+{
+    for (auto* capture = active; capture; capture = capture->previous) {
+        if (object.getDocument() == &capture->document) {
+            capture->requests.insert(&object);
+        }
+    }
+}
+}
 
 namespace
 {
@@ -175,7 +200,7 @@ bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
 std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
     App::Document& document,
     const App::Internal::NativeRecomputeErrors* baseline = nullptr,
-    const App::Transaction* transaction = nullptr)
+    const App::Internal::NativeRecomputeRequests* fresh = nullptr)
 {
     const auto objects = document.getObjects();
     std::unordered_set<App::DocumentObject*> selected;
@@ -183,13 +208,14 @@ std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
     selected.reserve(objects.size());
     for (auto* object : objects) {
         if (object
-            && (object->isTouched()
+            && (object->isTouched() || object->mustExecute()
+                || (fresh && fresh->contains(object))
                 || document.collaborationTransactionOwnsNewObject(*object))) {
-            // Retain only error work that was already dirty before apply.
-            // A newly touched error target or a transaction-owned change must
-            // still recompute and fail if its missing input remains unresolved.
-            if (baseline && baseline->contains(object) && transaction
-                && !transaction->hasObject(object)) {
+            // Only unchanged terminal errors may sit out this plan. Repeated
+            // touches and dirty-cell cache updates are fresh requests even when
+            // neither the touch bit nor the undo transaction changes.
+            if (baseline && baseline->contains(object)
+                && (!fresh || !fresh->contains(object))) {
                 continue;
             }
             pending.push_back(object);
@@ -1126,16 +1152,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     // part of the pre-commit boundary. An exact rollback to that same error
     // is repairable, rather than evidence of escaped Python Proxy state.
     const auto preexistingNativeErrors = Internal::captureNativeRecomputeErrors(_document);
-    Internal::NativeRecomputeErrors preexistingTouchedNativeErrors;
     std::unordered_set<App::DocumentObject*> preexistingObjects;
     for (auto* object : _document.getObjects()) {
         preexistingObjects.insert(object);
-        if (object->isTouched()) {
-            const auto error = preexistingNativeErrors.find(object);
-            if (error != preexistingNativeErrors.end()) {
-                preexistingTouchedNativeErrors.insert(*error);
-            }
-        }
     }
     const auto finishFailedRecompute = [&](DocumentCommitResult result) {
         // KEEP BOTH. Restore first: a recompute error whose document state
@@ -1233,7 +1252,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         return result;
     };
 
+    Internal::NativeRecomputeRequests freshRecomputeRequests;
     try {
+        Internal::NativeRecomputeRequestCapture capture(_document, freshRecomputeRequests);
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
             if (structuralCompatibility) {
@@ -1281,8 +1302,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         try {
             auto recomputeTargets = pendingTransactionRecomputeTargets(
                 _document,
-                requireDetachedPreparationSupport ? nullptr : &preexistingTouchedNativeErrors,
-                _document.d->activeUndoTransaction);
+                requireDetachedPreparationSupport ? nullptr : &preexistingNativeErrors,
+                &freshRecomputeRequests);
             if (recomputeTargets.empty()) {
                 _document.finalizeEmptyDetachedRecompute();
             }
@@ -1330,10 +1351,28 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                                 detail.str()));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
+        && !requireDetachedPreparationSupport) {
+        // A failed native recompute retains Touch as a retry hint. Consume
+        // that old hint before postflight only for the exact terminal errors
+        // nobody requested again during apply. Fresh requests must execute and
+        // have already failed above if their inputs remain unresolved.
+        for (auto* object : _document.getObjects()) {
+            const auto error = preexistingNativeErrors.find(object);
+            if (error == preexistingNativeErrors.end() || !object->isError()
+                || freshRecomputeRequests.contains(object)) {
+                continue;
+            }
+            const char* diagnostic = _document.getErrorDescription(object);
+            if (diagnostic && error->second == diagnostic && object->isTouched()) {
+                object->purgeTouched();
+            }
+        }
+    }
+    if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && _document.mustExecute()
         && (requireDetachedPreparationSupport
             || !Internal::pendingRecomputeMatchesNativeErrors(
-                _document, preexistingNativeErrors))) {
+                _document, preexistingNativeErrors, &freshRecomputeRequests))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::RecomputeFailed,
             edit,
@@ -1389,7 +1428,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         && _document.mustExecute()
         && (requireDetachedPreparationSupport
             || !Internal::pendingRecomputeMatchesNativeErrors(
-                _document, preexistingNativeErrors))) {
+                _document, preexistingNativeErrors, &freshRecomputeRequests))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::PostconditionFailed,
             edit,

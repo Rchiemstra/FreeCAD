@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <string>
@@ -27,6 +28,30 @@
 #include "src/App/InitApplication.h"
 
 // clang-format off
+
+namespace
+{
+App::DocumentRecomputeId nextRecomputeId(App::Document& document)
+{
+    App::DocumentRecomputeId id = 1;
+    while (document.recomputeCoordinator().status(id)) { ++id; }
+    return id;
+}
+
+bool executedFailureSince(App::Document& document, App::DocumentRecomputeId id,
+                          const std::string& name)
+{
+    while (const auto snapshot = document.recomputeCoordinator().status(id++)) {
+        for (const auto& feature : snapshot->features) {
+            if (feature.featureId == name && feature.executed
+                && feature.state == App::DocumentRecomputeFeatureState::Failed) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+}
 
 class PropertyExpressionEngineTest: public ::testing::Test
 {
@@ -341,6 +366,14 @@ TEST_P(CrossDocumentSpreadsheetLifecycleTest, terminalSheetErrorAllowsExpression
         _driven->recompute({}, true, &error);
         ASSERT_TRUE(error);
         ASSERT_TRUE(sheet->isError());
+        {
+            Base::PyGILStateLocker gil;
+            Py::Object object(sheet->getPyObject(), true);
+            Py::Object dirty(PyObject_CallMethod(object.ptr(), "getDirtyCells", nullptr), true);
+            ASSERT_FALSE(dirty.isNull());
+            EXPECT_EQ(PyList_Size(dirty.ptr()), 0)
+                << "settled cell errors must retain diagnostics without pending cell work";
+        }
         ASSERT_FALSE(_driven->recomputeCoordinator().hasPendingWork());
     }
     App::CollaborationCompatibilityMutation mutation;
@@ -349,12 +382,17 @@ TEST_P(CrossDocumentSpreadsheetLifecycleTest, terminalSheetErrorAllowsExpression
     mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*_drivenObject);
     const auto result = _driven->collaborationService().commitCompatibilityMutation(
         mutation, [&] {
+            // A read-only copy retains the owner's pointer; destroying that
+            // detached property must not request work on the canonical sheet.
+            const std::unique_ptr<App::Property> cellsSnapshot(
+                sheet->getPropertyByName("cells")->Copy());
             _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
             _drivenObject->Float.setValue(21);
         });
     ASSERT_TRUE(result.committed()) << result.message;
     EXPECT_FALSE(_driven->getMutationReadiness().quarantined);
     EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 21);
+    EXPECT_FALSE(sheet->isTouched()) << "unchanged terminal errors must be settled before postflight";
     mutation.objectName = sheet->getNameInDocument();
     mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*sheet);
     const auto repaired = _driven->collaborationService().commitCompatibilityMutation(
@@ -397,6 +435,74 @@ TEST_P(CrossDocumentSpreadsheetLifecycleTest, sheetOnlyUndoAdmissionRetainsHisto
     ASSERT_NE(cells, nullptr);
     cells->getLinks(links, true);
     EXPECT_EQ(links, std::vector<App::DocumentObject*>({_sourceObject}));
+}
+
+TEST_P(CrossDocumentSpreadsheetLifecycleTest, terminalErrorDoesNotDiscardFreshDirtyCell)
+{
+    addSheet();
+    App::DocumentObject* fresh = GetParam() ? sheet
+        : _driven->addObject("Spreadsheet::Sheet", "Fresh");
+    {
+        Base::PyGILStateLocker gil;
+        Py::Object object(fresh->getPyObject(), true);
+        PyObject* result = PyObject_CallMethod(object.ptr(), "set", "ss", "B1", "42");
+        ASSERT_NE(result, nullptr);
+        Py_DECREF(result);
+    }
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    App::GetApplication().closeDocument(_sourceName.c_str());
+    _source = nullptr;
+    _sourceObject = nullptr;
+    bool error = false;
+    _driven->recompute({}, true, &error);
+    ASSERT_TRUE(error);
+    ASSERT_TRUE(sheet->isError());
+    ASSERT_TRUE(sheet->isTouched());
+    // Make the evaluated output stale without changing its cell expression.
+    // touchCells only changes the dirty-cell cache, with no undo record.
+    auto* property = fresh->getPropertyByName("B1");
+    ASSERT_NE(property, nullptr);
+    if (auto* output = dynamic_cast<App::PropertyInteger*>(property)) {
+        output->setValue(99);
+    }
+    else {
+        auto* floatOutput = dynamic_cast<App::PropertyFloat*>(property);
+        ASSERT_NE(floatOutput, nullptr) << property->getTypeId().getName();
+        floatOutput->setValue(99);
+    }
+    if (fresh != sheet) { fresh->purgeTouched(); }
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+    mutation.objectName = fresh->getNameInDocument();
+    mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*fresh);
+    App::DocumentRecomputeId firstRecompute = 0;
+    const auto result = _driven->collaborationService().commitCompatibilityMutation(
+        mutation, [&] {
+            firstRecompute = nextRecomputeId(*_driven);
+            Base::PyGILStateLocker gil;
+            Py::Object object(fresh->getPyObject(), true);
+            PyObject* result = PyObject_CallMethod(object.ptr(), "touchCells", "s", "B1");
+            ASSERT_NE(result, nullptr);
+            Py_DECREF(result);
+            ASSERT_TRUE(fresh->mustExecute());
+        });
+    if (fresh == sheet) {
+        EXPECT_TRUE(executedFailureSince(*_driven, firstRecompute, sheet->getNameInDocument()));
+        EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed) << result.message;
+        EXPECT_NE(result.message.find("document recompute reported an object error"), std::string::npos)
+            << result.message;
+    }
+    else {
+        ASSERT_TRUE(result.committed()) << result.message;
+        Base::PyGILStateLocker gil;
+        Py::Object object(fresh->getPyObject(), true);
+        Py::Object value(PyObject_GetAttrString(object.ptr(), "B1"), true);
+        ASSERT_FALSE(value.isNull());
+        EXPECT_DOUBLE_EQ(PyFloat_AsDouble(value.ptr()), 42);
+        EXPECT_FALSE(fresh->mustExecute());
+    }
+    EXPECT_FALSE(_driven->getMutationReadiness().quarantined);
 }
 
 INSTANTIATE_TEST_SUITE_P(Round25, CrossDocumentSpreadsheetLifecycleTest, ::testing::Bool(),
@@ -684,9 +790,12 @@ TEST_F(CrossDocumentExpressionRecomputeTest, closedSourceDocumentReportsUnresolv
 class ClosedSourceRepairTest:
     public CrossDocumentExpressionRecomputeTest,
     public ::testing::WithParamInterface<bool>
-{};
+{
+protected:
+    void checkFailedEdit(bool purge);
+};
 
-TEST_P(ClosedSourceRepairTest, failedEditDoesNotFenceExpressionRepair)
+void ClosedSourceRepairTest::checkFailedEdit(bool purge)
 {
     _driven->removeObject(_drivenObject->getNameInDocument());
     _source->removeObject(_sourceObject->getNameInDocument());
@@ -708,17 +817,30 @@ TEST_P(ClosedSourceRepairTest, failedEditDoesNotFenceExpressionRepair)
         ASSERT_TRUE(error);
         ASSERT_TRUE(driven->isError());
         // Match the settled GUI boundary: the error persists without pending work.
-        _driven->purgeTouched();
+        if (purge) { _driven->purgeTouched(); }
+        else { ASSERT_TRUE(driven->isTouched()); }
     }
     App::CollaborationCompatibilityMutation mutation;
     mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
     mutation.objectName = driven->getNameInDocument();
     mutation.stableObjectIdentity = _driven->collaborationObjectIdentity(*driven);
+    App::DocumentRecomputeId firstRecompute = 0;
     auto result = _driven->collaborationService().commitCompatibilityMutation(
-        mutation, [&] { driven->touch(); });
+        mutation, [&] {
+            firstRecompute = nextRecomputeId(*_driven);
+            driven->touch();
+        });
     EXPECT_EQ(result.status, GetParam() ? App::DocumentCommitStatus::RecomputeFailed
                                        : App::DocumentCommitStatus::Committed)
         << result.message;
+    if (GetParam()) {
+        EXPECT_TRUE(executedFailureSince(*_driven, firstRecompute, driven->getNameInDocument()));
+        // This diagnostic is produced only after the authoritative recompute
+        // reports an object error, rather than a pending-work guard refusing it.
+        EXPECT_NE(result.message.find("document recompute reported an object error"), std::string::npos)
+            << result.message;
+        EXPECT_NE(result.message.find(_sourceName), std::string::npos) << result.message;
+    }
     EXPECT_FALSE(_driven->getMutationReadiness().quarantined);
     result = _driven->collaborationService().commitCompatibilityMutation(
         mutation, [&] {
@@ -728,6 +850,16 @@ TEST_P(ClosedSourceRepairTest, failedEditDoesNotFenceExpressionRepair)
     EXPECT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
     EXPECT_FALSE(driven->isError());
     EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("D"));
+}
+
+TEST_P(ClosedSourceRepairTest, failedEditDoesNotFenceExpressionRepair)
+{
+    checkFailedEdit(true);
+}
+
+TEST_P(ClosedSourceRepairTest, repeatedTouchExecutesAndFailsWithoutPurging)
+{
+    checkFailedEdit(false);
 }
 
 INSTANTIATE_TEST_SUITE_P(SourceLifecycle, ClosedSourceRepairTest,

@@ -42,6 +42,7 @@
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentObject.h"
+#include "NativeRecomputeErrors.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
@@ -218,6 +219,7 @@ void DocumentObject::setTouched(const char* name)
     // This function is not a replacement for touch(), it is only
     // used internally for fine-grained document recompute and replaces
     // the coarse grained equivalent of StatusBits.set(ObjectStatus::Touch);
+    Internal::NativeRecomputeRequestCapture::record(*this);
     touchedProps.insert(name);
     StatusBits.set(ObjectStatus::Touch);
 }
@@ -225,6 +227,7 @@ void DocumentObject::setTouched(const char* name)
 void DocumentObject::touch(bool noRecompute)
 {
     enforceAtomicPresentationMutationTarget(_pDoc);
+    Internal::NativeRecomputeRequestCapture::record(*this);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
@@ -1360,6 +1363,7 @@ void DocumentObject::onChanged(const Property* prop)
         // set object touched if it is not an output property
         if (!testStatus(ObjectStatus::NoTouch) && !(prop->getType() & Prop_Output)
             && !prop->testStatus(Property::Output)) {
+            Internal::NativeRecomputeRequestCapture::record(*this);
             if (!StatusBits.test(ObjectStatus::Touch)) {
                 FC_TRACE("touch '" << getFullName() << "' on change of '" << prop->getName() << "'");
                 StatusBits.set(ObjectStatus::Touch);
