@@ -8337,6 +8337,37 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         return;
     }
 
+    // Dependency retirement reads and updates foreign expression runtime
+    // edges. Pin and serialize the dependent documents without dispatching or
+    // waiting while this source's commit lock is held. A busy dependent is an
+    // explicit, retryable refusal before any removal callbacks run.
+    std::vector<std::unique_ptr<DocumentCollaborationService::LifecyclePin>> dependentPins;
+    std::vector<std::unique_lock<std::recursive_mutex>> dependentLocks;
+    const auto dependents = PropertyXLink::getDocumentInList(this);
+    const auto linked = dependents.find(this);
+    if (linked != dependents.end()) {
+        for (auto* dependent : linked->second) {
+            if (dependent == this) {
+                continue;
+            }
+            dependentPins.push_back(std::make_unique<DocumentCollaborationService::LifecyclePin>(
+                dependent->collaborationService()));
+            dependentLocks.emplace_back(dependent->collaborationCommitMutex(), std::try_to_lock);
+            if (!*dependentPins.back() || !dependentLocks.back().owns_lock()
+                || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+                || dependent->testStatus(Document::Recomputing)
+                || dependent->testStatus(Document::Restoring)
+                || dependent->collaborationLifecycleMutationBlocked()
+                || dependent->d->collaborationCommitNotificationBarrier
+                || dependent->collaborationNotificationsReplaying()) {
+                throw Base::RuntimeError(
+                    "cannot remove external source: dependent document '"
+                    + std::string(dependent->getName())
+                    + "' is recomputing or has an active collaboration boundary; retry after it ends");
+            }
+        }
+    }
+
     InternalTransactionLockScope tlock(*this);
 
     _checkTransaction(pcObject, nullptr, __LINE__);
@@ -8484,6 +8515,12 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         }
     }
     catch (...) {
+        // Removal callbacks and dependency cleanup can refuse a mutation. If
+        // the object survived, release the recursion guard before returning
+        // the error; a later native removeObject must be able to retry.
+        if (getObject(removedObjectName.c_str()) == pcObject) {
+            pcObject->setStatus(ObjectStatus::Remove, false);
+        }
         d->collaborationPropertyPublicationSuppression.erase(&Tip);
         d->collaborationPropertyPublicationSuppression.erase(&TipName);
         d->collaborationInitializationSuppression.erase(pcObject);

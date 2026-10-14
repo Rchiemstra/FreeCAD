@@ -5985,6 +5985,29 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
         if (it == _Deps.end()) {
             return;
         }
+        // A surviving external expression retains its text when a source is
+        // deleted. Retire only runtime dependency edges here, while the source
+        // is still attached; ordinary property notifications would enter the
+        // dependent's mutation boundary inside the source's atomic commit.
+        // Do not grant foreign callbacks authority to edit either document.
+        if (this == &owner->ExpressionEngine
+            && obj->getDocument() != owner->getDocument()
+            && obj->testStatus(ObjectStatus::Remove)) {
+            for (auto prop = _PropDeps.begin(); prop != _PropDeps.end();) {
+                if (prop->first.second != obj) {
+                    ++prop;
+                    continue;
+                }
+                if (!prop->second) {
+                    obj->_removeBackLinkProp(getName(), owner, prop->first.first.c_str());
+                }
+                prop = _PropDeps.erase(prop);
+            }
+            _XLinks.erase(obj->getFullName());
+            _Deps.erase(it);
+            StatusBits.set(Property::Touched);
+            return;
+        }
         aboutToSetValue();
         onBreakLink(obj);
         if (obj->getDocument() != owner->getDocument()) {

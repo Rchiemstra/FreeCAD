@@ -174,6 +174,90 @@ TEST_F(CrossDocumentExpressionRecomputeTest, openSourceDocumentDrivesTheDependen
     EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 9.0);
 }
 
+// Source pins must end with evaluation; deletion must invalidate, not erase,
+// a surviving external expression, so clearing it can repair the dependent.
+class CrossDocumentSourceDeletionTest:
+    public CrossDocumentExpressionRecomputeTest,
+    public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(CrossDocumentSourceDeletionTest, settledSourceCanBeDeleted)
+{
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_NO_THROW(_source->addObject("App::FeatureTest", "AfterEvaluation"));
+    if (!GetParam()) {
+        _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
+        static_cast<void>(_driven->recompute());
+    }
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::Structural;
+    const auto result = _source->collaborationService().commitCompatibilityMutationWithPolicy(
+        mutation, [&] { _source->removeObject("Dims"); },
+        App::CollaborationCompatibilityRecomputePolicy::Deferred);
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_source->getObject("Dims"), nullptr);
+    EXPECT_NO_THROW(_source->addObject("App::FeatureTest", "AfterDeletion"));
+    if (!result.committed()) {
+        ASSERT_NE(_source->getObject("Dims"), nullptr);
+        EXPECT_FALSE(_source->getObject("Dims")->testStatus(App::ObjectStatus::Remove));
+        return;
+    }
+    _sourceObject = nullptr;
+    if (GetParam()) {
+        EXPECT_EQ(_drivenObject->ExpressionEngine.getExpressions().size(), 1U);
+        EXPECT_TRUE(_drivenObject->isTouched());
+        static_cast<void>(_driven->recompute());
+        EXPECT_TRUE(_drivenObject->isError());
+        _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
+        _drivenObject->Float.setValue(12);
+        static_cast<void>(_driven->recompute());
+        EXPECT_FALSE(_drivenObject->isError());
+        EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 12);
+    }
+}
+
+TEST_F(CrossDocumentExpressionRecomputeTest, failedRemovalDoesNotLeaveRecursiveDeletionFlag)
+{
+    _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float), nullptr);
+    auto connection = _source->signalDeletedObject.connect([](const App::DocumentObject&) {
+        throw std::runtime_error("injected removal failure");
+    });
+    EXPECT_THROW(_source->removeObject("Dims"), std::runtime_error);
+    ASSERT_EQ(_source->getObject("Dims"), _sourceObject);
+    EXPECT_FALSE(_sourceObject->testStatus(App::ObjectStatus::Remove));
+    connection.disconnect();
+    EXPECT_NO_THROW(_source->removeObject("Dims"));
+    EXPECT_EQ(_source->getObject("Dims"), nullptr);
+    _sourceObject = nullptr;
+}
+
+TEST_F(CrossDocumentExpressionRecomputeTest, sourceRemovalWhileDependentRecomputesRaisesAndCanRetry)
+{
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    _driven->setStatus(App::Document::Recomputing, true);
+    try {
+        _source->removeObject("Dims");
+        FAIL() << "removed an external source during dependent recompute";
+    }
+    catch (const Base::Exception& error) {
+        EXPECT_NE(std::string(error.what()).find("dependent document"), std::string::npos)
+            << error.what();
+    }
+    _driven->setStatus(App::Document::Recomputing, false);
+    ASSERT_EQ(_source->getObject("Dims"), _sourceObject);
+    EXPECT_FALSE(_sourceObject->testStatus(App::ObjectStatus::Remove));
+    EXPECT_NO_THROW(_source->removeObject("Dims"));
+    EXPECT_EQ(_source->getObject("Dims"), nullptr);
+    _sourceObject = nullptr;
+}
+
+INSTANTIATE_TEST_SUITE_P(Round24, CrossDocumentSourceDeletionTest, ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) {
+        return info.param ? "DefectActiveBinding" : "HappyClearedBinding";
+    });
+
 TEST_F(CrossDocumentExpressionRecomputeTest,
        collaborativeCommitTellsTheCallerToRecomputeDirectly)
 {
@@ -515,6 +599,20 @@ protected:
     App::FeatureTestColumn* profile {};
     App::FeatureTestColumn* driven {};
 };
+
+TEST_F(DerivedExternalExpressionTest, successfulEvaluationReleasesSourceRestriction)
+{
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    const auto result = apply(*operation);
+    ASSERT_TRUE(result.committed()) << result.message;
+    // A native structural mutation after evaluation checks that the capture
+    // depth returned to zero; retaining the operation must not retain pins.
+    ASSERT_NO_THROW(_source->addObject("App::FeatureTest", "AfterEvaluation"));
+    EXPECT_NO_THROW(_source->removeObject("AfterEvaluation"));
+    EXPECT_EQ(_source->getObject("AfterEvaluation"), nullptr);
+}
 
 TEST_F(DerivedExternalExpressionTest, cleanSourceWithDirtyAncestorIsRefused)
 {
