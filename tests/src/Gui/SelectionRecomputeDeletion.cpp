@@ -385,3 +385,49 @@ TEST_F(SelectionRecomputeDeletionTest, removingOneSubelementPreservesOtherRows)
     Gui::Selection().rmvSelection(doc->getName(), "Elements");
     EXPECT_EQ(view->selectionView->count(), 0);
 }
+
+TEST_F(SelectionRecomputeDeletionTest, personalSelectionSurvivesUnrelatedDeletion)
+{
+    doc->addObject("App::FeatureTest", "Target");
+    doc->addObject("App::FeatureTest", "Other");
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    Gui::PersonalViewContext context;
+    context.selectionPaths = {"Target", "Target.Face1"};
+    guiDoc->storePersonalViewContext("actor", context);
+    doc->removeObject("Other");
+    EXPECT_EQ(guiDoc->personalViewContext("actor"), context);
+}
+
+TEST_F(SelectionRecomputeDeletionTest, personalSelectionRetiredByDeletionAndHistory)
+{
+    doc->addObject("App::FeatureTest", "Target");
+    doc->addObject("App::FeatureTest", "TargetSibling");
+    auto* guiDoc = Gui::Application::Instance->getDocument(doc);
+    ASSERT_NE(guiDoc, nullptr);
+    Gui::PersonalViewContext context;
+    context.selectionPaths = {"Target", "Target.Face1", "TargetSibling"};
+    context.preselectionPath = "Target.Edge1";
+    guiDoc->storePersonalViewContext("actor-a", context);
+    guiDoc->storePersonalViewContext("actor-b", context);
+    ASSERT_TRUE(Gui::Selection().addSelection(doc->getName(), "Target"));
+    const auto expectRetired = [&] {
+        EXPECT_FALSE(Gui::Selection().hasSelection());
+        for (const auto* actor : {"actor-a", "actor-b"}) {
+            const auto stored = guiDoc->personalViewContext(actor);
+            ASSERT_TRUE(stored);
+            EXPECT_EQ(stored->selectionPaths, std::vector<std::string> {"TargetSibling"});
+            EXPECT_FALSE(stored->preselectionPath);
+        }
+    };
+    doc->openTransaction("delete selected");
+    doc->removeObject("Target");
+    doc->commitTransaction();
+    expectRetired();
+    ASSERT_TRUE(doc->undo());
+    expectRetired();
+    ASSERT_TRUE(doc->redo());
+    expectRetired();
+    doc->addObject("App::FeatureTest", "Target");
+    expectRetired();
+}

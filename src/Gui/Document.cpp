@@ -1196,6 +1196,10 @@ void Document::slotNewObject(const App::DocumentObject& Obj)
 
 void Document::slotDeletedObject(const App::DocumentObject& Obj)
 {
+    // Personal selections have the same object lifetime as native Selection.
+    // Retire paths at deletion so undo and same-name recreation cannot adopt
+    // the old selection, including actors that do not read while it is absent.
+    d->personalViewContexts.retireObjectSelection(Obj.getNameInDocument());
     // cycling to all views of the document
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (!viewProvider) {

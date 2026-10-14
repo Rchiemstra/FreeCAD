@@ -161,6 +161,9 @@ public:
     /** Remove actorId; return false when it was already absent. */
     [[nodiscard]] bool remove(const std::string& actorId);
 
+    /** Retire selections rooted at a deleted object in every actor context. */
+    void retireObjectSelection(const std::string& objectName);
+
     [[nodiscard]] bool contains(const std::string& actorId) const;
     [[nodiscard]] std::size_t actorCount() const;
 

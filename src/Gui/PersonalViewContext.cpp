@@ -2,6 +2,7 @@
 
 #include "PersonalViewContext.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -107,6 +108,22 @@ bool PersonalViewContextStore::contains(const std::string& actorId) const
     requireActorId(actorId);
     std::lock_guard<std::mutex> guard(_contextsMutex);
     return _contexts.find(actorId) != _contexts.end();
+}
+
+void PersonalViewContextStore::retireObjectSelection(const std::string& objectName)
+{
+    const auto targetsObject = [&](const std::string& path) {
+        return path == objectName
+            || (path.starts_with(objectName) && path.size() > objectName.size()
+                && path[objectName.size()] == '.');
+    };
+    std::lock_guard<std::mutex> guard(_contextsMutex);
+    for (auto& [actor, context] : _contexts) {
+        std::erase_if(context.selectionPaths, targetsObject);
+        if (context.preselectionPath && targetsObject(*context.preselectionPath)) {
+            context.preselectionPath.reset();
+        }
+    }
 }
 
 std::size_t PersonalViewContextStore::actorCount() const
