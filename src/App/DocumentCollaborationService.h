@@ -41,6 +41,7 @@ struct RecoverySnapshotSaveOptions;
 namespace Internal
 {
 class DocumentCollaborationServiceTestAccess;
+class GenericIsolatedRecomputeAccess;
 
 struct CollaborationServiceLifetimeGate
 {
@@ -49,6 +50,8 @@ struct CollaborationServiceLifetimeGate
     std::size_t activeAccesses {0};
     std::unordered_map<std::thread::id, std::size_t> accessOwners;
     bool sealed {false};
+    // Only dereference after acquiring an unsealed lifecycle admission.
+    Document* document {nullptr};
 };
 }  // namespace Internal
 
@@ -228,6 +231,7 @@ private:
     // the private native controls stay behind the coordinator.
     friend class DocumentExecutionLane;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+    friend class Internal::GenericIsolatedRecomputeAccess;
     // Gui integration tests supply a serialize hook without a production GUI wait.
     friend class Gui::Test::SharedPresentationSerializeTestAccess;
     friend AppExport bool writeRecoverySnapshotToTransientDir(
@@ -238,6 +242,11 @@ private:
     {
     public:
         explicit LifecyclePin(const DocumentCollaborationService& service);
+        explicit LifecyclePin(std::shared_ptr<Internal::CollaborationServiceLifetimeGate> gate);
+        [[nodiscard]] Document* document() const noexcept
+        {
+            return _pinned ? const_cast<Document*>(_document) : nullptr;
+        }
         ~LifecyclePin();
 
         LifecyclePin(const LifecyclePin&) = delete;

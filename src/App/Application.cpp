@@ -1041,10 +1041,10 @@ void Application::registerCollaborationServiceLifetime(
     std::lock_guard lock(_collaborationServiceLifetimeMutex);
     const auto [position, inserted] = _collaborationServiceLifetimeGates.emplace(
         &service, std::make_shared<Internal::CollaborationServiceLifetimeGate>());
-    static_cast<void>(position);
     if (!inserted) {
         throw Base::RuntimeError("duplicate collaboration service lifetime registration");
     }
+    position->second->document = &service.document();
 }
 
 std::shared_ptr<Internal::CollaborationServiceLifetimeGate>

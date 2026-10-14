@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "CollaborativeOperation.h"
 #include "Document.h"
+#include "DocumentCollaborationService.h"
 #include "DocumentObject.h"
 #include "GeometryWorkerOperationRegistry.h"
 #include "Link.h"
@@ -54,6 +55,73 @@ namespace App::Internal
 class GenericIsolatedRecomputeAccess
 {
 public:
+    // A document lane may read a foreign source only inside this pinned,
+    // nonblocking serialization boundary. Never dispatch while retaining the
+    // dependent's commit lock, and never inspect source objects before locking.
+    class SourceReadGuard
+    {
+    public:
+        SourceReadGuard(const Document& reader, Document& source)
+            : SourceReadGuard(reader, source.collaborationService().lifetimeGate())
+        {}
+
+        SourceReadGuard(const Document& reader,
+                        std::shared_ptr<CollaborationServiceLifetimeGate> gate)
+            : _pin(std::move(gate))
+        {
+            if (!reader.isCollaborationOwnerThread() || !_pin) {
+                refuse();
+            }
+            _source = _pin.document();
+            _lock = std::unique_lock(_source->collaborationCommitMutex(), std::try_to_lock);
+            if (!_lock.owns_lock()
+                || _source->collaborationIdentity().state != DocumentLifecycleState::Live
+                || _source->testStatus(Document::Recomputing)
+                || _source->testStatus(Document::Restoring)
+                || _source->testStatus(Document::Importing)
+                || _source->testStatus(Document::PartialDoc)
+                || _source->collaborationStableReadBlocked()
+                || _source->recomputeCoordinator().hasUnresolvedWork()) {
+                refuse();
+            }
+            // A clean referenced object can still have a dirty ancestor.
+            // Refuse all dirty work in the source document conservatively.
+            for (const auto* object : _source->getObjects()) {
+                if (object->isTouched() || object->mustRecompute() || object->isError()) {
+                    refuse();
+                }
+            }
+            _source->beginCollaborationStableReadCapture();
+        }
+
+        ~SourceReadGuard()
+        {
+            _source->finishCollaborationStableReadCapture();
+        }
+
+        Document& document() const noexcept
+        {
+            return *_source;
+        }
+
+        static std::weak_ptr<CollaborationServiceLifetimeGate> lifetimeGate(Document& source)
+        {
+            return source.collaborationService().lifetimeGate();
+        }
+
+    private:
+        [[noreturn]] static void refuse()
+        {
+            throw std::invalid_argument(
+                "generic recompute has an unresolved cross-document dependency; "
+                "external source is not at a stable serialized boundary");
+        }
+
+        DocumentCollaborationService::LifecyclePin _pin;
+        Document* _source {nullptr};
+        std::unique_lock<std::recursive_mutex> _lock;
+    };
+
     static int execute(Document& document, DocumentObject& feature)
     {
         if (!document.testStatus(Document::TempDoc)
@@ -1376,14 +1444,32 @@ private:
     mutable bool _counted {true};
 };
 
+struct SettledExternalInput
+{
+    std::weak_ptr<App::Internal::CollaborationServiceLifetimeGate> lifetimeGate;
+    App::DocumentIdentity documentIdentity;
+    std::string objectName;
+    std::string objectIdentity;
+    App::DocumentPublicationSequence publicationSequence;
+};
+
+App::DocumentPublicationSequence sourcePublicationSequence(const App::Document& source)
+{
+    const auto identity = source.collaborationIdentity();
+    return source.collaborationRevisions().pollPublications(
+        {identity.instanceId, identity.lifecycleEpoch, 0}, 0).latestSequence;
+}
+
 class GenericRecomputeInProcessOperation final: public App::CollaborativeOperation
 {
 public:
     GenericRecomputeInProcessOperation(std::string target,
                                        std::string stableIdentity,
-                                       const bool ownerThreadRequested)
+                                       const bool ownerThreadRequested,
+                                       std::vector<SettledExternalInput> externalInputs)
         : _target(std::move(target))
         , _stableIdentity(std::move(stableIdentity))
+        , _externalInputs(std::move(externalInputs))
         , _ownerThreadRequested(ownerThreadRequested)
     {}
 
@@ -1395,6 +1481,25 @@ public:
     void apply(App::Document& document) const override
     {
         auto* target = requireTarget(document);
+        // Preparation retains only weak lifetime gates and stable identities.
+        // Pin and lock every source before resolving objects and revalidating.
+        // Keep all guards alive through expressions, execute and settlement.
+        std::vector<std::unique_ptr<App::Internal::GenericIsolatedRecomputeAccess::SourceReadGuard>>
+            sourceReads;
+        for (const auto& input : _externalInputs) {
+            sourceReads.push_back(std::make_unique<
+                App::Internal::GenericIsolatedRecomputeAccess::SourceReadGuard>(
+                    document, input.lifetimeGate.lock()));
+            auto* source = &sourceReads.back()->document();
+            auto* object = source->getObject(input.objectName.c_str());
+            if (source->collaborationIdentity() != input.documentIdentity || !object
+                || source->collaborationObjectIdentity(*object) != input.objectIdentity
+                || sourcePublicationSequence(*source) != input.publicationSequence) {
+                throw std::invalid_argument(
+                    "generic recompute has an unresolved cross-document dependency; "
+                    "external source changed before evaluation");
+            }
+        }
         // A target that never opts into worker execution must still be here at
         // commit time -- that is the contract this operation was prepared
         // under. When the caller asked for the owner thread, or an un-opted
@@ -1496,6 +1601,7 @@ private:
 
     std::string _target;
     std::string _stableIdentity;
+    std::vector<SettledExternalInput> _externalInputs;
     bool _ownerThreadRequested {false};
     mutable bool _applied {false};
     mutable bool _failed {false};
@@ -1619,7 +1725,9 @@ std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffe
 std::vector<App::DocumentObject*> collectClosure(
     const App::Document& document,
     App::DocumentObject& target,
-    const bool settledOwnerInputs = false)
+    const bool settledOwnerInputs = false,
+    std::vector<SettledExternalInput>* externalInputs = nullptr,
+    const bool validateWorkerTypes = true)
 {
     std::vector<App::DocumentObject*> pending {&target};
     std::unordered_set<App::DocumentObject*> seen;
@@ -1635,38 +1743,42 @@ std::vector<App::DocumentObject*> collectClosure(
             throw std::invalid_argument(
                 "generic recompute has an unresolved cross-document dependency");
         }
-        if (!object->canRecomputeOnWorker()) {
-            throw std::invalid_argument(
-                "generic recompute object has not opted into isolated execution: "
-                + std::string(object->getNameInDocument()));
-        }
-        std::unique_ptr<App::DocumentObject> registeredType(
-            static_cast<App::DocumentObject*>(object->getTypeId().createInstance()));
-        const auto* registeredObject = registeredType.get();
-        if (!registeredObject || typeid(*registeredObject) != typeid(*object)) {
-            throw std::invalid_argument(
-                "generic recompute object runtime type is not serializable: "
-                + std::string(object->getNameInDocument()));
+        if (validateWorkerTypes) {
+            if (!object->canRecomputeOnWorker()) {
+                throw std::invalid_argument(
+                    "generic recompute object has not opted into isolated execution: "
+                    + std::string(object->getNameInDocument()));
+            }
+            std::unique_ptr<App::DocumentObject> registeredType(
+                static_cast<App::DocumentObject*>(object->getTypeId().createInstance()));
+            const auto* registeredObject = registeredType.get();
+            if (!registeredObject || typeid(*registeredObject) != typeid(*object)) {
+                throw std::invalid_argument(
+                    "generic recompute object runtime type is not serializable: "
+                    + std::string(object->getNameInDocument()));
+            }
         }
         closure.push_back(object);
         for (auto* dependency : object->getOutList()) {
             if (!dependency || dependency->getDocument() != &document) {
-                // An existing expression can consume a settled external value
-                // on the owner thread when a local profile edit re-executes
-                // its feature. This does not serialize an external closure or
-                // admit a newly changed binding, dirty source, or native link.
-                if (settledOwnerInputs && dependency
-                    && dependency->isAttachedToDocument()
-                    && dependency->getDocument()
-                    && !dependency->isTouched() && !dependency->mustRecompute()
-                    && !dependency->isError()
+                if (settledOwnerInputs && dependency && externalInputs
                     && !object->ExpressionEngine.isTouched()) {
                     const auto nativeInputs = object->getOutListProp(
                         App::DocumentObject::OutListNoExpression);
-                    if (std::ranges::none_of(nativeInputs, [dependency](const auto& edge) {
+                    auto* source = dependency->getDocument();
+                    if (source && std::ranges::none_of(nativeInputs, [dependency](const auto& edge) {
                             return edge.toObj == dependency;
                         })) {
-                        continue;
+                        App::Internal::GenericIsolatedRecomputeAccess::SourceReadGuard
+                            read(document, *source);
+                        if (dependency->isAttachedToDocument()) {
+                            externalInputs->push_back({
+                                read.lifetimeGate(*source),
+                                source->collaborationIdentity(), dependency->getNameInDocument(),
+                                source->collaborationObjectIdentity(*dependency),
+                                sourcePublicationSequence(*source)});
+                            continue;
+                        }
                     }
                 }
                 throw std::invalid_argument(
@@ -1787,10 +1899,42 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     // and -- venueForcedByClosure -- a target that did opt in but whose
     // dependency closure contains something that did not, so the worker
     // cannot reproduce the job at all.
+    const bool derivedCoordinatorRecompute =
+        derivedCoordinatorMode != intent.arguments.end();
+    if (derivedCoordinatorRecompute && derivedCoordinatorMode->second != "1") {
+        throw std::invalid_argument("generic recompute derived pass mode is invalid");
+    }
+    std::vector<SettledExternalInput> externalInputs;
+    if (derivedCoordinatorRecompute && ownerThreadExecution
+        && !document.isCollaborationOwnerThread()) {
+        throw std::invalid_argument(
+            "generic recompute has an unresolved cross-document dependency; "
+            "derived external reads require the document owner thread");
+    }
     const auto prepareOwnerThreadExecution = [&document, &targetName, target,
                                               preserveLegacyRevisionSemantics,
-                                              ownerThreadExecution](
+                                              ownerThreadExecution, derivedCoordinatorRecompute,
+                                              &externalInputs](
                                                  bool venueForcedByClosure = false) {
+        if (derivedCoordinatorRecompute) {
+            // Settled expression inputs may be read on the owner thread.
+            // Changed bindings and unsettled external inputs remain refusals.
+            try {
+                static_cast<void>(collectClosure(document, *target, /*settledOwnerInputs=*/true,
+                                                 &externalInputs,
+                                                 !venueForcedByClosure && target->canRecomputeOnWorker()));
+            }
+            catch (const std::invalid_argument& error) {
+                const std::string_view text(error.what());
+                if (text.find("unresolved cross-document dependency")
+                    != std::string_view::npos) {
+                    throw std::invalid_argument(
+                        "generic recompute has an unresolved cross-document dependency; "
+                        "recompute the document directly, outside this collaborative commit");
+                }
+                throw;
+            }
+        }
         // The object has not opted into worker execution, so its execute()
         // cannot be reproduced in the detached process at all: for every
         // ordinary Python scripted feature the behaviour lives in a proxy the
@@ -1861,14 +2005,14 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         // when the closure forced it, so either one satisfies the guard.
         const bool targetOptOutNotRequired = ownerThreadExecution || venueForcedByClosure;
         App::CollaborativeOperationPreparation::DetachedTask task =
-            [targetName, stableIdentity, targetOptOutNotRequired](
+            [targetName, stableIdentity, targetOptOutNotRequired, externalInputs](
                 const std::stop_token stopToken) {
                 if (stopToken.stop_requested()) {
                     throw std::runtime_error(
                         "generic recompute in-process preparation was cancelled");
                 }
                 return std::make_unique<const GenericRecomputeInProcessOperation>(
-                    targetName, stableIdentity, targetOptOutNotRequired);
+                    targetName, stableIdentity, targetOptOutNotRequired, externalInputs);
             };
         return App::CollaborativeOperationPreparation {std::move(reads),
                                                        std::move(writes),
@@ -1877,11 +2021,6 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                                                        App::PreparationPolicy::DetachedInProcess};
     };
 
-    const bool derivedCoordinatorRecompute =
-        derivedCoordinatorMode != intent.arguments.end();
-    if (derivedCoordinatorRecompute && derivedCoordinatorMode->second != "1") {
-        throw std::invalid_argument("generic recompute derived pass mode is invalid");
-    }
     if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract
         && !derivedCoordinatorRecompute) {
         return prepareOwnerThreadExecution();
@@ -1939,23 +2078,6 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         if (derivedCoordinatorRecompute
             && !closureOptsIntoWorkerExecution(document, *target)) {
             return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
-        }
-        if (derivedCoordinatorRecompute) {
-            // Settled expression inputs may be read on the owner thread.
-            // Changed bindings and unsettled external inputs remain refusals.
-            try {
-                static_cast<void>(collectClosure(document, *target, /*settledOwnerInputs=*/true));
-            }
-            catch (const std::invalid_argument& error) {
-                const std::string_view text(error.what());
-                if (text.find("unresolved cross-document dependency")
-                    != std::string_view::npos) {
-                    throw std::invalid_argument(
-                        "generic recompute has an unresolved cross-document dependency; "
-                        "recompute the document directly, outside this collaborative commit");
-                }
-                throw;
-            }
         }
         return prepareOwnerThreadExecution();
     }

@@ -263,8 +263,12 @@ Result DocumentCollaborationService::invokeCollaborationOnDocumentThread(
 
 DocumentCollaborationService::LifecyclePin::LifecyclePin(
     const DocumentCollaborationService& service)
-    : _gate(service.lifetimeGate())
-    , _document(&service.document())
+    : LifecyclePin(service.lifetimeGate())
+{}
+
+DocumentCollaborationService::LifecyclePin::LifecyclePin(
+    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> gate)
+    : _gate(std::move(gate))
 {
     if (!_gate) {
         return;
@@ -274,6 +278,7 @@ DocumentCollaborationService::LifecyclePin::LifecyclePin(
         if (_gate->sealed) {
             return;
         }
+        _document = _gate->document;
         ++_gate->activeAccesses;
         ++_gate->accessOwners[std::this_thread::get_id()];
     }
