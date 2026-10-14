@@ -436,7 +436,8 @@ void PropertyEditor::closeTransaction()
     if (!doc) {
         return;
     }
-    if (doc->getBookedTransactionID() == transactionID) {
+    // A zero ID means this editor has no transaction to close.
+    if (transactionID != 0 && doc->getBookedTransactionID() == transactionID) {
         if (autoupdate) {
             recomputeDocument(doc);
         }
