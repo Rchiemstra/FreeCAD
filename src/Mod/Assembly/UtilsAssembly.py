@@ -1467,12 +1467,38 @@ def _joint_axis_alignment(joint):
 
 
 def jointRelationError(joint, tolerance=1e-4):
-    """Reason a solved orientation joint does not hold, or None.
+    """Reason a checked solved joint does not hold, or None.
 
-    Only Parallel and Perpendicular are checked. Other joint types stay on the
-    solver status so a redundant-but-satisfied constraint is not reported.
+    Check Fixed, planar Distance, Parallel and Perpendicular relations, since
+    the solver can discard any of their conflicting constraints as redundant.
+    Other distance geometries continue to use the native solver status.
     """
     jtype = getattr(joint, "JointType", "")
+    if not isRefValid(joint.Reference1, 1) or not isRefValid(joint.Reference2, 1):
+        return None
+    plc1 = getJcsGlobalPlc(joint.Placement1, joint.Reference1)
+    plc2 = getJcsGlobalPlc(joint.Placement2, joint.Reference2)
+    if jtype == "Fixed":
+        if not plc1.isSame(plc2, tolerance):
+            return "fixed coordinate systems differ"
+        return None
+    if jtype == "Distance":
+        # Use the same planar classification and signed JCS-Z separation as
+        # AssemblyObject::makeMbdJointDistance (ASMTRevCylJoint::offset).
+        for ref in (joint.Reference1, joint.Reference2):
+            obj = getObject(ref)
+            element = getElementName(ref[1][0])
+            if obj is None or not element.startswith("Face"):
+                return None
+            face = obj.Shape.getElement(element)
+            if not isinstance(face.Surface, Part.Plane):
+                return None
+        axis = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+        actual = (plc2.Base - plc1.Base).dot(axis)
+        expected = joint.Distance.Value
+        if abs(actual - expected) > tolerance:
+            return "distance {:.6f} mm differs from {:.6f} mm".format(actual, expected)
+        return None
     alignment = _joint_axis_alignment(joint)
     if alignment is None:
         return None
@@ -1486,7 +1512,7 @@ def jointRelationError(joint, tolerance=1e-4):
 def violatedJointLabels(assembly):
     """Labels of joints whose relation does not hold after a solve.
 
-    MbD can drop a conflicting orientation constraint as redundant and still
+    MbD can drop a conflicting constraint as redundant and still
     report success. solve() then returns the conflicting-constraints code and
     names these joints.
     """

@@ -924,6 +924,32 @@ class TestCore(AssemblyTestBase):
             ),
         )
 
+    def _fixed_distance_fixture(self, distance):
+        base = self.assembly.newObject("Part::Box", "DistanceBase")
+        lid = self.assembly.newObject("Part::Box", "DistanceLid")
+        lid.Placement.Base = App.Vector(30, 0, 0)
+        self.doc.recompute()
+        Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+        refs = (Assembly.makeJointReference(base, "Face1"),
+                Assembly.makeJointReference(lid, "Face1"))
+        Assembly.createJoint(self.assembly, "Fixed", *refs, solve=True)
+        joint = Assembly.createJoint(self.assembly, "Distance", *refs,
+                                     Distance=distance, solve=False, presolve=False)
+        return joint
+
+    def test_api_satisfied_fixed_distance_solves(self):
+        joint = self._fixed_distance_fixture(0)
+        self.assertEqual(self.assembly.solve(False), 0)
+        self.assertIsNone(UtilsAssembly.jointRelationError(joint))
+
+    def test_api_contradictory_fixed_distance_fails(self):
+        joint = self._fixed_distance_fixture(100)
+        status = self.assembly.solve(False)
+        details = [(j.Name, j.JointType, UtilsAssembly.jointRelationError(j))
+                   for j in self.assembly.Joints if hasattr(j, "JointType")]
+        self.assertEqual(status, -3, (UtilsAssembly.__file__, details))
+        self.assertTrue(UtilsAssembly.violatedJointLabels(self.assembly))
+
     def test_api_parallel_and_perpendicular_joints_hold(self):
         """A single parallel or perpendicular joint solves and the relation holds."""
         for joint_type, rotation, limit in (
