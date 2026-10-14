@@ -65,9 +65,18 @@ protected:
             _guiDocument->getViewProvider(_document->getObject("ColorFeature")));
         ASSERT_NE(_bodyView, nullptr);
         ASSERT_NE(_featureView, nullptr);
+        // Use an explicit material rather than the preference-dependent default.
+        // In a fresh profile that default matches the empty-material sentinel,
+        // which ViewProviderGeometryObject intentionally does not apply.
+        auto material = _body->getMaterialAppearance();
+        material.diffuseColor = Base::Color(0.4F, 0.5F, 0.6F);
+        _body->setMaterialAppearance(material);
+        Gui::Test::recomputeWithoutBlockingGui(*_document);
         // Finish setup catch-up before giving the feature its caller-set color.
         _guiDocument->catchUpIdleLivePresentation();
         QApplication::processEvents();
+        ASSERT_EQ(_body->getMaterialAppearance().diffuseColor, material.diffuseColor);
+        ASSERT_EQ(_bodyView->ShapeAppearance[0].diffuseColor, material.diffuseColor);
         Base::Interpreter().runString("feature.ViewObject.ShapeColor = (1.0, 0.0, 0.0)");
         ASSERT_EQ(_featureView->ShapeAppearance[0].diffuseColor, red);
     }
