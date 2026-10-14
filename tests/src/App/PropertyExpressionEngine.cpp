@@ -4,10 +4,12 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <thread>
 #include <string>
 
 #include "Base/Quantity.h"
+#include "Base/Exception.h"
 
 #include "App/Application.h"
 #include "App/Document.h"
@@ -407,13 +409,23 @@ protected:
         ASSERT_TRUE(_source->save());
     }
 
-    App::CollaborativeOperationPreparation prepare()
+    App::CollaborativeOperationPreparation prepareOnCurrentThread()
     {
         App::Internal::ensureGenericIsolatedRecomputeRegistered();
         return App::CollaborativeOperationRegistry::instance().prepare(*_driven,
             {std::string(App::GenericIsolatedRecomputeOperationType),
              {{"feature", "DrivenColumn"}, {"force_execution", "1"},
               {"owner_thread_execution", "1"}, {"derived_coordinator_recompute", "1"}}});
+    }
+
+    App::CollaborativeOperationPreparation prepare()
+    {
+        std::optional<App::CollaborativeOperationPreparation> preparation;
+        static_cast<void>(_driven->collaborationService().runOnOwnerThread([&] {
+            preparation.emplace(prepareOnCurrentThread());
+            return true;
+        }));
+        return std::move(*preparation);
     }
 
     App::DocumentCommitResult apply(const App::CollaborativeOperation& operation)
@@ -512,6 +524,23 @@ TEST_F(DerivedExternalExpressionTest, settledSourceMutationAfterPreparationIsRef
     expectRefusal(apply(*operation));
 }
 
+TEST_F(DerivedExternalExpressionTest, ownerFallbackStillRefusesChangedExternalSource)
+{
+    auto* unopted = _driven->addObject("App::FeaturePython", "OwnerOnlyInput");
+    ASSERT_FALSE(unopted->canRecomputeOnWorker());
+    auto* link = dynamic_cast<App::PropertyLink*>(
+        driven->addDynamicProperty("App::PropertyLink", "OwnerOnlyInput"));
+    ASSERT_NE(link, nullptr);
+    link->setValue(unopted);
+    static_cast<void>(_driven->recompute());
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    source->Column.setValue("E");
+    static_cast<void>(_source->recompute());
+    expectRefusal(apply(*operation));
+}
+
 TEST_F(DerivedExternalExpressionTest, sourceCloseAfterPreparationIsRefused)
 {
     auto preparation = prepare();
@@ -536,11 +565,50 @@ TEST_F(DerivedExternalExpressionTest, sourceReloadAfterPreparationIsRefused)
     expectRefusal(apply(*operation));
 }
 
+TEST_F(DerivedExternalExpressionTest, sourceReloadDuringEvaluationIsRefused)
+{
+    driven->Value.setValue(0);
+    auto preparation = prepare();
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    bool attempted = false;
+    bool refused = false;
+    auto connection = driven->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property& property) {
+            if (attempted || &property != &driven->Value) {
+                return;
+            }
+            attempted = true;
+            try {
+                _source->restore((_directory / "qa_hole.FCStd").string().c_str());
+            }
+            catch (const Base::Exception&) {
+                refused = true;
+            }
+        });
+    const auto result = apply(*operation);
+    connection.disconnect();
+    EXPECT_TRUE(attempted);
+    EXPECT_TRUE(refused) << "reload invalidated a source during evaluation";
+    EXPECT_EQ(_source->getObject("SourceColumn"), source);
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(driven->Value.getValue(), App::decodeColumn("C"));
+}
+
 TEST_F(DerivedExternalExpressionTest, foreignThreadSourceReadIsRefused)
 {
     // Both documents belong to the test thread. Unsupported foreign-thread
     // reads must be rejected before inspecting source objects or expressions.
-    std::thread foreign([&] { expectPreparationRefusal(); });
+    std::thread foreign([&] {
+        try {
+            static_cast<void>(prepareOnCurrentThread());
+            FAIL() << "accepted a foreign-thread source read";
+        }
+        catch (const std::invalid_argument& error) {
+            EXPECT_NE(std::string(error.what()).find("unresolved cross-document dependency"),
+                      std::string::npos) << error.what();
+        }
+    });
     foreign.join();
 }
 
