@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "MutationClassification.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 
 #include "Document.h"
 #include "DocumentExecutionLane.h"
@@ -634,4 +635,26 @@ App::MutationRevisionEffects App::classifyMutation(const MutationClassificationI
             return unknownMutation();
     }
     return unknownMutation();
+}
+
+App::Internal::LabelReferenceMutationTarget::LabelReferenceMutationTarget(
+    Document& source, Document& dependent)
+    : previous(&source)
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (admission.target != &source || admission.owner != std::this_thread::get_id()
+        || admission.preparedDepth == 0 || readOnlyTargetDepth(admission) != 0) {
+        throw Base::RuntimeError("label reference updates require the prepared mutation owner");
+    }
+    admission.target = &dependent;
+    admission.targetRevisionIndex = &dependent.collaborationRevisions();
+}
+
+App::Internal::LabelReferenceMutationTarget::~LabelReferenceMutationTarget()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    admission.target = previous;
+    admission.targetRevisionIndex = &previous->collaborationRevisions();
 }

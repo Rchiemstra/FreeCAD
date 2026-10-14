@@ -14,6 +14,10 @@
 
 namespace App
 {
+namespace Internal
+{
+class PreparedLabelReferenceUpdates;
+}
 
 class Document;
 class DocumentCommitCoordinator;
@@ -188,6 +192,7 @@ public:
 
 private:
     friend class DocumentCommitCoordinator;
+    friend class Internal::PreparedLabelReferenceUpdates;
 
     explicit CollaborationRevisionMutationGrant(
         const DocumentRevisionIndex& index) noexcept;

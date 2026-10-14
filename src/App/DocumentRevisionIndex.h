@@ -17,6 +17,10 @@
 
 namespace App
 {
+namespace Internal
+{
+class PreparedLabelReferenceUpdates;
+}
 
 using DocumentRevision = std::uint64_t;
 using DocumentPublicationSequence = std::uint64_t;
@@ -370,6 +374,7 @@ public:
 private:
     friend class DocumentRevisionIndex;
     friend class DocumentCommitCoordinator;
+    friend class Internal::PreparedLabelReferenceUpdates;
 
     void cancelPreparedPublication() noexcept;
     [[nodiscard]] bool commitPrepared(

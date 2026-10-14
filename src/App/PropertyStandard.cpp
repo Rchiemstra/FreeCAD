@@ -50,6 +50,7 @@
 #include "Application.h"
 #include "Document.h"
 #include "DocumentObject.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "Expression.h"
 #include "MaterialPy.h"
 #include "ObjectIdentifier.h"
@@ -1633,7 +1634,8 @@ void PropertyString::setValue(const char* newValue)
             // OnProposedLabelChange has changed the new value to what the current value is
             return;
         }
-        if (!propChanges.empty() && obj->getDocument()->getBookedTransactionID() == 0) {
+        if (!propChanges.empty() && !obj->getDocument()->hasPendingTransaction()
+            && obj->getDocument()->getBookedTransactionID() == 0) {
             commit = true;
             std::ostringstream str;
             str << "Change " << obj->getNameInDocument() << ".Label";
@@ -1646,7 +1648,10 @@ void PropertyString::setValue(const char* newValue)
     hasSetValue();
 
     for (auto& change : propChanges) {
-        change.first->Paste(*change.second);
+        if (!obj || !Internal::PreparedLabelReferenceUpdates::apply(
+                        *obj->getDocument(), *change.first, *change.second)) {
+            change.first->Paste(*change.second);
+        }
     }
 
     if (commit) {

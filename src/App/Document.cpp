@@ -84,6 +84,7 @@
 
 #include "Document.h"
 #include "ExternalSourceDependency.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "DocumentPresentationBoundary.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentHandle.h"
@@ -9101,4 +9102,191 @@ bool Document::mustExecute() const
         }
     }
     return false;
+}
+
+// Native object relabeling may rewrite properties in saved dependent documents.
+// Enlist those effects, rather than granting extension code transaction control.
+namespace App::Internal
+{
+namespace
+{
+thread_local PreparedLabelReferenceUpdates* activeLabelReferenceUpdates = nullptr;
+}
+
+struct PreparedLabelReferenceUpdates::State
+{
+    struct Participant
+    {
+        explicit Participant(Document& document)
+            : document(document), pin(document.collaborationService()),
+              lock(document.collaborationCommitMutex(), std::try_to_lock)
+        {}
+        Document& document;
+        DocumentCollaborationService::LifecyclePin pin;
+        std::unique_lock<std::recursive_mutex> lock;
+        bool suppressed {false};
+        bool barrier {false};
+        bool committed {false};
+        std::optional<DocumentRevisionPublicationReservation> reservation;
+        std::vector<DocumentRevisionObservation> published;
+    };
+    Document& source;
+    bool retainUndoHistory;
+    bool localUpdates {false};
+    std::vector<std::unique_ptr<Participant>> participants;
+};
+
+PreparedLabelReferenceUpdates::PreparedLabelReferenceUpdates(Document& source,
+                                                           bool retainUndoHistory)
+    : state(std::make_unique<State>(State {source, retainUndoHistory, false, {}}))
+{
+    if (activeLabelReferenceUpdates) {
+        throw Base::RuntimeError("prepared label reference context is already active");
+    }
+    activeLabelReferenceUpdates = this;
+}
+
+PreparedLabelReferenceUpdates::~PreparedLabelReferenceUpdates()
+{
+    rollback();
+    finish(false);
+    activeLabelReferenceUpdates = nullptr;
+}
+
+bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
+                                         const Property& value)
+{
+    auto* context = activeLabelReferenceUpdates;
+    auto* dependent = documentFromPropertyContainer(property.getContainer());
+    if (!context || &context->state->source != &source || !dependent) {
+        return false;
+    }
+    auto& state = *context->state;
+    if (dependent == &source) {
+        state.localUpdates = true;
+        return false;
+    }
+    auto found = std::find_if(state.participants.begin(), state.participants.end(),
+                             [&](const auto& entry) { return &entry->document == dependent; });
+    if (found == state.participants.end()) {
+        auto entry = std::make_unique<State::Participant>(*dependent);
+        if (!entry->pin || !entry->lock.owns_lock()
+            || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+            || dependent->collaborationStableReadBlocked()
+            || dependent->collaborationLifecycleMutationBlocked()
+            || dependent->recomputeCoordinator().hasPendingWork()
+            || dependent->testStatus(Document::Restoring)) {
+            throw Base::RuntimeError("cannot update label references: dependent document '"
+                                     + std::string(dependent->getName())
+                                     + "' has active work; retry after it ends");
+        }
+        // Own the participant before opening its barrier, so every exception
+        // is covered by the coordinator's rollback cleanup.
+        state.participants.push_back(std::move(entry));
+        auto& participant = *state.participants.back();
+        dependent->beginCollaborationCommitNotificationBarrier();
+        participant.barrier = true;
+        participant.suppressed = dependent->collaborationRevisionPublicationSuppressed();
+        dependent->setCollaborationRevisionPublicationSuppressed(true);
+        LabelReferenceMutationTarget target(source, *dependent);
+        Base::FlagToggler<bool> grant(dependent->d->collaborationTransactionControlGranted, false);
+        const int transactionId = source.d->nestedCommitParked && source.d->parkedNestedTransaction
+            ? source.d->parkedNestedTransaction->getID() : source.getTransactionID(true);
+        if (!dependent->_openTransaction("Update object label references",
+                                         transactionId, !state.retainUndoHistory)) {
+            throw Base::RuntimeError("dependent refused label reference transaction");
+        }
+    }
+    // Observers are deferred by the participant barrier. The process target
+    // remains bound and rejects writes back into the source or a third document.
+    LabelReferenceMutationTarget target(source, *dependent);
+    property.Paste(value);
+    return true;
+}
+
+bool PreparedLabelReferenceUpdates::hasLocalUpdates() const noexcept
+{
+    return state->localUpdates;
+}
+
+void PreparedLabelReferenceUpdates::prepare()
+{
+    for (auto& entry : state->participants) {
+        auto& document = entry->document;
+        LabelReferenceMutationTarget target(state->source, document);
+        document.prepareCollaborationCommitFinalization();
+        CollaborationRevisionMutationGrant grant(document.collaborationRevisions());
+        entry->reservation.emplace(document.collaborationRevisions().reservePublication(
+            {}, {{DocumentRevisionKey::unknownModelMutation(), std::nullopt}}));
+        if (!entry->reservation->ready()) {
+            throw Base::RuntimeError("dependent label reference publication was refused");
+        }
+    }
+}
+
+void PreparedLabelReferenceUpdates::commit()
+{
+    for (auto& entry : state->participants) {
+        auto& document = entry->document;
+        LabelReferenceMutationTarget target(state->source, document);
+        if (!document.commitCollaborationCommitTransaction(state->retainUndoHistory)) {
+            throw Base::RuntimeError("dependent label reference commit was refused");
+        }
+        entry->committed = true;
+        CollaborationRevisionMutationGrant grant(document.collaborationRevisions());
+        if (!entry->reservation->commitPrepared(entry->published)) {
+            document.poisonCollaborationCommit("dependent label reference publication failed");
+            throw Base::RuntimeError("dependent label reference publication failed");
+        }
+        entry->reservation.reset();
+    }
+}
+
+bool PreparedLabelReferenceUpdates::rollback() noexcept
+{
+    bool restored = true;
+    for (auto& entry : state->participants) {
+        if (!entry->barrier || entry->committed) {
+            continue;
+        }
+        try {
+            LabelReferenceMutationTarget target(state->source, entry->document);
+            entry->reservation.reset();
+            const auto result = entry->document.rollbackCollaborationTransaction();
+            if (!result.restored) {
+                entry->document.poisonCollaborationCommit(result.diagnostic.data());
+                restored = false;
+            }
+        }
+        catch (...) {
+            entry->document.poisonCollaborationCommit("label reference rollback failed");
+            restored = false;
+        }
+    }
+    return restored;
+}
+
+void PreparedLabelReferenceUpdates::finish(bool committed) noexcept
+{
+    if (activeLabelReferenceUpdates == this) {
+        activeLabelReferenceUpdates = nullptr;
+    }
+    // A stable observer may synchronously dispatch new work to a dependent's
+    // lane. Release all participant locks before replay; the barriers refuse
+    // premature admission and the lifecycle pins keep the documents alive.
+    for (auto& entry : state->participants) {
+        if (entry->barrier) {
+            entry->document.setCollaborationRevisionPublicationSuppressed(entry->suppressed);
+        }
+        if (entry->lock.owns_lock()) {
+            entry->lock.unlock();
+        }
+    }
+    for (auto& entry : state->participants) {
+        if (entry->barrier) {
+            entry->document.finishCollaborationCommitNotificationBarrier(committed);
+            entry->barrier = false;
+        }
+    }
+}
 }

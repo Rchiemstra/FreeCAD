@@ -220,6 +220,7 @@ class DocumentCollaborationConcurrencyTestAccess;
 class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
 class GenericIsolatedRecomputeAccess;
+class PreparedLabelReferenceUpdates;
 class NestedCommitBookingTestAccess;
 class DocumentExecutionLaneTestAccess;
 struct DocumentFileReplacementResult;
@@ -1730,6 +1731,7 @@ public:
     friend class Transaction;
     friend class TransactionDocumentObject;
     friend class MergeDocuments;
+    friend class Internal::PreparedLabelReferenceUpdates;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
     friend class DocumentExecutionLane;

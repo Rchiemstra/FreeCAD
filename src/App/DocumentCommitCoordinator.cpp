@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "DocumentCommitCoordinator.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "NativeRecomputeErrors.h"
 
 #include "CollaborativeOperation.h"
@@ -1028,6 +1029,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
     }
 
+    Internal::PreparedLabelReferenceUpdates labelReferenceUpdates(_document, retainUndoHistory);
     try {
         _document.beginCollaborationCommitNotificationBarrier();
     }
@@ -1049,8 +1051,15 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool preservePendingRecomputeOnRollback =
         recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred
         && preexistingPendingRecompute;
-    const auto rollbackTransaction = [this, preservePendingRecomputeOnRollback]() noexcept {
-        return rollbackNativeCommitTransaction(preservePendingRecomputeOnRollback);
+    const auto rollbackTransaction = [this, preservePendingRecomputeOnRollback,
+                                      &labelReferenceUpdates]() noexcept {
+        auto result = rollbackNativeCommitTransaction(preservePendingRecomputeOnRollback);
+        if (!labelReferenceUpdates.rollback()) {
+            result.restored = false;
+            std::snprintf(result.diagnostic.data(), result.diagnostic.size(),
+                          "dependent label reference rollback failed");
+        }
+        return result;
     };
 
     bool cleanupRequired = true;
@@ -1058,6 +1067,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         [this,
          priorSuppression,
          &rollbackTransaction,
+         &labelReferenceUpdates,
          &mutationTarget](bool* required) noexcept {
         if (!*required) {
             return;
@@ -1068,6 +1078,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
         _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
         mutationTarget.reset();
+        labelReferenceUpdates.finish(false);
         _document.finishCollaborationCommitNotificationBarrier(false);
     };
     std::unique_ptr<bool, decltype(emergencyCleanup)> cleanupGuard(&cleanupRequired,
@@ -1080,6 +1091,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         // A stable observer can synchronously resume unrelated document work.
         // Release the thread-local target before finish emits that event.
         mutationTarget.reset();
+        labelReferenceUpdates.finish(false);
         _document.finishCollaborationCommitNotificationBarrier(false);
     };
     const auto abortAndRestore = [&](DocumentCommitResult result) {
@@ -1458,6 +1470,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         auto observedStructuralEffects =
             _document.takeCollaborationObservedStructuralEffects();
         effects = declaredEffects;
+        if (labelReferenceUpdates.hasLocalUpdates()) {
+            effects.push_back({DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+        }
         effects.insert(effects.end(),
                        observedStructuralEffects.begin(),
                        observedStructuralEffects.end());
@@ -1503,6 +1518,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
 
     try {
+        labelReferenceUpdates.prepare();
         _document.prepareCollaborationCommitFinalization();
     }
     catch (const Base::Exception& exception) {
@@ -1610,6 +1626,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                               edit,
                                               "native transaction commit was refused"));
         }
+        labelReferenceUpdates.commit();
     }
     catch (...) {
         reservation->cancel();
@@ -1644,6 +1661,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "native transaction committed but semantic revision publication was denied");
         mutationTarget.reset();
         restoreSuppression();
+        labelReferenceUpdates.finish(true);
         _document.finishCollaborationCommitNotificationBarrier(true);
         cleanupRequired = false;
         return makeResult(
@@ -1658,6 +1676,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     // revision admission can enter the native-commit/publication interval.
     mutationTarget.reset();
     restoreSuppression();
+    labelReferenceUpdates.finish(true);
     _document.finishCollaborationCommitNotificationBarrier(true);
     cleanupRequired = false;
     return result;

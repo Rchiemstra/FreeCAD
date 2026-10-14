@@ -42,6 +42,7 @@ namespace Internal
 {
 class DocumentCollaborationServiceTestAccess;
 class GenericIsolatedRecomputeAccess;
+class PreparedLabelReferenceUpdates;
 
 struct CollaborationServiceLifetimeGate
 {
@@ -225,6 +226,7 @@ private:
     friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
     friend class Application;
+    friend class Internal::PreparedLabelReferenceUpdates;
     friend class Document;
     friend class DocumentPy;
     // The lane's Edit command opens and closes its undo transaction here, so
