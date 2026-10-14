@@ -64,14 +64,33 @@ void PersonalViewContextStore::requireActorId(const std::string& actorId)
     }
 }
 
-void PersonalViewContextStore::store(std::string actorId, PersonalViewContext context)
+PersonalViewContextStore::StoredContext PersonalViewContextStore::bindSelections(
+    PersonalViewContext context, const SelectionResolver& resolveSelection)
+{
+    StoredContext stored {std::move(context), {}};
+    if (resolveSelection) {
+        for (const auto& path : stored.value.selectionPaths) {
+            stored.selections.emplace(path, resolveSelection(stored.value, path));
+        }
+        if (stored.value.preselectionPath) {
+            const auto& path = *stored.value.preselectionPath;
+            stored.selections.emplace(path, resolveSelection(stored.value, path));
+        }
+    }
+    return stored;
+}
+
+void PersonalViewContextStore::store(std::string actorId, PersonalViewContext context,
+                                    const SelectionResolver& resolveSelection)
 {
     requireActorId(actorId);
     std::lock_guard<std::mutex> guard(_contextsMutex);
-    _contexts.insert_or_assign(std::move(actorId), std::move(context));
+    _contexts.insert_or_assign(std::move(actorId),
+                               bindSelections(std::move(context), resolveSelection));
 }
 
-bool PersonalViewContextStore::update(std::string actorId, PersonalViewContext context)
+bool PersonalViewContextStore::update(std::string actorId, PersonalViewContext context,
+                                     const SelectionResolver& resolveSelection)
 {
     requireActorId(actorId);
     std::lock_guard<std::mutex> guard(_contextsMutex);
@@ -80,7 +99,7 @@ bool PersonalViewContextStore::update(std::string actorId, PersonalViewContext c
         return false;
     }
 
-    found->second = std::move(context);
+    found->second = bindSelections(std::move(context), resolveSelection);
     return true;
 }
 
@@ -93,7 +112,7 @@ std::optional<PersonalViewContext> PersonalViewContextStore::snapshot(
     if (found == _contexts.end()) {
         return std::nullopt;
     }
-    return found->second;
+    return found->second.value;
 }
 
 bool PersonalViewContextStore::remove(const std::string& actorId)
@@ -110,19 +129,26 @@ bool PersonalViewContextStore::contains(const std::string& actorId) const
     return _contexts.find(actorId) != _contexts.end();
 }
 
-void PersonalViewContextStore::retireObjectSelection(const std::string& objectName)
+void PersonalViewContextStore::retireObjectSelection(std::uintptr_t objectIdentity)
 {
-    const auto targetsObject = [&](const std::string& path) {
-        return path == objectName
-            || (path.starts_with(objectName) && path.size() > objectName.size()
-                && path[objectName.size()] == '.');
-    };
+    if (!objectIdentity) {
+        return;
+    }
     std::lock_guard<std::mutex> guard(_contextsMutex);
-    for (auto& [actor, context] : _contexts) {
-        std::erase_if(context.selectionPaths, targetsObject);
-        if (context.preselectionPath && targetsObject(*context.preselectionPath)) {
-            context.preselectionPath.reset();
+    for (auto& [actor, stored] : _contexts) {
+        const auto targetsObject = [&](const std::string& path) {
+            const auto found = stored.selections.find(path);
+            return found != stored.selections.end()
+                && (found->second.first == objectIdentity
+                    || found->second.second == objectIdentity);
+        };
+        std::erase_if(stored.value.selectionPaths, targetsObject);
+        if (stored.value.preselectionPath && targetsObject(*stored.value.preselectionPath)) {
+            stored.value.preselectionPath.reset();
         }
+        std::erase_if(stored.selections, [&](const auto& entry) {
+            return entry.second.first == objectIdentity || entry.second.second == objectIdentity;
+        });
     }
 }
 

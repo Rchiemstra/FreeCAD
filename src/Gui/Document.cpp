@@ -72,6 +72,8 @@
 #include <App/DocumentWouldBlock.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/DocumentExecutionLane.h>
+#include <App/GeoFeature.h>
 #include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <App/ElementNamingUtils.h>
@@ -1196,10 +1198,9 @@ void Document::slotNewObject(const App::DocumentObject& Obj)
 
 void Document::slotDeletedObject(const App::DocumentObject& Obj)
 {
-    // Personal selections have the same object lifetime as native Selection.
-    // Retire paths at deletion so undo and same-name recreation cannot adopt
-    // the old selection, including actors that do not read while it is absent.
-    d->personalViewContexts.retireObjectSelection(Obj.getNameInDocument());
+    // Replay may follow same-name replacement. Compare the deleted identity,
+    // never resolve its old name against the current document here.
+    d->personalViewContexts.retireObjectSelection(reinterpret_cast<std::uintptr_t>(&Obj));
     // cycling to all views of the document
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (!viewProvider) {
@@ -2382,11 +2383,6 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     return result;
 }
 
-void Document::storePersonalViewContext(std::string actorId, PersonalViewContext context)
-{
-    d->personalViewContexts.store(std::move(actorId), std::move(context));
-}
-
 std::optional<PersonalViewContext>
 Document::personalViewContext(const std::string& actorId) const
 {
@@ -2448,6 +2444,43 @@ PersonalSelectionTarget parsePersonalSelectionTarget(const App::Document& docume
     }
     return target;
 }
+
+}  // namespace
+
+void Document::storePersonalViewContext(std::string actorId, PersonalViewContext context)
+{
+    // Resolve and store on the serial model owner, so no object can disappear
+    // while its binding is copied. Deferred GUI retirement needs only tokens
+    // under the store mutex, and never waits for or reads the live model.
+    if (auto* lane = d->_pcDocument->executionLane(); lane && !lane->isOwnerThread()) {
+        return lane->dispatchToOwner(
+            [this, actorId = std::move(actorId), context = std::move(context)]() mutable {
+                storePersonalViewContext(std::move(actorId), std::move(context));
+            });
+    }
+    d->personalViewContexts.store(std::move(actorId), std::move(context),
+        [this](const PersonalViewContext& value, const std::string& path) {
+            PersonalViewContextStore::SelectionIdentity identity {};
+            try {
+                // Use the same document qualification and path parsing as projection.
+                const auto target = parsePersonalSelectionTarget(*d->_pcDocument, value, path);
+                auto* root = d->_pcDocument->getObject(target.object.c_str());
+                App::ElementNamePair elementName;
+                auto* resolved = App::GeoFeature::resolveElement(
+                    root, target.subname.c_str(), elementName);
+                identity = {reinterpret_cast<std::uintptr_t>(root),
+                            reinterpret_cast<std::uintptr_t>(resolved)};
+            }
+            catch (const Base::ValueError&) {
+                // Storage remains an opaque value boundary. Invalid/foreign
+                // paths are diagnosed by projection, never matched by name.
+            }
+            return identity;
+        });
+}
+
+namespace
+{
 
 std::vector<PersonalSelectionTarget> personalSelectionTargets(
     const App::Document& document,
