@@ -27,6 +27,7 @@
 #include <Base/GeometryPyCXX.h>
 
 #include "Selection.h"
+#include "SelectionPython.h"
 #include "SelectionObject.h"
 
 // generated out of SelectionObject.pyi
@@ -43,6 +44,9 @@ std::string SelectionObjectPy::representation() const
 
 PyObject* SelectionObjectPy::remove(PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.SelectionObject.remove")) {
+        return nullptr;
+    }
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }

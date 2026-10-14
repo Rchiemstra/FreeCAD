@@ -42,6 +42,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Selection.h"
+#include "SelectionPython.h"
 #include "SelectionObject.h"
 #include "Application.h"
 #include "Document.h"
@@ -2336,23 +2337,6 @@ void SelectionSingleton::destruct()
 //**************************************************************************
 // Python stuff
 
-namespace
-{
-bool requirePythonSelectionMainThread(const char* api)
-{
-    if (App::MainThreadSignalConfig::isMainThread()) {
-        return true;
-    }
-    // Selection changes notify view providers and widgets synchronously. Reject
-    // before publishing any selection: an owner-thread callback may roll back
-    // and delete its objects when it receives this error. Throwing from notify()
-    // instead leaves selected pointers to those deleted objects, and unwinds
-    // through CPython frames without translating the C++ exception.
-    PyErr_Format(PyExc_RuntimeError, "GUI API '%s' may only be used from the main thread", api);
-    return false;
-}
-}  // namespace
-
 PyObject* SelectionSingleton::sAddSelection(PyObject* /*self*/, PyObject* args)
 {
     if (!requirePythonSelectionMainThread("FreeCADGui.Selection.addSelection")) {
@@ -2457,6 +2441,9 @@ PyObject* SelectionSingleton::sAddSelection(PyObject* /*self*/, PyObject* args)
 
 PyObject* SelectionSingleton::sUpdateSelection(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.updateSelection")) {
+        return nullptr;
+    }
     PyObject* show;
     PyObject* object;
     char* subname = nullptr;
@@ -2632,6 +2619,9 @@ PyObject* SelectionSingleton::sGetSelection(PyObject* /*self*/, PyObject* args)
 
 PyObject* SelectionSingleton::sEnablePickedList(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.enablePickedList")) {
+        return nullptr;
+    }
     PyObject* enable = Py_True;
     if (!PyArg_ParseTuple(args, "|O!", &PyBool_Type, &enable)) {
         return nullptr;
@@ -2644,6 +2634,9 @@ PyObject* SelectionSingleton::sEnablePickedList(PyObject* /*self*/, PyObject* ar
 
 PyObject* SelectionSingleton::sSetPreselection(PyObject* /*self*/, PyObject* args, PyObject* kwd)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.setPreselection")) {
+        return nullptr;
+    }
     PyObject* object;
     const char* subname = nullptr;
     float x = 0, y = 0, z = 0;
@@ -2700,6 +2693,9 @@ PyObject* SelectionSingleton::sGetPreselection(PyObject* /*self*/, PyObject* arg
 
 PyObject* SelectionSingleton::sClearPreselection(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.clearPreselection")) {
+        return nullptr;
+    }
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
@@ -2837,6 +2833,9 @@ PyObject* SelectionSingleton::sGetSelectionObject(PyObject* /*self*/, PyObject* 
 
 PyObject* SelectionSingleton::sSetSelectionStyle(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.setSelectionStyle")) {
+        return nullptr;
+    }
     int selStyle = 0;
     if (!PyArg_ParseTuple(args, "i", &selStyle)) {
         return nullptr;
@@ -2854,6 +2853,9 @@ PyObject* SelectionSingleton::sSetSelectionStyle(PyObject* /*self*/, PyObject* a
 
 PyObject* SelectionSingleton::sAddObserver(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.addObserver")) {
+        return nullptr;
+    }
     PyObject* o;
     int resolve = 1;
     if (!PyArg_ParseTuple(args, "O|i", &o, &resolve)) {
@@ -2870,6 +2872,9 @@ PyObject* SelectionSingleton::sAddObserver(PyObject* /*self*/, PyObject* args)
 
 PyObject* SelectionSingleton::sRemoveObserver(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.removeObserver")) {
+        return nullptr;
+    }
     PyObject* o;
     if (!PyArg_ParseTuple(args, "O", &o)) {
         return nullptr;
@@ -2885,6 +2890,9 @@ PyObject* SelectionSingleton::sRemoveObserver(PyObject* /*self*/, PyObject* args
 
 PyObject* SelectionSingleton::sAddSelectionGate(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.addSelectionGate")) {
+        return nullptr;
+    }
     char* filter;
     int resolve = 1;
     if (PyArg_ParseTuple(args, "s|i", &filter, &resolve)) {
@@ -2931,6 +2939,9 @@ PyObject* SelectionSingleton::sAddSelectionGate(PyObject* /*self*/, PyObject* ar
 
 PyObject* SelectionSingleton::sRemoveSelectionGate(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.removeSelectionGate")) {
+        return nullptr;
+    }
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
@@ -2966,6 +2977,9 @@ PyObject* SelectionSingleton::sSetVisible(PyObject* /*self*/, PyObject* args)
 
 PyObject* SelectionSingleton::sPushSelStack(PyObject* /*self*/, PyObject* args)
 {
+    if (!requirePythonSelectionMainThread("FreeCADGui.Selection.pushSelStack")) {
+        return nullptr;
+    }
     PyObject* clear = Py_True;
     PyObject* overwrite = Py_False;
     if (!PyArg_ParseTuple(args, "|O!O!", &PyBool_Type, &clear, &PyBool_Type, &overwrite)) {

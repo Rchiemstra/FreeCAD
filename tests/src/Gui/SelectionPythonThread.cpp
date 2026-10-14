@@ -12,6 +12,7 @@
 #include <Gui/Application.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
+#include <Gui/Selection/SelectionObjectPy.h>
 #include <src/App/InitApplication.h>
 
 #include <thread>
@@ -36,6 +37,17 @@ public:
     using SelectionSingleton::sAddSelection;
     using SelectionSingleton::sClearSelection;
     using SelectionSingleton::sRemoveSelection;
+    using SelectionSingleton::sUpdateSelection;
+    using SelectionSingleton::sSetPreselection;
+    using SelectionSingleton::sClearPreselection;
+    using SelectionSingleton::sEnablePickedList;
+    using SelectionSingleton::sSetSelectionStyle;
+    using SelectionSingleton::sAddObserver;
+    using SelectionSingleton::sRemoveObserver;
+    using SelectionSingleton::sAddSelectionGate;
+    using SelectionSingleton::sRemoveSelectionGate;
+    using SelectionSingleton::sPushSelStack;
+
 };
 
 class SelectionPythonThreadTest: public ::testing::Test
@@ -81,16 +93,28 @@ protected:
 
     void expectWorkerRejection(PyCFunction function, const char* api, bool withObject)
     {
+        PyObject* args;
+        {
+            Base::PyGILStateLocker gil;
+            args = withObject ? Py_BuildValue("(ss)", doc->getName(), "Rectangle")
+                              : PyTuple_New(0);
+        }
+        expectWorkerRejection([&](PyObject* a) { return function(nullptr, a); }, api, args);
+        Base::PyGILStateLocker gil;
+        Py_DECREF(args);
+    }
+
+    void expectWorkerRejection(const std::function<PyObject*(PyObject*)>& function,
+                               const char* api, PyObject* args)
+    {
         std::string escapedException;
         std::string pythonError;
         bool runtimeError = false;
         bool returnedNull = false;
         std::thread worker([&] {
             Base::PyGILStateLocker gil;
-            PyObject* args = withObject ? Py_BuildValue("(ss)", doc->getName(), "Rectangle")
-                                        : PyTuple_New(0);
             try {
-                PyObject* result = function(nullptr, args);
+                PyObject* result = function(args);
                 returnedNull = result == nullptr;
                 Py_XDECREF(result);
                 runtimeError = PyErr_ExceptionMatches(PyExc_RuntimeError);
@@ -111,15 +135,14 @@ protected:
                 escapedException = exception.what();
                 Base::setPythonFrameInspectionUnsafe(false);
             }
-            Py_DECREF(args);
             PyErr_Clear();
         });
         worker.join();
         EXPECT_TRUE(escapedException.empty()) << escapedException;
         EXPECT_TRUE(returnedNull);
         EXPECT_TRUE(runtimeError);
-        EXPECT_NE(pythonError.find(api), std::string::npos) << pythonError;
-        EXPECT_NE(pythonError.find("main thread"), std::string::npos) << pythonError;
+        EXPECT_EQ(pythonError, std::string("GUI API '") + api
+                                  + "' may only be used from the main thread");
     }
 
     App::Document* doc = nullptr;
@@ -164,3 +187,218 @@ TEST_F(SelectionPythonThreadTest, mainThreadPythonSelectionStillWorks)
     Py_DECREF(args);
     EXPECT_FALSE(Gui::Selection().hasSelection());
 }
+
+namespace
+{
+enum class Mutator
+{
+    Update, SetPreselection, ClearPreselection, PickedList, Style,
+    AddObserver, RemoveObserver, AddGate, RemoveGate, History, ObjectRemove
+};
+
+class RemainingSelectionMutatorTest: public SelectionPythonThreadTest,
+                                    public ::testing::WithParamInterface<Mutator>
+{
+protected:
+    void check(bool malformed)
+    {
+        auto& selection = Gui::Selection();
+        ASSERT_TRUE(selection.addSelection(doc->getName(), object->getNameInDocument()));
+        selection.setPreselect(doc->getName(), object->getNameInDocument(), "", 1, 2, 3,
+                               Gui::SelectionChanges::MsgSource::Any);
+        selection.enablePickedList(false);
+        selection.setSelectionStyle(Gui::SelectionSingleton::SelectionStyle::NormalSelection);
+
+        PyObject *probe, *args, *selectionObject, *globals, *pyObject;
+        std::function<PyObject*(PyObject*)> call;
+        const char* api = nullptr;
+        {
+            Base::PyGILStateLocker gil;
+            globals = PyDict_New();
+            PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+            PyObject* result = PyRun_String(
+                "class Probe:\n"
+                "    reads = 0\n"
+                "    events = 0\n"
+                "    def __getattribute__(self, name):\n"
+                "        type(self).reads += 1\n"
+                "        return object.__getattribute__(self, name)\n"
+                "    def addSelection(self, *args):\n"
+                "        type(self).events += 1\n"
+                "    def allow(self, *args):\n"
+                "        return True\n"
+                "probe = Probe()\n", Py_file_input, globals, globals);
+            ASSERT_NE(result, nullptr);
+            Py_DECREF(result);
+            probe = PyDict_GetItemString(globals, "probe");
+            selectionObject = Gui::SelectionObject(object).getPyObject();
+            pyObject = object->getPyObject();
+            args = PyTuple_New(0);
+            auto configure = [&](PyCFunction fn, const char* name, PyObject* a) {
+                call = [fn](PyObject* a) { return fn(nullptr, a); };
+                api = name;
+                Py_DECREF(args);
+                args = a;
+            };
+            switch (GetParam()) {
+                case Mutator::Update:
+                    configure(&SelectionPythonAccess::sUpdateSelection,
+                              "FreeCADGui.Selection.updateSelection",
+                              Py_BuildValue("(OO)", Py_False, pyObject));
+                    break;
+                case Mutator::SetPreselection:
+                    call = [](PyObject* a) {
+                        return SelectionPythonAccess::sSetPreselection(nullptr, a, nullptr);
+                    };
+                    api = "FreeCADGui.Selection.setPreselection";
+                    Py_DECREF(args);
+                    args = Py_BuildValue("(Os)", pyObject, "Face1");
+                    break;
+                case Mutator::ClearPreselection:
+                    configure(&SelectionPythonAccess::sClearPreselection,
+                              "FreeCADGui.Selection.clearPreselection", PyTuple_New(0));
+                    break;
+                case Mutator::PickedList:
+                    configure(&SelectionPythonAccess::sEnablePickedList,
+                              "FreeCADGui.Selection.enablePickedList", PyTuple_New(0));
+                    break;
+                case Mutator::Style:
+                    configure(&SelectionPythonAccess::sSetSelectionStyle,
+                              "FreeCADGui.Selection.setSelectionStyle", Py_BuildValue("(i)", 1));
+                    break;
+                case Mutator::RemoveObserver: {
+                    PyObject* a = PyTuple_Pack(1, probe);
+                    result = SelectionPythonAccess::sAddObserver(nullptr, a);
+                    ASSERT_NE(result, nullptr);
+                    Py_DECREF(result);
+                    Py_DECREF(a);
+                    [[fallthrough]];
+                }
+                case Mutator::AddObserver:
+                    configure(GetParam() == Mutator::AddObserver
+                                  ? &SelectionPythonAccess::sAddObserver
+                                  : &SelectionPythonAccess::sRemoveObserver,
+                              GetParam() == Mutator::AddObserver
+                                  ? "FreeCADGui.Selection.addObserver"
+                                  : "FreeCADGui.Selection.removeObserver", PyTuple_Pack(1, probe));
+                    break;
+                case Mutator::RemoveGate: {
+                    PyObject* a = PyTuple_Pack(1, probe);
+                    result = SelectionPythonAccess::sAddSelectionGate(nullptr, a);
+                    ASSERT_NE(result, nullptr);
+                    Py_DECREF(result);
+                    Py_DECREF(a);
+                    [[fallthrough]];
+                }
+                case Mutator::AddGate:
+                    configure(GetParam() == Mutator::AddGate
+                                  ? &SelectionPythonAccess::sAddSelectionGate
+                                  : &SelectionPythonAccess::sRemoveSelectionGate,
+                              GetParam() == Mutator::AddGate
+                                  ? "FreeCADGui.Selection.addSelectionGate"
+                                  : "FreeCADGui.Selection.removeSelectionGate",
+                              GetParam() == Mutator::AddGate ? PyTuple_Pack(1, probe)
+                                                            : PyTuple_New(0));
+                    break;
+                case Mutator::History:
+                    configure(&SelectionPythonAccess::sPushSelStack,
+                              "FreeCADGui.Selection.pushSelStack", PyTuple_New(0));
+                    break;
+                case Mutator::ObjectRemove:
+                    call = [selectionObject](PyObject* a) {
+                        return static_cast<Gui::SelectionObjectPy*>(selectionObject)->remove(a);
+                    };
+                    api = "FreeCADGui.SelectionObject.remove";
+                    break;
+            }
+            if (malformed) {
+                Py_DECREF(args);
+                args = PyTuple_Pack(5, Py_None, Py_None, Py_None, Py_None, Py_None);
+            }
+        }
+        const auto preselection = selection.getPreselection();
+        const auto gate = selection.getSelectionGate(doc);
+        const auto back = selection.selStackBackSize();
+        const auto forward = selection.selStackForwardSize();
+        Py_ssize_t refs;
+        long reads;
+        auto probeCount = [&](const char* name) {
+            PyObject* type = PyDict_GetItemString(globals, "Probe");
+            PyObject* value = PyObject_GetAttrString(type, name);
+            const long count = PyLong_AsLong(value);
+            Py_DECREF(value);
+            return count;
+        };
+        {
+            Base::PyGILStateLocker gil;
+            refs = Py_REFCNT(probe);
+            reads = probeCount("reads");
+        }
+        int notifications = 0;
+        auto record = [&](const Gui::SelectionChanges&) { ++notifications; };
+        fastsignals::scoped_connection c1 = selection.signalSelectionChanged.connect(record);
+        fastsignals::scoped_connection c2 = selection.signalSelectionChanged2.connect(record);
+        fastsignals::scoped_connection c3 = selection.signalSelectionChanged3.connect(record);
+        expectWorkerRejection(call, api, args);
+        QApplication::processEvents();
+        EXPECT_TRUE(selection.isSelected(object));
+        EXPECT_EQ(selection.getPreselection().Object, preselection.Object);
+        EXPECT_EQ(selection.getPreselection().Object.getSubName(), preselection.Object.getSubName());
+        EXPECT_EQ(selection.getPreselection().x, preselection.x);
+        EXPECT_EQ(selection.getSelectionGate(doc), gate);
+        EXPECT_FALSE(selection.needPickedList());
+        EXPECT_EQ(selection.getSelectionStyle(),
+                  Gui::SelectionSingleton::SelectionStyle::NormalSelection);
+        EXPECT_EQ(selection.selStackBackSize(), back);
+        EXPECT_EQ(selection.selStackForwardSize(), forward);
+        EXPECT_EQ(notifications, 0);
+        {
+            Base::PyGILStateLocker gil;
+            EXPECT_EQ(Py_REFCNT(probe), refs);
+            EXPECT_EQ(probeCount("reads"), reads);
+            EXPECT_EQ(probeCount("events"), 0);
+            selection.rmvSelectionGate();
+            selection.rmvPreselect();
+            // A later GUI notification proves registration/disconnection did not change.
+            selection.clearSelection();
+            selection.addSelection(doc->getName(), object->getNameInDocument());
+            EXPECT_EQ(probeCount("events"), GetParam() == Mutator::RemoveObserver ? 1 : 0);
+            PyObject* a = PyTuple_Pack(1, probe);
+            PyObject* result = SelectionPythonAccess::sRemoveObserver(nullptr, a);
+            Py_XDECREF(result);
+            Py_DECREF(a);
+            selection.rmvSelectionGate();
+            selection.rmvPreselect();
+            selection.enablePickedList(false);
+            selection.setSelectionStyle(Gui::SelectionSingleton::SelectionStyle::NormalSelection);
+            Py_DECREF(args);
+            Py_DECREF(selectionObject);
+            Py_DECREF(pyObject);
+            Py_DECREF(globals);
+        }
+    }
+};
+}
+
+TEST_P(RemainingSelectionMutatorTest, validCallPreservesStateAndNotifications)
+{
+    check(false);
+}
+
+TEST_P(RemainingSelectionMutatorTest, malformedCallRejectsBeforeParsing)
+{
+    check(true);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PythonSelection, RemainingSelectionMutatorTest,
+    ::testing::Values(Mutator::Update, Mutator::SetPreselection, Mutator::ClearPreselection,
+                      Mutator::PickedList, Mutator::Style, Mutator::AddObserver,
+                      Mutator::RemoveObserver, Mutator::AddGate, Mutator::RemoveGate,
+                      Mutator::History, Mutator::ObjectRemove),
+    ([](const ::testing::TestParamInfo<Mutator>& info) {
+        static const char* names[] = {"Update", "SetPreselection", "ClearPreselection", "PickedList",
+                                     "Style", "AddObserver", "RemoveObserver", "AddGate",
+                                     "RemoveGate", "History", "ObjectRemove"};
+        return names[static_cast<int>(info.param)];
+    }));
