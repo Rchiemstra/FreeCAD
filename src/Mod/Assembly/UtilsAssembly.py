@@ -1466,7 +1466,26 @@ def _joint_axis_alignment(joint):
     return abs(z1.dot(z2))
 
 
-def jointRelationError(joint, tolerance=1e-4):
+# Solved connector origins and distances are measured in millimetres.
+JOINT_LINEAR_TOLERANCE_MM = 1e-4
+# Angular deviations from parallel/perpendicular are measured in radians.
+JOINT_ANGULAR_TOLERANCE_RAD = 1e-4
+
+
+def _joint_direction_cosines(plc1, plc2):
+    """Native Fixed/Planar residuals: I-Y dot J-X, I-Z dot J-X/Y."""
+    y1 = plc1.Rotation.multVec(App.Vector(0, 1, 0))
+    z1 = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+    x2 = plc2.Rotation.multVec(App.Vector(1, 0, 0))
+    y2 = plc2.Rotation.multVec(App.Vector(0, 1, 0))
+    return (y1.dot(x2), z1.dot(x2), z1.dot(y2))
+
+
+def jointRelationError(
+    joint,
+    linear_tolerance_mm=JOINT_LINEAR_TOLERANCE_MM,
+    angular_tolerance_rad=JOINT_ANGULAR_TOLERANCE_RAD,
+):
     """Reason a checked solved joint does not hold, or None.
 
     Check Fixed, planar Distance, Parallel and Perpendicular relations, since
@@ -1478,13 +1497,19 @@ def jointRelationError(joint, tolerance=1e-4):
         return None
     plc1 = getJcsGlobalPlc(joint.Placement1, joint.Reference1)
     plc2 = getJcsGlobalPlc(joint.Placement2, joint.Reference2)
+    # A direction cosine constrained to zero is sin(deviation from pi/2).
+    cosine_tolerance = math.sin(angular_tolerance_rad)
     if jtype == "Fixed":
-        if not plc1.isSame(plc2, tolerance):
-            return "fixed coordinate systems differ"
+        if (plc2.Base - plc1.Base).Length > linear_tolerance_mm:
+            return "fixed coordinate system origins differ"
+        # FixedJoint::initializeGlobally constrains these three cosines to
+        # zero, allowing 180-degree reversals of any pair of connector axes.
+        if any(abs(value) > cosine_tolerance for value in _joint_direction_cosines(plc1, plc2)):
+            return "fixed coordinate system axes differ"
         return None
     if jtype == "Distance":
         # Use the same planar classification and signed JCS-Z separation as
-        # AssemblyObject::makeMbdJointDistance (ASMTRevCylJoint::offset).
+        # AssemblyObject::makeMbdJointDistance (ASMTPlanarJoint::offset).
         for ref in (joint.Reference1, joint.Reference2):
             obj = getObject(ref)
             element = getElementName(ref[1][0])
@@ -1496,15 +1521,19 @@ def jointRelationError(joint, tolerance=1e-4):
         axis = plc1.Rotation.multVec(App.Vector(0, 0, 1))
         actual = (plc2.Base - plc1.Base).dot(axis)
         expected = joint.Distance.Value
-        if abs(actual - expected) > tolerance:
+        if abs(actual - expected) > linear_tolerance_mm:
             return "distance {:.6f} mm differs from {:.6f} mm".format(actual, expected)
+        # PlanarJoint constrains I-Z dot J-X/Y to zero. Both parallel and
+        # antiparallel plane normals satisfy those native constraints.
+        if any(abs(value) > cosine_tolerance for value in _joint_direction_cosines(plc1, plc2)[1:]):
+            return "planar distance axes are not parallel"
         return None
     alignment = _joint_axis_alignment(joint)
     if alignment is None:
         return None
-    if jtype == "Parallel" and alignment < 1.0 - tolerance:
+    if jtype == "Parallel" and math.acos(min(1.0, alignment)) > angular_tolerance_rad:
         return "not parallel (alignment {:.6f})".format(alignment)
-    if jtype == "Perpendicular" and alignment > tolerance:
+    if jtype == "Perpendicular" and alignment > cosine_tolerance:
         return "not perpendicular (alignment {:.6f})".format(alignment)
     return None
 
@@ -1517,8 +1546,16 @@ def violatedJointLabels(assembly):
     names these joints.
     """
     labels = []
+    connected = {}
+    # Joints already uses native getJoints() to exclude suppressed/deactivated,
+    # invalid and self-referencing joints. Use the native connectivity traversal
+    # (including rigid clusters) to match removeUnconnectedJoints() as well.
     for joint in assembly.Joints:
-        if getattr(joint, "Suppressed", False):
+        parts = (getMovingPart(joint.Reference1), getMovingPart(joint.Reference2))
+        for part in parts:
+            if part not in connected:
+                connected[part] = assembly.isPartConnected(part)
+        if not all(connected[part] for part in parts):
             continue
         reason = jointRelationError(joint)
         if not reason:

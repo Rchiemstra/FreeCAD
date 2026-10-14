@@ -950,6 +950,86 @@ class TestCore(AssemblyTestBase):
         self.assertEqual(status, -3, (UtilsAssembly.__file__, details))
         self.assertTrue(UtilsAssembly.violatedJointLabels(self.assembly))
 
+    def test_api_flipped_fixed_joint_solves(self):
+        """Native Fixed accepts coincident frames with any two axes reversed."""
+        for axis in (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1)):
+            with self.subTest(axis=axis):
+                base = self.assembly.newObject("Part::Box", "FlippedBase")
+                lid = self.assembly.newObject("Part::Box", "FlippedLid")
+                self.doc.recompute()
+                Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+                joint = Assembly.createJoint(
+                    self.assembly,
+                    "Fixed",
+                    Assembly.makeJointReference(base, "Face6"),
+                    Assembly.makeJointReference(lid, "Face6"),
+                    solve=False,
+                    presolve=False,
+                )
+                flip = App.Placement(App.Vector(), App.Rotation(axis, 180))
+                lid.Placement = (
+                    base.Placement * joint.Placement1 * flip * joint.Placement2.inverse()
+                )
+                self.assertEqual(self.assembly.solve(False), 0)
+                self.assertIsNone(UtilsAssembly.jointRelationError(joint))
+                if axis.z == 0:
+                    # Presolve deliberately preserves opposite connector Z axes.
+                    joint.Proxy.preSolve(joint, False)
+                    self.assertEqual(self.assembly.solve(False), 0)
+                    self.assertIsNone(UtilsAssembly.jointRelationError(joint))
+
+    def test_api_disconnected_ungrounded_joint_group_solves(self):
+        """Unsatisfied joints in an ungrounded island are excluded by MbD."""
+        self._fixed_distance_fixture(0)
+        base = self.assembly.newObject("Part::Box", "FloatingBase")
+        lid = self.assembly.newObject("Part::Box", "FloatingLid")
+        lid.Placement.Base = App.Vector(30, 0, 0)
+        self.doc.recompute()
+        refs = (
+            Assembly.makeJointReference(base, "Face1"),
+            Assembly.makeJointReference(lid, "Face1"),
+        )
+        for joint_type in ("Fixed", "Distance"):
+            Assembly.createJoint(self.assembly, joint_type, *refs, solve=False, presolve=False)
+        self.assertFalse(self.assembly.isPartConnected(base))
+        self.assertFalse(self.assembly.isPartConnected(lid))
+        self.assertEqual(self.assembly.solve(False), 0)
+        self.assertEqual(UtilsAssembly.violatedJointLabels(self.assembly), [])
+
+    def test_api_planar_distance_conflicting_rotation_fails(self):
+        """Correct separation cannot hide incompatible grounded plane normals."""
+        for angle, expected_status in ((0, 0), (180, 0), (90, -3)):
+            with self.subTest(angle=angle):
+                base = self.assembly.newObject("Part::Box", "PlanarBase")
+                lid = self.assembly.newObject("Part::Box", "PlanarLid")
+                lid.Placement.Rotation = App.Rotation(App.Vector(1, 0, 0), angle)
+                self.doc.recompute()
+                for part in (base, lid):
+                    Assembly.createGroundedJoint(self.assembly, part, recompute=False)
+                refs = (
+                    Assembly.makeJointReference(base, "Face6"),
+                    Assembly.makeJointReference(lid, "Face6"),
+                )
+                plc1 = UtilsAssembly.getJcsGlobalPlc(
+                    UtilsAssembly.findPlacement(refs[0], True), refs[0]
+                )
+                plc2 = UtilsAssembly.getJcsGlobalPlc(
+                    UtilsAssembly.findPlacement(refs[1], True), refs[1]
+                )
+                axis = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+                joint = Assembly.createJoint(
+                    self.assembly,
+                    "Distance",
+                    *refs,
+                    Distance=(plc2.Base - plc1.Base).dot(axis),
+                    solve=False,
+                    presolve=False,
+                )
+                self.assertEqual(self.assembly.solve(False), expected_status)
+                self.assertEqual(
+                    UtilsAssembly.jointRelationError(joint) is None, expected_status == 0
+                )
+
     def test_api_parallel_and_perpendicular_joints_hold(self):
         """A single parallel or perpendicular joint solves and the relation holds."""
         for joint_type, rotation, limit in (
