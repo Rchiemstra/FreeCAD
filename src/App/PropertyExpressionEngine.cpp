@@ -274,7 +274,40 @@ TYPESYSTEM_SOURCE(App::PropertyExpressionEngine, App::PropertyExpressionContaine
 
 PropertyExpressionEngine::PropertyExpressionEngine()
     : validator(0)
-{}
+{
+    static const auto undoConnection = GetApplication().signalUndoDocument.connect(
+        [](const Document& source) {
+            // Source deletion retains foreign expression text, but retires its
+            // runtime graph. Undo reattaches the source before this signal. The
+            // replay admission keeps these owners pinned and locked; rebuild
+            // only runtime state, without foreign property mutation callbacks.
+            for (auto* container : _ExprContainers) {
+                auto* engine = dynamic_cast<PropertyExpressionEngine*>(container);
+                auto* owner = engine
+                    ? dynamic_cast<DocumentObject*>(engine->getContainer()) : nullptr;
+                if (!owner || !owner->isAttachedToDocument()
+                    || owner->getDocument() == &source) {
+                    continue;
+                }
+                bool affected = false;
+                for (const auto& binding : engine->expressions) {
+                    if (!binding.second.expression) {
+                        continue;
+                    }
+                    for (const auto& identifier : binding.second.expression->getIdentifiers()) {
+                        if (identifier.first.getDocument() == &source) {
+                            affected = true;
+                        }
+                    }
+                }
+                if (affected) {
+                    engine->rebuildDependencies();
+                    owner->clearOutListCache();
+                    engine->StatusBits.set(Property::Touched);
+                }
+            }
+        });
+}
 
 PropertyExpressionEngine::~PropertyExpressionEngine() = default;
 

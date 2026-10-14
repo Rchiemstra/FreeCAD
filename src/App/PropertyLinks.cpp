@@ -37,6 +37,10 @@
 #include <Base/Tools.h>
 
 #include "PropertyLinks.h"
+#include "PropertyExpressionEngine.h"
+#include "ExternalSourceDependency.h"
+#include "Expression.h"
+#include "MutationClassification.h"
 #include "Application.h"
 #include "Document.h"
 #include "DocumentObject.h"
@@ -4714,6 +4718,43 @@ PropertyXLink::getDocumentInList(App::Document* doc)
     return ret;
 }
 
+std::set<Document*> App::externalSourceDependentDocuments(
+    const Document& source, bool includeRetiredExpressions)
+{
+    std::set<Document*> dependents;
+    for (auto& entry : _DocInfoMap) {
+        if (entry.second->pcDoc != &source) {
+            continue;
+        }
+        for (auto* link : entry.second->links) {
+            auto* owner = dynamic_cast<DocumentObject*>(link->getContainer());
+            if (owner && owner->isAttachedToDocument() && owner->getDocument() != &source) {
+                dependents.insert(owner->getDocument());
+            }
+        }
+    }
+    if (includeRetiredExpressions) {
+        for (auto* document : GetApplication().getDocuments()) {
+            if (document == &source) {
+                continue;
+            }
+            for (auto* owner : document->getObjects()) {
+                for (const auto& binding : owner->ExpressionEngine.getExpressions()) {
+                    if (!binding.second) {
+                        continue;
+                    }
+                    for (const auto& identifier : binding.second->getIdentifiers()) {
+                        if (identifier.first.getDocument() == &source) {
+                            dependents.insert(document);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return dependents;
+}
+
 PyObject* PropertyXLink::getPyObject()
 {
     if (!_pcLink) {
@@ -5989,10 +6030,13 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
         // deleted. Retire only runtime dependency edges here, while the source
         // is still attached; ordinary property notifications would enter the
         // dependent's mutation boundary inside the source's atomic commit.
-        // Do not grant foreign callbacks authority to edit either document.
+        // Ordinary native deletion keeps the historical transaction capture
+        // and notifications below. Atomic deletion cannot grant foreign
+        // callbacks authority to edit either document.
         if (this == &owner->ExpressionEngine
             && obj->getDocument() != owner->getDocument()
-            && obj->testStatus(ObjectStatus::Remove)) {
+            && obj->testStatus(ObjectStatus::Remove)
+            && atomicPresentationMutationAdmissionHeldFor(*obj->getDocument())) {
             for (auto prop = _PropDeps.begin(); prop != _PropDeps.end();) {
                 if (prop->first.second != obj) {
                     ++prop;
@@ -6005,6 +6049,7 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
             }
             _XLinks.erase(obj->getFullName());
             _Deps.erase(it);
+            owner->clearOutListCache();
             StatusBits.set(Property::Touched);
             return;
         }

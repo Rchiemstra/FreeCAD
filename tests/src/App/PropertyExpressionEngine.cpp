@@ -174,6 +174,179 @@ TEST_F(CrossDocumentExpressionRecomputeTest, openSourceDocumentDrivesTheDependen
     EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 9.0);
 }
 
+TEST_F(CrossDocumentExpressionRecomputeTest, sourceDestructionClearsBothPrimedCaches)
+{
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    ASSERT_FALSE(_drivenObject->getOutList().empty());
+    ASSERT_FALSE(_drivenObject->getOutListProp().empty());
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::Structural;
+    const auto result = _source->collaborationService().commitCompatibilityMutationWithPolicy(
+        mutation, [&] { _source->removeObject("Dims"); },
+        App::CollaborationCompatibilityRecomputePolicy::Deferred);
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_EQ(_source->getObject("Dims"), nullptr);
+    _source->clearUndos();
+    _sourceObject = nullptr;
+    // Do not dereference stale pointers on the unfixed build. The fixed build
+    // must reach recompute after the source has actually been destroyed.
+    ASSERT_TRUE(_drivenObject->getOutList().empty());
+    ASSERT_TRUE(_drivenObject->getOutListProp().empty());
+    EXPECT_NO_THROW(static_cast<void>(_driven->recompute()));
+    EXPECT_TRUE(_drivenObject->isError());
+    EXPECT_EQ(_drivenObject->ExpressionEngine.numExpressions(), 1U);
+}
+
+TEST_F(CrossDocumentExpressionRecomputeTest, ordinaryDeletionKeepsForeignTransactionCapture)
+{
+    int notifications = 0;
+    auto connection = _driven->signalChangedObject.connect(
+        [&](const App::DocumentObject& owner, const App::Property& property) {
+            if (&owner == _drivenObject && &property == &_drivenObject->ExpressionEngine) {
+                ++notifications;
+            }
+        });
+    _driven->openTransaction("Record foreign expression retirement");
+    _source->removeObject("Dims");
+    _sourceObject = nullptr;
+    _driven->commitTransaction();
+    EXPECT_GT(notifications, 0);
+    EXPECT_EQ(_driven->getAvailableUndoNames(),
+              std::vector<std::string>({"Record foreign expression retirement"}));
+    EXPECT_TRUE(_drivenObject->getOutList().empty());
+    EXPECT_TRUE(_drivenObject->getOutListProp().empty());
+    EXPECT_EQ(_drivenObject->ExpressionEngine.numExpressions(), 1U);
+}
+
+TEST_F(CrossDocumentExpressionRecomputeTest, deletionUndoRedoRestoresForeignDependency)
+{
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    _source->openTransaction("Delete external source");
+    _source->removeObject("Dims");
+    _source->commitTransaction();
+    ASSERT_TRUE(_source->undo());
+    ASSERT_EQ(_source->getObject("Dims"), _sourceObject);
+    ASSERT_NE(std::find(_drivenObject->getOutList().begin(),
+                        _drivenObject->getOutList().end(), _sourceObject),
+              _drivenObject->getOutList().end());
+    ASSERT_FALSE(_drivenObject->getOutListProp().empty());
+    ASSERT_FALSE(_sourceObject->getInListProp().empty());
+    static_cast<void>(_driven->recompute());
+    _sourceObject->Float.setValue(19.0);
+    static_cast<void>(_source->recompute());
+    EXPECT_TRUE(_drivenObject->isTouched());
+    static_cast<void>(_driven->recompute());
+    EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 19.0);
+    ASSERT_TRUE(_source->redo());
+    EXPECT_EQ(_source->getObject("Dims"), nullptr);
+    EXPECT_TRUE(_drivenObject->getOutList().empty());
+    EXPECT_TRUE(_drivenObject->getOutListProp().empty());
+    EXPECT_TRUE(_sourceObject->getInListProp().empty());
+    ASSERT_TRUE(_source->undo());
+    _sourceObject->Float.setValue(23.0);
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), 23.0);
+}
+
+class CrossDocumentReplayAdmissionTest:
+    public CrossDocumentExpressionRecomputeTest,
+    public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(CrossDocumentReplayAdmissionTest, busyDependentDoesNotConsumeHistory)
+{
+    auto* surviving = _source->addObject<App::FeatureTest>("Surviving");
+    surviving->Float.setValue(2.0);
+    _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float),
+        std::shared_ptr<App::Expression>(App::Expression::parse(_drivenObject,
+            _sourceName + "#Dims.Float + " + _sourceName + "#Surviving.Float")));
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    App::DocumentObject* replaySource = _sourceObject;
+    _source->openTransaction(GetParam() ? "Delete source" : "Add source");
+    if (GetParam()) {
+        _source->removeObject("Dims");
+    }
+    else {
+        replaySource = _source->addObject<App::FeatureTest>("Added");
+        _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float),
+            std::shared_ptr<App::Expression>(App::Expression::parse(_drivenObject,
+                _sourceName + "#Added.Float + " + _sourceName + "#Surviving.Float")));
+    }
+    _source->commitTransaction();
+    if (GetParam()) {
+        ASSERT_TRUE(_source->undo());
+    }
+    const auto undos = _source->getAvailableUndoNames();
+    const auto redos = _source->getAvailableRedoNames();
+    const auto value = _drivenObject->Float.getValue();
+    _driven->setStatus(App::Document::Recomputing, true);
+    bool refused = false;
+    try {
+        refused = !(GetParam() ? _source->redo() : _source->undo());
+    }
+    catch (const Base::Exception& error) {
+        refused = true;
+        EXPECT_NE(std::string(error.what()).find("dependent document"), std::string::npos);
+    }
+    _driven->setStatus(App::Document::Recomputing, false);
+    EXPECT_TRUE(refused);
+    EXPECT_EQ(_source->getAvailableUndoNames(), undos);
+    EXPECT_EQ(_source->getAvailableRedoNames(), redos);
+    EXPECT_EQ(_source->getObject(GetParam() ? "Dims" : "Added"),
+              replaySource);
+    EXPECT_EQ(_source->getObject("Surviving"), surviving);
+    EXPECT_DOUBLE_EQ(_drivenObject->Float.getValue(), value);
+    // Only retry when history was retained, so the unfixed test cannot assert
+    // inside redo() on an empty history stack.
+    ASSERT_EQ(_source->getAvailableRedoNames(), redos);
+    ASSERT_EQ(_source->getAvailableUndoNames(), undos);
+    EXPECT_TRUE(GetParam() ? _source->redo() : _source->undo());
+    EXPECT_EQ(_source->getObject(GetParam() ? "Dims" : "Added"), nullptr);
+}
+
+INSTANTIATE_TEST_SUITE_P(ExternalSource, CrossDocumentReplayAdmissionTest, ::testing::Bool(),
+    [](const ::testing::TestParamInfo<bool>& info) { return info.param ? "Redo" : "Undo"; });
+
+TEST_F(CrossDocumentExpressionRecomputeTest, hiddenSourceRemovalWaitsForInFlightCompletion)
+{
+    _drivenObject->setExpression(App::ObjectIdentifier(_drivenObject->Float),
+        std::shared_ptr<App::Expression>(App::Expression::parse(_drivenObject,
+            "hiddenref(" + _sourceName + "#Dims.Float)")));
+    auto* worker = _driven->addObject<App::FeatureTestColumn>("Worker");
+    static_cast<void>(_source->recompute());
+    static_cast<void>(_driven->recompute());
+    std::vector<App::DocumentObject*> hiddenLinks;
+    _drivenObject->ExpressionEngine.getLinks(hiddenLinks, true);
+    ASSERT_EQ(hiddenLinks, std::vector<App::DocumentObject*>({_sourceObject}));
+    ASSERT_TRUE(_drivenObject->getOutList().empty());
+    auto pending = _driven->recomputeAsync({worker}, true, 0, App::RecomputeVenue::Isolated);
+    ASSERT_TRUE(_driven->recomputeCoordinator().hasPendingWork());
+    bool refused = false;
+    try { _source->removeObject("Dims"); }
+    catch (const Base::Exception& error) {
+        refused = true;
+        EXPECT_NE(std::string(error.what()).find("dependent document"), std::string::npos);
+    }
+    EXPECT_TRUE(refused);
+    EXPECT_EQ(_source->getObject("Dims"), _sourceObject);
+    const auto completed = pending->wait(std::chrono::seconds(30));
+    EXPECT_EQ(completed.state, App::DocumentRecomputeState::Completed);
+    ASSERT_FALSE(_driven->recomputeCoordinator().hasPendingWork());
+    if (!refused) { _sourceObject = nullptr; return; }
+    EXPECT_FALSE(_sourceObject->testStatus(App::ObjectStatus::Remove));
+    EXPECT_NO_THROW(_source->removeObject("Dims"));
+    EXPECT_EQ(_source->getObject("Dims"), nullptr);
+    _sourceObject = nullptr;
+    hiddenLinks.clear();
+    _drivenObject->ExpressionEngine.getLinks(hiddenLinks, true);
+    EXPECT_TRUE(hiddenLinks.empty());
+    EXPECT_EQ(_drivenObject->ExpressionEngine.numExpressions(), 1U);
+}
+
 // Source pins must end with evaluation; deletion must invalidate, not erase,
 // a surviving external expression, so clearing it can repair the dependent.
 class CrossDocumentSourceDeletionTest:

@@ -83,6 +83,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "ExternalSourceDependency.h"
 #include "DocumentPresentationBoundary.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentHandle.h"
@@ -2523,6 +2524,45 @@ bool Document::checkOnCycle()
     return false;
 }
 
+namespace
+{
+// Hold admission through the complete replay, including dependency rebuilding
+// in signalUndoDocument. Refuse before replay can remove backlinks, invoke
+// callbacks, create an inverse transaction, or consume a history entry.
+template<typename LifecyclePin>
+class ExternalSourceAdmission
+{
+public:
+    ExternalSourceAdmission(Document& source,
+                            const std::function<std::recursive_mutex&(Document&)>& commitMutex,
+                            const std::function<bool(const Document&)>& mutationBoundary,
+                            bool replay = false)
+    {
+        for (auto* dependent : externalSourceDependentDocuments(source, replay)) {
+            pins.push_back(std::make_unique<LifecyclePin>(
+                dependent->collaborationService()));
+            locks.emplace_back(commitMutex(*dependent), std::try_to_lock);
+            if (!*pins.back() || !locks.back().owns_lock()
+                || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+                || dependent->testStatus(Document::Recomputing)
+                || dependent->testStatus(Document::Restoring)
+                || dependent->recomputeCoordinator().hasPendingWork()
+                || mutationBoundary(*dependent)
+                || dependent->collaborationNotificationsReplaying()) {
+                throw Base::RuntimeError(
+                    "cannot remove external source: dependent document '"
+                    + std::string(dependent->getName())
+                    + "' is recomputing or has an active collaboration boundary; retry after it ends");
+            }
+        }
+    }
+
+private:
+    std::vector<std::unique_ptr<LifecyclePin>> pins;
+    std::vector<std::unique_lock<std::recursive_mutex>> locks;
+};
+}
+
 bool Document::undo(const int id)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
@@ -2536,6 +2576,15 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
     // Replay must not throw across Qt.
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        }, true);
 
     if (id != 0) {
         const auto it = mUndoMap.find(id);
@@ -2603,6 +2652,15 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        }, true);
 
     if (id != 0) {
         const auto it = mRedoMap.find(id);
@@ -8337,36 +8395,16 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         return;
     }
 
-    // Dependency retirement reads and updates foreign expression runtime
-    // edges. Pin and serialize the dependent documents without dispatching or
-    // waiting while this source's commit lock is held. A busy dependent is an
-    // explicit, retryable refusal before any removal callbacks run.
-    std::vector<std::unique_ptr<DocumentCollaborationService::LifecyclePin>> dependentPins;
-    std::vector<std::unique_lock<std::recursive_mutex>> dependentLocks;
-    const auto dependents = PropertyXLink::getDocumentInList(this);
-    const auto linked = dependents.find(this);
-    if (linked != dependents.end()) {
-        for (auto* dependent : linked->second) {
-            if (dependent == this) {
-                continue;
-            }
-            dependentPins.push_back(std::make_unique<DocumentCollaborationService::LifecyclePin>(
-                dependent->collaborationService()));
-            dependentLocks.emplace_back(dependent->collaborationCommitMutex(), std::try_to_lock);
-            if (!*dependentPins.back() || !dependentLocks.back().owns_lock()
-                || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
-                || dependent->testStatus(Document::Recomputing)
-                || dependent->testStatus(Document::Restoring)
-                || dependent->collaborationLifecycleMutationBlocked()
-                || dependent->d->collaborationCommitNotificationBarrier
-                || dependent->collaborationNotificationsReplaying()) {
-                throw Base::RuntimeError(
-                    "cannot remove external source: dependent document '"
-                    + std::string(dependent->getName())
-                    + "' is recomputing or has an active collaboration boundary; retry after it ends");
-            }
-        }
-    }
+    // Keep every affected dependent pinned and serialized through retirement.
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        });
 
     InternalTransactionLockScope tlock(*this);
 

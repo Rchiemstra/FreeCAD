@@ -362,6 +362,7 @@ SET(Properties_HPP_SRCS
     PropertyFile.h
     PropertyGeo.h
     PropertyLinks.h
+    ExternalSourceDependency.h
     PropertyPythonObject.h
     PropertyStandard.h
     PropertyUnits.h
