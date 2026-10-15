@@ -173,7 +173,53 @@ struct PropertyExpressionEngine::Private
     // defined in header, hence the private structure here.
     std::vector<fastsignals::scoped_connection> conns;
     std::unordered_map<std::string, std::vector<ObjectIdentifier>> propMap;
-    std::map<std::string, std::set<std::string>> externalExpressions;
+    struct ExternalSource
+    {
+        // Relabeling rewrites expressions in place without rebuilding dependencies.
+        // Weak ownership identifies surviving bindings without retaining removed
+        // expressions or mistaking newly allocated expressions for old ones.
+        std::set<std::weak_ptr<Expression>, std::owner_less<std::weak_ptr<Expression>>> bindings;
+        std::string filePath;
+        std::string objectName;
+        LinkScope scope = LinkScope::Global;
+    };
+    std::map<std::string, ExternalSource> externalSources;
+
+    static void copyExternalSources(const PropertyExpressionEngine& from,
+                                    PropertyExpressionEngine& to)
+    {
+        if (!from.pimpl || from.pimpl->externalSources.empty()) {
+            return;
+        }
+        if (!to.pimpl) {
+            to.pimpl = std::make_unique<Private>();
+        }
+        for (const auto& [key, source] : from.pimpl->externalSources) {
+            ExternalSource copy;
+            copy.filePath = source.filePath;
+            copy.objectName = source.objectName;
+            copy.scope = source.scope;
+            // Capture current file identity, including a Save As since the last
+            // dependency rebuild. History owns no live PropertyXLink callbacks.
+            const auto link = from._XLinks.find(key);
+            if (link != from._XLinks.end()) {
+                copy.filePath = link->second->getDocumentPath();
+                copy.objectName = link->second->getObjectName();
+                copy.scope = link->second->getScope();
+            }
+            for (const auto& [path, info] : from.expressions) {
+                if (info.expression && source.bindings.contains(info.expression)) {
+                    const auto target = to.expressions.find(path);
+                    if (target != to.expressions.end() && target->second.expression) {
+                        copy.bindings.insert(target->second.expression);
+                    }
+                }
+            }
+            if (!copy.bindings.empty()) {
+                to.pimpl->externalSources.emplace(key, std::move(copy));
+            }
+        }
+    }
 
     static bool shouldEvaluateOnRestore(const Property* prop,
                                         const std::shared_ptr<Expression>& expression)
@@ -369,6 +415,7 @@ Property* PropertyExpressionEngine::Copy() const
     }
 
     engine->validator = validator;
+    Private::copyExternalSources(*this, *engine);
 
     return engine;
 }
@@ -402,29 +449,28 @@ void PropertyExpressionEngine::rebuildDependencies()
     std::map<App::DocumentObject*, bool> deps;
     std::map<std::pair<std::string, App::DocumentObject*>, bool> propDeps;
     std::vector<std::string> labels;
-    std::map<std::string, std::set<std::string>> externalExpressions;
+    std::map<std::string, Private::ExternalSource> externalSources;
     const auto* owner = freecad_cast<DocumentObject*>(getContainer());
     for (auto& e : expressions) {
         auto expr = e.second.expression;
         if (expr) {
             std::map<App::DocumentObject*, bool> expressionDeps;
             expr->getDepObjects(expressionDeps, &labels, &propDeps);
-            const auto text = expr->toString();
             for (const auto& [source, hidden] : expressionDeps) {
                 const auto [it, inserted] = deps.emplace(source, hidden);
                 if (!hidden || inserted) {
                     it->second = hidden;
                 }
                 if (owner && source && source->getDocument() != owner->getDocument()) {
-                    externalExpressions[source->getFullName()].insert(text);
+                    externalSources[source->getFullName()].bindings.insert(expr);
                 }
             }
             if (pimpl) {
-                for (const auto& [source, bindings] : pimpl->externalExpressions) {
+                for (const auto& [source, info] : pimpl->externalSources) {
                     const auto link = _XLinks.find(source);
-                    if (bindings.contains(text) && link != _XLinks.end()
+                    if (info.bindings.contains(expr) && link != _XLinks.end()
                         && !link->second->getValue()) {
-                        externalExpressions[source].insert(text);
+                        externalSources[source].bindings.insert(expr);
                     }
                 }
             }
@@ -437,7 +483,7 @@ void PropertyExpressionEngine::rebuildDependencies()
     // graph. Drop links whose last binding was removed, as before.
     decltype(_XLinks) retainedLinks;
     for (auto it = _XLinks.begin(); it != _XLinks.end();) {
-        if (!it->second->getValue() && externalExpressions.contains(it->first)) {
+        if (!it->second->getValue() && externalSources.contains(it->first)) {
             retainedLinks.insert(_XLinks.extract(it++));
         }
         else {
@@ -452,11 +498,19 @@ void PropertyExpressionEngine::rebuildDependencies()
         throw;
     }
     _XLinks.merge(retainedLinks);
-    if (!externalExpressions.empty() && !pimpl) {
+    for (auto& [key, source] : externalSources) {
+        const auto link = _XLinks.find(key);
+        if (link != _XLinks.end()) {
+            source.filePath = link->second->getDocumentPath();
+            source.objectName = link->second->getObjectName();
+            source.scope = link->second->getScope();
+        }
+    }
+    if (!externalSources.empty() && !pimpl) {
         pimpl = std::make_unique<Private>();
     }
     if (pimpl) {
-        pimpl->externalExpressions = std::move(externalExpressions);
+        pimpl->externalSources = std::move(externalSources);
     }
 
     if (pimpl) {
@@ -588,6 +642,22 @@ void PropertyExpressionEngine::Paste(const Property& from)
         expressionChanged(e.first);
     }
     validator = fromee.validator;
+    if (pimpl) {
+        pimpl->externalSources.clear();
+    }
+    Private::copyExternalSources(fromee, *this);
+    if (pimpl) {
+        // Recreate detached links before hasSetValue rebuilds dependencies.
+        // Their normal restore callback will rebuild the graph on source reopen.
+        for (const auto& [key, source] : pimpl->externalSources) {
+            if (!_XLinks.contains(key) && !source.filePath.empty() && !source.objectName.empty()) {
+                std::unique_ptr<PropertyXLink> link(createXLink());
+                link->setScope(source.scope);
+                link->setValue(std::string(source.filePath), std::string(source.objectName), {});
+                _XLinks.emplace(key, std::move(link));
+            }
+        }
+    }
     signaller.tryInvoke();
 }
 

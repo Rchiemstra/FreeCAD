@@ -83,6 +83,7 @@ class TestSketchExpression(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as directory:
+            existingDocuments = set(FreeCAD.listDocuments())
             source = FreeCAD.newDocument("SrcDoc")
             try:
                 sheet = source.addObject("Spreadsheet::Sheet", "Dims")
@@ -112,10 +113,31 @@ class TestSketchExpression(unittest.TestCase):
                 if mode == "relabel":
                     source.Label = "Renamed dimensions"
                     source.save()
-                    self.assertIn("<<Renamed dimensions>>#", dict((p.lstrip("."), e) for p, e in sketch.ExpressionEngine)["Constraints.H"])
+                    bindings = {p.lstrip("."): e for p, e in sketch.ExpressionEngine}
+                    self.assertIn("<<Renamed dimensions>>#", bindings["Constraints.H"])
+                if mode == "save_as":
+                    path = os.path.join(directory, "RenamedSource.FCStd")
+                    source.saveAs(path)
                 if mode != "open":
                     FreeCAD.closeDocument("SrcDoc")
                     self.Doc.recompute()
+                if mode == "name_collision":
+                    otherDirectory = os.path.join(directory, "other")
+                    os.mkdir(otherDirectory)
+                    other = FreeCAD.newDocument("SrcDoc")
+                    other.saveAs(os.path.join(otherDirectory, "SrcDoc.FCStd"))
+                if mode in ("save_as", "name_collision"):
+                    source = FreeCAD.openDocument(path)
+                    self.assertNotEqual(source.Name, "SrcDoc")
+                    self.Doc.recompute()
+                    # Document-name remapping is upstream behavior. These cases
+                    # only require safe reopen, recompute and manual repair.
+                    self.assertEqual(len(sketch.ExpressionEngine), 2)
+                    sketch.setExpression("Constraints.W", None)
+                    sketch.setExpression("Constraints.H", None)
+                    self.Doc.recompute()
+                    self.assertNotIn("Invalid", sketch.State)
+                    return
                 partial = mode in ("partial", "relabel", "undo_last")
                 if partial:
                     sketch.setExpression("Constraints.W", None)
@@ -159,8 +181,9 @@ class TestSketchExpression(unittest.TestCase):
                     self.assertNotIn("Invalid", sketch.State)
                     self.assertEqual(sketch.getDatum(width).Value, 35)
             finally:
-                if "SrcDoc" in FreeCAD.listDocuments():
-                    FreeCAD.closeDocument("SrcDoc")
+                for name in list(FreeCAD.listDocuments()):
+                    if name not in existingDocuments:
+                        FreeCAD.closeDocument(name)
 
     def testExternalConstraintHappyOpen(self):
         self._externalConstraintLifecycle("open")
@@ -179,6 +202,12 @@ class TestSketchExpression(unittest.TestCase):
 
     def testExternalConstraintLastClosedBindingUndoReopened(self):
         self._externalConstraintLifecycle("undo_last")
+
+    def testExternalConstraintSourceSaveAsDifferentBasenameSafe(self):
+        self._externalConstraintLifecycle("save_as")
+
+    def testExternalConstraintSourceSameNameDifferentFileSafe(self):
+        self._externalConstraintLifecycle("name_collision")
 
     def tearDown(self):
         # comment out to omit closing document for debugging
