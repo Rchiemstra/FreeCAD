@@ -381,8 +381,11 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     eager_closing = _matching(coordinator, eager_opening, "{", "}")
     assert eager_closing is not None
     eager_stage = coordinator[eager_opening + 1:eager_closing]
+    # Native error baselines and fresh requests preserve scoped eager recompute.
     scoped_targets = eager_stage.find(
-        "autorecomputeTargets=pendingTransactionRecomputeTargets(_document);"
+        "autorecomputeTargets=pendingTransactionRecomputeTargets("
+        "_document,requireDetachedPreparationSupport?nullptr:&preexistingNativeErrors,"
+        "&freshRecomputeRequests);"
     )
     empty = eager_stage.find("if(recomputeTargets.empty()){", scoped_targets)
     empty_finalize = eager_stage.find(
