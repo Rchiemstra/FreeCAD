@@ -2809,6 +2809,30 @@ TEST_F(DocumentCollaborationServiceTest, labelRedoWithSourceBeforeDependent)
     EXPECT_EQ(foreign->getAvailableRedos(), 0);
 }
 
+TEST_F(LabelGroupRegressionTest, readOnlyCompatibilityCommitPreservesGroupedRedo)
+{
+    const auto renamed = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(renamed.committed()) << renamed.message;
+    ASSERT_TRUE(_document->undo());
+    const auto inspected = documents.back()->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+            EXPECT_GT(documents.back()->getAvailableUndos(), 0);
+        });
+    ASSERT_TRUE(inspected.committed()) << inspected.message;
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+    }
+    ASSERT_TRUE(_document->redo());
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+    }
+}
+
 TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
 {
     documents.back()->openTransaction("Busy dependent");

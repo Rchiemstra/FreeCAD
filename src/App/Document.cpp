@@ -3286,6 +3286,14 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                      || (d->collaborationCommitNotificationBarrier
                          && d->activeUndoTransaction->isEmpty()
                          && !d->transactionFileChanges.contains(id))) {
+                // An empty compatibility commit must keep the redo branch it
+                // parked on entry. Otherwise a diagnostic read in one document
+                // silently removes that participant from a grouped redo.
+                if (retainUndoHistory && d->collaborationRedoHistoryParked) {
+                    mRedoTransactions.swap(d->collaborationParkedRedos);
+                    mRedoMap.swap(d->collaborationParkedRedoMap);
+                    d->collaborationRedoHistoryParked = false;
+                }
                 // Native compatibility commits eagerly create a transaction,
                 // even when the callback only reads. Keep a file-only change,
                 // but retire empty records so one undo reaches the real edit.
