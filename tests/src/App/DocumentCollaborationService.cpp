@@ -2876,6 +2876,36 @@ TEST_P(LabelBranchRegressionTest, missingMemberRefusesReplayBeforeAnyMutation)
     expectModel(GetParam() ? "Before" : "After");
 }
 
+TEST_P(LabelBranchRegressionTest, explicitRangeCannotSplitAnIntermediateGroup)
+{
+    auto* target = static_cast<FeatureTest*>(_target);
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { target->String.setValue("Before group"); }).committed());
+    const int beforeId = _document->getTransactionID(true);
+    for (auto* doc : documents) { doc->recompute(); }
+    const auto renamed = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(renamed.committed()) << renamed.message;
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { target->String.setValue("After group"); }).committed());
+    const int afterId = _document->getTransactionID(true);
+    for (auto* doc : documents) { doc->recompute(); }
+    if (GetParam()) {
+        ASSERT_TRUE(_document->undo());
+        ASSERT_TRUE(_document->undo());
+        ASSERT_TRUE(_document->undo());
+        const auto before = target->String.getStrValue();
+        EXPECT_THROW(static_cast<void>(_document->redo(afterId)), Base::RuntimeError);
+        EXPECT_EQ(target->String.getStrValue(), before);
+        expectModel("Before");
+    }
+    else {
+        EXPECT_THROW(static_cast<void>(_document->undo(beforeId)), Base::RuntimeError);
+        EXPECT_EQ(target->String.getStrValue(), "After group");
+        expectModel("After");
+    }
+}
+
 INSTANTIATE_TEST_SUITE_P(SourceAndDependent, LabelBranchRegressionTest, ::testing::Bool());
 
 // Every category also runs against an ordinary single-document redo branch.
@@ -2923,7 +2953,7 @@ TEST_P(RedoMutationRegressionTest, changedCompatibilityCommitDiscardsRedo)
     if (grouped && kind != 3) { expectModel("Before"); }
 }
 
-TEST_P(RedoMutationRegressionTest, nativeMutationDiscardsRedo)
+TEST_P(RedoMutationRegressionTest, nativeMutationRespectsGroupedRedoMembership)
 {
     const auto [grouped, kind] = GetParam();
     auto* doc = grouped ? documents.back() : _document;
@@ -2935,34 +2965,73 @@ TEST_P(RedoMutationRegressionTest, nativeMutationDiscardsRedo)
     ASSERT_TRUE(_document->undo());
     ASSERT_GT(doc->getAvailableRedos(), 0u);
     {
-            switch (kind) {
-                case 0: doc->Comment.setValue("A real document edit"); break;
-                case 1: doc->Label.setValue("A new document label"); break;
-                case 2: object->touch(); break;
-                case 3:
-                    object->setExpression(ObjectIdentifier::parse(object, "Float"),
-                                          Expression::parse(object, "42"));
-                    break;
-                case 4: {
-                    // Solvers suppress property recompute while applying Placement.
-                    Base::ObjectStatusLocker<Property::Status, Property> guard(
-                        Property::NoRecompute, &object->Placement);
-                    object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
-                                                               Base::Rotation()));
-                    break;
-                }
+        switch (kind) {
+            case 0: doc->Comment.setValue("A real document edit"); break;
+            case 1: doc->Label.setValue("A new document label"); break;
+            case 2: object->touch(); break;
+            case 3:
+                object->setExpression(ObjectIdentifier::parse(object, "Float"),
+                                      Expression::parse(object, "42"));
+                break;
+            case 4: {
+                // Solvers suppress property recompute while applying Placement.
+                Base::ObjectStatusLocker<Property::Status, Property> guard(
+                    Property::NoRecompute, &object->Placement);
+                object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
+                                                           Base::Rotation()));
+                break;
             }
+        }
     }
     if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
-    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
-        EXPECT_EQ(member->getAvailableRedos(), 0u);
-        EXPECT_FALSE(member->redo());
+    if (grouped) {
+        for (auto* member : documents) {
+            EXPECT_EQ(member->getAvailableRedos(), 0u);
+            EXPECT_FALSE(member->redo());
+        }
+    }
+    else {
+        // Legacy unbooked native edits leave ordinary history available. A
+        // compatibility callback is the single-document commit boundary above.
+        EXPECT_EQ(_document->getAvailableRedos(), 1u);
     }
     if (grouped && kind != 3) { expectModel("Before"); }
 }
 
 INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, RedoMutationRegressionTest,
     ::testing::Combine(::testing::Bool(), ::testing::Range(0, 5)));
+
+// Failed callbacks can leave non-transactional document metadata changed.
+// Such a boundary is not an unchanged rollback and cannot keep its old redo.
+class FailedMetadataRedoRegressionTest: public LabelGroupRegressionTest,
+    public ::testing::WithParamInterface<std::tuple<bool, bool>>
+{};
+
+TEST_P(FailedMetadataRedoRegressionTest, unrestoredDocumentMetadataDiscardsRedo)
+{
+    const auto [grouped, label] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    auto& property = label ? doc->Label : doc->Comment;
+    const auto result = doc->collaborationService().commitCompatibilityMutation({}, [&] {
+        property.setValue("Metadata changed before failure");
+        throw std::runtime_error("after document metadata change");
+    });
+    ASSERT_FALSE(result.committed());
+    ASSERT_EQ(property.getStrValue(), "Metadata changed before failure");
+    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
+        EXPECT_EQ(member->getAvailableRedos(), 0u);
+        EXPECT_FALSE(member->redo());
+    }
+    if (grouped) { expectModel("Before"); }
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, FailedMetadataRedoRegressionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool()));
 
 TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
 {

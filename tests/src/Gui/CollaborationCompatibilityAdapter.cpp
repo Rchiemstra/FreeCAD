@@ -1582,3 +1582,31 @@ TEST_P(GuiRedoMutationRegressionTest, guiOnlyPropertyInvalidatesRedo)
 }
 
 INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, GuiRedoMutationRegressionTest, ::testing::Bool());
+
+TEST_F(CrossDocumentExpressionGuiTest, passiveAppearanceReplayPreservesGroupedRedo)
+{
+    Gui::Test::recomputeWithoutBlockingGui(*_driven);
+    auto* gui = Gui::Application::Instance->getDocument(_driven);
+    auto* view = freecad_cast<Gui::ViewProviderGeometryObject*>(gui->getViewProvider(_drivenBox));
+    ASSERT_NE(view, nullptr);
+    auto* sheet = _source->getObject("Dims");
+    ASSERT_NE(sheet, nullptr);
+    const auto renamed = commitOnPlacement(*_source, [&] { sheet->Label.setValue("After"); });
+    ASSERT_TRUE(renamed.committed()) << renamed.message;
+    ASSERT_TRUE(undoOnOwner(*_source));
+    {
+        // This is the reservation used by catchUpIdleLivePresentation().
+        // Re-applying the model's material is presentation replay, even when
+        // the property setter sends its normal change notifications.
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_TRUE(refresh.acquired());
+        const App::Material material = view->ShapeAppearance[0];
+        view->ShapeAppearance.setValue(material);
+    }
+    EXPECT_EQ(_source->getAvailableRedos(), 1u);
+    EXPECT_EQ(_driven->getAvailableRedos(), 1u);
+    ASSERT_TRUE(redoOnOwner(*_source));
+    EXPECT_EQ(sheet->Label.getStrValue(), "After");
+    EXPECT_NE(_drivenBox->getExpression(App::ObjectIdentifier(*drivenLength()))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+}
