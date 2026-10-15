@@ -2865,10 +2865,14 @@ TEST_P(LabelBranchRegressionTest, missingMemberRefusesReplayBeforeAnyMutation)
     documents.back()->clearUndos();
     // Explicit transaction IDs must enforce membership too.
     const int id = _document->getTransactionID(!GetParam());
-    EXPECT_THROW({
-        if (GetParam()) { static_cast<void>(_document->redo(id)); }
-        else { static_cast<void>(_document->undo(id)); }
-    }, Base::RuntimeError);
+    if (GetParam()) {
+        // Clearing one member's redo invalidates the complete group.
+        for (auto* doc : documents) { EXPECT_EQ(doc->getAvailableRedos(), 0u); }
+        EXPECT_FALSE(_document->redo(id));
+    }
+    else {
+        EXPECT_THROW(static_cast<void>(_document->undo(id)), Base::RuntimeError);
+    }
     expectModel(GetParam() ? "Before" : "After");
 }
 
@@ -2911,6 +2915,44 @@ TEST_P(RedoMutationRegressionTest, changedCompatibilityCommitDiscardsRedo)
             }
         }, CollaborationCompatibilityRecomputePolicy::Deferred);
     ASSERT_TRUE(changed.committed()) << changed.message;
+    if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
+    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
+        EXPECT_EQ(member->getAvailableRedos(), 0u);
+        EXPECT_FALSE(member->redo());
+    }
+    if (grouped && kind != 3) { expectModel("Before"); }
+}
+
+TEST_P(RedoMutationRegressionTest, nativeMutationDiscardsRedo)
+{
+    const auto [grouped, kind] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(doc->getObject(grouped ? "Dependent" : "Target"));
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    ASSERT_GT(doc->getAvailableRedos(), 0u);
+    {
+            switch (kind) {
+                case 0: doc->Comment.setValue("A real document edit"); break;
+                case 1: doc->Label.setValue("A new document label"); break;
+                case 2: object->touch(); break;
+                case 3:
+                    object->setExpression(ObjectIdentifier::parse(object, "Float"),
+                                          Expression::parse(object, "42"));
+                    break;
+                case 4: {
+                    // Solvers suppress property recompute while applying Placement.
+                    Base::ObjectStatusLocker<Property::Status, Property> guard(
+                        Property::NoRecompute, &object->Placement);
+                    object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
+                                                               Base::Rotation()));
+                    break;
+                }
+            }
+    }
     if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
     for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
         EXPECT_EQ(member->getAvailableRedos(), 0u);
