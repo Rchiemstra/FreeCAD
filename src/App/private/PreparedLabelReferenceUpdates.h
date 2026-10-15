@@ -3,6 +3,7 @@
 
 #include <FCGlobal.h>
 #include <memory>
+#include <list>
 #include <atomic>
 
 namespace App
@@ -11,6 +12,7 @@ class Document;
 class DocumentCommitCoordinator;
 class Property;
 class PropertyString;
+class Transaction;
 namespace Internal
 {
 class LabelReferenceUpdatesTestAccess;
@@ -28,6 +30,12 @@ public:
     static void admit(Document& source, Property& property);
     static void activate(Document& source);
     static void preserveRedo(Document& document);
+    static void noteMutation(Document& document);
+    static bool hasUnrestoredChanges(const Document& document) noexcept;
+    static bool presentationRefreshOnCallingThread() noexcept;
+    static void invalidateRedos(Document& document);
+    static void clearRedos(Document& document,
+                           std::list<Transaction*>* deferred = nullptr) noexcept;
     static void failed(Document& source) noexcept;
     bool failed() const noexcept;
     class ReplayMode final

@@ -41,6 +41,7 @@
 #include "ElementNamingUtils.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "DocumentObject.h"
 #include "NativeRecomputeErrors.h"
 #include "DocumentObjectPy.h"
@@ -219,6 +220,7 @@ void DocumentObject::setTouched(const char* name)
     // This function is not a replacement for touch(), it is only
     // used internally for fine-grained document recompute and replaces
     // the coarse grained equivalent of StatusBits.set(ObjectStatus::Touch);
+    if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
     Internal::NativeRecomputeRequestCapture::record(*this);
     touchedProps.insert(name);
     StatusBits.set(ObjectStatus::Touch);
@@ -227,6 +229,7 @@ void DocumentObject::setTouched(const char* name)
 void DocumentObject::touch(bool noRecompute)
 {
     enforceAtomicPresentationMutationTarget(_pDoc);
+    if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
     Internal::NativeRecomputeRequestCapture::record(*this);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     if (!noRecompute) {
@@ -244,6 +247,9 @@ void DocumentObject::touch(bool noRecompute)
 void DocumentObject::purgeTouched()
 {
     enforceAtomicPresentationMutationTarget(_pDoc);
+    if (_pDoc && (isTouched() || !touchedProps.empty())) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc);
+    }
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     StatusBits.reset(ObjectStatus::Touch);
     StatusBits.reset(ObjectStatus::Enforce);
@@ -1363,6 +1369,7 @@ void DocumentObject::onChanged(const Property* prop)
         // set object touched if it is not an output property
         if (!testStatus(ObjectStatus::NoTouch) && !(prop->getType() & Prop_Output)
             && !prop->testStatus(Property::Output)) {
+            if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
             Internal::NativeRecomputeRequestCapture::record(*this);
             if (!StatusBits.test(ObjectStatus::Touch)) {
                 FC_TRACE("touch '" << getFullName() << "' on change of '" << prop->getName() << "'");

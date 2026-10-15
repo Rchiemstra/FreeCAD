@@ -1727,6 +1727,11 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
     d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
+    d->collaborationHistoryChanged = false;
+    d->collaborationUnrecordedDocumentChange = false;
+    d->collaborationBoundaryStickyTokens = {d->fileChangeTokens.model.sticky,
+                                            d->fileChangeTokens.appearance.sticky,
+                                            d->fileChangeTokens.compatibility.sticky};
     d->collaborationCommitNotificationBarrier = true;
     d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
 }
@@ -1762,11 +1767,16 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         return;
     }
 
-    // Failed prepared operations keep the exact preexisting redo branch.
-    // Successful edits retire that branch only after model commitment.
+    // A read-only boundary keeps its branch; sticky properties and scheduler
+    // changes count even when the native transaction has no property records.
+    // A failed operation keeps redo only after a complete rollback; document
+    // metadata and sticky dirty state are outside the native transaction.
+    // Successful edits retire the branch only after model commitment.
     std::list<Transaction*> retiredRedos;
     if (d->collaborationRedoHistoryParked) {
-        if (committed) {
+        if ((committed && d->collaborationHistoryChanged)
+            || Internal::PreparedLabelReferenceUpdates::hasUnrestoredChanges(*this)) {
+            Internal::PreparedLabelReferenceUpdates::clearRedos(*this, &retiredRedos);
             retiredRedos.splice(retiredRedos.end(), d->collaborationParkedRedos);
             d->collaborationParkedRedoMap.clear();
         }
@@ -2572,6 +2582,7 @@ bool Document::checkOnCycle()
 namespace
 {
 thread_local std::vector<Document*> replayParticipants;
+thread_local bool historyReplayActive = false;
 // Hold admission through the complete replay, including dependency rebuilding
 // in signalUndoDocument. Refuse before replay can remove backlinks, invoke
 // callbacks, create an inverse transaction, or consume a history entry.
@@ -2732,7 +2743,7 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
         _commitTransaction(true);
     }
 
-    assert(mRedoTransactions.size() != 0);
+    if (mRedoTransactions.empty()) { return false; }
 
     // undo
     d->activeUndoTransaction = new Transaction(mRedoTransactions.back()->getID());
@@ -3154,12 +3165,7 @@ void Document::_clearRedos()
         return;
     }
 
-    mRedoMap.clear();
-    while (!mRedoTransactions.empty()) {
-        discardTransactionFileState(mRedoTransactions.back()->getID());
-        delete mRedoTransactions.back();
-        mRedoTransactions.pop_back();
-    }
+    Internal::PreparedLabelReferenceUpdates::invalidateRedos(*this);
 }
 
 void Document::commitTransaction() // NOLINT
@@ -3217,6 +3223,10 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             if (retainUndoHistory && d->activeTransactionFileChanges
                 && !d->collaborationCommitNotificationBarrier) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
+            }
+            if (!d->activeUndoTransaction->isEmpty()
+                || d->activeTransactionFileChanges || d->transactionFileChanges.contains(id)) {
+                Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
             }
             d->activeTransactionFileChanges.reset();
 
@@ -3286,14 +3296,8 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                      || (d->collaborationCommitNotificationBarrier
                          && d->activeUndoTransaction->isEmpty()
                          && !d->transactionFileChanges.contains(id))) {
-                // An empty compatibility commit must keep the redo branch it
-                // parked on entry. Otherwise a diagnostic read in one document
-                // silently removes that participant from a grouped redo.
-                if (retainUndoHistory && d->collaborationRedoHistoryParked) {
-                    mRedoTransactions.swap(d->collaborationParkedRedos);
-                    mRedoMap.swap(d->collaborationParkedRedoMap);
-                    d->collaborationRedoHistoryParked = false;
-                }
+                // Redo restoration is decided at boundary finalization, using
+                // the mutation ledger as well as native transaction records.
                 // Native compatibility commits eagerly create a transaction,
                 // even when the callback only reads. Keep a file-only change,
                 // but retire empty records so one undo reaches the real edit.
@@ -3836,6 +3840,10 @@ unsigned int Document::getMaxUndoStackSize() const
 
 void Document::onBeforeChange(const Property* prop)
 {
+    if (!d->collaborationCommitNotificationBarrier
+        && !saveBookkeepingPropertySuppressed(*d, prop)) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     if (prop == &Label) {
         oldLabel = Label.getValue();
     }
@@ -3857,6 +3865,12 @@ void Document::onChanged(const Property* prop)
 {
     const bool suppressBookkeepingProperty =
         saveBookkeepingPropertySuppressed(*d, prop);
+    if (!suppressBookkeepingProperty) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+        if (d->collaborationCommitNotificationBarrier && !d->rollback && !d->undoing) {
+            d->collaborationUnrecordedDocumentChange = true;
+        }
+    }
     if (shouldTrackFileChange(prop)) {
         // App::Document itself is not a TransactionalObject. Its persistent
         // properties therefore stay dirty independently of any object
@@ -3984,6 +3998,9 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
     // capture or the property's value change so a foreign document cannot
     // escape an atomic presentation rollback boundary.
     enforceAtomicPresentationMutationTarget(*this);
+    if (!d->collaborationCommitNotificationBarrier) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     if (Who->isDerivedFrom<DocumentObject>()) {
         if (d->collaborationCommitNotificationBarrier) {
             d->collaborationDeferredNotifications.push_back(
@@ -6262,6 +6279,11 @@ void Document::markFileChange(const DocumentFileChange category,
         return;
     }
 
+    // Dirty-state bookkeeping alone is not a native model edit. Inside a
+    // prepared callback it still makes the boundary observably non-empty.
+    if (d->collaborationCommitNotificationBarrier) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     const auto previousState = getFileChangeState();
     const auto previousChanges = getPendingFileChanges();
     const bool previousFailure = d->lastCanonicalSaveFailed;
@@ -6393,6 +6415,7 @@ void Document::restoreTransactionFileState(const int transactionId, const bool a
 void Document::discardTransactionFileState(const int transactionId)
 {
     d->transactionFileChanges.erase(transactionId);
+    d->historyGroups.erase(transactionId);
 }
 
 void Document::establishCanonicalSavepoint(const std::array<std::uint64_t, 6> tokens,
@@ -9206,11 +9229,23 @@ struct PreparedLabelReferenceUpdates::State
     bool localUpdates {false};
     bool failed {false};
     std::vector<std::unique_ptr<Participant>> participants;
+    // Admit all branches whose redo can be retired before changing the model.
+    std::vector<std::unique_ptr<Participant>> historyAdmissions;
+    struct Membership
+    {
+        Document* document;
+        int id;
+        decltype(DocumentP::historyGroups)::node_type previous;
+    };
+    std::vector<Membership> memberships;
+    std::list<Transaction*> retiredRedos;
+    bool finished {false};
+    void admitRedoHistory(Document& document);
 };
 
 PreparedLabelReferenceUpdates::PreparedLabelReferenceUpdates(Document& source,
                                                            bool retainUndoHistory)
-    : state(std::make_unique<State>(State {source, retainUndoHistory, false, false, {}}))
+    : state(std::make_unique<State>(State {source, retainUndoHistory, false, false, {}, {}, {}, {}}))
 {
     if (activeLabelReferenceUpdates) {
         throw Base::RuntimeError("prepared label reference context is already active");
@@ -9231,6 +9266,7 @@ PreparedLabelReferenceUpdates::~PreparedLabelReferenceUpdates()
 {
     rollback();
     finish(false);
+    for (auto* transaction : state->retiredRedos) { delete transaction; }
     activeLabelReferenceUpdates = nullptr;
 }
 
@@ -9265,8 +9301,130 @@ void PreparedLabelReferenceUpdates::admit(Document& source, Property& property)
     }
 }
 
+void PreparedLabelReferenceUpdates::noteMutation(Document& document)
+{
+    if (!document.d->rollback && !document.d->undoing
+        && !document.testStatus(Document::Restoring)) {
+        document.d->collaborationHistoryChanged = true;
+        if (!document.d->collaborationCommitNotificationBarrier
+            && !historyReplayActive && !document.testStatus(Document::Recomputing)
+            && !document.testStatus(Document::Importing)
+            && std::ranges::any_of(document.mRedoTransactions, [&](const auto* transaction) {
+                return document.d->historyGroups.contains(transaction->getID());
+            }) && !presentationRefreshOnCallingThread()) {
+            // Ordinary unbooked native edits retain their legacy history
+            // semantics. An explicitly recorded group cannot branch locally.
+            // Idle GUI material/visibility reflection is derived replay.
+            invalidateRedos(document);
+        }
+    }
+}
+
+bool PreparedLabelReferenceUpdates::hasUnrestoredChanges(const Document& document) noexcept
+{
+    // The snapshot belongs only to this active boundary, not to a subsequent
+    // observer's history operation or the context destructor's repeated finish.
+    if (!document.d->collaborationCommitNotificationBarrier) { return false; }
+    const auto& tokens = document.d->fileChangeTokens;
+    return document.d->collaborationUnrecordedDocumentChange
+        || document.d->collaborationBoundaryStickyTokens
+            != std::array<std::uint64_t, 3> {tokens.model.sticky,
+                                             tokens.appearance.sticky,
+                                             tokens.compatibility.sticky};
+}
+
+void PreparedLabelReferenceUpdates::clearRedos(Document& document,
+                                               std::list<Transaction*>* deferred) noexcept
+{
+    // Detach first: recursive group invalidation may come back to this member.
+    // No allocations or public transaction callbacks after durable commitment.
+    std::list<Transaction*> retired;
+    retired.splice(retired.end(), document.mRedoTransactions);
+    retired.splice(retired.end(), document.d->collaborationParkedRedos);
+    document.mRedoMap.clear();
+    document.d->collaborationParkedRedoMap.clear();
+    for (auto* transaction : retired) {
+        const int id = transaction->getID();
+        const auto found = document.d->historyGroups.find(id);
+        if (found != document.d->historyGroups.end()) {
+            const auto group = found->second;
+            for (const auto& member : *group) {
+                auto* peer = member.document;
+                if (peer && peer != &document && GetApplication().getDocumentName(peer)
+                    && peer->collaborationRevisions().documentIdentity() == member.identity) {
+                    clearRedos(*peer, deferred);
+                }
+            }
+        }
+        document.discardTransactionFileState(id);
+        if (!deferred) { delete transaction; }
+    }
+    if (deferred) { deferred->splice(deferred->end(), retired); }
+}
+
+void PreparedLabelReferenceUpdates::State::admitRedoHistory(Document& document)
+{
+    auto& admissions = historyAdmissions;
+    const auto admitHistory = [&](auto&& self, Document& doc) -> void {
+        if (std::ranges::any_of(admissions, [&](const auto& entry) {
+                return &entry->document == &doc;
+            })) {
+            return;
+        }
+        auto entry = std::make_unique<State::Participant>(doc);
+        if (!entry->pin || !entry->lock.owns_lock()
+            || doc.collaborationIdentity().state != DocumentLifecycleState::Live
+            || (&doc != &document && (doc.hasPendingTransaction()
+                || doc.collaborationLifecycleMutationBlocked()
+                || doc.recomputeCoordinator().hasPendingWork()))) {
+            throw Base::RuntimeError("grouped redo invalidation admission is busy; retry");
+        }
+        admissions.push_back(std::move(entry));
+        const auto scan = [&](const auto& transactions) {
+            for (auto* transaction : transactions) {
+                const auto found = doc.d->historyGroups.find(transaction->getID());
+                if (found == doc.d->historyGroups.end()) { continue; }
+                for (const auto& member : *found->second) {
+                    auto* peer = member.document;
+                    if (peer && GetApplication().getDocumentName(peer)
+                        && peer->collaborationRevisions().documentIdentity() == member.identity) {
+                        self(self, *peer);
+                    }
+                }
+            }
+        };
+        scan(doc.mRedoTransactions);
+        scan(doc.d->collaborationParkedRedos);
+    };
+    admitHistory(admitHistory, document);
+}
+
+void PreparedLabelReferenceUpdates::invalidateRedos(Document& document)
+{
+    if (document.mRedoTransactions.empty() && document.d->collaborationParkedRedos.empty()) {
+        return;
+    }
+    if (!GetApplication().getDocumentName(&document)) {
+        // Teardown has already sealed this document's service admission.
+        // Any replay involving this missing member will be refused.
+        clearRedos(document);
+    }
+    else if (auto* context = activeLabelReferenceUpdates) {
+        context->state->admitRedoHistory(document);
+        clearRedos(document, &context->state->retiredRedos);
+    }
+    else {
+        State admission {document, true, false, false, {}, {}, {}, {}};
+        admission.admitRedoHistory(document);
+        clearRedos(document);
+    }
+}
+
 void PreparedLabelReferenceUpdates::preserveRedo(Document& document)
 {
+    if (auto* context = activeLabelReferenceUpdates) {
+        context->state->admitRedoHistory(document);
+    }
     if (!document.d->collaborationRedoHistoryParked) {
         document.d->collaborationParkedRedos.splice(
             document.d->collaborationParkedRedos.end(), document.mRedoTransactions);
@@ -9346,6 +9504,36 @@ void PreparedLabelReferenceUpdates::prepare()
     if (state->failed) {
         throw Base::RuntimeError("Label reference update failed");
     }
+    if (state->retainUndoHistory && !state->participants.empty()) {
+        auto& source = state->source;
+        const int id = source.d->nestedCommitParked && source.d->parkedNestedTransaction
+            ? source.d->parkedNestedTransaction->getID() : source.getTransactionID(true);
+        auto group = std::make_shared<DocumentP::HistoryGroup>();
+        if (const auto old = source.d->historyGroups.find(id); old != source.d->historyGroups.end()) {
+            *group = *old->second;
+        }
+        const auto append = [&](Document& document) {
+            const auto identity = document.collaborationRevisions().documentIdentity().value();
+            if (!std::ranges::any_of(*group, [&](const auto& member) {
+                    return member.identity == identity;
+                })) {
+                group->push_back({&document, identity});
+            }
+        };
+        append(source);
+        for (auto& entry : state->participants) { append(entry->document); }
+        state->memberships.reserve(group->size());
+        for (const auto& member : *group) {
+            auto* document = member.document;
+            if (!document || !GetApplication().getDocumentName(document)
+                || document->collaborationRevisions().documentIdentity() != member.identity) {
+                throw Base::RuntimeError("incomplete grouped history membership");
+            }
+            auto previous = document->d->historyGroups.extract(id);
+            state->memberships.push_back({document, id, std::move(previous)});
+            document->d->historyGroups.emplace(id, group);
+        }
+    }
     for (auto& entry : state->participants) {
         auto& document = entry->document;
         LabelReferenceMutationTarget target(state->source, document);
@@ -9402,8 +9590,41 @@ bool PreparedLabelReferenceUpdates::rollback() noexcept
 
 void PreparedLabelReferenceUpdates::finish(bool committed) noexcept
 {
+    // The destructor repeats finish(false). It must not inspect a subsequent
+    // observer's new boundary in an already-released participant.
+    if (std::exchange(state->finished, true)) { return; }
     if (activeLabelReferenceUpdates == this) {
         activeLabelReferenceUpdates = nullptr;
+    }
+    if (!committed) {
+        for (auto& membership : state->memberships) {
+            membership.document->d->historyGroups.erase(membership.id);
+            if (!membership.previous.empty()) {
+                // Rollback may have erased the replacement slot. Restore the
+                // preallocated node, including nested membership, without allocation.
+                membership.document->d->historyGroups.insert(std::move(membership.previous));
+            }
+        }
+    }
+    state->memberships.clear();
+    const bool unrestored = hasUnrestoredChanges(state->source)
+        || std::ranges::any_of(state->participants, [](const auto& entry) {
+            return hasUnrestoredChanges(entry->document);
+        });
+    if (unrestored || (committed && state->retainUndoHistory
+        && (state->source.d->collaborationHistoryChanged
+            || std::ranges::any_of(state->participants, [](const auto& entry) {
+                return entry->document.d->collaborationHistoryChanged;
+            })))) {
+        // Settle the entire branch while admission locks still cover every
+        // affected member, before any observer can dispatch new work.
+        clearRedos(state->source, &state->retiredRedos);
+        for (auto& entry : state->participants) {
+            clearRedos(entry->document, &state->retiredRedos);
+        }
+    }
+    for (auto& entry : state->historyAdmissions) {
+        if (entry->lock.owns_lock()) { entry->lock.unlock(); }
     }
     // A stable observer may synchronously dispatch new work to a dependent's
     // lane. Release all participant locks before replay; the barriers refuse
@@ -9435,16 +9656,42 @@ bool App::Internal::PreparedLabelReferenceUpdates::replay(
     // mutation or read-only postcondition before inspecting group membership.
     source.ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(source);
+    const bool wasReplaying = std::exchange(historyReplayActive, true);
+    const auto replayGuard = Base::ScopeGuard([&] { historyReplayActive = wasReplaying; });
     const auto replayOne = [undo](Document& document, int id) {
         return undo ? document.undoCompatibilityTransactionImpl(id)
                     : document.redoCompatibilityTransactionImpl(id);
     };
-    if (!grouped || !groupedReplayEnabled) {
+    const int id = transactionId ? transactionId : source.getTransactionID(undo);
+    if (!id) { return false; }
+    const auto membership = source.d->historyGroups.find(id);
+    const auto group = membership == source.d->historyGroups.end()
+        ? nullptr : membership->second;
+    if (!group && transactionId) {
+        // An explicit range ending at an ordinary entry can still cross a
+        // recorded group. The native single-document loop must never replay
+        // that intermediate group without its members.
+        int remaining = undo ? source.getAvailableUndos(id) : source.getAvailableRedos(id);
+        if (undo && source.d->activeUndoTransaction) { --remaining; }
+        const auto& history = undo ? source.mUndoTransactions : source.mRedoTransactions;
+        for (auto it = history.rbegin(); remaining > 0 && it != history.rend(); ++it, --remaining) {
+            if (source.d->historyGroups.contains((*it)->getID())) {
+                throw Base::RuntimeError("grouped history range requires coordinated replay");
+            }
+        }
+    }
+    if (!group && (!grouped || !groupedReplayEnabled)) {
         return replayOne(source, transactionId);
     }
-    const int id = transactionId ? transactionId : source.getTransactionID(undo);
-    if (!id) {
-        return false;
+    if (group) {
+        for (const auto& member : *group) {
+            auto* document = member.document;
+            if (!document || !GetApplication().getDocumentName(document)
+                || document->collaborationRevisions().documentIdentity() != member.identity
+                || !(undo ? document->getAvailableUndos(id) : document->getAvailableRedos(id))) {
+                throw Base::RuntimeError("incomplete grouped history; replay refused");
+            }
+        }
     }
     struct Participant
     {
@@ -9489,6 +9736,25 @@ bool App::Internal::PreparedLabelReferenceUpdates::replay(
             || document.recomputeCoordinator().hasPendingWork()
             || document.testStatus(Document::Restoring)) {
             throw Base::RuntimeError("grouped history participant has active work; retry after it ends");
+        }
+    }
+    for (const auto& entry : participants) {
+        const auto& history = undo ? entry.document->mUndoTransactions : entry.document->mRedoTransactions;
+        int remaining = entry.steps;
+        for (auto it = history.rbegin(); remaining > 0 && it != history.rend(); ++it, --remaining) {
+            const auto found = entry.document->d->historyGroups.find((*it)->getID());
+            if (found == entry.document->d->historyGroups.end()) { continue; }
+            for (const auto& member : *found->second) {
+                if (!std::ranges::any_of(participants, [&](const auto& peer) {
+                    return peer.document->collaborationRevisions().documentIdentity() == member.identity
+                        && (undo ? peer.document->getAvailableUndos((*it)->getID())
+                                 : peer.document->getAvailableRedos((*it)->getID())) <= peer.steps
+                        && (undo ? peer.document->getAvailableUndos((*it)->getID())
+                                 : peer.document->getAvailableRedos((*it)->getID())) > 0;
+                })) {
+                    throw Base::RuntimeError("incomplete grouped history range; replay refused");
+                }
+            }
         }
     }
     std::vector<Document*> admitted;

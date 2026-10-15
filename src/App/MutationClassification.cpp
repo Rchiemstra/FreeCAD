@@ -279,6 +279,20 @@ App::LivePresentationRefreshScope::~LivePresentationRefreshScope() noexcept
     }
 }
 
+bool App::Internal::PreparedLabelReferenceUpdates::presentationRefreshOnCallingThread() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.refreshDepth != 0
+            && admission.refreshOwner == std::this_thread::get_id();
+    }
+    catch (...) {
+        // Without proof of presentation replay, retain normal edit semantics.
+        return false;
+    }
+}
+
 App::LivePresentationRefreshInProgress::LivePresentationRefreshInProgress(bool deferrable)
     : Base::RuntimeError("an idle live presentation refresh is active in this process")
     , _deferrable(deferrable)

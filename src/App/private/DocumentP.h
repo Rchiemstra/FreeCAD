@@ -319,6 +319,21 @@ struct DocumentP
     // as a grant; the removal handoff is a private, consumed stack value.
     const Internal::SpreadsheetCellClearOperation* collaborationSpreadsheetCellClear {nullptr};
     std::list<Transaction*> collaborationPreparedUndoSlot;
+    // Membership outlives any one participant's transaction record. Resolve
+    // addresses through the live application map before dereferencing, then
+    // check instance identity so a reused address cannot join an old group.
+    struct HistoryGroupMember
+    {
+        Document* document;
+        DocumentRevisionIdentityBinding identity;
+    };
+    using HistoryGroup = std::vector<HistoryGroupMember>;
+    std::map<int, std::shared_ptr<const HistoryGroup>> historyGroups;
+    bool collaborationHistoryChanged {false};
+    // Native rollback restores transactional properties and scheduler state,
+    // but document metadata and sticky dirty-state tokens remain changed.
+    bool collaborationUnrecordedDocumentChange {false};
+    std::array<std::uint64_t, 3> collaborationBoundaryStickyTokens {};
     bool collaborationRedoHistoryParked {false};
     std::list<Transaction*> collaborationParkedRedos;
     std::map<int, Transaction*> collaborationParkedRedoMap;
