@@ -209,6 +209,64 @@ class TestSketchExpression(unittest.TestCase):
     def testExternalConstraintSourceSameNameDifferentFileSafe(self):
         self._externalConstraintLifecycle("name_collision")
 
+    def _closedSourceCommitRepair(self, closed):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = FreeCAD.newDocument("SrcDoc")
+            try:
+                dims = source.addObject("Spreadsheet::Sheet", "Dims")
+                for cell, value, alias in (("A1", "30", "Wall"), ("A2", "12", "PadLen")):
+                    dims.set(cell, value)
+                    dims.setAlias(cell, alias)
+                source.recompute()
+                source.saveAs(os.path.join(directory, "SrcDoc.FCStd"))
+                sk = self.Doc.addObject("Sketcher::SketchObject", "Sketch")
+                for end, value, name in ((App.Vector(30, 0, 0), 30, "W"), (App.Vector(0, 15, 0), 15, "H")):
+                    geo = sk.addGeometry(Part.LineSegment(App.Vector(), end))
+                    index = sk.addConstraint(Sketcher.Constraint("Distance", geo, value))
+                    sk.renameConstraint(index, name)
+                other = self.Doc.addObject("Part::Box", "Other")
+                other.addProperty("App::PropertyLink", "Profile")
+                other.Profile = sk
+                self.Doc.saveAs(os.path.join(directory, "DepDoc.FCStd"))
+                sk.setExpression("Constraints.W", "SrcDoc#<<Dims>>.Wall")
+                sk.setExpression("Constraints.H", "SrcDoc#<<Dims>>.Wall / 2")
+                other.setExpression("Length", "SrcDoc#<<Dims>>.PadLen")
+                self.Doc.recompute()
+                self.Doc.save()
+                self.Doc.UndoMode = 1
+                if closed:
+                    FreeCAD.closeDocument("SrcDoc")
+                def commit(callback, deferred=False):
+                    before = self.Doc.UndoCount
+                    result = self.Doc.commitCompatibilityMutation(callback, recompute=not deferred)
+                    self.assertEqual(result["status"], "Committed", result)
+                    self.assertEqual(self.Doc.UndoCount, before + 1)
+                commit(lambda: sk.setExpression("Constraints.W", None), deferred=True)
+                self.Doc.recompute()
+                self.Doc.purgeTouched()
+                result = self.Doc.commitCompatibilityMutation(
+                    lambda: sk.setExpression("Constraints.H", None))
+                self.assertNotEqual(result["status"], "RollbackFailed", result)
+                self.assertFalse(self.Doc.getMutationReadiness().get("quarantined"), result)
+                # Failure is an ordinary rollback; source-free repair can follow.
+                if not result["committed"]:
+                    commit(lambda: sk.setExpression("Constraints.H", None), deferred=True)
+                commit(lambda: other.setExpression("Length", None), deferred=True)
+                self.Doc.recompute()
+                self.assertNotIn("Invalid", sk.State)
+                self.assertNotIn("Invalid", other.State)
+            finally:
+                if "SrcDoc" in FreeCAD.listDocuments():
+                    FreeCAD.closeDocument("SrcDoc")
+
+    def testExternalConstraintCommitRepairHappyOpen(self):
+        self._closedSourceCommitRepair(False)
+
+    def testExternalConstraintCommitRepairMissingSource(self):
+        self._closedSourceCommitRepair(True)
+
     def tearDown(self):
         # comment out to omit closing document for debugging
         FreeCAD.closeDocument(self.Doc.Name)
