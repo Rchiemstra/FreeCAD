@@ -103,27 +103,47 @@ class TestSketchExpression(unittest.TestCase):
                 self.Doc.saveAs(os.path.join(directory, "DepDoc.FCStd"))
                 sketch.setExpression("Constraints[{}]".format(width), "SrcDoc#<<Dims>>.Wall")
                 sketch.setExpression("Constraints.H", "SrcDoc#<<Dims>>.PadLen")
+                if mode == "relabel":
+                    source.Label = "Source dimensions"
+                    sketch.setExpression("Constraints.H", "<<Source dimensions>>#<<Dims>>.PadLen")
                 self.Doc.recompute()
                 self.Doc.save()
                 self.Doc.UndoMode = 1
+                if mode == "relabel":
+                    source.Label = "Renamed dimensions"
+                    source.save()
+                    self.assertIn("<<Renamed dimensions>>#", dict((p.lstrip("."), e) for p, e in sketch.ExpressionEngine)["Constraints.H"])
                 if mode != "open":
                     FreeCAD.closeDocument("SrcDoc")
                     self.Doc.recompute()
-                if mode == "partial":
+                partial = mode in ("partial", "relabel", "undo_last")
+                if partial:
                     sketch.setExpression("Constraints.W", None)
                     self.Doc.recompute()
                     self.Doc.purgeTouched()
-                if mode in ("reopen", "partial"):
+                if mode == "undo_last":
+                    self.Doc.openTransaction("Clear last closed-source expression")
+                    sketch.setExpression("Constraints.H", None)
+                    self.Doc.commitTransaction()
+                    self.assertEqual(sketch.ExpressionEngine, [])
+                    self.Doc.undo()
+                    self.assertEqual(len(sketch.ExpressionEngine), 1)
+                    self.Doc.redo()
+                    self.assertEqual(sketch.ExpressionEngine, [])
+                    self.Doc.undo()
+                    self.assertEqual(len(sketch.ExpressionEngine), 1)
+                    self.Doc.purgeTouched()
+                if mode in ("reopen", "partial", "relabel", "undo_last"):
                     source = FreeCAD.openDocument(path)
                     self.Doc.recompute()
                     self.assertNotIn("Invalid", sketch.State)
                     self.assertEqual(sketch.getDatum(width).Value, 30)
                     # Verify the runtime dependency was reattached, too.
-                    source.Dims.set("A1" if mode == "partial" else "A2", "18" if mode == "partial" else "42")
+                    source.Dims.set("A1" if partial else "A2", "18" if partial else "42")
                     source.recompute()
                     self.Doc.recompute()
-                    self.assertEqual(sketch.getDatum(height if mode == "partial" else width).Value,
-                                     18 if mode == "partial" else 42)
+                    self.assertEqual(sketch.getDatum(height if partial else width).Value,
+                                     18 if partial else 42)
                 else:
                     self.Doc.openTransaction("Clear width expression")
                     sketch.setExpression("Constraints.W", None)
@@ -153,6 +173,12 @@ class TestSketchExpression(unittest.TestCase):
 
     def testExternalConstraintRetainedBindingSourceReopened(self):
         self._externalConstraintLifecycle("partial")
+
+    def testExternalConstraintRelabeledSourcePartialClearReopened(self):
+        self._externalConstraintLifecycle("relabel")
+
+    def testExternalConstraintLastClosedBindingUndoReopened(self):
+        self._externalConstraintLifecycle("undo_last")
 
     def tearDown(self):
         # comment out to omit closing document for debugging
