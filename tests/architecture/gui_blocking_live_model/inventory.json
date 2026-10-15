@@ -3228,7 +3228,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 664,
+      "line": 667,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -3236,7 +3236,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 840,
+      "line": 843,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
