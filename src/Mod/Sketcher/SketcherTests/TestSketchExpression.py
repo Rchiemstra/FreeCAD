@@ -109,16 +109,21 @@ class TestSketchExpression(unittest.TestCase):
                 if mode != "open":
                     FreeCAD.closeDocument("SrcDoc")
                     self.Doc.recompute()
-                if mode == "reopen":
+                if mode == "partial":
+                    sketch.setExpression("Constraints.W", None)
+                    self.Doc.recompute()
+                    self.Doc.purgeTouched()
+                if mode in ("reopen", "partial"):
                     source = FreeCAD.openDocument(path)
                     self.Doc.recompute()
                     self.assertNotIn("Invalid", sketch.State)
                     self.assertEqual(sketch.getDatum(width).Value, 30)
                     # Verify the runtime dependency was reattached, too.
-                    source.Dims.set("A2", "42")
+                    source.Dims.set("A1" if mode == "partial" else "A2", "18" if mode == "partial" else "42")
                     source.recompute()
                     self.Doc.recompute()
-                    self.assertEqual(sketch.getDatum(width).Value, 42)
+                    self.assertEqual(sketch.getDatum(height if mode == "partial" else width).Value,
+                                     18 if mode == "partial" else 42)
                 else:
                     self.Doc.openTransaction("Clear width expression")
                     sketch.setExpression("Constraints.W", None)
@@ -145,6 +150,9 @@ class TestSketchExpression(unittest.TestCase):
 
     def testExternalConstraintClearSourceClosed(self):
         self._externalConstraintLifecycle("closed")
+
+    def testExternalConstraintRetainedBindingSourceReopened(self):
+        self._externalConstraintLifecycle("partial")
 
     def tearDown(self):
         # comment out to omit closing document for debugging

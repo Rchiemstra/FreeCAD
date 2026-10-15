@@ -173,6 +173,7 @@ struct PropertyExpressionEngine::Private
     // defined in header, hence the private structure here.
     std::vector<fastsignals::scoped_connection> conns;
     std::unordered_map<std::string, std::vector<ObjectIdentifier>> propMap;
+    std::map<std::string, std::set<std::string>> externalExpressions;
 
     static bool shouldEvaluateOnRestore(const Property* prop,
                                         const std::shared_ptr<Expression>& expression)
@@ -401,15 +402,62 @@ void PropertyExpressionEngine::rebuildDependencies()
     std::map<App::DocumentObject*, bool> deps;
     std::map<std::pair<std::string, App::DocumentObject*>, bool> propDeps;
     std::vector<std::string> labels;
+    std::map<std::string, std::set<std::string>> externalExpressions;
+    const auto* owner = freecad_cast<DocumentObject*>(getContainer());
     for (auto& e : expressions) {
         auto expr = e.second.expression;
         if (expr) {
-            expr->getDepObjects(deps, &labels, &propDeps);
+            std::map<App::DocumentObject*, bool> expressionDeps;
+            expr->getDepObjects(expressionDeps, &labels, &propDeps);
+            const auto text = expr->toString();
+            for (const auto& [source, hidden] : expressionDeps) {
+                const auto [it, inserted] = deps.emplace(source, hidden);
+                if (!hidden || inserted) {
+                    it->second = hidden;
+                }
+                if (owner && source && source->getDocument() != owner->getDocument()) {
+                    externalExpressions[source->getFullName()].insert(text);
+                }
+            }
+            if (pimpl) {
+                for (const auto& [source, bindings] : pimpl->externalExpressions) {
+                    const auto link = _XLinks.find(source);
+                    if (bindings.contains(text) && link != _XLinks.end()
+                        && !link->second->getValue()) {
+                        externalExpressions[source].insert(text);
+                    }
+                }
+            }
         }
     }
     registerLabelReferences(std::move(labels));
 
-    updateDeps(std::move(deps), &propDeps);
+    // A closed source has no live dependency objects. Retained bindings still
+    // need their detached file links so reopening can reattach and rebuild the
+    // graph. Drop links whose last binding was removed, as before.
+    decltype(_XLinks) retainedLinks;
+    for (auto it = _XLinks.begin(); it != _XLinks.end();) {
+        if (!it->second->getValue() && externalExpressions.contains(it->first)) {
+            retainedLinks.insert(_XLinks.extract(it++));
+        }
+        else {
+            ++it;
+        }
+    }
+    try {
+        updateDeps(std::move(deps), &propDeps);
+    }
+    catch (...) {
+        _XLinks.merge(retainedLinks);
+        throw;
+    }
+    _XLinks.merge(retainedLinks);
+    if (!externalExpressions.empty() && !pimpl) {
+        pimpl = std::make_unique<Private>();
+    }
+    if (pimpl) {
+        pimpl->externalExpressions = std::move(externalExpressions);
+    }
 
     if (pimpl) {
         pimpl->conns.clear();
