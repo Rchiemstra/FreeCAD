@@ -66,6 +66,12 @@ public:
 class DocumentCommitCoordinatorTestAccess
 {
 public:
+    static CollaborationRollbackResult rollback(Document& document)
+    {
+        DocumentCommitCoordinator coordinator(document);
+        return coordinator.rollbackNativeCommitTransaction(false);
+    }
+
     static void setPostReservationHook(void (*hook)())
     {
         DocumentCommitCoordinator::_postReservationTestHook.store(
@@ -142,6 +148,18 @@ public:
     static bool commitCoordinatorTransaction(Document& document)
     {
         return document.commitCollaborationCommitTransaction(true);
+    }
+
+    static CollaborationRollbackResult failedStabilization(Document& document, DocumentObject& target)
+    {
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            target.Label.setValue("Transient label");
+            document.applyCollaborationRecomputeFailure(target, "transient mutation error");
+            const auto result = DocumentCommitCoordinatorTestAccess::rollback(document);
+            endBoundary(document);
+            return result;
+        });
     }
 
     /** Probe grant on the calling thread (no lane hop). */
@@ -3115,4 +3133,33 @@ TEST_F(LabelGroupRegressionTest, poisonedDependentPreservesExistingRedoBranches)
         {}, [&] { _target->Label.setValue("After"); });
     EXPECT_FALSE(result.committed());
     expectUnchanged();
+}
+
+TEST_F(DocumentCollaborationServiceTest, failedStabilizationRestoresOwnErrorSnapshot)
+{
+    auto* pending = _document->addObject<App::FeatureTest>("Pending");
+    auto* existing = _document->addObject<App::FeatureTest>("ExistingError");
+    existing->ExceptionType.setValue(1);
+    _document->recompute();
+    existing->purgeTouched();
+    const std::string originalError = _document->getErrorDescription(existing);
+    const auto originalStatus = existing->getStatus();
+    pending->ExceptionType.setValue(1);
+    const auto pendingStatus = pending->getStatus();
+    const auto undos = _document->getAvailableUndos();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto result = App::Internal::DocumentStructuralCompatibilityTestAccess::failedStabilization(
+            *_document, *pending);
+        EXPECT_TRUE(result.restored) << result.diagnostic.data();
+        EXPECT_NE(std::string(result.diagnostic.data()).find("stabilization"), std::string::npos)
+            << result.diagnostic.data();
+        EXPECT_STREQ(_document->getErrorDescription(existing), originalError.c_str());
+        EXPECT_EQ(existing->getStatus(), originalStatus);
+        EXPECT_EQ(pending->getStatus(), pendingStatus);
+        EXPECT_EQ(_document->getErrorDescription(pending), nullptr);
+        EXPECT_STREQ(pending->Label.getValue(), "Pending");
+        EXPECT_FALSE(_document->hasPendingTransaction());
+        EXPECT_FALSE(_document->getMutationReadiness().poisoned);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+    }
 }
