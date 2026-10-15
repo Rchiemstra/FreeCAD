@@ -1675,7 +1675,11 @@ void Document::applyCollaborationRecomputeFailure(
 
 void Document::beginCollaborationCommitNotificationBarrier()
 {
-    if (d->collaborationCommitNotificationBarrier) {
+    // A second transaction inside the same notification barrier (rollback
+    // stabilization) needs a new snapshot. Never reuse the consumed swaps.
+    const bool renewing = d->collaborationCommitNotificationBarrier
+        && d->collaborationBoundaryConsumed && !d->activeUndoTransaction;
+    if (d->collaborationCommitNotificationBarrier && !renewing) {
         throw Base::RuntimeError("collaboration commit notification barrier is already active");
     }
 
@@ -1706,6 +1710,19 @@ void Document::beginCollaborationCommitNotificationBarrier()
             std::make_unique<DocumentObjectExecReturn>(error->Why, error->Which));
     }
 
+    d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
+    d->collaborationBoundaryPendingRemove = std::move(boundaryPendingRemove);
+    d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
+    d->collaborationBoundaryObjectSchedulerStates =
+        std::move(boundaryObjectSchedulerStates);
+    d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
+    d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
+    d->collaborationBoundaryActiveObject = boundaryActiveObject;
+    d->collaborationBoundaryConsumed = false;
+    d->collaborationBoundaryTransactionId = 0;
+    if (renewing) {
+        return; // Keep deferred notifications and publication suppression.
+    }
     d->collaborationDeferredNotifications.clear();
     d->collaborationDeferredNotifications.reserve(64);
     d->collaborationDeferredExternalRecomputes.clear();
@@ -1718,14 +1735,6 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
-    d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
-    d->collaborationBoundaryPendingRemove = std::move(boundaryPendingRemove);
-    d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
-    d->collaborationBoundaryObjectSchedulerStates =
-        std::move(boundaryObjectSchedulerStates);
-    d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
-    d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
-    d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationHistoryChanged = false;
     d->collaborationUnrecordedDocumentChange = false;
@@ -1824,6 +1833,8 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationBoundaryTouchedObjects.clear();
     d->collaborationBoundaryRecomputeLog.clear();
     d->collaborationBoundaryActiveObject = nullptr;
+    d->collaborationBoundaryConsumed = false;
+    d->collaborationBoundaryTransactionId = 0;
     try {
         GetApplication().endCollaborationTransactionSignalSuppression();
     }
@@ -2964,6 +2975,12 @@ int Document::_openTransaction(
         _clearRedos();
     }
 
+    if (d->collaborationCommitNotificationBarrier
+        && d->collaborationBoundaryTransactionId != 0) {
+        d->collaborationBoundaryConsumed = true;
+        beginCollaborationCommitNotificationBarrier();
+    }
+
     // When id == 0, this creates a new id
     // for instance, when there is no global transaction
     // from the application to stick to
@@ -2977,6 +2994,7 @@ int Document::_openTransaction(
     id = d->activeUndoTransaction->getID();
 
     if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationBoundaryTransactionId = id;
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::OpenTransaction,
              nullptr,
@@ -3501,6 +3519,14 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
     const bool previousSaveFailure = d->lastCanonicalSaveFailed;
     const auto transactionFileChanges = d->activeTransactionFileChanges;
     const int transactionId = transaction->getID();
+    if (d->collaborationBoundaryConsumed
+        || d->collaborationBoundaryTransactionId != transactionId) {
+        appendDiagnostic("collaboration rollback snapshot does not belong to the active transaction");
+        return result;
+    }
+    // Consume before checked apply: even a failed restore must never swap this
+    // transaction's snapshot a second time. A new transaction captures its own.
+    d->collaborationBoundaryConsumed = true;
     bool transactionRestoreSucceeded = true;
     bool boundaryStateRestored = false;
     {

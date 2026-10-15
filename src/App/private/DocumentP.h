@@ -247,6 +247,8 @@ struct DocumentP
     bool opentransaction {false};
     bool suppressCollaborationRevisionPublication {true};
     bool collaborationCommitNotificationBarrier {false};
+    bool collaborationBoundaryConsumed {false};
+    int collaborationBoundaryTransactionId {0};
     bool collaborationTransactionControlGranted {false};
     bool collaborationCompatibilityStructuralMutationGranted {false};
     bool collaborationDerivedRecomputeGranted {false};

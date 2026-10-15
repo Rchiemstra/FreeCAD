@@ -150,10 +150,17 @@ public:
         return document.commitCollaborationCommitTransaction(true);
     }
 
-    static CollaborationRollbackResult failedStabilization(Document& document, DocumentObject& target)
+    static CollaborationRollbackResult failedStabilization(
+        Document& document, DocumentObject& target, bool clearError = false)
     {
         return onOwner(document, [&] {
             beginBoundary(document, true);
+            if (clearError) {
+                auto* existing = static_cast<FeatureTest*>(document.getObject("ExistingError"));
+                existing->ExceptionType.setValue(0);
+                auto derived = document.openCollaborationDerivedRecomputeGrant();
+                document.recompute({existing});
+            }
             target.Label.setValue("Transient label");
             document.applyCollaborationRecomputeFailure(target, "transient mutation error");
             const auto result = DocumentCommitCoordinatorTestAccess::rollback(document);
@@ -3149,7 +3156,7 @@ TEST_F(DocumentCollaborationServiceTest, failedStabilizationRestoresOwnErrorSnap
     const auto undos = _document->getAvailableUndos();
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto result = App::Internal::DocumentStructuralCompatibilityTestAccess::failedStabilization(
-            *_document, *pending);
+            *_document, *pending, attempt == 1);
         EXPECT_TRUE(result.restored) << result.diagnostic.data();
         EXPECT_NE(std::string(result.diagnostic.data()).find("stabilization"), std::string::npos)
             << result.diagnostic.data();
@@ -3162,4 +3169,44 @@ TEST_F(DocumentCollaborationServiceTest, failedStabilizationRestoresOwnErrorSnap
         EXPECT_FALSE(_document->getMutationReadiness().poisoned);
         EXPECT_EQ(_document->getAvailableUndos(), undos);
     }
+}
+
+
+TEST_F(LabelGroupRegressionTest, nativeErrorSnapshotsSurviveGroupedRollbackAndReplay)
+{
+    std::vector<App::FeatureTest*> errors;
+    std::vector<std::string> diagnostics;
+    std::vector<unsigned long> statuses;
+    for (auto* doc : documents) {
+        auto* error = doc->addObject<App::FeatureTest>("ExistingError");
+        error->ExceptionType.setValue(1);
+        doc->recompute();
+        error->purgeTouched();
+        errors.push_back(error);
+        diagnostics.emplace_back(doc->getErrorDescription(error));
+        statuses.push_back(error->getStatus());
+    }
+    const auto expectErrors = [&] {
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_STREQ(documents[i]->getErrorDescription(errors[i]), diagnostics[i].c_str());
+            EXPECT_EQ(errors[i]->getStatus(), statuses[i]);
+            EXPECT_FALSE(documents[i]->getMutationReadiness().poisoned);
+        }
+    };
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(_document->undo());
+        expectModel("Before");
+        expectErrors();
+        ASSERT_TRUE(documents.back()->redo());
+        expectModel("After");
+        expectErrors();
+    }
+    const auto failed = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("Rejected"); }, [] { return false; });
+    EXPECT_FALSE(failed.committed());
+    expectModel("After");
+    expectErrors();
 }

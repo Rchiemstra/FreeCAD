@@ -415,9 +415,9 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
         return rollback;
     }
     // A terminal native error is the restored boundary, not unfinished work.
-    // Stabilizing it fails again and consumes the barrier's swap-based rollback
-    // snapshot a second time, replacing the original diagnostics with the
-    // failed attempt's errors. Keep the exact restored error/dependency state.
+    // Stabilizing it would retry the same failed work unnecessarily. A new
+    // stabilization transaction captures its own rollback snapshot, but an
+    // already terminal boundary can retain its exact error/dependency state.
     try {
         const auto errors = Internal::captureNativeRecomputeErrors(_document);
         if (!errors.empty()
