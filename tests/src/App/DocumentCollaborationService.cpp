@@ -2741,6 +2741,74 @@ TEST_F(LabelGroupRegressionTest, crossDocumentRenameUndoRedoRestoresEveryHistory
     }
 }
 
+// Round 27: the source's own expression also participates in Label replay.
+TEST_F(LabelGroupRegressionTest, localAndExternalReferencesRedoFromSource)
+{
+    auto* local = _document->addObject<FeatureTest>("LocalDependent");
+    local->setExpression(ObjectIdentifier::parse(local, "Float"),
+                         Expression::parse(local, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        expectModel("After");
+        EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                      .expression->toString().find("<<After>>"), std::string::npos);
+        ASSERT_TRUE(_document->undo());
+        expectModel("Before");
+        EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                      .expression->toString().find("<<Before>>"), std::string::npos);
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+        }
+        ASSERT_TRUE(_document->redo());
+        expectModel("After");
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+        }
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRedoWithSourceBeforeDependent)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("zzzLabelDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    auto* local = _document->addObject<FeatureTest>("LocalDependent");
+    _target->Label.setValue("Target");
+    ASSERT_TRUE(_document->saveAs(("/tmp/" + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs(("/tmp/" + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+        Expression::parse(dependent, _documentName + "#<<Target>>.Float + 1"));
+    local->setExpression(ObjectIdentifier::parse(local, "Float"),
+        Expression::parse(local, "<<Target>>.Float + 1"));
+    _document->recompute();
+    foreign->recompute();
+    const auto sourceUndos = _document->getAvailableUndos();
+    const auto foreignUndos = foreign->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_TRUE(_document->undo());
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Target>>"), std::string::npos);
+    EXPECT_EQ(foreign->getAvailableUndos(), foreignUndos);
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(_document->getAvailableUndos(), sourceUndos + 1);
+    EXPECT_EQ(foreign->getAvailableUndos(), foreignUndos + 1);
+    EXPECT_EQ(_document->getAvailableRedos(), 0);
+    EXPECT_EQ(foreign->getAvailableRedos(), 0);
+}
+
 TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
 {
     documents.back()->openTransaction("Busy dependent");
