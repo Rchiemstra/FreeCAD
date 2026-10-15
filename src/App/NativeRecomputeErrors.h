@@ -27,7 +27,6 @@ public:
     static void record(const DocumentObject& object);
 
 private:
-    static thread_local NativeRecomputeRequestCapture* active;
     NativeRecomputeRequestCapture* const previous;
     Document& document;
     NativeRecomputeRequests& requests;

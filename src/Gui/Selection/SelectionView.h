@@ -53,7 +53,7 @@ namespace DockWnd
 
 /** A test class. A more elaborate class description.
  */
-class SelectionView: public Gui::DockWindow, public Gui::SelectionObserver
+class GuiExport SelectionView: public Gui::DockWindow, public Gui::SelectionObserver
 {
     Q_OBJECT
 

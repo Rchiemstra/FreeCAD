@@ -27,7 +27,6 @@ public:
     static bool consume(const ViewProvider* provider, const App::Property* property);
 
 private:
-    static thread_local SyntheticPropertyReplay* current;
     SyntheticPropertyReplay* previous;
     const ViewProvider* provider;
     const App::Property* property;

@@ -61,7 +61,10 @@ FC_LOG_LEVEL_INIT("Gui", true, true)
 using namespace Gui;
 
 
-thread_local SyntheticPropertyReplay* SyntheticPropertyReplay::current = nullptr;
+namespace
+{
+thread_local SyntheticPropertyReplay* current = nullptr;
+}
 
 SyntheticPropertyReplay::SyntheticPropertyReplay(
     const ViewProvider* provider, const App::Property* property)

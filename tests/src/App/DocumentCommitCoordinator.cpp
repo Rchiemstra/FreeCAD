@@ -2,9 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include "App/Application.h"
 #include "App/Document.h"
 #include "App/DocumentCommitCoordinator.h"
+#include "App/NativeRecomputeErrors.h"
+#include <src/App/InitApplication.h>
 
+#include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -79,4 +84,107 @@ TEST(DocumentCommitCoordinatorContractTest, constructionIsRestrictedToCollaborat
 {
     EXPECT_FALSE((std::is_constructible_v<DocumentCommitCoordinator, Document&>));
     EXPECT_FALSE(std::is_copy_constructible_v<DocumentCommitCoordinator>);
+}
+
+class NativeRecomputeRequestCaptureTest: public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+    }
+
+    void SetUp() override
+    {
+        auto& application = GetApplication();
+        documentName = application.getUniqueDocumentName("RecomputeCapture");
+        document = application.newDocument(documentName.c_str());
+    }
+
+    void TearDown() override
+    {
+        if (!foreignDocumentName.empty()) {
+            GetApplication().closeDocument(foreignDocumentName.c_str());
+        }
+        GetApplication().closeDocument(documentName.c_str());
+    }
+
+    std::string documentName;
+    std::string foreignDocumentName;
+    Document* document {};
+};
+
+TEST_F(NativeRecomputeRequestCaptureTest, recordsRepeatedTouchesOfAlreadyDirtyObjects)
+{
+    auto* object = document->addObject("App::DocumentObject", "Target");
+    object->touch();
+    Internal::NativeRecomputeRequests requests;
+    Internal::NativeRecomputeRequestCapture capture(*document, requests);
+
+    object->touch();
+    EXPECT_EQ(requests, (Internal::NativeRecomputeRequests {object}));
+    requests.clear();
+    object->touch();
+    EXPECT_EQ(requests, (Internal::NativeRecomputeRequests {object}));
+}
+
+TEST_F(NativeRecomputeRequestCaptureTest, nestedCapturesRestoreThePreviousScope)
+{
+    auto* first = document->addObject("App::DocumentObject", "First");
+    auto* second = document->addObject("App::DocumentObject", "Second");
+    auto* third = document->addObject("App::DocumentObject", "Third");
+    auto* outside = document->addObject("App::DocumentObject", "Outside");
+    Internal::NativeRecomputeRequests outerRequests;
+    Internal::NativeRecomputeRequests innerRequests;
+    {
+        Internal::NativeRecomputeRequestCapture outer(*document, outerRequests);
+        first->touch();
+        {
+            Internal::NativeRecomputeRequestCapture inner(*document, innerRequests);
+            second->touch();
+        }
+        third->touch();
+    }
+    outside->touch();
+
+    EXPECT_EQ(outerRequests, (Internal::NativeRecomputeRequests {first, second, third}));
+    EXPECT_EQ(innerRequests, (Internal::NativeRecomputeRequests {second}));
+}
+
+TEST_F(NativeRecomputeRequestCaptureTest, ignoresObjectsFromOtherDocuments)
+{
+    auto* object = document->addObject("App::DocumentObject", "Target");
+    foreignDocumentName = GetApplication().getUniqueDocumentName("ForeignRecomputeCapture");
+    auto* foreignDocument = GetApplication().newDocument(foreignDocumentName.c_str());
+    auto* foreignObject = foreignDocument->addObject("App::DocumentObject", "Foreign");
+    DocumentObject detached;
+    Internal::NativeRecomputeRequests requests;
+    Internal::NativeRecomputeRequestCapture capture(*document, requests);
+
+    Internal::NativeRecomputeRequestCapture::record(detached);
+    Internal::NativeRecomputeRequestCapture::record(*foreignObject);
+    Internal::NativeRecomputeRequestCapture::record(*object);
+
+    EXPECT_EQ(requests, (Internal::NativeRecomputeRequests {object}));
+}
+
+TEST_F(NativeRecomputeRequestCaptureTest, isolatesCapturesBetweenThreads)
+{
+    auto* first = document->addObject("App::DocumentObject", "OwnerThread");
+    auto* second = document->addObject("App::DocumentObject", "WorkerThread");
+    Internal::NativeRecomputeRequests ownerRequests;
+    Internal::NativeRecomputeRequests workerRequests;
+    Internal::NativeRecomputeRequestCapture ownerCapture(*document, ownerRequests);
+
+    std::thread worker([&] {
+        Internal::NativeRecomputeRequestCapture::record(*first);
+        Internal::NativeRecomputeRequestCapture workerCapture(*document, workerRequests);
+        Internal::NativeRecomputeRequestCapture::record(*second);
+    });
+    worker.join();
+
+    EXPECT_TRUE(ownerRequests.empty());
+    EXPECT_EQ(workerRequests, (Internal::NativeRecomputeRequests {second}));
+    Internal::NativeRecomputeRequestCapture::record(*first);
+    EXPECT_EQ(ownerRequests, (Internal::NativeRecomputeRequests {first}));
 }

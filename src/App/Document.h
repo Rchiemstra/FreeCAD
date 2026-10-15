@@ -1995,7 +1995,7 @@ private:
         Document& _document;
     };
 
-    class CollaborationDerivedRecomputeGrant final
+    class AppExport CollaborationDerivedRecomputeGrant final
     {
     public:
         explicit CollaborationDerivedRecomputeGrant(Document& document);

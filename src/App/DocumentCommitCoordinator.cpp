@@ -34,7 +34,10 @@
 
 namespace App::Internal
 {
-thread_local NativeRecomputeRequestCapture* NativeRecomputeRequestCapture::active = nullptr;
+namespace
+{
+thread_local NativeRecomputeRequestCapture* active = nullptr;
+}
 
 NativeRecomputeRequestCapture::NativeRecomputeRequestCapture(
     Document& document, NativeRecomputeRequests& requests)

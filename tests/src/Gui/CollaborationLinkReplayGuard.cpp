@@ -13,9 +13,12 @@
 #include <App/Link.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/SyntheticPropertyReplay.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
+
+#include <thread>
 
 namespace
 {
@@ -145,6 +148,55 @@ TEST_F(CollaborationLinkReplayGuardTest,
     EXPECT_TRUE(_linkRight->isTouched());
     EXPECT_TRUE(linkTouchedProperty(_linkLeft));
     EXPECT_TRUE(linkTouchedProperty(_linkRight));
+}
+
+TEST_F(CollaborationLinkReplayGuardTest, syntheticReplayConsumesOnlyTheMatchingCallbackOnce)
+{
+    auto* provider = _guiDocument->getViewProvider(_target);
+    auto* otherProvider = _guiDocument->getViewProvider(_linkLeft);
+    Gui::SyntheticPropertyReplay replay(provider, &_target->Integer);
+
+    EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(otherProvider, &_target->Integer));
+    EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Label));
+    EXPECT_TRUE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Integer));
+    EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Integer));
+}
+
+TEST_F(CollaborationLinkReplayGuardTest, nestedSyntheticReplayRestoresThePreviousScope)
+{
+    auto* provider = _guiDocument->getViewProvider(_target);
+    {
+        Gui::SyntheticPropertyReplay outer(provider, &_target->Integer);
+        {
+            Gui::SyntheticPropertyReplay inner(provider, &_target->Label);
+            EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Integer));
+            EXPECT_TRUE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Label));
+        }
+        EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Label));
+        EXPECT_TRUE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Integer));
+    }
+    EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, &_target->Integer));
+}
+
+TEST_F(CollaborationLinkReplayGuardTest, syntheticReplayIsIsolatedBetweenThreads)
+{
+    auto* provider = _guiDocument->getViewProvider(_target);
+    auto* property = &_target->Integer;
+    Gui::SyntheticPropertyReplay ownerReplay(provider, property);
+    bool workerConsumedOwner = false;
+    bool workerConsumedReplay = false;
+
+    std::thread worker([&] {
+        workerConsumedOwner = Gui::SyntheticPropertyReplay::consume(provider, property);
+        Gui::SyntheticPropertyReplay workerReplay(provider, property);
+        workerConsumedReplay = Gui::SyntheticPropertyReplay::consume(provider, property);
+    });
+    worker.join();
+
+    EXPECT_FALSE(workerConsumedOwner);
+    EXPECT_TRUE(workerConsumedReplay);
+    EXPECT_TRUE(Gui::SyntheticPropertyReplay::consume(provider, property));
+    EXPECT_FALSE(Gui::SyntheticPropertyReplay::consume(provider, property));
 }
 
 TEST_F(CollaborationLinkReplayGuardTest,

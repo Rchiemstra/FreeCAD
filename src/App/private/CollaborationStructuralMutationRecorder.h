@@ -181,13 +181,13 @@ public:
 
 private:
     friend class Spreadsheet::Sheet;
-    static bool spreadsheetDerivedCacheActive(const DocumentObject& object);
+    static AppExport bool spreadsheetDerivedCacheActive(const DocumentObject& object);
     static void validateSpreadsheetDerivedCache(const SpreadsheetDerivedCacheOperation& operation);
-    static void validateSpreadsheetDerivedCacheReuse(
+    static AppExport void validateSpreadsheetDerivedCacheReuse(
         DocumentObject& object, Property* property, CellAddress address,
         Base::Type nativePropertyType,
         const std::map<const Property*, CellAddress>& addressMap);
-    static Property* addSpreadsheetDerivedCache(
+    static AppExport Property* addSpreadsheetDerivedCache(
         DocumentObject& object, CellAddress address, Base::Type nativePropertyType,
         const std::map<const Property*, CellAddress>& addressMap);
     friend class SpreadsheetCellClearOperation;
