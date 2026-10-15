@@ -1916,12 +1916,23 @@ void PropertySheet::onContainerRestored()
     Base::FlagToggler<bool> flag(restoring);
     unregisterElementReference();
     UpdateElementReferenceExpressionVisitor<PropertySheet> v(*this);
+    std::map<App::DocumentObject*, bool> deps;
+    std::vector<std::string> labels;
     for (auto& d : data) {
         auto expr = d.second->expression.get();
         if (expr) {
             expr->visit(v);
+            expr->getDepObjects(deps, &labels);
         }
+        // Grouped replay can paste a formula before its source Label exists.
+        // Repair both cell-level maps and runtime source connections now that
+        // the entire restored group is available, without property callbacks.
+        removeDependencies(d.first);
+        addDependencies(d.first);
     }
+    registerLabelReferences(std::move(labels));
+    updateDeps(std::move(deps));
+    updateCount = 0;
 }
 
 bool PropertySheet::adjustLink(const std::set<DocumentObject*>& inList)

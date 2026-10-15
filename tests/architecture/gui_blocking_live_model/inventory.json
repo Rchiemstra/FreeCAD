@@ -1444,7 +1444,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 572,
+      "line": 573,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1452,7 +1452,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 573,
+      "line": 574,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1460,7 +1460,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 575,
+      "line": 576,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1468,7 +1468,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 576,
+      "line": 577,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1476,7 +1476,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 578,
+      "line": 579,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1484,7 +1484,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 579,
+      "line": 580,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1492,7 +1492,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 649,
+      "line": 650,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1500,7 +1500,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 650,
+      "line": 651,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1508,7 +1508,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1051,
+      "line": 1052,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1516,7 +1516,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1199,
+      "line": 1200,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1524,7 +1524,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1232,
+      "line": 1233,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1532,7 +1532,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1254,
+      "line": 1255,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1540,7 +1540,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1311,
+      "line": 1312,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1548,7 +1548,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1398,
+      "line": 1399,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1556,7 +1556,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1457,
+      "line": 1458,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1564,7 +1564,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1572,
+      "line": 1573,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1572,7 +1572,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1584,
+      "line": 1585,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1580,7 +1580,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1608,
+      "line": 1609,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1588,7 +1588,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1797,
+      "line": 1798,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1596,7 +1596,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2950,
+      "line": 2951,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1604,7 +1604,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3358,
+      "line": 3359,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1612,7 +1612,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3372,
+      "line": 3373,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1620,7 +1620,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3486,
+      "line": 3487,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1628,7 +1628,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4675,
+      "line": 4677,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1636,7 +1636,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4913,
+      "line": 4909,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1708,7 +1708,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 320,
+      "line": 323,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1716,7 +1716,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 561,
+      "line": 564,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1724,7 +1724,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 612,
+      "line": 615,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1732,7 +1732,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 649,
+      "line": 652,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",

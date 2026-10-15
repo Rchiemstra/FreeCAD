@@ -145,6 +145,7 @@ struct DocumentP
     bool _isClosing;
     bool _isModified;
     bool _isTransacting;
+    bool groupedUndoRedo {true};
     /** Which close to re-issue when the in-flight lane Save reaches a terminal state. */
     Document::PendingLaneCloseKind _pendingLaneClose {Document::PendingLaneCloseKind::None};
     /** canClose() skips the save prompt once. */
@@ -4658,6 +4659,7 @@ std::vector<std::string> Document::getRedoVector() const
 
 bool Document::checkTransactionID(bool undo, int iSteps)
 {
+    d->groupedUndoRedo = true;
     if (!iSteps) {
         return false;
     }
@@ -4688,12 +4690,6 @@ bool Document::checkTransactionID(bool undo, int iSteps)
             if (currentSteps < steps) {
                 currentSteps = steps;
             }
-        }
-    }
-    if (!dmap.empty()) {
-        if (prompts.empty()) {
-            reportGroupedUndoRedoUnsupported(*getDocument(), undo);
-            return false;
         }
     }
     if (!prompts.empty()) {
@@ -4729,10 +4725,10 @@ bool Document::checkTransactionID(bool undo, int iSteps)
             return false;
         }
         if (ret == QMessageBox::No) {
+            d->groupedUndoRedo = false;
             return true;
         }
-        reportGroupedUndoRedoUnsupported(*getDocument(), undo);
-        return false;
+        // The lane admits and replays all participants as one group.
     }
     return true;
 }
@@ -4755,7 +4751,7 @@ void Document::undo(int iSteps)
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Undo,
-        iSteps);
+        iSteps, d->groupedUndoRedo);
     if (!outcome.accepted()) {
         d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
@@ -4788,7 +4784,7 @@ void Document::redo(int iSteps)
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Redo,
-        iSteps);
+        iSteps, d->groupedUndoRedo);
     if (!outcome.accepted()) {
         d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);

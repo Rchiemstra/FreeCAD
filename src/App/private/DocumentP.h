@@ -104,6 +104,8 @@ enum class CollaborationDeferredNotificationKind
     OpenTransaction,
     CommitTransaction,
     AbortTransaction,
+    Undo,
+    Redo,
     BecameStable,
     NewObject,
     DeletedObject,
@@ -317,6 +319,9 @@ struct DocumentP
     // as a grant; the removal handoff is a private, consumed stack value.
     const Internal::SpreadsheetCellClearOperation* collaborationSpreadsheetCellClear {nullptr};
     std::list<Transaction*> collaborationPreparedUndoSlot;
+    bool collaborationRedoHistoryParked {false};
+    std::list<Transaction*> collaborationParkedRedos;
+    std::map<int, Transaction*> collaborationParkedRedoMap;
 
     StringHasherRef Hasher {new StringHasher};
 

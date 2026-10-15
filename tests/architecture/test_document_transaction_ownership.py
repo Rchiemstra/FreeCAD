@@ -422,11 +422,21 @@ def test_public_compatibility_transactions_follow_dcs_to_dcc_route() -> None:
             f"_coordinator.{service_method}(",
             f"DocumentCollaborationService::{service_method}",
         )
-        _assert_body_calls(
-            _body_for(dcc, f"DocumentCommitCoordinator::{service_method}"),
-            f"_document.{impl_method}(",
-            f"DocumentCommitCoordinator::{service_method}",
-        )
+        terminal = _body_for(dcc, f"DocumentCommitCoordinator::{service_method}")
+        if document_method in {"undo", "redo"}:
+            _assert_body_calls(
+                terminal, "Internal::PreparedLabelReferenceUpdates::replay(",
+                f"DocumentCommitCoordinator::{service_method}",
+            )
+            _assert_body_calls(
+                _body_for(document, "App::Internal::PreparedLabelReferenceUpdates::replay"),
+                f"document.{impl_method}(", "grouped history replay",
+            )
+        else:
+            _assert_body_calls(
+                terminal, f"_document.{impl_method}(",
+                f"DocumentCommitCoordinator::{service_method}",
+            )
 
 
 def test_lazy_mutation_opening_routes_through_dcs_and_dcc() -> None:

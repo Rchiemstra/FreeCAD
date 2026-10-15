@@ -87,6 +87,7 @@ struct AppExport DocumentCommandEditPayload
 struct AppExport DocumentCommandTransactionPayload
 {
     int steps {1};
+    bool grouped {true};
 };
 
 /** Pointer-free save / save-as payload carried by one admitted Save command. */

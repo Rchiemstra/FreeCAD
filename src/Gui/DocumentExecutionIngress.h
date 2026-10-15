@@ -62,13 +62,15 @@ GuiExport App::DocumentCommandSubmitOutcome submitDocumentSaveAs(
 GuiExport App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,
     App::DocumentCommandKind kind,
-    int steps = 1);
+    int steps = 1,
+    bool grouped = true);
 
 /** Admit one Save, Undo, or Redo through DocumentHandle::trySubmit(). */
 GuiExport App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::Document& document,
     App::DocumentCommandKind kind,
-    int steps = 1);
+    int steps = 1,
+    bool grouped = true);
 
 /** Build one pointer-free property Edit command for the property editor. */
 GuiExport App::DocumentCommand makeDocumentPropertyEditCommand(

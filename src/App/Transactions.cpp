@@ -132,6 +132,18 @@ bool Transaction::isEmpty() const
     return _Objects.empty();
 }
 
+void Transaction::prepareMergeInto(Transaction& parent)
+{
+    parent._Objects.get<1>().reserve(parent._Objects.size() + _Objects.size());
+    for (const auto& entry : _Objects) {
+        auto found = parent._Objects.get<1>().find(entry.first);
+        if (found != parent._Objects.get<1>().end()) {
+            found->second->_PropChangeMap.reserve(found->second->_PropChangeMap.size()
+                                                  + entry.second->_PropChangeMap.size());
+        }
+    }
+}
+
 void Transaction::mergeInto(Transaction& parent)
 {
     mergeInto(parent, false);
@@ -142,6 +154,7 @@ void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
     if (&parent == this) {
         return;
     }
+    prepareMergeInto(parent);
     auto& index = _Objects.get<0>();
     auto& parentIndex = parent._Objects.get<1>();
     for (auto entry = index.begin(); entry != index.end();) {
@@ -166,13 +179,12 @@ void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
                     && data.property;
             };
             for (auto prop = nested->_PropChangeMap.begin(); prop != nested->_PropChangeMap.end();) {
-                auto inserted = target->_PropChangeMap.emplace(prop->first, prop->second);
-                if (inserted.second) {
-                    // The parent had no snapshot of this property yet; hand it
-                    // the nested one. Remove it here without destroying it, so
-                    // ~TransactionObject() below does not also delete the
-                    // Property that the parent's copy now owns.
-                    prop = nested->_PropChangeMap.erase(prop);
+                auto existing = target->_PropChangeMap.find(prop->first);
+                if (existing == target->_PropChangeMap.end()) {
+                    // Transfer the preallocated node; final commitment must
+                    // not allocate property records after another document commits.
+                    auto transfer = prop++;
+                    target->_PropChangeMap.insert(nested->_PropChangeMap.extract(transfer));
                 }
                 else {
                     // The parent already holds a record for this property
@@ -195,12 +207,12 @@ void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
                     // spreadsheet recompute that clears a cell range lands
                     // here through removeDynamicProperty().
                     if (isValueSnapshot(prop->second)
-                        != isValueSnapshot(inserted.first->second)) {
+                        != isValueSnapshot(existing->second)) {
                         FC_LOG("mergeInto: property record kind mismatch on "
                                << prop->first << ", keeping the parent's");
                     }
                     if (prop->second.restoreSerializedStatus) {
-                        inserted.first->second.restoreSerializedStatus = true;
+                        existing->second.restoreSerializedStatus = true;
                     }
                     ++prop;
                 }
@@ -269,10 +281,8 @@ void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
             entry = index.erase(entry);
             continue;
         }
-        parent._Objects.push_back(*entry);
-        // Ownership moved with the record; drop it here without destroying it
-        // so ~Transaction() cannot free what the parent now owns.
-        entry = index.erase(entry);
+        auto transfer = entry++;
+        parent._Objects.get<0>().insert(parent._Objects.get<0>().end(), index.extract(transfer));
     }
 }
 

@@ -370,12 +370,12 @@ void DocumentCommitCoordinator::abortCompatibilityTransaction()
 
 bool DocumentCommitCoordinator::undoCompatibilityTransaction(const int transactionId)
 {
-    return _document.undoCompatibilityTransactionImpl(transactionId);
+    return Internal::PreparedLabelReferenceUpdates::replay(_document, true, transactionId, transactionId == 0);
 }
 
 bool DocumentCommitCoordinator::redoCompatibilityTransaction(const int transactionId)
 {
-    return _document.redoCompatibilityTransactionImpl(transactionId);
+    return Internal::PreparedLabelReferenceUpdates::replay(_document, false, transactionId, transactionId == 0);
 }
 
 void DocumentCommitCoordinator::clearCompatibilityTransactionHistory()
@@ -1298,6 +1298,11 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     catch (...) {
         abortRestoreAndRethrow("unknown operation apply failure");
     }
+    if (labelReferenceUpdates.failed()) {
+        return abortAndRestore(makeResult(DocumentCommitStatus::ApplyFailed,
+                                          edit, "Label reference update failed"));
+    }
+
     if (!_document.hasPendingTransaction()) {
         _document.poisonCollaborationCommit(
             "prepared operation escaped its native transaction; rollback cannot be proven");

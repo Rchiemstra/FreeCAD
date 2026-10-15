@@ -4,6 +4,7 @@
 
 #include "Application.h"
 #include "Document.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 
 #include "DocumentCollaborationService.h"
 #include "DocumentCrossDocumentSnapshot.h"
@@ -1042,6 +1043,8 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             if (steps <= 0) {
                 return false;
             }
+            Internal::PreparedLabelReferenceUpdates::ReplayMode mode(
+                !command.command.transaction || command.command.transaction->grouped);
             for (int step = 0; step < steps; ++step) {
                 if (!_document.undo()) {
                     return false;
@@ -1054,6 +1057,8 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             if (steps <= 0) {
                 return false;
             }
+            Internal::PreparedLabelReferenceUpdates::ReplayMode mode(
+                !command.command.transaction || command.command.transaction->grouped);
             for (int step = 0; step < steps; ++step) {
                 if (!_document.redo()) {
                     return false;

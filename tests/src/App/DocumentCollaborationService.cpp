@@ -2668,6 +2668,7 @@ protected:
             redos.push_back(doc->getAvailableRedos());
             revisions.push_back(doc->collaborationRevisions().current(
                 DocumentRevisionKey::unknownModelMutation()));
+            sequences.push_back(publicationSequence(*doc));
         }
     }
     void TearDown() override
@@ -2691,12 +2692,19 @@ protected:
             }
         }
     }
+    static DocumentPublicationSequence publicationSequence(Document& doc)
+    {
+        const auto identity = doc.collaborationRevisions().documentIdentity().value();
+        return doc.collaborationRevisions().pollPublications(
+            {identity.documentInstanceId, identity.lifecycleEpoch, 0}, 0).latestSequence;
+    }
     void expectUnchanged()
     {
         expectModel("Before");
         for (std::size_t i = 0; i < documents.size(); ++i) {
             EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
             EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+            EXPECT_EQ(publicationSequence(*documents[i]), sequences[i]);
             EXPECT_EQ(documents[i]->collaborationRevisions().current(
                 DocumentRevisionKey::unknownModelMutation()), revisions[i]);
         }
@@ -2704,6 +2712,7 @@ protected:
     std::vector<Document*> documents;
     std::vector<unsigned int> undos, redos;
     std::vector<DocumentRevision> revisions;
+    std::vector<DocumentPublicationSequence> sequences;
 };
 }
 
@@ -2736,6 +2745,9 @@ TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
 {
     documents.back()->openTransaction("Busy dependent");
     documents.back()->getObject("Dependent")->Label.setValue("Busy");
+    // The pending user edit is the boundary this failed rename must preserve.
+    undos.back() = documents.back()->getAvailableUndos();
+    sequences.back() = publicationSequence(*documents.back());
     bool caught = false;
     const auto result = _document->collaborationService().commitCompatibilityMutation(
         {}, [&] {
@@ -2745,8 +2757,8 @@ TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
         });
     EXPECT_TRUE(caught);
     EXPECT_FALSE(result.committed());
-    documents.back()->abortTransaction();
     expectUnchanged();
+    documents.back()->abortTransaction();
 }
 
 TEST_F(LabelGroupRegressionTest, caughtRewriteFailureForcesGroupRollback)
@@ -2782,6 +2794,30 @@ TEST_F(LabelGroupRegressionTest, finalizationFailureRestoresAllParticipants)
 
 TEST_F(LabelGroupRegressionTest, poisonedDependentRejectedBeforeAnyMutation)
 {
+    Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*documents.back());
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, poisonedDependentPreservesExistingRedoBranches)
+{
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        auto* doc = documents[i];
+        auto* object = i == 0 ? _target : doc->getObject("Dependent");
+        doc->openTransaction("Existing redo branch");
+        static_cast<FeatureTest*>(object)->String.setValue("Existing redo value");
+        doc->commitTransaction();
+        ASSERT_TRUE(doc->undo());
+        doc->recompute();
+        undos[i] = doc->getAvailableUndos();
+        redos[i] = doc->getAvailableRedos();
+        ASSERT_GT(redos[i], 0u);
+        revisions[i] = doc->collaborationRevisions().current(
+            DocumentRevisionKey::unknownModelMutation());
+        sequences[i] = publicationSequence(*doc);
+    }
     Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*documents.back());
     const auto result = _document->collaborationService().commitCompatibilityMutation(
         {}, [&] { _target->Label.setValue("After"); });

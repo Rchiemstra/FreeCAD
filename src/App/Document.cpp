@@ -1641,7 +1641,10 @@ int Document::openCollaborationCommitTransaction(
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _openTransaction(std::move(name), nestedCommitTransactionId(), !retainUndoHistory);
+    if (retainUndoHistory) {
+        Internal::PreparedLabelReferenceUpdates::preserveRedo(*this);
+    }
+    return _openTransaction(std::move(name), nestedCommitTransactionId(), true);
 }
 
 bool Document::commitCollaborationCommitTransaction(const bool retainUndoHistory)
@@ -1738,6 +1741,17 @@ void Document::prepareCollaborationCommitFinalization()
     if (d->collaborationPreparedUndoSlot.empty()) {
         d->collaborationPreparedUndoSlot.push_back(nullptr);
     }
+    if (const auto hook = Internal::PreparedLabelReferenceUpdates::finalizationTestHook.load()) {
+        hook(*this);
+    }
+    if (d->activeUndoTransaction && d->activeTransactionFileChanges) {
+        // rollback discards this hidden slot; final commitment only consumes it.
+        d->transactionFileChanges.insert_or_assign(d->activeUndoTransaction->getID(),
+                                                   *d->activeTransactionFileChanges);
+    }
+    if (d->nestedCommitParked && d->parkedNestedTransaction && d->activeUndoTransaction) {
+        d->activeUndoTransaction->prepareMergeInto(*d->parkedNestedTransaction);
+    }
 }
 
 void Document::finishCollaborationCommitNotificationBarrier(bool committed) noexcept
@@ -1747,6 +1761,30 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     if (!d->collaborationCommitNotificationBarrier) {
         return;
     }
+
+    // Failed prepared operations keep the exact preexisting redo branch.
+    // Successful edits retire that branch only after model commitment.
+    std::list<Transaction*> retiredRedos;
+    if (d->collaborationRedoHistoryParked) {
+        if (committed) {
+            retiredRedos.splice(retiredRedos.end(), d->collaborationParkedRedos);
+            d->collaborationParkedRedoMap.clear();
+        }
+        else {
+            mRedoTransactions.swap(d->collaborationParkedRedos);
+            mRedoMap.swap(d->collaborationParkedRedoMap);
+        }
+        d->collaborationRedoHistoryParked = false;
+    }
+    const auto deleteRetiredRedos = [this](std::list<Transaction*>* retired) noexcept {
+        for (auto* transaction : *retired) {
+            discardTransactionFileState(transaction->getID());
+            delete transaction;
+        }
+    };
+    // A deleter stored inline cannot allocate after durable commitment.
+    std::unique_ptr<std::list<Transaction*>, decltype(deleteRetiredRedos)> retiringRedoGuard(
+        &retiredRedos, deleteRetiredRedos);
 
     // The preallocated finalization slot also owns a non-history transaction
     // retired by recompute. Its removed objects must survive the entire replay:
@@ -2015,6 +2053,12 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                     GetApplication().signalBeforeCloseTransaction(false);
                 }
                 signalCommitTransaction(*this);
+                break;
+            case CollaborationDeferredNotificationKind::Undo:
+                signalUndo(*this);
+                break;
+            case CollaborationDeferredNotificationKind::Redo:
+                signalRedo(*this);
                 break;
             case CollaborationDeferredNotificationKind::AbortTransaction:
                 signalAbortTransaction(*this);
@@ -2527,6 +2571,7 @@ bool Document::checkOnCycle()
 
 namespace
 {
+thread_local std::vector<Document*> replayParticipants;
 // Hold admission through the complete replay, including dependency rebuilding
 // in signalUndoDocument. Refuse before replay can remove backlinks, invoke
 // callbacks, create an inverse transaction, or consume a history entry.
@@ -2540,6 +2585,9 @@ public:
                             bool replay = false)
     {
         for (auto* dependent : externalSourceDependentDocuments(source, replay)) {
+            if (replay && std::ranges::find(replayParticipants, dependent) != replayParticipants.end()) {
+                continue; // The group already owns its pin, lock and barrier.
+            }
             pins.push_back(std::make_unique<LifecyclePin>(
                 dependent->collaborationService()));
             locks.emplace_back(commitMutex(*dependent), std::try_to_lock);
@@ -2635,7 +2683,12 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
     }
 
     restoreTransactionFileState(mRedoTransactions.back()->getID(), false);
-    signalUndo(*this);  // now signal the undo
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back({CollaborationDeferredNotificationKind::Undo});
+    }
+    else {
+        signalUndo(*this);
+    }
     emitCollaborationBecameStable();
 
     return true;
@@ -2708,7 +2761,12 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
     }
 
     restoreTransactionFileState(mUndoTransactions.back()->getID(), true);
-    signalRedo(*this);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back({CollaborationDeferredNotificationKind::Redo});
+    }
+    else {
+        signalRedo(*this);
+    }
     emitCollaborationBecameStable();
     return true;
 }
@@ -3156,10 +3214,8 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
-            if (const auto hook = Internal::PreparedLabelReferenceUpdates::finalizationTestHook.load()) {
-                hook(*this);
-            }
-            if (retainUndoHistory && d->activeTransactionFileChanges) {
+            if (retainUndoHistory && d->activeTransactionFileChanges
+                && !d->collaborationCommitNotificationBarrier) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
             }
             d->activeTransactionFileChanges.reset();
@@ -9114,6 +9170,7 @@ namespace App::Internal
 namespace
 {
 thread_local PreparedLabelReferenceUpdates* activeLabelReferenceUpdates = nullptr;
+thread_local bool groupedReplayEnabled = true;
 }
 
 std::atomic<void (*)(Document&)> PreparedLabelReferenceUpdates::finalizationTestHook {nullptr};
@@ -9139,17 +9196,27 @@ struct PreparedLabelReferenceUpdates::State
     Document& source;
     bool retainUndoHistory;
     bool localUpdates {false};
+    bool failed {false};
     std::vector<std::unique_ptr<Participant>> participants;
 };
 
 PreparedLabelReferenceUpdates::PreparedLabelReferenceUpdates(Document& source,
                                                            bool retainUndoHistory)
-    : state(std::make_unique<State>(State {source, retainUndoHistory, false, {}}))
+    : state(std::make_unique<State>(State {source, retainUndoHistory, false, false, {}}))
 {
     if (activeLabelReferenceUpdates) {
         throw Base::RuntimeError("prepared label reference context is already active");
     }
     activeLabelReferenceUpdates = this;
+}
+
+PreparedLabelReferenceUpdates::ReplayMode::ReplayMode(bool grouped) noexcept
+    : previous(std::exchange(groupedReplayEnabled, grouped))
+{}
+
+PreparedLabelReferenceUpdates::ReplayMode::~ReplayMode()
+{
+    groupedReplayEnabled = previous;
 }
 
 PreparedLabelReferenceUpdates::~PreparedLabelReferenceUpdates()
@@ -9159,18 +9226,17 @@ PreparedLabelReferenceUpdates::~PreparedLabelReferenceUpdates()
     activeLabelReferenceUpdates = nullptr;
 }
 
-bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
-                                         const Property& value)
+void PreparedLabelReferenceUpdates::admit(Document& source, Property& property)
 {
     auto* context = activeLabelReferenceUpdates;
     auto* dependent = documentFromPropertyContainer(property.getContainer());
     if (!context || &context->state->source != &source || !dependent) {
-        return false;
+        return;
     }
     auto& state = *context->state;
     if (dependent == &source) {
         state.localUpdates = true;
-        return false;
+        return;
     }
     auto found = std::find_if(state.participants.begin(), state.participants.end(),
                              [&](const auto& entry) { return &entry->document == dependent; });
@@ -9178,6 +9244,7 @@ bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
         auto entry = std::make_unique<State::Participant>(*dependent);
         if (!entry->pin || !entry->lock.owns_lock()
             || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+            || dependent->collaborationCommitPoisoned()
             || dependent->collaborationStableReadBlocked()
             || dependent->collaborationLifecycleMutationBlocked()
             || dependent->recomputeCoordinator().hasPendingWork()
@@ -9186,10 +9253,33 @@ bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
                                      + std::string(dependent->getName())
                                      + "' has active work; retry after it ends");
         }
-        // Own the participant before opening its barrier, so every exception
-        // is covered by the coordinator's rollback cleanup.
         state.participants.push_back(std::move(entry));
-        auto& participant = *state.participants.back();
+    }
+}
+
+void PreparedLabelReferenceUpdates::preserveRedo(Document& document)
+{
+    if (!document.d->collaborationRedoHistoryParked) {
+        document.d->collaborationParkedRedos.splice(
+            document.d->collaborationParkedRedos.end(), document.mRedoTransactions);
+        document.d->collaborationParkedRedoMap.swap(document.mRedoMap);
+        document.d->collaborationRedoHistoryParked = true;
+    }
+}
+
+void PreparedLabelReferenceUpdates::activate(Document& source)
+{
+    auto* context = activeLabelReferenceUpdates;
+    if (!context || &context->state->source != &source) {
+        return;
+    }
+    auto& state = *context->state;
+    for (auto& entry : state.participants) {
+        auto& participant = *entry;
+        auto* dependent = &participant.document;
+        if (participant.barrier) {
+            continue;
+        }
         dependent->beginCollaborationCommitNotificationBarrier();
         participant.barrier = true;
         participant.suppressed = dependent->collaborationRevisionPublicationSuppressed();
@@ -9198,11 +9288,36 @@ bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
         Base::FlagToggler<bool> grant(dependent->d->collaborationTransactionControlGranted, false);
         const int transactionId = source.d->nestedCommitParked && source.d->parkedNestedTransaction
             ? source.d->parkedNestedTransaction->getID() : source.getTransactionID(true);
-        if (!dependent->_openTransaction("Update object label references",
-                                         transactionId, !state.retainUndoHistory)) {
+        if (state.retainUndoHistory) {
+            preserveRedo(*dependent);
+        }
+        if (!dependent->_openTransaction("Update object label references", transactionId, true)) {
             throw Base::RuntimeError("dependent refused label reference transaction");
         }
     }
+}
+
+void PreparedLabelReferenceUpdates::failed(Document& source) noexcept
+{
+    if (activeLabelReferenceUpdates && &activeLabelReferenceUpdates->state->source == &source) {
+        activeLabelReferenceUpdates->state->failed = true;
+    }
+}
+
+bool PreparedLabelReferenceUpdates::failed() const noexcept
+{
+    return state->failed;
+}
+
+bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
+                                         const Property& value)
+{
+    auto* context = activeLabelReferenceUpdates;
+    auto* dependent = documentFromPropertyContainer(property.getContainer());
+    if (!context || &context->state->source != &source || !dependent || dependent == &source) {
+        return false;
+    }
+    // Admission was completed for the entire rewrite set before the Label changed.
     // Observers are deferred by the participant barrier. The process target
     // remains bound and rejects writes back into the source or a third document.
     LabelReferenceMutationTarget target(source, *dependent);
@@ -9220,6 +9335,9 @@ bool PreparedLabelReferenceUpdates::hasLocalUpdates() const noexcept
 
 void PreparedLabelReferenceUpdates::prepare()
 {
+    if (state->failed) {
+        throw Base::RuntimeError("Label reference update failed");
+    }
     for (auto& entry : state->participants) {
         auto& document = entry->document;
         LabelReferenceMutationTarget target(state->source, document);
@@ -9242,7 +9360,6 @@ void PreparedLabelReferenceUpdates::commit()
             throw Base::RuntimeError("dependent label reference commit was refused");
         }
         entry->committed = true;
-        CollaborationRevisionMutationGrant grant(document.collaborationRevisions());
         if (!entry->reservation->commitPrepared(entry->published)) {
             document.poisonCollaborationCommit("dependent label reference publication failed");
             throw Base::RuntimeError("dependent label reference publication failed");
@@ -9298,4 +9415,171 @@ void PreparedLabelReferenceUpdates::finish(bool committed) noexcept
         }
     }
 }
+}
+
+// A group is admitted in full before the first history entry moves. Native
+// replay runs under the same locks/barriers as reference rewriting; observers
+// see the complete group only after every revision has been published.
+bool App::Internal::PreparedLabelReferenceUpdates::replay(
+    Document& source, bool undo, int transactionId, bool grouped)
+{
+    // Even an empty stack must reject history control inside a prepared
+    // mutation or read-only postcondition before inspecting group membership.
+    source.ensureCollaborationTransactionControlAllowed();
+    enforceAtomicPresentationMutationTarget(source);
+    const auto replayOne = [undo](Document& document, int id) {
+        return undo ? document.undoCompatibilityTransactionImpl(id)
+                    : document.redoCompatibilityTransactionImpl(id);
+    };
+    if (!grouped || !groupedReplayEnabled) {
+        return replayOne(source, transactionId);
+    }
+    const int id = transactionId ? transactionId : source.getTransactionID(undo);
+    if (!id) {
+        return false;
+    }
+    struct Participant
+    {
+        Document* document;
+        std::unique_ptr<DocumentCollaborationService::LifecyclePin> pin;
+        std::unique_lock<std::recursive_mutex> lock;
+        bool barrier {false};
+        bool suppressed {false};
+        int steps {0};
+        int completed {0};
+        std::optional<DocumentRevisionPublicationReservation> reservation;
+        std::vector<DocumentRevisionObservation> published;
+    };
+    std::vector<Participant> participants;
+    for (auto* document : GetApplication().getDocuments()) {
+        auto pin = std::make_unique<DocumentCollaborationService::LifecyclePin>(document->collaborationService());
+        if (!*pin) {
+            throw Base::RuntimeError("grouped history participant is closing");
+        }
+        std::unique_lock lock(document->collaborationCommitMutex(), std::try_to_lock);
+        if (!lock.owns_lock()) {
+            throw Base::RuntimeError("grouped history admission is busy; retry");
+        }
+        const int steps = undo ? document->getAvailableUndos(id) : document->getAvailableRedos(id);
+        if (steps) {
+            participants.push_back({document, std::move(pin), std::move(lock), false, false, steps, 0, {}, {}});
+        }
+    }
+    if (participants.size() <= 1) {
+        participants.clear();
+        return replayOne(source, transactionId);
+    }
+    for (auto& entry : participants) {
+        auto& document = *entry.document;
+        if (document.collaborationIdentity().state != DocumentLifecycleState::Live
+            || document.collaborationCommitPoisoned()
+            || document.collaborationNestedRecomputeCaptureBlocked()
+            || document.hasPendingTransaction()
+            || document.getBookedTransactionID() != 0
+            || document.testStatus(Document::Recomputing)
+            || document.collaborationLifecycleMutationBlocked()
+            || document.recomputeCoordinator().hasPendingWork()
+            || document.testStatus(Document::Restoring)) {
+            throw Base::RuntimeError("grouped history participant has active work; retry after it ends");
+        }
+    }
+    std::vector<Document*> admitted;
+    admitted.reserve(participants.size());
+    for (const auto& entry : participants) {
+        admitted.push_back(entry.document);
+    }
+    const auto finish = [&](bool committed) noexcept {
+        replayParticipants.clear();
+        for (auto& entry : participants) {
+            entry.reservation.reset();
+            if (entry.barrier) {
+                entry.document->setCollaborationRevisionPublicationSuppressed(entry.suppressed);
+            }
+            if (entry.lock.owns_lock()) {
+                entry.lock.unlock();
+            }
+        }
+        for (auto& entry : participants) {
+            if (entry.barrier) {
+                entry.document->finishCollaborationCommitNotificationBarrier(committed);
+                entry.barrier = false;
+            }
+        }
+    };
+    const auto rebuildDependencies = [&] {
+        // Paste may run before the referenced document's Label is restored.
+        // Rebuild runtime graphs once all values in the group are in place.
+        for (auto& entry : participants) {
+            for (auto* object : entry.document->getObjects()) {
+                std::vector<Property*> properties;
+                object->getPropertyList(properties);
+                for (auto* property : properties) {
+                    if (auto* expressions = dynamic_cast<PropertyExpressionContainer*>(property)) {
+                        expressions->onContainerRestored();
+                        object->clearOutListCache();
+                    }
+                }
+            }
+        }
+    };
+    try {
+        for (auto& entry : participants) {
+            auto& document = *entry.document;
+            document.beginCollaborationCommitNotificationBarrier();
+            entry.barrier = true;
+            entry.suppressed = document.collaborationRevisionPublicationSuppressed();
+            document.setCollaborationRevisionPublicationSuppressed(true);
+            entry.reservation.emplace(document.collaborationRevisions().reservePublication(
+                {}, {{DocumentRevisionKey::unknownModelMutation(), std::nullopt}}));
+            if (!entry.reservation->ready()) {
+                throw Base::RuntimeError("grouped history publication refused");
+            }
+        }
+        replayParticipants.swap(admitted);
+        for (auto& entry : participants) {
+            Base::FlagToggler<bool> grant(entry.document->d->collaborationTransactionControlGranted, false);
+            for (int i = 0; i < entry.steps; ++i) {
+                if (!replayOne(*entry.document, 0)) {
+                    throw Base::RuntimeError("grouped history replay refused");
+                }
+                ++entry.completed;
+            }
+        }
+        rebuildDependencies();
+    }
+    catch (...) {
+        // Keep barriers and admission until inverse replay has compensated every
+        // completed participant. An unprovable restore quarantines the group.
+        bool restored = true;
+        for (auto it = participants.rbegin(); it != participants.rend(); ++it) {
+            try {
+                Base::FlagToggler<bool> grant(it->document->d->collaborationTransactionControlGranted, false);
+                while (it->completed > 0) {
+                    const bool ok = undo ? it->document->redoCompatibilityTransactionImpl(0)
+                                         : it->document->undoCompatibilityTransactionImpl(0);
+                    if (!ok) { restored = false; break; }
+                    --it->completed;
+                }
+            }
+            catch (...) { restored = false; }
+        }
+        if (restored) {
+            try { rebuildDependencies(); }
+            catch (...) { restored = false; }
+        }
+        if (!restored) {
+            for (auto& entry : participants) {
+                entry.document->poisonCollaborationCommit("grouped history compensation failed");
+            }
+        }
+        finish(false);
+        throw;
+    }
+    for (auto& entry : participants) {
+        if (!entry.reservation->commitPrepared(entry.published)) {
+            entry.document->poisonCollaborationCommit("grouped history publication failed");
+        }
+    }
+    finish(true);
+    return true;
 }

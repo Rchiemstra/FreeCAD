@@ -209,6 +209,7 @@ public:
      *
      * @param[in,out] parent The enclosing transaction to fold into.
      */
+    void prepareMergeInto(Transaction& parent);
     void mergeInto(Transaction& parent);
 
     /** Fold records into parent, leaving cancelled detached objects owned by

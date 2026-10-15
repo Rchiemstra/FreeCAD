@@ -25,6 +25,24 @@ public:
     void commit();
     bool rollback() noexcept;
     void finish(bool committed) noexcept;
+    static void admit(Document& source, Property& property);
+    static void activate(Document& source);
+    static void preserveRedo(Document& document);
+    static void failed(Document& source) noexcept;
+    bool failed() const noexcept;
+    class ReplayMode final
+    {
+    public:
+        explicit ReplayMode(bool grouped) noexcept;
+        ~ReplayMode();
+        ReplayMode(const ReplayMode&) = delete;
+        ReplayMode& operator=(const ReplayMode&) = delete;
+    private:
+        bool previous;
+    };
+    // Shared native replay entry for the collaboration coordinator.
+    static bool replay(Document& source, bool undo, int transactionId = 0,
+                       bool grouped = true);
     static bool apply(Document& source, Property& property, const Property& value);
 
 private:

@@ -187,7 +187,8 @@ App::DocumentCommandSubmitOutcome submitDocumentSaveAs(
 App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,
     const App::DocumentCommandKind kind,
-    const int steps)
+    const int steps,
+    const bool grouped)
 {
     App::DocumentCommand command;
     command.kind = kind;
@@ -195,6 +196,7 @@ App::DocumentCommand makeDocumentKindCommand(
     if (kind == App::DocumentCommandKind::Undo || kind == App::DocumentCommandKind::Redo) {
         command.transaction = App::DocumentCommandTransactionPayload {};
         command.transaction->steps = steps > 0 ? steps : 1;
+        command.transaction->grouped = grouped;
     }
     return command;
 }
@@ -202,9 +204,10 @@ App::DocumentCommand makeDocumentKindCommand(
 App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::Document& document,
     const App::DocumentCommandKind kind,
-    const int steps)
+    const int steps,
+    const bool grouped)
 {
-    return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind, steps));
+    return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind, steps, grouped));
 }
 
 App::DocumentCommand makeDocumentPropertyEditCommand(

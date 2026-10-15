@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
+#include <Base/Tools.h>
 #include <algorithm>
 #include <set>
 #include <limits>
@@ -1627,6 +1629,13 @@ void PropertyString::setValue(const char* newValue)
     std::string newValueStr = newValue;
     auto obj = freecad_cast<DocumentObject*>(getContainer());
     bool commit = false;
+    const int exceptionDepth = std::uncaught_exceptions();
+    Base::ScopeGuard renameFailure([&] {
+        if (obj && obj->getDocument() && this == &obj->Label
+            && std::uncaught_exceptions() > exceptionDepth) {
+            Internal::PreparedLabelReferenceUpdates::failed(*obj->getDocument());
+        }
+    });
 
     if (obj && this == &obj->Label) {
         propChanges = obj->onProposedLabelChange(newValueStr);
@@ -1643,6 +1652,12 @@ void PropertyString::setValue(const char* newValue)
         }
     }
 
+    if (obj && obj->getDocument() && this == &obj->Label) {
+        for (auto& change : propChanges) {
+            Internal::PreparedLabelReferenceUpdates::admit(*obj->getDocument(), *change.first);
+        }
+        Internal::PreparedLabelReferenceUpdates::activate(*obj->getDocument());
+    }
     aboutToSetValue();
     _cValue = newValueStr;
     hasSetValue();
