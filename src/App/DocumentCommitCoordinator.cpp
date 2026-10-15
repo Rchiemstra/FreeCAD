@@ -414,6 +414,22 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
     if (!rollback.restored || preservePendingRecompute || !_document.mustExecute()) {
         return rollback;
     }
+    // A terminal native error is the restored boundary, not unfinished work.
+    // Stabilizing it fails again and consumes the barrier's swap-based rollback
+    // snapshot a second time, replacing the original diagnostics with the
+    // failed attempt's errors. Keep the exact restored error/dependency state.
+    try {
+        const auto errors = Internal::captureNativeRecomputeErrors(_document);
+        if (!errors.empty()
+            && Internal::pendingRecomputeMatchesNativeErrors(_document, errors)) {
+            return rollback;
+        }
+    }
+    catch (...) {
+        // The initial checked rollback already restored the boundary. A failed
+        // optional classification must not start another recovery transaction.
+        return rollback;
+    }
     auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
     if (recomputeTargets.empty()) {
         // Undo can leave Enforce/Touch without a touched-object plan. Clearing

@@ -246,13 +246,21 @@ class TestSketchExpression(unittest.TestCase):
                 commit(lambda: sk.setExpression("Constraints.W", None), deferred=True)
                 self.Doc.recompute()
                 self.Doc.purgeTouched()
+                beforeErrors = [(o.Name, list(o.State), o.getStatusString()) for o in self.Doc.Objects]
                 result = self.Doc.commitCompatibilityMutation(
                     lambda: sk.setExpression("Constraints.H", None))
                 self.assertNotEqual(result["status"], "RollbackFailed", result)
                 self.assertFalse(self.Doc.getMutationReadiness().get("quarantined"), result)
                 # Failure is an ordinary rollback; source-free repair can follow.
                 if not result["committed"]:
+                    self.assertEqual([(o.Name, list(o.State), o.getStatusString()) for o in self.Doc.Objects], beforeErrors)
                     commit(lambda: sk.setExpression("Constraints.H", None), deferred=True)
+                commit(lambda: sk.setDatum(0, App.Units.Quantity("35 mm")), deferred=True)
+                self.assertEqual(sk.getDatum(0).Value, 35)
+                self.Doc.undo()
+                self.assertEqual(sk.getDatum(0).Value, 30)
+                self.Doc.redo()
+                self.assertEqual(sk.getDatum(0).Value, 35)
                 commit(lambda: other.setExpression("Length", None), deferred=True)
                 self.Doc.recompute()
                 self.assertNotIn("Invalid", sk.State)
