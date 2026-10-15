@@ -2833,6 +2833,95 @@ TEST_F(LabelGroupRegressionTest, readOnlyCompatibilityCommitPreservesGroupedRedo
     }
 }
 
+// Review regressions: branching must retire the complete Label history group.
+class LabelBranchRegressionTest: public LabelGroupRegressionTest,
+                                public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(LabelBranchRegressionTest, realBranchInvalidatesEveryRedo)
+{
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); }).committed());
+    ASSERT_TRUE(_document->undo());
+    auto* branch = GetParam() ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(branch->getObject(
+        GetParam() ? "Dependent" : "Target"));
+    ASSERT_TRUE(branch->collaborationService().commitCompatibilityMutation(
+        {}, [&] { object->String.setValue("New branch"); }).committed());
+    for (auto* doc : documents) {
+        EXPECT_EQ(doc->getAvailableRedos(), 0u);
+        EXPECT_FALSE(doc->redo());
+    }
+    expectModel("Before");
+}
+
+TEST_P(LabelBranchRegressionTest, missingMemberRefusesReplayBeforeAnyMutation)
+{
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); }).committed());
+    if (GetParam()) {
+        ASSERT_TRUE(_document->undo());
+    }
+    documents.back()->clearUndos();
+    // Explicit transaction IDs must enforce membership too.
+    const int id = _document->getTransactionID(!GetParam());
+    EXPECT_THROW({
+        if (GetParam()) { static_cast<void>(_document->redo(id)); }
+        else { static_cast<void>(_document->undo(id)); }
+    }, Base::RuntimeError);
+    expectModel(GetParam() ? "Before" : "After");
+}
+
+INSTANTIATE_TEST_SUITE_P(SourceAndDependent, LabelBranchRegressionTest, ::testing::Bool());
+
+// Every category also runs against an ordinary single-document redo branch.
+class RedoMutationRegressionTest: public LabelGroupRegressionTest,
+    public ::testing::WithParamInterface<std::tuple<bool, int>>
+{};
+
+TEST_P(RedoMutationRegressionTest, changedCompatibilityCommitDiscardsRedo)
+{
+    const auto [grouped, kind] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(doc->getObject(grouped ? "Dependent" : "Target"));
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    ASSERT_GT(doc->getAvailableRedos(), 0u);
+    const auto changed = doc->collaborationService().commitCompatibilityMutationWithPolicy(
+        {}, [&] {
+            switch (kind) {
+                case 0: doc->Comment.setValue("A real document edit"); break;
+                case 1: doc->Label.setValue("A new document label"); break;
+                case 2: object->touch(); break;
+                case 3:
+                    object->setExpression(ObjectIdentifier::parse(object, "Float"),
+                                          Expression::parse(object, "42"));
+                    break;
+                case 4: {
+                    // Solvers suppress property recompute while applying Placement.
+                    Base::ObjectStatusLocker<Property::Status, Property> guard(
+                        Property::NoRecompute, &object->Placement);
+                    object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
+                                                               Base::Rotation()));
+                    break;
+                }
+            }
+        }, CollaborationCompatibilityRecomputePolicy::Deferred);
+    ASSERT_TRUE(changed.committed()) << changed.message;
+    if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
+    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
+        EXPECT_EQ(member->getAvailableRedos(), 0u);
+        EXPECT_FALSE(member->redo());
+    }
+    if (grouped && kind != 3) { expectModel("Before"); }
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, RedoMutationRegressionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Range(0, 5)));
+
 TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
 {
     documents.back()->openTransaction("Busy dependent");

@@ -1538,3 +1538,47 @@ TEST_F(CrossDocumentExpressionGuiTest, viewAppearanceDuringOwnerAdmissionIsNotLo
     EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
     EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, material.diffuseColor);
 }
+
+class GuiRedoMutationRegressionTest: public CollaborationCompatibilityIntegrationTest,
+                                    public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(GuiRedoMutationRegressionTest, guiOnlyPropertyInvalidatesRedo)
+{
+    auto* branch = _document;
+    App::Document* dependent = nullptr;
+    std::string dependentName;
+    auto close = qScopeGuard([&] {
+        if (dependent) { App::GetApplication().closeDocument(dependentName.c_str()); }
+    });
+    if (GetParam()) {
+        ASSERT_TRUE(_document->saveAs(("/tmp/" + _documentName + ".FCStd").c_str()));
+        dependentName = App::GetApplication().getUniqueDocumentName("GuiRedoDependent");
+        App::DocumentInitFlags flags;
+        flags.createView = false;
+        dependent = App::GetApplication().newDocument(dependentName.c_str(), nullptr, flags);
+        auto* object = dependent->addObject("App::FeatureTest", "Dependent");
+        ASSERT_TRUE(dependent->saveAs(("/tmp/" + dependentName + ".FCStd").c_str()));
+        object->setExpression(App::ObjectIdentifier::parse(object, "Float"),
+            App::Expression::parse(object, _documentName + "#<<before>>.Float + 1"));
+        Gui::Test::recomputeWithoutBlockingGui(*dependent);
+        branch = dependent;
+    }
+    ASSERT_TRUE(commitOnPlacement(*_document, [&] { _object->Label.setValue("after"); }).committed());
+    ASSERT_TRUE(undoOnOwner(*_document));
+    auto* gui = Gui::Application::Instance->getDocument(branch);
+    auto* object = branch->getObject(GetParam() ? "Dependent" : "Target");
+    auto* view = placementView(*gui, *object);
+    ASSERT_NE(view, nullptr);
+    const bool before = view->ShowInTree.getValue();
+    // ShowInTree belongs only to the ViewProvider, unlike mirrored Visibility.
+    const auto result = commitOnPlacement(*branch, [&] { view->ShowInTree.setValue(!before); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(view->ShowInTree.getValue(), !before);
+    EXPECT_EQ(_document->getAvailableRedos(), 0u);
+    EXPECT_EQ(branch->getAvailableRedos(), 0u);
+    EXPECT_FALSE(redoOnOwner(*_document));
+    EXPECT_EQ(_object->Label.getStrValue(), "before");
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, GuiRedoMutationRegressionTest, ::testing::Bool());
