@@ -79,6 +79,73 @@ class TestSketchExpression(unittest.TestCase):
             context.exception
         )
 
+    def _externalConstraintLifecycle(self, mode):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = FreeCAD.newDocument("SrcDoc")
+            try:
+                sheet = source.addObject("Spreadsheet::Sheet", "Dims")
+                sheet.set("A1", "12")
+                sheet.setAlias("A1", "PadLen")
+                sheet.set("A2", "30")
+                sheet.setAlias("A2", "Wall")
+                source.recompute()
+                path = os.path.join(directory, "SrcDoc.FCStd")
+                source.saveAs(path)
+                sketch = self.Doc.addObject("Sketcher::SketchObject", "Sketch")
+                sketch.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(30, 0, 0)))
+                sketch.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(0, 12, 0)))
+                width = sketch.addConstraint(Sketcher.Constraint("Distance", 0, 30.0))
+                height = sketch.addConstraint(Sketcher.Constraint("Distance", 1, 12.0))
+                sketch.renameConstraint(width, "W")
+                sketch.renameConstraint(height, "H")
+                self.Doc.saveAs(os.path.join(directory, "DepDoc.FCStd"))
+                sketch.setExpression("Constraints[{}]".format(width), "SrcDoc#<<Dims>>.Wall")
+                sketch.setExpression("Constraints.H", "SrcDoc#<<Dims>>.PadLen")
+                self.Doc.recompute()
+                self.Doc.save()
+                self.Doc.UndoMode = 1
+                if mode != "open":
+                    FreeCAD.closeDocument("SrcDoc")
+                    self.Doc.recompute()
+                if mode == "reopen":
+                    source = FreeCAD.openDocument(path)
+                    self.Doc.recompute()
+                    self.assertNotIn("Invalid", sketch.State)
+                    self.assertEqual(sketch.getDatum(width).Value, 30)
+                    # Verify the runtime dependency was reattached, too.
+                    source.Dims.set("A2", "42")
+                    source.recompute()
+                    self.Doc.recompute()
+                    self.assertEqual(sketch.getDatum(width).Value, 42)
+                else:
+                    self.Doc.openTransaction("Clear width expression")
+                    sketch.setExpression("Constraints.W", None)
+                    self.Doc.commitTransaction()
+                    self.assertFalse(any(p.lstrip(".") == "Constraints.W" for p, _ in sketch.ExpressionEngine))
+                    self.Doc.undo()
+                    self.assertTrue(any(p.lstrip(".") == "Constraints.W" for p, _ in sketch.ExpressionEngine))
+                    self.Doc.redo()
+                    self.assertFalse(any(p.lstrip(".") == "Constraints.W" for p, _ in sketch.ExpressionEngine))
+                    sketch.setExpression("Constraints.H", None)
+                    sketch.setDatum(width, App.Units.Quantity("35 mm"))
+                    self.Doc.recompute()
+                    self.assertNotIn("Invalid", sketch.State)
+                    self.assertEqual(sketch.getDatum(width).Value, 35)
+            finally:
+                if "SrcDoc" in FreeCAD.listDocuments():
+                    FreeCAD.closeDocument("SrcDoc")
+
+    def testExternalConstraintHappyOpen(self):
+        self._externalConstraintLifecycle("open")
+
+    def testExternalConstraintSourceReopened(self):
+        self._externalConstraintLifecycle("reopen")
+
+    def testExternalConstraintClearSourceClosed(self):
+        self._externalConstraintLifecycle("closed")
+
     def tearDown(self):
         # comment out to omit closing document for debugging
         FreeCAD.closeDocument(self.Doc.Name)
