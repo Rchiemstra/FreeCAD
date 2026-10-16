@@ -1,0 +1,22 @@
+# Full CI debug build: TestExecutables in tests/CMakeLists.txt, with BUILD_GUI
+# and all default BUILD_<module> options ON (CMakePresets.json debug preset).
+# Keep this explicit inventory in sync; test_ci_test_results.py checks the set.
+App_tests_run
+Base_tests_run
+Zipios_tests_run
+Gui_tests_run
+GuiShutdown_tests_run
+Assembly_tests_run
+AssemblyGui_tests_run
+CAM_tests_run
+Material_tests_run
+Measure_tests_run
+Mesh_tests_run
+MeshPart_tests_run
+Part_tests_run
+PartDesign_tests_run
+Points_tests_run
+Sketcher_tests_run
+Spreadsheet_tests_run
+Start_tests_run
+TechDraw_tests_run
