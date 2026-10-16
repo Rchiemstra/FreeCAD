@@ -19,7 +19,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import socket
+import subprocess
+import sys
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -391,6 +395,32 @@ class MainRefusalTests(unittest.TestCase):
 
 class TrackedEntrypointTests(unittest.TestCase):
     """The public entrypoint must resolve the tracked implementation."""
+
+    def test_build_failure_exits_before_launch_through_public_entrypoint(self):
+        # Exercise the real entrypoint and child process, without requiring a
+        # compiler or touching the user's FreeCAD profile.
+        with tempfile.TemporaryDirectory(prefix="freecad build ") as directory:
+            root = Path(directory)
+            (root / "build_freecad.py").write_text(
+                "import sys\n"
+                "print('simulated compiler failure', file=sys.stderr)\n"
+                "raise SystemExit(17)\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["FREECAD_REPO"] = str(root)
+            result = subprocess.run(
+                [sys.executable, str(ENTRYPOINT), "--build"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertEqual(result.stderr.strip(), "simulated compiler failure")
+        self.assertNotIn("Started FreeCAD:", result.stdout)
 
     def test_entrypoint_and_implementation_are_both_tracked(self):
         self.assertTrue(ENTRYPOINT.is_file(), ENTRYPOINT)
