@@ -292,6 +292,8 @@ protected:
 
     App::Property* getProperty(const char* addr) const;
 
+    std::string getCanonicalPropertyName(const char* name) const override;
+
     void updateProperty(App::CellAddress key);
 
     App::Property* setStringProperty(App::CellAddress key, const std::string& value);

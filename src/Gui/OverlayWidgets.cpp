@@ -459,6 +459,7 @@ OverlayTabWidget::OverlayTabWidget(QWidget* parent, Qt::DockWidgetArea pos)
     connect(tabBar(), &QTabBar::tabBarClicked, this, &OverlayTabWidget::onCurrentChanged);
     connect(tabBar(), &QTabBar::tabMoved, this, &OverlayTabWidget::onTabMoved);
     tabBar()->installEventFilter(this);
+    autoModeMenu.installEventFilter(this);
 
     timer.setSingleShot(true);
     connect(&timer, &QTimer::timeout, this, &OverlayTabWidget::setupLayout);
@@ -519,13 +520,9 @@ OverlayTabWidget::~OverlayTabWidget()
 
 void OverlayTabWidget::refreshIcons()
 {
-    auto curStyleSheet = App::GetApplication()
-                             .GetParameterGroupByPath("User parameter:BaseApp/Preferences/MainWindow")
-                             ->GetASCII("StyleSheet", "None");
-
     QPixmap pxAutoHide;
 
-    if (isStyleSheetDark(curStyleSheet)) {
+    if (isDarkTheme()) {
         actOverlay.setIcon(BitmapFactory().pixmap("qss:overlay/icons/overlay_light.svg"));
         actNoAutoMode.setIcon(BitmapFactory().pixmap("qss:overlay/icons/mode_light.svg"));
         actTaskShow.setIcon(BitmapFactory().pixmap("qss:overlay/icons/taskshow_light.svg"));
@@ -828,6 +825,9 @@ bool OverlayTabWidget::eventFilter(QObject* o, QEvent* ev)
             timer.start(10);
         }
     }
+    else if (ev->type() == QEvent::StyleChange && o == &autoModeMenu) {
+        refreshIcons();
+    }
     return QTabWidget::eventFilter(o, ev);
 }
 
@@ -1009,15 +1009,11 @@ void OverlayTabWidget::retranslate()
 
 void OverlayTabWidget::syncAutoMode()
 {
-    auto curStyleSheet = App::GetApplication()
-                             .GetParameterGroupByPath("User parameter:BaseApp/Preferences/MainWindow")
-                             ->GetASCII("StyleSheet", "None");
-
     QAction* action = nullptr;
     switch (autoMode) {
         case AutoMode::AutoHide:
             action = &actAutoHide;
-            if (isStyleSheetDark(curStyleSheet)) {
+            if (isDarkTheme()) {
                 QPixmap pxAutoHideMode = BitmapFactory().pixmap(
                     "qss:overlay/icons/autohide_lighter.svg"
                 );
@@ -1040,7 +1036,7 @@ void OverlayTabWidget::syncAutoMode()
             break;
         case AutoMode::EditShow:
             action = &actEditShow;
-            if (isStyleSheetDark(curStyleSheet)) {
+            if (isDarkTheme()) {
                 QPixmap pxEditShowMode = BitmapFactory().pixmap(
                     "qss:overlay/icons/editshow_lighter.svg"
                 );
@@ -1067,7 +1063,7 @@ void OverlayTabWidget::syncAutoMode()
             break;
         case AutoMode::TaskShow:
             action = &actTaskShow;
-            if (isStyleSheetDark(curStyleSheet)) {
+            if (isDarkTheme()) {
                 QPixmap pxTaskShowMode = BitmapFactory().pixmap(
                     "qss:overlay/icons/taskshow_lighter.svg"
                 );
@@ -1094,7 +1090,7 @@ void OverlayTabWidget::syncAutoMode()
             break;
         case AutoMode::EditHide:
             action = &actEditHide;
-            if (isStyleSheetDark(curStyleSheet)) {
+            if (isDarkTheme()) {
                 QPixmap pxEditHideMode = BitmapFactory().pixmap(
                     "qss:overlay/icons/edithide_lighter.svg"
                 );
@@ -1121,7 +1117,7 @@ void OverlayTabWidget::syncAutoMode()
             break;
         default:
             action = &actNoAutoMode;
-            if (isStyleSheetDark(curStyleSheet)) {
+            if (isDarkTheme()) {
                 QPixmap pxNoAutoMode = BitmapFactory().pixmap("qss:overlay/icons/mode_lighter.svg");
                 action->setIcon(pxNoAutoMode);
                 QPixmap pxAutoHideMode = BitmapFactory().pixmap("qss:overlay/icons/autohide_light.svg");
@@ -2151,13 +2147,11 @@ QLayoutItem* OverlayTabWidget::prepareTitleWidget(QWidget* widget, const QList<Q
     return spacer;
 }
 
-bool OverlayTabWidget::isStyleSheetDark(std::string curStyleSheet)
+bool OverlayTabWidget::isDarkTheme() const
 {
-    if (curStyleSheet.find("dark") != std::string::npos
-        || curStyleSheet.find("Dark") != std::string::npos) {
-        return true;
-    }
-    return false;
+    constexpr int midLightness = 128;
+    autoModeMenu.ensurePolished();
+    return autoModeMenu.palette().color(QPalette::Window).lightness() < midLightness;
 }
 
 QPixmap OverlayTabWidget::rotateAutoHideIcon(QPixmap pxAutoHide, Qt::DockWidgetArea dockArea)

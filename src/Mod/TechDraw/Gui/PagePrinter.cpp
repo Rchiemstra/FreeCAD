@@ -52,6 +52,7 @@
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "PagePrinter.h"
+#include "PreferencesGui.h"
 #include "QGSPage.h"
 #include "Rez.h"
 #include "ViewProviderPage.h"
@@ -103,6 +104,15 @@ PaperAttributes PagePrinter::getPaperAttributes(ViewProviderPage* vpPage)
     return getPaperAttributes(page);
 }
 
+Base::ScopeGuard PagePrinter::suspendScreenMode()
+{
+    bool screenMode = PreferencesGui::screenMode();
+    PreferencesGui::setScreenMode(false);
+    return Base::ScopeGuard([screenMode]() {
+        PreferencesGui::setScreenMode(screenMode);
+    });
+}
+
 //! construct a page layout object that reflects the characteristics of a DrawPage
 void PagePrinter::makePageLayout(TechDraw::DrawPage* dPage, QPageLayout& pageLayout, double& width,
                                 double& height)
@@ -143,6 +153,8 @@ void PagePrinter::printAll(QPrinter* printer, App::Document* doc)
     makePageLayout(dPage, pageLayout, width, height);
     printer->setPageLayout(pageLayout);
     QPainter painter(printer);
+
+    auto restoreScreenMode = PagePrinter::suspendScreenMode();
 
     bool firstTime = true;
     for (auto& obj : docObjs) {
@@ -221,6 +233,8 @@ void PagePrinter::printAllPdf(QPrinter* printer, App::Document* doc)
     // to get several pages into the same pdf, we must use the same painter for each page and not have any
     // start() or end() until all the pages are printed.
     QPainter painter(&pdfWriter);
+
+    auto restoreScreenMode = PagePrinter::suspendScreenMode();
 
     bool firstTime = true;
     for (auto& obj : docObjs) {
@@ -325,6 +339,8 @@ void PagePrinter::print(ViewProviderPage* vpPage, QPrinter* printer)
 
     QPainter painter(printer);
 
+    auto restoreScreenMode = PagePrinter::suspendScreenMode();
+
     QGISVGTemplate* ourTemplate{nullptr};
     QGSPage* ourScene{nullptr};
     preRenderSetUp(vpPage, ourScene, ourTemplate);
@@ -376,6 +392,8 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
     // first page does not respect page layout unless painter is created after
     // pdfWriter layout is established.
     QPainter painter(&pdfWriter);
+
+    auto restoreScreenMode = PagePrinter::suspendScreenMode();
 
     QGISVGTemplate* ourTemplate{nullptr};
     QGSPage* ourScene{nullptr};
@@ -431,6 +449,8 @@ void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
     QString filename = QString::fromStdString(filespec);
     App::Document::FileChangeTrackingScope trackingScope(
         *vpPage->getDrawPage()->getDocument());
+
+    auto restoreScreenMode = PagePrinter::suspendScreenMode();
 
     auto ourScene = vpPage->getQGSPage();
     ourScene->setExportingSvg(true);

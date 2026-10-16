@@ -1371,6 +1371,13 @@ bool ViewProviderSketch::mouseButtonPressed(int Button, bool pressed, const SbVe
             }
         }
         else {// Button 1 released
+            if (Mode == STATUS_SKETCH_Drag || Mode == STATUS_SKETCH_DragConstraint) {
+                // Use the actual cursor position instead of the picked geometry position.
+                if (!getCoordsOnSketchPlane(
+                        point, normal, snapHandle->cursorPos.x, snapHandle->cursorPos.y)) {
+                    return false;
+                }
+            }
             // Do things depending on the mode of the user interaction
             switch (Mode) {
                 case STATUS_SELECT_Point:
@@ -4421,13 +4428,7 @@ bool ViewProviderSketch::setEdit(int ModNum)
         Base::Console().error("ViewProviderSketch::setEdit: {}\n", e.GetMessageString());
     }
 
-    // intercept del key press from main app
-    listener = std::make_unique<ShortcutListener>(this);
-
-    Gui::getMainWindow()->installEventFilter(listener.get());
-    if (editDoc && editDoc->isActive()) {
-        setupActiveAndInEdit();
-    }
+    setupActiveAndInEdit();
 
     return true;
 }

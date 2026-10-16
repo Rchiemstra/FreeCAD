@@ -5997,7 +5997,7 @@ Internal::DocumentFileReplacementResult Document::saveToFileWithPolicy(
     auto hGrp = GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Document");
     int compression = static_cast<int>(hGrp->GetInt("CompressionLevel", 7));
-    compression = Base::clamp<int>(compression, Z_NO_COMPRESSION, Z_BEST_COMPRESSION);
+    compression = std::clamp<int>(compression, Z_NO_COMPRESSION, Z_BEST_COMPRESSION);
 
     Internal::DocumentFileReplacementRequest request;
     request.destination = filename;
