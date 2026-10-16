@@ -26,10 +26,10 @@
 
 import FreeCAD
 from draftobjects.hatch import Hatch
+from draftutils import gui_utils
 
 if FreeCAD.GuiUp:
     from draftviewproviders.view_hatch import ViewProviderDraftHatch
-    import draftutils.gui_utils as gui_utils
 
 
 def make_hatch(selection, filename, pattern, scale, rotation, translate=True):
