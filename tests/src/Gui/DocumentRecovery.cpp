@@ -15,6 +15,8 @@
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
+#include <App/MutationClassification.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/Application.h>
 #include <Gui/AutoSaver.h>
 #include <Gui/Document.h>
@@ -896,12 +898,9 @@ TEST_F(AutoSaverRecoveryTest, ForeignPostconditionDefersRecoveryWithoutPoisoning
     // Exercise production's asynchronous scheduler, not the synchronous test
     // flush helper. No recovery IO may poison an unrelated read-only audit.
     Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
-    const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (!document->executionLane()->isIdle()
-           && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    ASSERT_TRUE(document->executionLane()->isIdle());
+    // Pending recovery now retains its lane work while waiting for a fair
+    // reservation. It must not serialize or report an outcome under the audit.
+    ASSERT_FALSE(document->executionLane()->isIdle());
     const bool violated = foreign->collaborationAtomicPresentationAuditViolated();
     EXPECT_FALSE(QFileInfo::exists(archivePath()));
     releaseAudit();
@@ -911,4 +910,160 @@ TEST_F(AutoSaverRecoveryTest, ForeignPostconditionDefersRecoveryWithoutPoisoning
         return QFileInfo::exists(archivePath()) && QFileInfo::exists(metadataPath())
             && recoveryOutcome && recoveryOutcome->fileWritten;
     })) << "deferred recovery must resume after native admission is released";
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryRetainsEligibilityUnderTransactionLock)
+{
+    bool reported = false;
+    auto connection = document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome& outcome) {
+            reported = outcome.intent == App::DocumentSaveIntent::Recovery && outcome.fileWritten;
+        });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    document->lockTransaction();
+    const auto unlock = qScopeGuard([&] { document->unlockTransaction(); });
+    ASSERT_TRUE(document->canWriteRecoverySnapshot());
+    ASSERT_FALSE(document->getMutationReadiness().ready);
+    Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+    ASSERT_TRUE(processEventsUntil([&] { return QFileInfo::exists(metadataPath()) && reported; }));
+}
+
+TEST_F(AutoSaverRecoveryTest, ClosedDocumentCompletionCannotResetReplacementAttempt)
+{
+    const auto oldIdentity = document->collaborationIdentity();
+    App::GetApplication().closeDocument(documentName.c_str());
+    document = App::GetApplication().newDocument(documentName.c_str());
+    object = document->addObject("App::FeatureTest", "Replacement");
+    Gui::Test::recomputeWithoutBlockingGui(*document);
+    QCoreApplication::processEvents();
+    ASSERT_TRUE(Gui::Test::beginAutoSaveAttempt(*document));
+    Gui::Test::deliverRecoveryCompletion(
+        documentName, oldIdentity.instanceId, oldIdentity.lifecycleEpoch);
+    EXPECT_FALSE(Gui::Test::beginAutoSaveAttempt(*document))
+        << "late completion must leave the replacement's in-flight attempt alone";
+}
+
+TEST_F(AutoSaverRecoveryTest, WorkerAdmissionRaceWaitsWithoutReportingFailedWrite)
+{
+    using namespace std::chrono_literals;
+    auto* lane = document->executionLane();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    bool completed = false, written = false;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* foreign = App::GetApplication().newDocument("workerAdmissionForeign", "foreign", flags);
+    App::beginCollaborationReadOnlyMutationTarget(*foreign);
+    Gui::scheduleRecoverySnapshotWrite(*document, {}, [&](bool result, std::exception_ptr failure) {
+        completed = true;
+        written = result;
+        EXPECT_EQ(failure, nullptr);
+    });
+    release.set_value();
+    blocker.wait();
+    // Old code returns false from the worker while admission is held. A fair
+    // reservation retains the write instead of declaring an IO failure.
+    const auto deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_FALSE(completed);
+    App::endCollaborationReadOnlyMutationTarget(*foreign);
+    ASSERT_TRUE(processEventsUntil([&] { return completed; }));
+    EXPECT_TRUE(written);
+    App::GetApplication().closeDocument("workerAdmissionForeign");
+}
+
+TEST_F(AutoSaverRecoveryTest, PendingRecoveryGetsFairAdmissionUnderSustainedContention)
+{
+    bool reported = false;
+    auto connection = document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome& outcome) {
+            reported = outcome.intent == App::DocumentSaveIntent::Recovery && outcome.fileWritten;
+        });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* foreign = App::GetApplication().newDocument("fairAdmissionForeign", "foreign", flags);
+    const auto close = qScopeGuard([&] { App::GetApplication().closeDocument("fairAdmissionForeign"); });
+    App::beginCollaborationReadOnlyMutationTarget(*foreign);
+    Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+    App::endCollaborationReadOnlyMutationTarget(*foreign);
+    bool saved = false;
+    // No idle timer gap: repeated foreign commands must yield to queued recovery.
+    for (int attempt = 0; attempt < 100 && !saved; ++attempt) {
+        bool admitted = false;
+        try {
+            App::beginCollaborationReadOnlyMutationTarget(*foreign);
+            admitted = true;
+        }
+        catch (const App::LivePresentationRefreshInProgress&) {}
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (admitted) {
+            App::endCollaborationReadOnlyMutationTarget(*foreign);
+        }
+        saved = QFileInfo::exists(metadataPath()) && reported;
+    }
+    EXPECT_TRUE(saved) << "pending recovery was starved by repeated mutation admission";
+    // Let the asynchronous completion retire before fixture teardown.
+    ASSERT_TRUE(processEventsUntil([&] { return QFileInfo::exists(metadataPath()) && reported; }));
+}
+
+TEST_F(AutoSaverRecoveryTest, CompletionAdmissionRaceRetainsAttemptUntilReporting)
+{
+    const auto identity = document->collaborationIdentity();
+    ASSERT_TRUE(Gui::Test::beginAutoSaveAttempt(*document));
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* foreign = App::GetApplication().newDocument("completionAdmissionForeign", "foreign", flags);
+    App::beginCollaborationReadOnlyMutationTarget(*foreign);
+    Gui::Test::deliverRecoveryCompletion(documentName, identity.instanceId, identity.lifecycleEpoch);
+    EXPECT_FALSE(Gui::Test::beginAutoSaveAttempt(*document));
+    App::endCollaborationReadOnlyMutationTarget(*foreign);
+    // A queued completion must get a turn before another foreign command.
+    bool admitted = false;
+    try {
+        App::beginCollaborationReadOnlyMutationTarget(*foreign);
+        admitted = true;
+    }
+    catch (const App::LivePresentationRefreshInProgress&) {}
+    EXPECT_FALSE(admitted);
+    if (admitted) App::endCollaborationReadOnlyMutationTarget(*foreign);
+    ASSERT_TRUE(processEventsUntil([&] { return Gui::Test::beginAutoSaveAttempt(*document); }));
+    App::GetApplication().closeDocument("completionAdmissionForeign");
+}
+
+TEST_F(AutoSaverRecoveryTest, CompletionDoesNotBlockAlreadyActiveDocumentLane)
+{
+    using namespace std::chrono_literals;
+    const auto identity = document->collaborationIdentity();
+    ASSERT_TRUE(Gui::Test::beginAutoSaveAttempt(*document));
+    auto* lane = document->executionLane();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto busy = lane->postToOwner([&] {
+        lane->beginRecoverySnapshotOwnerWork();
+        const auto finish = qScopeGuard([&] { lane->endRecoverySnapshotOwnerWork(); });
+        entered.set_value();
+        released.wait();
+    });
+    const auto finishBusy = qScopeGuard([&] { release.set_value(); busy.wait(); });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    Gui::Test::deliverRecoveryCompletion(documentName, identity.instanceId, identity.lifecycleEpoch);
+    // A pending completion cannot hold process admission hostage to a busy
+    // lane: that lane may need mutation admission itself in order to finish.
+    bool admitted = false;
+    try {
+        App::beginCollaborationReadOnlyMutationTarget(*document);
+        admitted = true;
+    }
+    catch (const App::LivePresentationRefreshInProgress&) {}
+    EXPECT_TRUE(admitted);
+    if (admitted) App::endCollaborationReadOnlyMutationTarget(*document);
 }

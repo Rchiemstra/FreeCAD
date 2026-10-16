@@ -564,7 +564,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 146,
+      "line": 147,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -572,7 +572,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 147,
+      "line": 148,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -580,7 +580,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 155,
+      "line": 156,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -588,7 +588,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 199,
+      "line": 200,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -596,7 +596,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 280,
+      "line": 275,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -604,7 +604,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 354,
+      "line": 360,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1708,7 +1708,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 324,
+      "line": 326,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1716,7 +1716,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 573,
+      "line": 579,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1724,7 +1724,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 628,
+      "line": 634,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1732,7 +1732,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 665,
+      "line": 671,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -19372,7 +19372,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 237,
+      "line": 278,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19380,7 +19380,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 244,
+      "line": 285,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19388,7 +19388,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 737,
+      "line": 778,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19396,7 +19396,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 876,
+      "line": 917,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19404,7 +19404,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1014,
+      "line": 1055,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19412,7 +19412,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1050,
+      "line": 1091,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19420,7 +19420,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1135,
+      "line": 1176,
       "category": "process-events-polling",
       "subsystem": "Draft",
       "disposition": "investigate",

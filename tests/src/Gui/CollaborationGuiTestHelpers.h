@@ -168,3 +168,8 @@ bool canCloseWithoutBlockingGui(Gui::Document& guiDocument,
 bool closeAllDocumentsWithoutBlockingGui(bool close);
 
 }  // namespace Gui::Test
+
+namespace Gui::Test {
+bool beginAutoSaveAttempt(App::Document& document);
+void deliverRecoveryCompletion(const std::string& name, std::uint64_t instance, std::uint64_t epoch);
+}

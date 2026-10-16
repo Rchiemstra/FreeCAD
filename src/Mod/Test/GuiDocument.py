@@ -192,49 +192,124 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
-    def testPresentationCallbackWaitsForDocumentLane(self):
-        """Factory presentation must not start while the target lane is busy."""
+    def _queuedPresentationWhileBusy(self, *, failing=False, from_owner=False):
         from Test.GuiRecompute import _pump_gui_until
+        from draftutils import gui_utils
 
-        entered = threading.Event()
-        release = threading.Event()
-        errors = []
-        callbacks = []
+        obj = self.doc.addObject("App::FeaturePython", "QueuedPresentation")
+        entered, release = threading.Event(), threading.Event()
+        errors, calls = [], []
         main_thread = threading.get_ident()
 
         def hold_lane():
+            if from_owner:
+                gui_utils.run_gui_setup(obj, lambda: record("A"))
+                gui_utils.run_gui_setup(obj, lambda: record("B"))
             entered.set()
             if not release.wait(10):
-                raise RuntimeError("presentation regression did not release the owner")
+                raise RuntimeError("presentation test did not release owner")
 
         def worker():
             try:
-                result = self.doc.commitCompatibilityMutation(
-                    hold_lane, structural=False, recompute=False
-                )
-                self.assertTrue(result["committed"], result)
+                self.doc.commitCompatibilityMutation(hold_lane, structural=False, recompute=False)
             except BaseException as exc:
                 errors.append(exc)
 
-        def presented():
-            callbacks.append(threading.get_ident())
+        def record(value):
+            calls.append((value, threading.get_ident()))
+            if failing and value == "A":
+                raise ValueError("queued presentation failure")
 
         thread = threading.Thread(target=worker)
         thread.start()
         try:
             _pump_gui_until(entered.is_set, 5)
-            self.assertFalse(FreeCADGui.tryRunPresentationCallback(presented, self.doc))
-            self.assertFalse(callbacks)
+            # The real public Draft entry point must queue even on the GUI thread.
+            if not from_owner:
+                gui_utils.run_gui_setup(obj, lambda: record("A"))
+                gui_utils.run_gui_setup(obj, lambda: record("B"))
+            self.assertEqual(calls, [])
         finally:
             release.set()
             _pump_gui_until(lambda: not thread.is_alive(), 10)
             thread.join()
         if errors:
             raise errors[0]
-        _pump_gui_until(
-            lambda: FreeCADGui.tryRunPresentationCallback(presented, self.doc), 5
-        )
-        self.assertEqual(callbacks, [main_thread])
+        # B is already queued when C arrives after release: C cannot overtake it.
+        gui_utils.run_gui_setup(obj, lambda: record("C"))
+        _pump_gui_until(lambda: not gui_utils._pending_gui_setups, 5)
+        expected = [(v, main_thread) for v in "ABC"]
+        self.assertEqual(calls, expected)
+        for _ in range(5):
+            QtCore.QCoreApplication.processEvents()
+        self.assertEqual(calls, expected)  # no duplicate timer or wake delivery
+
+    def testPresentationCallbackWaitsForDocumentLane(self):
+        self._queuedPresentationWhileBusy()
+
+    def testQueuedPresentationFromOwnerRunsInOrderOnce(self):
+        self._queuedPresentationWhileBusy(from_owner=True)
+
+    def testQueuedPresentationCannotOvertakeDeferredCallback(self):
+        from Test.GuiRecompute import _pump_gui_until
+        from draftutils import gui_utils
+        from unittest.mock import patch
+
+        obj = self.doc.addObject("App::FeaturePython", "OrderedPresentation")
+        calls, rejected = [], []
+        main_thread = threading.get_ident()
+        def record(value):
+            calls.append((value, threading.get_ident()))
+        # Inject one admission refusal at the native boundary. Delivery and
+        # retry use the real Qt queue; the test never retries a callback itself.
+        with patch.object(FreeCADGui, "tryRunPresentationCallback",
+                          side_effect=lambda *_: rejected.append(True) or False):
+            thread = threading.Thread(target=lambda: gui_utils.run_gui_setup(
+                obj, lambda: record("A")))
+            thread.start()
+            thread.join()
+            _pump_gui_until(lambda: bool(rejected), 5)
+        gui_utils.run_gui_setup(obj, lambda: record("B"))
+        _pump_gui_until(lambda: not gui_utils._pending_gui_setups, 5)
+        self.assertEqual(calls, [(value, main_thread) for value in "AB"])
+
+    def testQueuedPresentationDropsClosedDocument(self):
+        from Test.GuiRecompute import _pump_gui_until
+        from draftutils import gui_utils
+
+        obj = self.doc.addObject("App::FeaturePython", "ClosingPresentation")
+        calls = []
+        thread = threading.Thread(target=lambda: gui_utils.run_gui_setup(
+            obj, lambda: calls.append(True)))
+        thread.start()
+        thread.join()
+        # Admit Close before delivering the queued Qt wake. This is the real
+        # document lifecycle, with no manual retry of the presentation callback.
+        close_document(self.doc)
+        self.doc = None
+        _pump_gui_until(lambda: not gui_utils._pending_gui_setups, 5)
+        self.assertEqual(calls, [])
+
+    def testQueuedPresentationCallbackFailureRunsOnce(self):
+        self._queuedPresentationWhileBusy(failing=True)
+
+    def testQueuedPresentationDropsFailedOwner(self):
+        from Test.GuiRecompute import _pump_gui_until
+        from draftutils import gui_utils
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        calls = []
+        # Inject the terminal readiness reported after an owner rollback fails.
+        failed = SimpleNamespace(getMutationReadiness=lambda: {"poisoned": True})
+        obj = SimpleNamespace(Document=failed, Name="FailedOwnerObject")
+        thread = threading.Thread(target=lambda: gui_utils.run_gui_setup(
+            obj, lambda: calls.append(threading.get_ident())))
+        with patch.object(gui_utils, "_err"):
+            thread.start()
+            thread.join()
+            _pump_gui_until(lambda: not gui_utils._pending_gui_setups, 5)
+        self.assertEqual(calls, [])
 
     def testPresentationCallbackRejectsDeletedDocument(self):
         closed = FreeCAD.newDocument("ClosedPresentationTarget")

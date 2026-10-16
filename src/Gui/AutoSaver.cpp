@@ -28,6 +28,7 @@
 #include <App/Document.h>
 #include <App/RecoverySnapshot.h>
 #include <App/MutationClassification.h>
+#include <App/RecoveryAdmission.h>
 #include <Base/Console.h>
 #include <Base/TimeInfo.h>
 #include <Base/Tools.h>
@@ -207,13 +208,6 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
         return;
     }
 
-    if (App::atomicPresentationMutationAdmissionActive()) {
-        saver.deferSaveUntilStable();
-        const auto identity = doc->collaborationIdentity();
-        queueRecoveryAdmissionRetry(name, identity.instanceId, identity.lifecycleEpoch);
-        return;
-    }
-
     if (!doc->canWriteRecoverySnapshot() || !isGuiDocumentStableForAutoSave(doc)) {
         // Keep timer-triggered saves out of unstable document states. Instead
         // of trying to save during recompute or an open transaction, just keep
@@ -267,7 +261,8 @@ void AutoSaver::completeRecoverySnapshotSave(
     const std::uint64_t lifecycleEpoch,
     const Base::TimeElapsed startTime,
     const bool written,
-    const std::exception_ptr failure)
+    const std::exception_ptr failure,
+    std::shared_ptr<App::RecoveryAdmission> admission)
 {
     Q_ASSERT(QThread::currentThread() == thread());
 
@@ -279,29 +274,41 @@ void AutoSaver::completeRecoverySnapshotSave(
 
     App::Document* doc = App::GetApplication().getDocument(name.c_str());
     if (!doc) {
-        saver.restoreFailedSaveAttempt();
         return;
     }
 
     const auto identity = doc->collaborationIdentity();
     if (identity.instanceId != documentInstanceId
         || identity.lifecycleEpoch != lifecycleEpoch) {
-        saver.restoreFailedSaveAttempt();
         return;
     }
 
     // Reporting the result is a save intent too. Keep that GUI notification
     // out of another command's audit and out of this document's busy lane.
-    App::LivePresentationRefreshScope reservation;
     auto* guiDocument = Gui::Application::Instance
         ? Gui::Application::Instance->getDocument(doc)
         : nullptr;
-    if (!reservation.acquired()
-        || (guiDocument && guiDocument->deferLivePresentationUpdates())) {
+    if (guiDocument && guiDocument->isAboutToClose()) {
+        return;
+    }
+    const bool targetBusy = documentExecutionLaneBusy(*doc)
+        || doc->collaborationNotificationsReplaying()
+        || (guiDocument && guiDocument->isPerformingTransaction())
+        || (guiDocument && !App::atomicPresentationMutationAdmissionActive()
+            && guiDocument->deferLivePresentationUpdates());
+    if (targetBusy) {
+        // An already active owner may itself need process admission to finish.
+        // Do not make it wait for a completion that is waiting for that lane.
+        admission.reset();
+    }
+    else if (!admission) {
+        admission = std::make_shared<App::RecoveryAdmission>();
+    }
+    if (targetBusy || !admission->tryAcquire()) {
         scheduleGuiSingleShot(10, [this, name, documentInstanceId, lifecycleEpoch,
-                                  startTime, written, failure] {
+                                  startTime, written, failure, admission = std::move(admission)] {
             completeRecoverySnapshotSave(
-                name, documentInstanceId, lifecycleEpoch, startTime, written, failure);
+                name, documentInstanceId, lifecycleEpoch, startTime, written, failure, admission);
         });
         return;
     }
@@ -326,8 +333,7 @@ void AutoSaver::completeRecoverySnapshotSave(
         // started. Retain dirty work and resume only when it can be admitted.
         // Actual IO errors use failure above and remain visible failures.
         saver.deferSaveUntilStable();
-        if (doc->canWriteRecoverySnapshot() && doc->getMutationReadiness().ready
-            && isGuiDocumentStableForAutoSave(doc)) {
+        if (doc->canWriteRecoverySnapshot() && isGuiDocumentStableForAutoSave(doc)) {
             queueRecoveryAdmissionRetry(name, documentInstanceId, lifecycleEpoch);
         }
         return;

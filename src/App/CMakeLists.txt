@@ -279,6 +279,7 @@ SET(Document_HPP_SRCS
     EditSession.h
     MutationClassification.h
     MutationKind.h
+    RecoveryAdmission.h
     RecoverySnapshot.h
     DepEdge.h
     DocumentObject.h

@@ -42,6 +42,8 @@ of the objects or the 3D view.
 import importlib
 import math
 import os
+import threading
+from collections import deque
 
 import FreeCAD as App
 from draftutils import params
@@ -87,83 +89,122 @@ def gui_available():
 # Retain callbacks and their factory arguments until Qt can install presentation.
 # They are process-local intent, never serialized into a document or a model proxy.
 _pending_gui_setups = set()
+_gui_setup_queues = {}
+_gui_setup_lock = threading.RLock()
 
 
 if App.GuiUp:
     class _GuiSetup(QtCore.QObject):
+        """One retained FIFO and one GUI timer for each document identity."""
         wake = QtCore.Signal()
 
-        def __init__(self, obj, callback):
+        def __init__(self, document):
             super().__init__()
-            self.obj = obj
-            self.document = obj.Document
-            self.name = obj.Name
-            self.callback = callback
+            self.document = document
+            self.key = id(document)
+            self.callbacks = deque()
+            self.running = False
+            self.applying = False
+            self.timer = QtCore.QTimer(self)
+            self.timer.setSingleShot(True)
+            self.timer.timeout.connect(self.run)
             self.moveToThread(QtCore.QCoreApplication.instance().thread())
             self.wake.connect(self.run, QtCore.Qt.QueuedConnection)
 
         @QtCore.Slot()
         def run(self):
-            # The native reservation closes the race between checking document
-            # readiness and installing providers or writing their properties.
+            if self.running or self.document is None:
+                return
+            self.running = True
             try:
-                if not Gui.tryRunPresentationCallback(self.apply, self.document):
-                    QtCore.QTimer.singleShot(10, self.run)
+                while self.callbacks:
+                    readiness = self.document.getMutationReadiness()
+                    if readiness.get("poisoned") or readiness.get("quarantined"):
+                        self.finish()
+                        return
+                    if not Gui.tryRunPresentationCallback(self.apply, self.document):
+                        self.timer.start(10)
+                        return
+                    if self.callbacks:
+                        # A provider may still be awaiting attachment.
+                        self.timer.start(10)
+                        return
+                self.finish()
             except ReferenceError:
                 self.finish()
-
-        def apply(self):
-            try:
-                readiness = self.document.getMutationReadiness()
-                busy = ("recomputing", "commit_barrier", "notification_replay", "pending_removal")
-                if any(readiness.get(flag) for flag in busy):
-                    QtCore.QTimer.singleShot(10, self.run)
-                    return
-                # Closing, removing or rolling back the object cancels its intent.
-                if self.document.getObject(self.name) is not self.obj:
-                    self.finish()
-                    return
-                if not self.obj.ViewObject:
-                    QtCore.QTimer.singleShot(10, self.run)
-                    return
-                self.callback()
-            except ReferenceError:
-                pass  # A deleted document/object has no presentation to apply.
             except Exception:
                 import traceback
                 _err(traceback.format_exc())
-            self.finish()
+                self.finish()  # failed owner/admission cannot retain closures forever
+            finally:
+                self.running = False
+
+        def apply(self):
+            self.applying = True
+            try:
+                self.apply_pending()
+            finally:
+                self.applying = False
+
+        def apply_pending(self):
+            while self.callbacks:
+                obj, name, callback = self.callbacks[0]
+                if self.document.getObject(name) is not obj:
+                    self.callbacks.popleft()
+                    continue
+                if not obj.ViewObject:
+                    return
+                # Remove before invocation: reentrancy and failures run at most once.
+                self.callbacks.popleft()
+                try:
+                    callback()
+                except ReferenceError:
+                    pass
+                except Exception:
+                    import traceback
+                    _err(traceback.format_exc())
 
         def finish(self):
-            self.callback = None
-            self.obj = None
-            self.document = None
-            _pending_gui_setups.discard(self)
+            self.timer.stop()
+            with _gui_setup_lock:
+                self.callbacks.clear()
+                self.document = None
+                _gui_setup_queues.pop(self.key, None)
+                _pending_gui_setups.discard(self)
             self.deleteLater()
 
 
 def run_gui_setup(obj, callback):
-    """Apply presentation now on Qt's main thread, or retain it for GUI catch-up.
+    """Apply presentation through targeted admission, preserving document FIFO order.
 
-    Owner callers never inspect ViewObject or start a GUI timer. A queued Qt
-    signal delivers the callback to a receiver on the main thread, after commit,
-    notification replay and view-provider attachment. Factory closures keep
-    explicit arguments and the original presentation order. Main-thread calls remain
-    synchronous; headless calls have no presentation.
+    GUI callers run synchronously when admitted. Owner callers only enqueue;
+    their callbacks run on Qt's main thread after the document lane is idle.
+    Closing or a failed document drops retained presentation intents.
     """
     if not App.GuiUp:
         return
+    document = obj.Document
+    with _gui_setup_lock:
+        key = id(document)
+        setup = _gui_setup_queues.get(key)
+        if setup is None:
+            setup = _GuiSetup(document)
+            _gui_setup_queues[key] = setup
+            _pending_gui_setups.add(setup)
+        setup.callbacks.append((obj, obj.Name, callback))
     if on_gui_thread():
-        return callback()
-    setup = _GuiSetup(obj, callback)
-    _pending_gui_setups.add(setup)
-    setup.wake.emit()
+        setup.run()
+    else:
+        setup.wake.emit()
 
 
 def defer_gui_setup(obj, callback):
     """Return True if a GUI-only restore callback cannot run in this caller."""
     if gui_available():
-        return False
+        with _gui_setup_lock:
+            setup = _gui_setup_queues.get(id(obj.Document))
+            if setup is not None and setup.applying:
+                return False  # already inside this document's targeted reservation
     run_gui_setup(obj, callback)
     return True
 

@@ -27,6 +27,7 @@
 #include <QObject>
 
 #include <map>
+#include <memory>
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -37,6 +38,7 @@
 namespace App
 {
 class Document;
+class RecoveryAdmission;
 }  // namespace App
 
 namespace Gui
@@ -155,7 +157,8 @@ private:
                                       std::uint64_t lifecycleEpoch,
                                       Base::TimeElapsed startTime,
                                       bool written,
-                                      std::exception_ptr failure);
+                                      std::exception_ptr failure,
+                                      std::shared_ptr<App::RecoveryAdmission> admission = {});
     void slotDeleteDocumentByName(const std::string& name);
     int timeout; /*!< Timeout in milliseconds */
     bool compressed;

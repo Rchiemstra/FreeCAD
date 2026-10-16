@@ -480,7 +480,7 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
         mutableDocument.collaborationCommitMutex()
     );
     const auto identity = doc.collaborationIdentity();
-    if (!doc.canWriteRecoverySnapshot() || doc.collaborationStableReadBlocked()
+    if (!doc.canWriteRecoverySnapshot()
         || doc.collaborationNotificationsReplaying()
         || doc.collaborationLifecycleMutationBlocked()
         || identity.state != DocumentLifecycleState::Live) {
@@ -521,7 +521,7 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
         }
 
         const auto identityAfterSerialization = doc.collaborationIdentity();
-        if (!doc.canWriteRecoverySnapshot() || doc.collaborationStableReadBlocked()
+        if (!doc.canWriteRecoverySnapshot()
             || doc.collaborationNotificationsReplaying()
             || identityAfterSerialization.state != DocumentLifecycleState::Live
             || captureRecoverySnapshotMetadata(doc) != metadata) {

@@ -16,6 +16,7 @@
 #include <App/Property.h>
 #include <App/RecoverySnapshot.h>
 #include <App/MutationClassification.h>
+#include <App/RecoveryAdmission.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/PyObjectBase.h>
@@ -24,6 +25,7 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QTimer>
+#include <QScopeGuard>
 
 #include <algorithm>
 #include <chrono>
@@ -540,7 +542,11 @@ void scheduleRecoverySnapshotWrite(
         lane->beginRecoverySnapshotOwnerWork();
     }
 
+    // Register on the GUI thread before dispatch so fresh commands cannot
+    // repeatedly overtake an already pending recovery write.
+    auto admission = std::make_shared<App::RecoveryAdmission>();
     std::thread([lane = std::move(lane),
+                 admission = std::move(admission),
                  documentName,
                  optionsCopy,
                  onFinished = std::move(onFinished)]() mutable {
@@ -553,15 +559,15 @@ void scheduleRecoverySnapshotWrite(
                 // lane; the document is only closed from the GUI thread so it
                 // remains valid for the duration of the dispatch.
                 result = lane->dispatchToOwner(
-                    [&lane, &optionsCopy]() -> bool {
+                    [&lane, &optionsCopy, &admission]() -> bool {
                         // A recovery write is not part of a foreign command's
                         // read-only postcondition. Reserve before the save
                         // boundary so rejection cannot poison that audit.
-                        App::LivePresentationRefreshScope reservation;
+                        admission->acquire();
+                        const auto releaseAdmission = qScopeGuard([&] { admission.reset(); });
                         auto& document = lane->document();
-                        if (!reservation.acquired() || !document.canWriteRecoverySnapshot()
-                            || !document.getMutationReadiness().ready) {
-                            return false;  // No IO was attempted; defer admission.
+                        if (!document.canWriteRecoverySnapshot()) {
+                            return false;  // Recovery eligibility changed before the worker ran.
                         }
                         return App::writeRecoverySnapshotToTransientDir(document, optionsCopy);
                     },
@@ -571,11 +577,10 @@ void scheduleRecoverySnapshotWrite(
             else {
                 // No-lane legacy path: look up document by name (as before).
                 if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
-                    App::LivePresentationRefreshScope reservation;
-                    result = reservation.acquired() && doc->canWriteRecoverySnapshot()
-                            && doc->getMutationReadiness().ready
-                        ? App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy)
-                        : false;
+                    admission->acquire();
+                    const auto releaseAdmission = qScopeGuard([&] { admission.reset(); });
+                    result = doc->canWriteRecoverySnapshot()
+                        && App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy);
                 }
                 else {
                     result = false;
@@ -585,6 +590,7 @@ void scheduleRecoverySnapshotWrite(
         catch (...) {
             failure = std::current_exception();
         }
+        admission.reset();
         if (lane) {
             lane->endRecoverySnapshotOwnerWork();
         }

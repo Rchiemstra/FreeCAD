@@ -154,6 +154,16 @@ void submitAndWait(App::Document& document, App::DocumentCommand&& command)
 class AutoSaverRecoveryTestAccess
 {
 public:
+    static bool beginAttempt(App::Document& document)
+    {
+        return AutoSaver::instance()->saverMap.at(document.getName())->beginSaveAttempt();
+    }
+    static void deliverCompletion(const std::string& name, std::uint64_t instance,
+                                  std::uint64_t epoch)
+    {
+        AutoSaver::instance()->completeRecoverySnapshotSave(
+            name, instance, epoch, Base::TimeElapsed(), false, {});
+    }
     static void flushPendingSaveWithoutBlockingGui(App::Document& document)
     {
         auto* const saver = AutoSaver::instance();
@@ -500,3 +510,13 @@ App::DocumentCommitResult commitCompatibilityMutationWithoutBlockingGui(
 }
 
 }  // namespace Gui::Test
+
+bool Gui::Test::beginAutoSaveAttempt(App::Document& document)
+{
+    return AutoSaverRecoveryTestAccess::beginAttempt(document);
+}
+void Gui::Test::deliverRecoveryCompletion(const std::string& name, std::uint64_t instance,
+                                         std::uint64_t epoch)
+{
+    AutoSaverRecoveryTestAccess::deliverCompletion(name, instance, epoch);
+}

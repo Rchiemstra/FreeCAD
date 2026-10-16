@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "MutationClassification.h"
+#include "RecoveryAdmission.h"
 #include "private/PreparedLabelReferenceUpdates.h"
 
 #include "Document.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -35,6 +37,7 @@ struct AtomicPresentationMutationAdmission
     unsigned int preparedReadOnlyDepth {0};
     std::thread::id refreshOwner;
     unsigned int refreshDepth {0};
+    std::deque<App::RecoveryAdmission*> recoveryQueue;
 };
 
 thread_local const App::DocumentRevisionIndex* coordinatorRevisionGrantIndex {nullptr};
@@ -88,7 +91,8 @@ void beginMutationTarget(App::Document& document, bool prepared, bool readOnly)
     // A refresh may call back into admission on its own thread. Refuse that
     // too: otherwise its remaining provider work would run under the new
     // target, or a worker could hold locks while waiting for the GUI callback.
-    if (admission.refreshDepth != 0) {
+    if (admission.refreshDepth != 0
+        || (!admission.target && !admission.recoveryQueue.empty())) {
         throw App::LivePresentationRefreshInProgress(
             admission.refreshOwner != caller && !App::DocumentWouldBlock::isGuiThread());
     }
@@ -155,6 +159,7 @@ void endMutationTarget(const App::Document& document,
             }
         }
         if (releasedDocument) {
+            atomicPresentationMutationAdmission().refreshChanged.notify_all();
             notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
         }
     }
@@ -237,6 +242,82 @@ App::Document* App::documentFromPropertyContainer(const PropertyContainer* conta
     return nullptr;
 }
 
+App::RecoveryAdmission::RecoveryAdmission()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    admission.recoveryQueue.push_back(this);
+}
+
+bool App::RecoveryAdmission::tryAcquire()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (acquired) {
+        return true;
+    }
+    if (admission.target || admission.refreshDepth != 0
+        || admission.recoveryQueue.empty() || admission.recoveryQueue.front() != this) {
+        return false;
+    }
+    admission.recoveryQueue.pop_front();
+    admission.refreshOwner = std::this_thread::get_id();
+    admission.refreshDepth = 1;
+    acquired = true;
+    return true;
+}
+
+void App::RecoveryAdmission::acquire()
+{
+    // Only recovery workers wait; never block the GUI or hold the Python GIL.
+    if (DocumentWouldBlock::isGuiThread()) {
+        throw Base::RuntimeError("recovery admission cannot wait on the GUI thread");
+    }
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    auto& admission = atomicPresentationMutationAdmission();
+    std::unique_lock lock(admission.mutex);
+    admission.refreshChanged.wait(lock, [&] {
+        if (acquired) {
+            return true;
+        }
+        if (admission.target || admission.refreshDepth != 0
+            || admission.recoveryQueue.empty() || admission.recoveryQueue.front() != this) {
+            return false;
+        }
+        admission.recoveryQueue.pop_front();
+        admission.refreshOwner = std::this_thread::get_id();
+        admission.refreshDepth = 1;
+        acquired = true;
+        return true;
+    });
+}
+
+App::RecoveryAdmission::~RecoveryAdmission() noexcept
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (acquired) {
+        // The final release belongs to the thread that acquired the reservation.
+        if (admission.refreshOwner != std::this_thread::get_id()
+            || admission.refreshDepth != 1) {
+            std::terminate();
+        }
+        admission.refreshDepth = 0;
+        admission.refreshOwner = {};
+    }
+    else {
+        const auto it = std::find(admission.recoveryQueue.begin(),
+                                  admission.recoveryQueue.end(), this);
+        if (it != admission.recoveryQueue.end()) {
+            admission.recoveryQueue.erase(it);
+        }
+    }
+    admission.refreshChanged.notify_all();
+}
+
 App::LivePresentationRefreshScope::LivePresentationRefreshScope() noexcept
 {
     try {
@@ -244,6 +325,7 @@ App::LivePresentationRefreshScope::LivePresentationRefreshScope() noexcept
         std::unique_lock lock(admission.mutex, std::try_to_lock);
         const auto caller = std::this_thread::get_id();
         if (!lock.owns_lock() || admission.target
+            || (!admission.recoveryQueue.empty() && admission.refreshDepth == 0)
             || (admission.refreshDepth != 0 && admission.refreshOwner != caller)
             || admission.refreshDepth == std::numeric_limits<unsigned int>::max()) {
             return;
@@ -315,7 +397,9 @@ bool App::waitForLivePresentationRefresh()
         && admission.refreshOwner == std::this_thread::get_id()) {
         return false;
     }
-    admission.refreshChanged.wait(lock, [&] { return admission.refreshDepth == 0; });
+    admission.refreshChanged.wait(lock, [&] {
+        return admission.refreshDepth == 0 && admission.recoveryQueue.empty();
+    });
     return true;
 }
 
