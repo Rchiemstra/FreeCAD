@@ -14,7 +14,7 @@ class TestVisualLayerListGui(SketcherGuiTestCase):
         super().setUp()
         self.doc = FreeCAD.newDocument("TestVisualLayerList")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
-        self.doc.recompute()
+        self.recompute_gui_document()
 
     def testVisualLayerListIsReadableFromPython(self):
         layers = self.sketch.ViewObject.VisualLayerList

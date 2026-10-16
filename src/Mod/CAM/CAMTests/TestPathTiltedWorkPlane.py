@@ -196,7 +196,8 @@ class _PlaneFixture(PathTestUtils.PathTestBase):
             placement = plane.Placement
             normal = placement.Rotation.multVec(Z)
             placement.Rotation = Rotation(x, normal.cross(x), normal)
-            plane.Placement = placement
+            support = plane.AttachmentSupport[0][0]
+            plane.AttachmentOffset = support.Placement.inverse().multiply(placement)
         return plane
 
     def _op(self, label, plane=None):

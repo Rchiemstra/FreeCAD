@@ -281,7 +281,9 @@ class TestGenerateInPlaneFrame(PathTestUtils.PathTestBase):
         stored_before = min(p.z for p in _cutPoints(op.Path))
         world_before = min(n.dot(p) for p in _cutPoints(PathUtils.getPathWithPlacement(op)))
 
-        plane.Placement = FreeCAD.Placement(n * 25.0, plane.Placement.Rotation)
+        target = FreeCAD.Placement(n * 25.0, plane.Placement.Rotation)
+        support = plane.AttachmentSupport[0][0]
+        plane.AttachmentOffset = support.Placement.inverse().multiply(target)
         self.doc.recompute()
         self.assertAlmostEqual(op.FinalDepth.Value, -3.0, msg="the entered depth is untouched")
         self.assertAlmostEqual(min(p.z for p in _cutPoints(op.Path)), stored_before, places=6)

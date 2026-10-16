@@ -25,7 +25,6 @@
 
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <QMenu>
-#include <optional>
 
 #include <Gui/SyntheticPropertyReplay.h>
 
@@ -349,17 +348,17 @@ void ViewProviderBody::updateData(const App::Property* prop)
     PartDesign::Body* body = getObject<PartDesign::Body>();
     const bool materialUpdate = prop->getName()
         && std::string_view(prop->getName()) == "ShapeMaterial";
-    std::optional<Gui::SyntheticPropertyReplay> materialReplay;
-    if (synthetic && materialUpdate && !pendingMaterialAssignment
+    // The geometry provider skips copying an unchanged appearance. A real
+    // material assignment still means applying the Body color to its features,
+    // including an equal assignment delivered after a document-lane commit.
+    bool reapplyAppearance = false;
+    if (materialUpdate && (!synthetic || pendingMaterialAssignment)
         && ShapeAppearance.getSize() == 1) {
         auto appearance = ShapeAppearance[0];
         auto material = body->getMaterialAppearance();
-        const bool sameUuid = appearance.uuid == material.uuid;
         appearance.uuid.clear();
         material.uuid.clear();
-        if (sameUuid && appearance == material) {
-            materialReplay.emplace(this, &ShapeAppearance);
-        }
+        reapplyAppearance = appearance == material && material != App::Material();
     }
 
     if (prop == &body->Group || prop == &body->BaseFeature) {
@@ -383,6 +382,9 @@ void ViewProviderBody::updateData(const App::Property* prop)
     }
 
     PartGui::ViewProviderPart::updateData(prop);
+    if (reapplyAppearance) {
+        unifyVisualProperty(&ShapeAppearance);
+    }
     if (materialUpdate) {
         pendingMaterialAssignment = false;
     }

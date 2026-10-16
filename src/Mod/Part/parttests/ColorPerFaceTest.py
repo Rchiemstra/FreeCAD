@@ -184,12 +184,12 @@ class ColorPerFaceTest(unittest.TestCase):
             cyl = self.doc.addObject("Part::Cylinder", "Cylinder")
             box.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
             cyl.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
-            self.doc.recompute()
+            recompute_document(self.doc)
 
             bp = BOPFeatures.BOPFeatures(self.doc)
             fuse = bp.make_multi_fuse([box.Name, cyl.Name])
             fuse.Refine = False
-            self.doc.recompute()
+            recompute_document(self.doc)
 
             self.assertEqual(len(fuse.Shape.Faces), 11)
             self.assertEqual(len(fuse.ViewObject.DiffuseColor), 11)
