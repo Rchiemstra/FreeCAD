@@ -516,6 +516,10 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
+    "src/Mod/CAM/Path/Main/Job.py||obj.Document.recompute()": (
+        1,
+        "upstream model reattachment restores dependent links before returning; the legacy clone route already requires an immediate guarded recompute",
+    ),
     "src/Mod/CAM/Path/Main/Job.py||obj.Document.recompute() # necessary to create the clone shape": (
         1,
         "obj.Document.recompute() required for clone shape creation; result read immediately after",
@@ -661,8 +665,8 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/Draft/draftguitools/gui_trimex.py||self.doc.recompute()": (
-        2,
-        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+        3,
+        "two legacy calls plus upstream's pre-commit recompute for undo correctness; DocumentWouldBlock still guards this unmigrated GUI route",
     ),
     "src/Mod/Draft/draftguitools/gui_wire2spline.py||self.doc.recompute()": (
         1,
