@@ -102,6 +102,57 @@ namespace PartApp = Part;
 namespace
 {
 
+SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
+{
+    // execute() and other native callers need not hold the Python GIL.
+    // Keep it until every Python reference (including exceptions) is released.
+    Base::PyGILStateLocker lock;
+    try {
+        Py::Module module(PyImport_ImportModule("UtilsAssembly"), true);
+        Py::Object function = module.getAttr("violatedJointLabels");
+        Py::Tuple args(1);
+        args.setItem(0, Py::asObject(assembly->getPyObject()));
+        Py::Object result = Py::Callable(function).apply(args);
+        if (!PyList_Check(result.ptr())) {
+            FC_ERR("Assembly relation validation failed: violatedJointLabels must return a list");
+            return SolveResult::ValidationFailed;
+        }
+        if (PyList_Size(result.ptr()) > 0) {
+            return SolveResult::RelationsViolated;
+        }
+        return SolveResult::Success;
+    }
+    catch (Py::Exception&) {
+        Base::PyException exception;
+        FC_ERR("Assembly relation validation failed");
+        exception.reportException();
+        return SolveResult::ValidationFailed;
+    }
+}
+
+const char* solveFailureMessage(SolveResult result)
+{
+    switch (result) {
+        case SolveResult::Success:
+            return "";
+        case SolveResult::SolverFailure:
+            return "Assembly solver failed";
+        case SolveResult::RedundantConstraints:
+            return "Assembly has redundant constraints";
+        case SolveResult::RelationsViolated:
+            return "Assembly joint relations are violated (conflicting constraints)";
+        case SolveResult::OverConstrained:
+            return "Assembly is over-constrained";
+        case SolveResult::MalformedConstraints:
+            return "Assembly has malformed constraints";
+        case SolveResult::NoGroundedParts:
+            return "Assembly has no grounded parts";
+        case SolveResult::ValidationFailed:
+            return "Assembly joint relation validation could not run";
+    }
+    return "Assembly solve failed";
+}
+
 struct RotationJointSide
 {
     App::DocumentObject* joint = nullptr;
@@ -269,7 +320,6 @@ AssemblyObject::AssemblyObject()
     , lastHasRedundancies(false)
     , lastHasPartialRedundancies(false)
     , lastHasMalformedConstraints(false)
-    , lastSolverStatus(0)
 {
     mbdAssembly->externalSystem->freecadAssemblyObject = this;
 
@@ -359,12 +409,18 @@ PyObject* AssemblyObject::getPyObject()
 App::DocumentObjectExecReturn* AssemblyObject::execute()
 {
     App::DocumentObjectExecReturn* ret = App::Part::execute();
+    if (ret != App::DocumentObject::StdReturn) {
+        return ret;
+    }
 
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Assembly"
     );
     if (hGrp->GetBool("SolveOnRecompute", true)) {
-        solve(false);
+        const SolveResult result = solve(false);
+        if (result != SolveResult::Success) {
+            return new App::DocumentObjectExecReturn(solveFailureMessage(result), this);
+        }
     }
     return ret;
 }
@@ -382,10 +438,15 @@ void AssemblyObject::onChanged(const App::Property* prop)
     App::Part::onChanged(prop);
 }
 
-int AssemblyObject::solve(bool enableRedo)
+SolveResult AssemblyObject::solve(bool enableRedo)
 {
     // updateSolveStatus() solves on demand; suppress that while a solve is running.
     Base::StateLocker lock(solveInProgress);
+    const auto finish = [this](SolveResult result) {
+        lastSolveResult = result;
+        updateSolveStatus();
+        return result;
+    };
 
     ensureIdentityPlacements();
 
@@ -400,7 +461,7 @@ int AssemblyObject::solve(bool enableRedo)
     auto groundedObjs = fixGroundedParts();
     if (groundedObjs.empty()) {
         // If no part fixed we can't solve.
-        return -6;
+        return finish(SolveResult::NoGroundedParts);
     }
 
     std::vector<App::DocumentObject*> joints = getJoints();
@@ -415,19 +476,14 @@ int AssemblyObject::solve(bool enableRedo)
 
     try {
         mbdAssembly->runPreDrag();
-        lastSolverStatus = 0;
     }
     catch (const std::exception& e) {
         FC_ERR("Solve failed: " << e.what());
-        lastSolverStatus = -1;
-        updateSolveStatus();
-        return -1;
+        return finish(SolveResult::SolverFailure);
     }
     catch (...) {
         FC_ERR("Solve failed: unhandled exception");
-        lastSolverStatus = -1;
-        updateSolveStatus();
-        return -1;
+        return finish(SolveResult::SolverFailure);
     }
 
     setNewPlacements();
@@ -435,13 +491,13 @@ int AssemblyObject::solve(bool enableRedo)
 
     redrawJointPlacements(joints);
 
-    updateSolveStatus();
-
-    return 0;
+    return finish(validateSolvedJointRelations(this));
 }
 
 void AssemblyObject::updateSolveStatus()
 {
+    lastHasConflict = lastSolveResult == SolveResult::RelationsViolated;
+    lastHasMalformedConstraints = lastSolveResult == SolveResult::MalformedConstraints;
     lastRedundantJoints.clear();
     lastHasRedundancies = false;
 
@@ -468,6 +524,7 @@ void AssemblyObject::updateSolveStatus()
     }
 
     if (!mbdAssembly || !mbdAssembly->mbdSystem) {
+        signalSolverUpdate();
         return;
     }
 
