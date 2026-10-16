@@ -292,7 +292,7 @@ before any remote history action is admitted:
 ## 4. View-state classification
 
 This reuses the classification already ruled in
-`doc/freecad_document_collaboration_plan.md` §3 and proved by
+[document collaboration ADR](document-collaboration-architecture-adr.md#scope) and proved by
 `tests/src/Gui/CollaborationViewIsolation.cpp`.
 
 | Class | Contents | Revisioned | Dirties the file | Owner |
