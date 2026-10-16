@@ -41,6 +41,7 @@
 #include <Base/Tools.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 
 #include "Document.h"
 #include "Tree.h"
@@ -407,7 +408,7 @@ void PropertyEditor::recomputeDocument(App::Document* doc)
             // Between opening and committing a transaction a recompute
             // could already have been done
             if (doc->isTouched()) {
-                doc->recompute();
+                requestDocumentRecompute(*doc, {}, false, 0, true);
             }
         }
     }
@@ -435,7 +436,8 @@ void PropertyEditor::closeTransaction()
     if (!doc) {
         return;
     }
-    if (doc->getBookedTransactionID() == transactionID) {
+    // A zero ID means this editor has no transaction to close.
+    if (transactionID != 0 && doc->getBookedTransactionID() == transactionID) {
         if (autoupdate) {
             recomputeDocument(doc);
         }

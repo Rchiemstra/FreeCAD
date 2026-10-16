@@ -66,6 +66,7 @@
 #include "PatternParametersWidget.h"
 #include "TaskLinkArrayParameters.h"
 #include "ui_TaskLinkArrayParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 using namespace PartGui;
 
@@ -615,8 +616,8 @@ void TaskLinkArrayParameters::setupPatternTransaction()
 
 void TaskLinkArrayParameters::recomputePatternFeature()
 {
-    if (array && array->getDocument() && array->getDocument()->recomputeFeature(array)) {
-        array->purgeTouched();
+    if (array && array->getDocument()) {
+        PartGui::submitDocumentRecomputeOrReport(*array, this);
     }
     // vector<bool> does not satisfy the C++20 output_range requirements of ranges::fill.
     std::fill(instanceControlCentersValid.begin(), instanceControlCentersValid.end(), false);
@@ -923,5 +924,4 @@ bool TaskDlgLinkArrayParameters::reject()
     parameter->exitReferenceSelectionMode();
     return parameter->reject();
 }
-
 #include "moc_TaskLinkArrayParameters.cpp"

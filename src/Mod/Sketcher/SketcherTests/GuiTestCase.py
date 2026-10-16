@@ -138,6 +138,30 @@ class SketcherGuiTestCase(unittest.TestCase):
         if timeout_ms:
             self.pump(timeout_ms)
 
+    def recompute_gui_document(self, document=None):
+        from Test.GuiRecompute import recompute_document
+
+        target = document or getattr(self, "doc", None) or FreeCAD.ActiveDocument
+        if target is None:
+            return
+        recompute_document(target)
+
+    def undo_gui_document(self, document=None):
+        from Test.GuiRecompute import undo_document
+
+        target = document or getattr(self, "doc", None) or FreeCAD.ActiveDocument
+        if target is None:
+            return
+        undo_document(target)
+
+    def redo_gui_document(self, document=None):
+        from Test.GuiRecompute import redo_document
+
+        target = document or getattr(self, "doc", None) or FreeCAD.ActiveDocument
+        if target is None:
+            return
+        redo_document(target)
+
     def cleanup_gui_document(self, doc, timeout_ms=80):
         if not gui_available():
             return
@@ -158,8 +182,16 @@ class SketcherGuiTestCase(unittest.TestCase):
             FreeCADGui.Control.closeDialog()
             self.flush_gui(timeout_ms)
 
-        if doc is not None and doc.Name in FreeCAD.listDocuments():
-            FreeCAD.closeDocument(doc.Name)
+        doc_name = None
+        if doc is not None:
+            try:
+                doc_name = doc.Name
+            except ReferenceError:
+                doc_name = None
+        if doc_name and doc_name in FreeCAD.listDocuments():
+            from Test.GuiRecompute import close_document
+
+            close_document(FreeCAD.getDocument(doc_name))
             self.flush_gui(timeout_ms)
 
     def wait_until(self, predicate, timeout_ms=1000, step_ms=50):

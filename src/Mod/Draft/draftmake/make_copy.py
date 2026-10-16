@@ -67,7 +67,7 @@ def make_copy(obj, force=None, reparent=False, simple_copy=False):
         _name = utils.get_real_name(obj.Name)
         newobj = App.ActiveDocument.addObject("Part::Feature", _name)
         newobj.Shape = obj.Shape
-        gui_utils.format_object(newobj, obj)
+        gui_utils.run_gui_setup(newobj, lambda: gui_utils.format_object(newobj, obj))
     elif not simple_copy:
         # this is the new implementation using doc.copyObject API
         if obj.hasExtension("App::OriginGroupExtension"):

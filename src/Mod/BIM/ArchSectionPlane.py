@@ -313,6 +313,50 @@ def isOriented(obj, plane):
     return False
 
 
+def _section_geometry_token(objs):
+    """Return a hashable token that reflects stable geometry content.
+
+    Vertex coordinates catch an opening that slides along a wall. Volume and
+    element counts stay the same in that case, and Volume is not scanned.
+    shape.hashCode() is address-based and changes between sessions, so it is
+    not used.
+    """
+    token = []
+    for obj in objs:
+        shape = getattr(obj, "Shape", None)
+        identity = None
+        if shape is not None:
+            try:
+                if not shape.isNull():
+                    bb = shape.BoundBox
+                    placement = getattr(obj, "Placement", None)
+                    origin = (0.0, 0.0, 0.0)
+                    if placement is not None:
+                        base = placement.Base
+                        origin = (round(base.x, 6), round(base.y, 6), round(base.z, 6))
+                    vertices = tuple(
+                        (round(vertex.Point.x, 6), round(vertex.Point.y, 6), round(vertex.Point.z, 6))
+                        for vertex in shape.Vertexes
+                    )
+                    identity = (
+                        len(shape.Faces),
+                        len(shape.Edges),
+                        len(shape.Vertexes),
+                        origin,
+                        round(bb.XMin, 6),
+                        round(bb.YMin, 6),
+                        round(bb.ZMin, 6),
+                        round(bb.XMax, 6),
+                        round(bb.YMax, 6),
+                        round(bb.ZMax, 6),
+                        vertices,
+                    )
+            except Exception:
+                identity = None
+        token.append((getattr(obj, "Name", ""), identity))
+    return tuple(token)
+
+
 def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinArch, allOn, objs):
     """
     Returns None or cached SVG, clears shape cache if required
@@ -321,6 +365,7 @@ def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinA
     if hasattr(source, "Proxy"):
         if hasattr(source.Proxy, "svgcache") and source.Proxy.svgcache:
             # TODO check array bounds
+            token = _section_geometry_token(objs)
             svgcache = source.Proxy.svgcache[0]
             # empty caches if we want to force-recalculate for certain properties
             if (
@@ -339,6 +384,9 @@ def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinA
                 or source.Proxy.svgcache[6] != allOn
                 or source.Proxy.svgcache[7] != set(objs)
             ):
+                source.Proxy.shapecache = None
+            if len(source.Proxy.svgcache) <= 8 or source.Proxy.svgcache[8] != token:
+                svgcache = None
                 source.Proxy.shapecache = None
     return svgcache
 
@@ -634,6 +682,7 @@ def getSVG(
                 joinArch,
                 allOn,
                 set(objs),
+                _section_geometry_token(objs),
             ]
 
     svgcache = svgcache.replace("SVGLINECOLOR", svgLineColor)
@@ -1033,6 +1082,15 @@ class _SectionPlane:
     def setProperties(self, obj):
 
         pl = obj.PropertiesList
+        for name in ("PlaneLength", "PlaneHeight"):
+            if name not in pl:
+                obj.addProperty("App::PropertyLength", name, "SectionPlane",
+                                "Authoritative section plane dimension", locked=True)
+                setattr(obj, name, 1)
+        if "PlaneDimensionsRevision" not in pl:
+            obj.addProperty("App::PropertyInteger", "PlaneDimensionsRevision", "SectionPlane",
+                            "Committed dimension input command", attr=8,
+                            read_only=True, hidden=True, locked=True)
         if not "Placement" in pl:
             obj.addProperty(
                 "App::PropertyPlacement",
@@ -1115,16 +1173,13 @@ class _SectionPlane:
         import math
         import Part
 
-        l = 1
-        h = 1
-        if obj.ViewObject:
-            if hasattr(obj.ViewObject, "DisplayLength"):
-                l = obj.ViewObject.DisplayLength.Value
-                h = obj.ViewObject.DisplayHeight.Value
-            elif hasattr(obj.ViewObject, "DisplaySize"):
-                # old objects
-                l = obj.ViewObject.DisplaySize.Value
-                h = obj.ViewObject.DisplaySize.Value
+        # App inputs remain authoritative while an edit is outstanding and
+        # after undo/redo or rollback. Python request diagnostics are history,
+        # not an admission gate (including rollback verification recomputes).
+        l, h = obj.PlaneLength.Value, obj.PlaneHeight.Value
+        if not FreeCAD.GuiUp:
+            # Historical headless behavior, including a GUI-authored document.
+            l = h = 1
         if not l:
             l = 1
         if not h:
@@ -1156,15 +1211,47 @@ class _SectionPlane:
         self.Type = "SectionPlane"
 
 
+def _createSectionPlaneViewProvider(vobj):
+    """Initialize the view while makeSectionPlane still has inputs to set."""
+    return _ViewProviderSectionPlane(vobj, defer_dimension_inputs=True)
+
+
 class _ViewProviderSectionPlane:
     "A View Provider for Section Planes"
 
-    def __init__(self, vobj):
+    def __init__(self, vobj, defer_dimension_inputs=False):
 
-        vobj.Proxy = self
-        self.setProperties(vobj)
+        # Assigning Proxy can synchronously attach before view properties exist.
+        # The section factory also has model and display inputs left to set.
+        self._initializing_view = True
+        initialized = False
+        try:
+            vobj.Proxy = self
+            self.setProperties(vobj)
+            initialized = True
+        finally:
+            self._initializing_view = initialized and defer_dimension_inputs
+        if not defer_dimension_inputs:
+            self._finishDimensionInitialization(vobj)
+
+    def _finishDimensionInitialization(self, vobj, completed=True):
+        self._initializing_view = False
+        if not completed:
+            return
+        if vobj.Object.PlaneDimensionsRevision:
+            self.updateData(vobj.Object, "PlaneDimensionsRevision")
+        else:
+            self._submitDimensionInputs(vobj)
 
     def setProperties(self, vobj):
+        initializing = getattr(self, "_initializing_view", False)
+        self._initializing_view = True
+        try:
+            self._setProperties(vobj)
+        finally:
+            self._initializing_view = initializing
+
+    def _setProperties(self, vobj):
 
         pl = vobj.PropertiesList
         d = 0
@@ -1282,7 +1369,16 @@ class _ViewProviderSectionPlane:
 
     def onDocumentRestored(self, vobj):
 
+        # A legacy view schema still supplies dimension inputs, even when
+        # this model already has a committed revision. Capture the schema
+        # before setProperties removes DisplaySize; mirroring first would
+        # discard the migrated values.
+        legacy_dimensions = "DisplaySize" in vobj.PropertiesList
         self.setProperties(vobj)
+        if vobj.Object.PlaneDimensionsRevision and not legacy_dimensions:
+            self.updateData(vobj.Object, "PlaneDimensionsRevision")
+        else:
+            self._submitDimensionInputs(vobj)  # Migrate legacy view dimensions.
 
     def finishRestoring(self):
         """Remove CutDistance from older documents."""
@@ -1304,6 +1400,16 @@ class _ViewProviderSectionPlane:
         return []
 
     def attach(self, vobj):
+        initializing = getattr(self, "_initializing_view", False)
+        self._initializing_view = True
+        try:
+            self._attach(vobj)
+        finally:
+            self._initializing_view = initializing
+        if not initializing:
+            self._submitDimensionInputs(vobj)
+
+    def _attach(self, vobj):
 
         self.Object = vobj.Object
         self.clip = None
@@ -1408,7 +1514,10 @@ class _ViewProviderSectionPlane:
         sep.addChild(psep)
         sep.addChild(tsep)
         vobj.addDisplayMode(sep, "Default")
-        self.onChanged(vobj, "DisplayLength")
+        if vobj.Object.PlaneDimensionsRevision:
+            self.updateData(vobj.Object, "PlaneDimensionsRevision")
+        else:
+            self.onChanged(vobj, "DisplayLength")
         self.onChanged(vobj, "LineColor")
         self.onChanged(vobj, "Transparency")
         self.onChanged(vobj, "CutView")
@@ -1427,8 +1536,25 @@ class _ViewProviderSectionPlane:
 
     def updateData(self, obj, prop):
         vobj = obj.ViewObject
-        if prop in ["Placement", "Shape"]:
-            self.onChanged(vobj, "DisplayLength")
+        if prop in ["Placement", "Shape", "PlaneLength", "PlaneHeight", "PlaneDimensionsRevision"]:
+            # Presentation consumes committed inputs. It never submits model
+            # work while mirroring those inputs back to the legacy view editor.
+            requested = getattr(obj.Proxy, "_dimension_request", None)
+            status = getattr(obj.Proxy, "_dimension_request_status", None)
+            pending = (getattr(self, "_dimension_input_pending", False)
+                       or (requested and status == (requested, "pending")
+                           and requested[-1] != obj.PlaneDimensionsRevision))
+            self._presenting_dimensions = True
+            try:
+                if (prop in ["PlaneLength", "PlaneHeight", "PlaneDimensionsRevision"] and not pending
+                        and {"DisplayLength", "DisplayHeight"}.issubset(vobj.PropertiesList)):
+                    if vobj.DisplayLength.Value != obj.PlaneLength.Value:
+                        vobj.DisplayLength = obj.PlaneLength.Value
+                    if vobj.DisplayHeight.Value != obj.PlaneHeight.Value:
+                        vobj.DisplayHeight = obj.PlaneHeight.Value
+                self.onChanged(vobj, "DisplayLength")
+            finally:
+                self._presenting_dimensions = False
             if vobj and hasattr(vobj, "CutView") and vobj.CutView:
                 self.refreshCutView(vobj)
         elif prop == "Label":
@@ -1445,8 +1571,219 @@ class _ViewProviderSectionPlane:
             vobj.CutView = False
             vobj.CutView = True
 
+    def _submitDimensionInputs(self, vobj):
+        """Enqueue an owner input command without waiting on GUI main."""
+        self._dimension_input_pending = False
+        if getattr(self, "_initializing_view", False):
+            return
+        import threading
+
+        # Native Transacting covers undo/redo and rollback, not ordinary open
+        # transactions. Restored view aliases must not enqueue another edit.
+        if vobj.Object.Document.Transacting:
+            return
+        if not hasattr(self, "_dimension_lock"):
+            self._dimension_lock = threading.Lock()
+            self._dimension_commands = []
+            self._dimension_errors = []
+            self._dimension_waiter_running = False
+
+        obj, doc = vobj.Object, vobj.Object.Document
+        self._dimension_model_proxy = obj.Proxy
+        self._dimension_document = doc
+        if not {"DisplayLength", "DisplayHeight"}.issubset(vobj.PropertiesList):
+            return
+        length, height = vobj.DisplayLength.Value, vobj.DisplayHeight.Value
+        identity = doc.collaborationIdentity()
+        if identity["state"] != "Live" or obj.Removing:
+            raise RuntimeError("cannot edit dimensions of a retiring section plane")
+        binding = (identity["instance_id"], identity["lifecycle_epoch"], obj.ID)
+        prior = getattr(obj.Proxy, "_dimension_request", None)
+        status = getattr(obj.Proxy, "_dimension_request_status", None)
+        pending = prior and status == (prior, "pending")
+        if pending and prior[:3] == binding and prior[3:5] == (length, height):
+            return  # Also retain a timed-out, possibly applied native command.
+        if (not pending and (not status or status[1] != "failed")
+                and obj.PlaneDimensionsRevision
+                and (length, height) == (obj.PlaneLength.Value, obj.PlaneHeight.Value)):
+            return  # Presentation of authoritative inputs, including undo.
+        generation = max(obj.PlaneDimensionsRevision, prior[-1] if prior else 0) + 1
+        request = binding + (length, height, generation)
+        obj.Proxy._dimension_request = request
+        obj.Proxy._dimension_request_status = (request, "pending")
+        model = obj.Proxy
+        disposition = ["committed"]
+        name = obj.Name
+
+        def apply():
+            current = doc.collaborationIdentity()
+            target = doc.getObject(name)
+            if (current["state"] != "Live"
+                    or (current["instance_id"], current["lifecycle_epoch"]) != binding[:2]
+                    or target is None or target.ID != binding[2] or target.Removing):
+                raise RuntimeError("section plane dimension command target became stale")
+            if target.Proxy._dimension_request != request:
+                disposition[0] = "superseded"
+                return  # A later explicit input command supersedes this one.
+            if (target.getTypeIdOfProperty("PlaneLength") != "App::PropertyLength"
+                    or target.getTypeIdOfProperty("PlaneHeight") != "App::PropertyLength"):
+                raise RuntimeError("section plane dimension schema changed")
+            target.PlaneLength = length
+            target.PlaneHeight = height
+            target.PlaneDimensionsRevision = generation
+
+        try:
+            handle = doc.commitCompatibilityMutationAsync(apply, recompute=False,
+                object_name=name, label="Section plane dimensions")
+        except Exception as exc:
+            if model._dimension_request == request:
+                model._dimension_request_status = (request, "failed")
+                model._last_dimension_disposition = (generation, "failed")
+            model._dimension_command_error = exc
+            model._dimension_command_error_request = request
+            with self._dimension_lock:
+                self._dimension_errors.append(exc)
+            raise
+        # The pinned API has off-owner wait dicts and owner terminal dicts.
+        # Only observe wait() off GUI; callback-local metadata is not committed
+        # until the native result confirms it (the callback may roll back).
+        with self._dimension_lock:
+            self._dimension_commands.append((model, request, handle, disposition))
+            if self._dimension_waiter_running:
+                return
+            self._dimension_waiter_running = True
+        threading.Thread(target=self._observeDimensionCommands,
+                         name="section-dimension-results", daemon=True).start()
+
+    def recomputeDimensions(self):
+        """Task-panel resize/rotate: observe input completion, then recompute."""
+        import threading
+        self._submitDimensionInputs(self.Object.ViewObject)
+        with self._dimension_lock:
+            self._dimension_recompute_requested = True
+            if self._dimension_waiter_running:
+                return
+            self._dimension_waiter_running = True
+        threading.Thread(target=self._observeDimensionCommands,
+                         name="section-dimension-results", daemon=True).start()
+
+    def _observeDimensionCommands(self):
+        first_error = None
+        recompute_handle = None
+        recompute_request = None
+        reported_timeouts = set()
+        while True:
+            with self._dimension_lock:
+                if self._dimension_commands:
+                    model, request, handle, disposition = self._dimension_commands[0]
+                    recompute = False
+                elif recompute_handle is not None or getattr(self, "_dimension_recompute_requested", False):
+                    model = self._dimension_model_proxy
+                    if recompute_handle is None:
+                        self._dimension_recompute_requested = False
+                        recompute_request = getattr(model, "_dimension_request", None)
+                    request = recompute_request
+                    recompute = True
+                else:
+                    self._dimension_waiter_running = False
+                    break
+            terminal = True
+            outcome = "failed"
+            try:
+                if recompute:
+                    # Retain the accepted handle across nonterminal snapshots.
+                    if recompute_handle is None:
+                        recompute_handle = self._dimension_document.recomputeAsync()
+                    result = recompute_handle.wait(120.0)
+                    snapshot = result.get("recompute", result)
+                    state = snapshot.get("state")
+                    if not snapshot.get("terminal", state not in ("running", "cancelling")):
+                        raise TimeoutError("section recompute is still outstanding")
+                    if state != "completed":
+                        raise RuntimeError("section recompute failed: " + repr(result))
+                else:
+                    result = handle["wait"](120.0) if "wait" in handle else handle
+                    if result["status"] != "Committed":
+                        raise RuntimeError("section dimension command failed: " + repr(result))
+                    outcome = disposition[0]
+            except Exception as exc:
+                # Native compatibility wait timeout leaves the future valid.
+                # Reobserve that work; never resubmit an unknown mutation.
+                terminal = not isinstance(exc, TimeoutError)
+                key = (recompute, id(recompute_handle if recompute else handle))
+                if terminal or key not in reported_timeouts:
+                    model._dimension_command_error = exc
+                    model._dimension_command_error_request = request
+                    with self._dimension_lock:
+                        self._dimension_errors.append(exc)
+                    if first_error is None:
+                        first_error = exc
+                    if not terminal:
+                        reported_timeouts.add(key)
+            if not terminal:
+                continue
+            if recompute:
+                recompute_handle = None  # Busy/failure retires only this recompute.
+            else:
+                with self._dimension_lock:
+                    self._dimension_commands.pop(0)
+                    if model._dimension_request == request:
+                        model._dimension_request_status = (request, outcome)
+                        model._last_dimension_disposition = (request[-1], outcome)
+        if first_error is not None:
+            raise first_error
+
+    def dimensionCommandsDone(self):
+        if getattr(self, "_dimension_input_pending", False):
+            return False
+        if not hasattr(self, "_dimension_lock"):
+            return True
+        with self._dimension_lock:
+            return not self._dimension_waiter_running
+
+    def raiseDimensionCommandErrors(self):
+        if hasattr(self, "_dimension_lock"):
+            with self._dimension_lock:
+                if self._dimension_errors:
+                    raise self._dimension_errors[0]
+        error = getattr(self, "_dimension_timer_error", None)
+        if error is not None:
+            raise error
+
+    def onBeforeChange(self, vobj, prop):
+        # Native onChanged can be deferred while the owner lane is busy.
+        # Capture explicit editor intent before that gate, then submit the
+        # completed view pair on GUI main after the assignment returns.
+        if (prop not in ["DisplayLength", "DisplayHeight", "DisplaySize"]
+                or getattr(self, "_initializing_view", False)
+                or getattr(self, "_presenting_dimensions", False)):
+            return
+        if QtCore.QThread.currentThread() != QtCore.QCoreApplication.instance().thread():
+            return
+        doc = self.Object.Document
+        if doc.Transacting or doc.Restoring:
+            return
+        if getattr(self, "_dimension_input_pending", False):
+            return
+        self._dimension_input_pending = True
+
+        def submit():
+            if self._dimension_input_pending:
+                try:
+                    self._submitDimensionInputs(vobj)
+                except Exception as exc:
+                    # A queued input can outlive its view or document. Retain
+                    # the failure for the normal completion/error observer.
+                    if getattr(self, "_dimension_timer_error", None) is None:
+                        self._dimension_timer_error = exc
+
+        QtCore.QTimer.singleShot(0, submit)
+
     def onChanged(self, vobj, prop):
 
+        if prop in ["DisplayLength", "DisplayHeight", "DisplaySize"]:
+            if not getattr(self, "_presenting_dimensions", False):
+                self._submitDimensionInputs(vobj)
         if prop == "LineColor":
             if hasattr(vobj, "LineColor"):
                 l = vobj.LineColor
@@ -1749,7 +2086,7 @@ class SectionPlaneTaskPanel:
             local_axis = self.obj.Placement.Rotation.multVec(axis)
             face.rotate(self.obj.Placement.Base, local_axis, 90)
             self.obj.Placement = face.Placement
-            self.obj.Proxy.execute(self.obj)
+            self.obj.ViewObject.Proxy.recomputeDimensions()
 
     def rotateX(self):
         self.rotate(FreeCAD.Vector(1, 0, 0))
@@ -1766,7 +2103,7 @@ class SectionPlaneTaskPanel:
             if fit is not None:
                 self.obj.ViewObject.DisplayLength = fit[0]
                 self.obj.ViewObject.DisplayHeight = fit[1]
-                self.obj.Proxy.execute(self.obj)
+                self.obj.ViewObject.Proxy.recomputeDimensions()
 
     def recenter(self):
         if self.obj:

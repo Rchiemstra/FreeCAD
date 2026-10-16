@@ -83,10 +83,12 @@ def make_ellipse(majradius, minradius, placement=None, face=None, support=None):
     if placement:
         obj.Placement = placement
 
-    if App.GuiUp:
+    def setup_view():
         ViewProviderDraft(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)
+
+    gui_utils.run_gui_setup(obj, setup_view)
 
     return obj
 

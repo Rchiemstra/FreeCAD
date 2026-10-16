@@ -33,7 +33,7 @@
 # @{
 import FreeCAD as App
 from draftobjects.layer import Layer, LayerContainer
-from draftutils import utils
+from draftutils import gui_utils, utils
 from draftutils.messages import _err
 from draftutils.translate import translate
 from freecad.deprecation import deprecated
@@ -66,8 +66,10 @@ def get_layer_container():
 
     LayerContainer(obj)
 
-    if App.GuiUp:
+    def setup_view():
         ViewProviderLayerContainer(obj.ViewObject)
+
+    gui_utils.run_gui_setup(obj, setup_view)
 
     return obj
 
@@ -221,7 +223,7 @@ def make_layer(
 
     obj.Label = name
 
-    if App.GuiUp:
+    def setup_view():
         vobj = obj.ViewObject
         ViewProviderLayer(vobj)
         if line_color is not None:
@@ -234,6 +236,8 @@ def make_layer(
             vobj.DrawStyle = draw_style
         if transparency is not None:
             vobj.Transparency = transparency
+
+    gui_utils.run_gui_setup(obj, setup_view)
 
     container = get_layer_container()
     container.addObject(obj)

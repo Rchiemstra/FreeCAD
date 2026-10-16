@@ -67,6 +67,51 @@ PARAMS = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/NativeIFC")
 PRESERVED_BUILDINGPART_PROPERTIES = {"Height", "LevelOffset"}
 
 
+# ---------------------------------------------------------------------------
+# ifcopenshell version-independent schema/entity helpers
+# ---------------------------------------------------------------------------
+
+
+def ifc_schema_name(ifcfile):
+    """Return the IFC schema name (e.g. 'IFC4') without accessing wrapped_data.
+
+    Falls back to ``wrapped_data.schema_name()`` for ifcopenshell < 0.9 so the
+    current CI pin keeps working.  Do not call this with ``None``.
+    """
+    try:
+        return ifcfile.schema
+    except AttributeError:
+        return ifcfile.wrapped_data.schema_name()
+
+
+def ifc_file_to_string(ifcfile):
+    """Serialize an IFC file to an IFC-STEP string without accessing wrapped_data.
+
+    Falls back to ``wrapped_data.to_string()`` for ifcopenshell < 0.9.
+    """
+    try:
+        return ifcfile.to_string()
+    except AttributeError:
+        return ifcfile.wrapped_data.to_string()
+
+
+def ifc_entity_declaration(entity):
+    """Return the schema entity declaration for an IFC entity instance.
+
+    The returned object exposes ``name()``, ``all_attributes()``, and related
+    schema-query methods.  Newer ifcopenshell exposes ``entity.declaration``
+    as a property that returns it; a release that exposes a method is called.
+    ifcopenshell 0.8 has neither and falls back to
+    ``entity.wrapped_data.declaration().as_entity()``.
+    """
+    declaration = getattr(entity, "declaration", None)
+    if declaration is None:
+        return entity.wrapped_data.declaration().as_entity()
+    if callable(declaration) and not hasattr(declaration, "all_attributes"):
+        declaration = declaration()
+    return declaration
+
+
 def create_document(document, filename=None, shapemode=0, strategy=0, silent=False):
     """Creates a IFC document object in the given FreeCAD document or converts that
     document into an IFC document, depending on the state of the statusbar lock button.
@@ -621,9 +666,7 @@ def add_properties(obj, ifcfile=None, ifcentity=None, links=False, shapemode=0, 
             obj.setPropertyStatus("ShapeMode", "Hidden")
     if ifcentity.is_a("IfcProduct"):
         obj.addProperty("App::PropertyLink", "Type", "IFC", locked=True)
-    declaration = getattr(ifcentity, "declaration", None)
-    if declaration is None:
-        declaration = ifcentity.wrapped_data.declaration().as_entity()
+    declaration = ifc_entity_declaration(ifcentity)
     attr_defs = declaration.all_attributes()
     try:
         info_ifcentity = ifcentity.get_info()

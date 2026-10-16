@@ -116,6 +116,9 @@ class SetupSheet:
         "Tool Shape",
     ]
 
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def __init__(self, obj):
         self.obj = obj
         obj.addProperty(

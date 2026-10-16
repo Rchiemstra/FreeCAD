@@ -30,6 +30,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/NativeRecomputeErrors.h>
 #include <App/DocumentObserver.h>
 #include <App/Expression.h>
 #include <App/ExpressionParser.h>
@@ -42,6 +43,7 @@
 #include <Base/Writer.h>
 
 #include "PropertySheet.h"
+#include <App/MutationClassification.h>
 #include "PropertySheetPy.h"
 #include "Sheet.h"
 
@@ -244,6 +246,11 @@ std::tuple<CellAddress, CellAddress> PropertySheet::getNonEmptyRange() const
 
 void PropertySheet::setDirty(CellAddress address)
 {
+    // Detached copies retain owner for expression bookkeeping. Only dirty
+    // writes to the canonical cells property request work on the live sheet.
+    if (owner && getContainer() == owner && owner->getCells() == this) {
+        App::Internal::NativeRecomputeRequestCapture::record(*owner);
+    }
     /* Merged cells will automatically force an update of the top left cell
        to be consistent. */
     std::map<CellAddress, CellAddress>::const_iterator i = mergedCells.find(address);
@@ -610,7 +617,7 @@ void PropertySheet::pasteCells(XMLReader& reader, Range dstRange)
                             recomputeDependencies(dst);
                         }
                     }
-                    dirty.insert(dst);
+                    setDirty(dst);
                 }
             }
         }
@@ -943,7 +950,7 @@ void PropertySheet::clear(CellAddress address, bool toClearAlias)
     delete i->second;
 
     // Mark as dirty
-    dirty.insert(i->first);
+    setDirty(i->first);
 
     if (toClearAlias) {
         clearAlias(address);
@@ -1607,6 +1614,23 @@ void PropertySheet::recomputeDependants(const App::DocumentObject* owner, const 
 
 void PropertySheet::breakLink(App::DocumentObject* obj, bool clear)
 {
+    if (obj && owner && obj != owner && obj->isAttachedToDocument()
+        && obj->getDocument() != owner->getDocument()
+        && obj->testStatus(App::ObjectStatus::Remove)
+        && App::atomicPresentationMutationAdmissionHeldFor(*obj->getDocument())) {
+        // Source removal admission pins and serializes this dependent. Retire
+        // runtime state without entering a foreign property change callback.
+        // Cell text stays intact for missing-source reporting and undo repair.
+        PropertyExpressionContainer::breakLink(obj, clear);
+        depConnections.erase(obj);
+        auto cells = documentObjectToCellMap.find(obj->getFullName());
+        if (cells != documentObjectToCellMap.end()) {
+            for (const auto& address : cells->second) {
+                setDirty(address);
+            }
+        }
+        return;
+    }
     AtomicPropertyChange signaller(*this, false);
     PropertyExpressionContainer::breakLink(obj, clear);
 }
@@ -1892,12 +1916,23 @@ void PropertySheet::onContainerRestored()
     Base::FlagToggler<bool> flag(restoring);
     unregisterElementReference();
     UpdateElementReferenceExpressionVisitor<PropertySheet> v(*this);
+    std::map<App::DocumentObject*, bool> deps;
+    std::vector<std::string> labels;
     for (auto& d : data) {
         auto expr = d.second->expression.get();
         if (expr) {
             expr->visit(v);
+            expr->getDepObjects(deps, &labels);
         }
+        // Grouped replay can paste a formula before its source Label exists.
+        // Repair both cell-level maps and runtime source connections now that
+        // the entire restored group is available, without property callbacks.
+        removeDependencies(d.first);
+        addDependencies(d.first);
     }
+    registerLabelReferences(std::move(labels));
+    updateDeps(std::move(deps));
+    updateCount = 0;
 }
 
 bool PropertySheet::adjustLink(const std::set<DocumentObject*>& inList)

@@ -935,16 +935,21 @@ class WindowsPlatform:
 
     initialized = False
     enabled = platform.system() == 'Windows' and hasattr(os, "add_dll_directory")
+    # This helper class is transient and removed after initialization. Keep the
+    # handles on the persistent application module so their directories remain
+    # registered for later workbench imports.
+    dll_directory_handles: dict[Path, object] = getattr(App, "__DllDirectoryHandles__", {})
+    App.__DllDirectoryHandles__ = dll_directory_handles
 
     def __init__(self) -> None:
         if not WindowsPlatform.enabled or WindowsPlatform.initialized:
             return
 
         if lib_pack := utils.env_to_path("FREECAD_LIBPACK_BIN"):
-            os.add_dll_directory(str(lib_pack.resolve()))
+            self.add_dll_search_paths([lib_pack])
         if win_dir := utils.env_to_path("WINDIR"):
             system32 = win_dir / "system32"
-            os.add_dll_directory(str(system32.resolve()))
+            self.add_dll_search_paths([system32])
 
         WindowsPlatform.initialized = True
 
@@ -953,7 +958,13 @@ class WindowsPlatform:
 
     def add_dll_search_paths(self, paths: list[Path]) -> None:
         for path in paths:
-            os.add_dll_directory(str(path.resolve()))
+            resolved = path.resolve()
+            if resolved not in WindowsPlatform.dll_directory_handles:
+                # The returned handle removes the directory when it is closed
+                # or garbage-collected, so retain it for the process lifetime.
+                WindowsPlatform.dll_directory_handles[resolved] = os.add_dll_directory(
+                    str(resolved)
+                )
 
 
 @transient

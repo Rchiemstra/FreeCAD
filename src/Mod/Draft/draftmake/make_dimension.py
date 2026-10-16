@@ -133,10 +133,12 @@ def make_dimension(p1, p2, p3=None, p4=None):
 
     wp = WorkingPlane.get_working_plane(update=False)
     normal = wp.axis
+    deferred_presentation = App.GuiUp and not gui_utils.on_gui_thread()
+    p3_original = p3
     flip_text = False
     override = ""
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         # invert the normal if we are viewing it from the back
         vnorm = gui_utils.get3DView().getViewDirection()
         if vnorm.getAngle(normal) < math.pi / 2:
@@ -153,7 +155,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
             p3.multiply(0.5)
             p3 = p1.add(p3)
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(p1, p2, wp, normal)
 
     elif isinstance(p2, int) and isinstance(p3, int):
@@ -175,7 +177,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
             p3.multiply(0.5)
             p3 = v1.add(p3)
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(v1, v2, wp, normal)
 
     elif isinstance(p3, str):
@@ -201,7 +203,7 @@ def make_dimension(p1, p2, p3=None, p4=None):
         if not p3:
             p3 = cen.add(App.Vector(1, 0, 0))
 
-        if App.GuiUp:
+        if gui_utils.gui_available():
             flip_text = _get_flip_text_lin(cen, p3, wp, normal)
 
     # This p3 is the point through which the dimension line will pass,
@@ -209,13 +211,28 @@ def make_dimension(p1, p2, p3=None, p4=None):
     # depending on the first three parameter values
     new_obj.Dimline = p3
 
-    if App.GuiUp:
+    def setup_view():
+        presentation_flip = flip_text
+        if deferred_presentation:
+            presentation_normal = normal
+            vnorm = gui_utils.get3DView().getViewDirection()
+            if vnorm.getAngle(presentation_normal) < math.pi / 2:
+                presentation_normal = presentation_normal.negative()
+            new_obj.Normal = presentation_normal
+            if isinstance(p3_original, str):
+                start, end = cen, new_obj.Dimline
+            elif isinstance(p1, App.Vector):
+                start, end = new_obj.Start, new_obj.End
+            else:
+                start, end = v1, v2
+            presentation_flip = _get_flip_text_lin(start, end, wp, presentation_normal)
         ViewProviderLinearDimension(new_obj.ViewObject)
-        new_obj.ViewObject.FlipText = flip_text
+        new_obj.ViewObject.FlipText = presentation_flip
         new_obj.ViewObject.Override = override
         gui_utils.format_object(new_obj)
         gui_utils.select(new_obj)
 
+    gui_utils.run_gui_setup(new_obj, setup_view)
     return new_obj
 
 
@@ -649,7 +666,7 @@ def make_angular_dimension(
     new_obj = App.ActiveDocument.addObject("App::FeaturePython", "Dimension")
     AngularDimension(new_obj)
 
-    if App.GuiUp:
+    if gui_utils.gui_available():
         ViewProviderAngularDimension(new_obj.ViewObject)
 
         # Invert the normal if we are viewing it from the back.
@@ -665,11 +682,23 @@ def make_angular_dimension(
     new_obj.Dimline = dim_line
     new_obj.Normal = normal
 
-    if App.GuiUp:
-        new_obj.ViewObject.FlipText = _get_flip_text_ang(center, angles[0], angles[1], normal)
+    deferred_presentation = App.GuiUp and not gui_utils.on_gui_thread()
+
+    def setup_view():
+        presentation_normal = normal
+        if deferred_presentation:
+            ViewProviderAngularDimension(new_obj.ViewObject)
+            vnorm = gui_utils.get3DView().getViewDirection()
+            if vnorm.getAngle(presentation_normal) < math.pi / 2:
+                presentation_normal = presentation_normal.negative()
+            new_obj.Normal = presentation_normal
+        new_obj.ViewObject.FlipText = _get_flip_text_ang(
+            center, angles[0], angles[1], presentation_normal
+        )
         gui_utils.format_object(new_obj)
         gui_utils.select(new_obj)
 
+    gui_utils.run_gui_setup(new_obj, setup_view)
     return new_obj
 
 

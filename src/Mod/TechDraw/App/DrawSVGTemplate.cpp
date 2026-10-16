@@ -174,7 +174,10 @@ QString DrawSVGTemplate::processTemplate()
     return templateDocument.toString();
 }
 
-// find the width, height and orientation of the template and update the properties
+// find the width, height and orientation of the template and update the properties.
+// processTemplate() runs on every GUI redraw, so only write values that changed;
+// otherwise drawing the page touches the template and the document never
+// settles after a recompute.
 void DrawSVGTemplate::extractTemplateAttributes(QDomDocument& templateDocument)
 {
     QDomElement docElement = templateDocument.documentElement();
@@ -185,17 +188,24 @@ void DrawSVGTemplate::extractTemplateAttributes(QDomDocument& templateDocument)
     quantity = Base::Quantity::parse(str.toStdString());
     quantity.setUnit(Base::Unit::Length);
 
-    Width.setValue(quantity.getValue());
+    if (Width.getValue() != quantity.getValue()) {
+        Width.setValue(quantity.getValue());
+    }
 
     str = docElement.attribute(QStringLiteral("height"));
     quantity = Base::Quantity::parse(str.toStdString());
     quantity.setUnit(Base::Unit::Length);
 
-    Height.setValue(quantity.getValue());
+    if (Height.getValue() != quantity.getValue()) {
+        Height.setValue(quantity.getValue());
+    }
 
     bool isLandscape = getWidth() / getHeight() >= 1.;
 
-    Orientation.setValue(isLandscape ? 1 : 0);
+    const long orientation = isLandscape ? 1 : 0;
+    if (Orientation.getValue() != orientation) {
+        Orientation.setValue(orientation);
+    }
 }
 
 // load the included template file as a QDomDocument

@@ -32,6 +32,7 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "CommandT.h"
+#include "DocumentExecutionIngress.h"
 #include "EditorView.h"
 #include "PythonEditor.h"
 #include "MainWindow.h"
@@ -178,7 +179,7 @@ void FileHandler::openInternal(const char* type, const char* prop)
     Gui::cmdAppDocumentArgs(doc, "addObject('%s', '%s')", type, encBase);
     Gui::cmdAppDocumentArgs(doc, "ActiveObject.%s = '%s'", prop, encPath);
     Gui::cmdAppDocumentArgs(doc, "ActiveObject.Label = '%s'", encBase);
-    Gui::cmdAppDocument(doc, "recompute()");
+    requestDocumentRecompute(*doc);
 }
 
 void FileHandler::openInventor()

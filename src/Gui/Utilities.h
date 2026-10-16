@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <functional>
 #include <vector>
 #include <QBrush>
 #include <QColor>
@@ -527,6 +528,12 @@ namespace Gui
 {
 
 [[nodiscard]] GuiExport bool isInternalGuiTestRun();
+
+/** Run \a task on the Qt GUI thread (queued if called from the document owner thread). */
+GuiExport void schedulePassiveGuiRefresh(std::function<void()> task);
+
+/** Arm a single-shot Qt timer on the GUI thread. */
+GuiExport void scheduleGuiSingleShot(int msec, std::function<void()> task);
 
 /**
  */

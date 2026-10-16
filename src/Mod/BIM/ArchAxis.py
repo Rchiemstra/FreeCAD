@@ -347,7 +347,8 @@ class _Axis:
     def onChanged(self, obj, prop):
 
         if prop in ["Angles", "Distances", "Placement"]:
-            obj.touch()
+            # Same as touch(), which is refused on the GUI thread inside this hook.
+            obj.enforceRecompute()
 
     def dumps(self):
 
@@ -985,7 +986,7 @@ class _AxisTaskPanel:
         self.obj.Angles = self.tree.Angles
         self.obj.Labels = self.tree.Labels
         self.obj.touch()
-        FreeCAD.ActiveDocument.recompute()
+        ArchCommands.recompute_active_document()
 
     def reject(self):
 

@@ -31,6 +31,7 @@ import Part
 import PartGui
 import Sketcher
 from PySide import QtWidgets
+from Test.GuiRecompute import close_document, recompute_document
 
 
 def findDockWidget(name):
@@ -84,7 +85,7 @@ class PartGuiViewProviderTestCases(unittest.TestCase):
 
     def tearDown(self):
         # closing doc
-        FreeCAD.closeDocument("PartGuiTest")
+        close_document(FreeCAD.getDocument("PartGuiTest"))
 
 
 class ProjectionOnSurfaceTestCases(unittest.TestCase):
@@ -103,7 +104,7 @@ class ProjectionOnSurfaceTestCases(unittest.TestCase):
             ],
             False,
         )
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         FreeCADGui.activateWorkbench("PartWorkbench")
         FreeCADGui.updateGui()
@@ -131,7 +132,7 @@ class ProjectionOnSurfaceTestCases(unittest.TestCase):
         guiDocument = FreeCADGui.getDocument("ProjectionOnSurface")
         if FreeCADGui.Control.activeDialog(guiDocument):
             FreeCADGui.Control.closeDialog(guiDocument)
-        FreeCAD.closeDocument("ProjectionOnSurface")
+        close_document(FreeCAD.getDocument("ProjectionOnSurface"))
 
 
 class PartMirrorGuiTestCases(unittest.TestCase):
@@ -142,7 +143,7 @@ class PartMirrorGuiTestCases(unittest.TestCase):
         if FreeCADGui.Control.activeDialog():
             FreeCADGui.Control.closeDialog()
         FreeCADGui.Selection.clearSelection()
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
     def mirrorBoxWithLabel(self, label):
         if not FreeCAD.GuiUp:
@@ -150,7 +151,7 @@ class PartMirrorGuiTestCases(unittest.TestCase):
 
         box = self.Doc.addObject("Part::Box", "Box")
         box.Label = label
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         FreeCADGui.Selection.clearSelection()
         FreeCADGui.Selection.addSelection(self.Doc.Name, box.Name)
@@ -186,7 +187,7 @@ class SectionCutTestCases(unittest.TestCase):
         comp.Links = box
         grp = self.Doc.addObject("App::DocumentObjectGroup", "SectionCutX")
         grp.addObject(comp)
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         FreeCADGui.runCommand("Part_SectionCut")
         dw = findDockWidget("Section Cutting")
@@ -198,4 +199,4 @@ class SectionCutTestCases(unittest.TestCase):
             print("No section cutting panel found")
 
     def tearDown(self):
-        FreeCAD.closeDocument("SectionCut")
+        close_document(FreeCAD.getDocument("SectionCut"))

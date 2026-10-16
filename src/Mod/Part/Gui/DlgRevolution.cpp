@@ -53,6 +53,7 @@
 
 #include "DlgRevolution.h"
 #include "ui_DlgRevolution.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -507,7 +508,7 @@ void DlgRevolution::accept()
         }
 
         activeDoc->commitTransaction();
-        activeDoc->recompute();
+        PartGui::submitDocumentRecomputeOrReport(*activeDoc);
     }
     catch (Base::Exception& err) {
         QMessageBox::critical(
@@ -671,5 +672,4 @@ bool TaskRevolution::accept()
     widget->accept();
     return (widget->result() == QDialog::Accepted);
 }
-
 #include "moc_DlgRevolution.cpp"

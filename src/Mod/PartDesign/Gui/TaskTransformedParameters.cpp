@@ -47,6 +47,7 @@
 #include "TaskTransformedParameters.h"
 #include "TaskMultiTransformParameters.h"
 #include "ReferenceSelection.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 FC_LOG_LEVEL_INIT("PartDesign", true, true)
@@ -605,5 +606,4 @@ bool TaskDlgTransformedParameters::reject()
     parameter->exitSelectionMode();
     return TaskDlgFeatureParameters::reject();
 }
-
 #include "moc_TaskTransformedParameters.cpp"

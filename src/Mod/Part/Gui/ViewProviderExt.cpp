@@ -52,6 +52,8 @@
 #include <QMenu>
 #include <sstream>
 
+#include <Gui/SyntheticPropertyReplay.h>
+
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/details/SoFaceDetail.h>
 #include <Inventor/details/SoLineDetail.h>
@@ -66,11 +68,16 @@
 #include <Inventor/nodes/SoPolygonOffset.h>
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoShapeHints.h>
+#include <Inventor/fields/SoMFInt32.h>
+#include <Inventor/fields/SoMFVec3f.h>
+
+#include <cstdint>
 
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
 #include <Base/TimeInfo.h>
@@ -87,6 +94,7 @@
 #include <Mod/Part/App/Tools.h>
 
 #include "ViewProviderExt.h"
+#include "ViewProviderPresentationAdapter.h"
 #include "ViewProviderPartExtPy.h"
 #include "SoBrepEdgeSet.h"
 #include "SoBrepFaceSet.h"
@@ -447,7 +455,13 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
                 &ShapeAppearance
             );
             // The material has to be checked again (#0001736)
-            onChanged(&ShapeAppearance);
+            {
+                // This rechecks the existing appearance without assigning it.
+                // Keep virtual dispatch; only a Body's synthetic feature copy
+                // needs to be suppressed, including reentrant notifications.
+                Gui::SyntheticPropertyReplay replay(this, &ShapeAppearance);
+                onChanged(&ShapeAppearance);
+            }
             onChanged(&ShowPlacement);
         }
     }
@@ -1048,7 +1062,28 @@ void ViewProviderPartExt::unsetEdit(int ModNum)
     }
 }
 
-void ViewProviderPartExt::setupCoinGeometry(
+namespace
+{
+
+void clearCoinGeometry(
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset)
+{
+    coords->point.setNum(0);
+    norm->vector.setNum(0);
+    faceset->coordIndex.setNum(0);
+    faceset->partIndex.setNum(0);
+    lineset->coordIndex.setNum(0);
+    lineset->setEdgeMapping({});
+    nodeset->startIndex.setValue(0);
+}
+
+}  // namespace
+
+static void setupCoinGeometryUnchecked(
     TopoDS_Shape shape,
     SoCoordinate3* coords,
     SoBrepFaceSet* faceset,
@@ -1191,9 +1226,13 @@ void ViewProviderPartExt::setupCoinGeometry(
 
     // get the raw memory for fast fill up
     SbVec3f* verts = coords->point.startEditing();
+    Base::ScopeGuard finishVertices([&] { coords->point.finishEditing(); });
     SbVec3f* norms = norm->vector.startEditing();
+    Base::ScopeGuard finishNormals([&] { norm->vector.finishEditing(); });
     int32_t* index = faceset->coordIndex.startEditing();
+    Base::ScopeGuard finishFaces([&] { faceset->coordIndex.finishEditing(); });
     int32_t* parts = faceset->partIndex.startEditing();
+    Base::ScopeGuard finishParts([&] { faceset->partIndex.finishEditing(); });
 
     // preset the normal vector with null vector
     for (int i = 0; i < numNorms; i++) {
@@ -1461,18 +1500,13 @@ void ViewProviderPartExt::setupCoinGeometry(
     numLines = lineSetCoords.size();
     lineset->coordIndex.setNum(numLines);
     int32_t* lines = lineset->coordIndex.startEditing();
+    Base::ScopeGuard finishLines([&] { lineset->coordIndex.finishEditing(); });
 
     int l = 0;
     for (auto it = lineSetCoords.begin(); it != lineSetCoords.end(); ++it, l++) {
         lines[l] = *it;
     }
 
-    // end the editing of the nodes
-    coords->point.finishEditing();
-    norm->vector.finishEditing();
-    faceset->coordIndex.finishEditing();
-    faceset->partIndex.finishEditing();
-    lineset->coordIndex.finishEditing();
 
 #ifdef FC_DEBUG
     Base::Console().log(
@@ -1488,6 +1522,43 @@ void ViewProviderPartExt::setupCoinGeometry(
         numLines
     );
 #endif
+}
+
+// This entry point is also used by owner-thread presentation capture and previews.
+// Keep OCC failures inside the common helper, and never publish partial geometry.
+void ViewProviderPartExt::setupCoinGeometry(
+    TopoDS_Shape shape,
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset,
+    double deviation,
+    double angularDeflection,
+    bool normalsFromUV)
+{
+    try {
+        for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+            if (BRep_Tool::Surface(TopoDS::Face(faces.Current())).IsNull()) {
+                throw Standard_Failure("Face has no surface");
+            }
+        }
+        setupCoinGeometryUnchecked(
+            shape, coords, faceset, norm, lineset, nodeset,
+            deviation, angularDeflection, normalsFromUV);
+    }
+    catch (const Standard_Failure& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: " << error.GetMessageString());
+    }
+    catch (const std::exception& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: " << error.what());
+    }
+    catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        FC_ERR("Cannot compute Inventor representation: unknown C++ exception");
+    }
 }
 
 void ViewProviderPartExt::setupCoinGeometry(
@@ -1513,7 +1584,24 @@ void ViewProviderPartExt::setupCoinGeometry(
 
 void ViewProviderPartExt::updateVisual()
 {
-    TopoDS_Shape shape = getRenderedShape().getShape();
+    TopoDS_Shape shape;
+    try {
+        shape = getRenderedShape().getShape();
+    }
+    catch (const Standard_Failure& error) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
+        FC_ERR("Cannot obtain shape for display: " << error.GetMessageString());
+        return;
+    }
+    catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
+        FC_ERR("Cannot obtain shape for display");
+        return;
+    }
 
     if (!VisualTouched && lastRenderedShape.IsPartner(shape)) {
         // shape unchanged so do not rebuild geometry
@@ -1561,12 +1649,18 @@ void ViewProviderPartExt::updateVisual()
         VisualTouched = false;
     }
     catch (const Standard_Failure& e) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
         FC_ERR(
             "Cannot compute Inventor representation for the shape of "
             << pcObject->getFullName() << ": " << e.GetMessageString()
         );
     }
     catch (...) {
+        clearCoinGeometry(coords, faceset, norm, lineset, nodeset);
+        lastRenderedShape.Nullify();
+        VisualTouched = true;
         FC_ERR("Cannot compute Inventor representation for the shape of " << pcObject->getFullName());
     }
 
@@ -1606,4 +1700,87 @@ void ViewProviderPartExt::handleChangedPropertyName(
     else {
         Gui::ViewProviderGeometryObject::handleChangedPropertyName(reader, TypeName, PropName);
     }
+}
+
+Gui::ViewProviderPresentationClassification ViewProviderPartExt::presentationClassification() const
+{
+    return Gui::ViewProviderPresentationClassification::Adapted;
+}
+
+namespace
+{
+
+void appendCoinVec3Field(const SoMFVec3f& field, std::vector<float>& target)
+{
+    const int count = field.getNum();
+    target.reserve(target.size() + static_cast<std::size_t>(count) * 3U);
+    for (int index = 0; index < count; ++index) {
+        const SbVec3f& value = field[index];
+        target.push_back(value[0]);
+        target.push_back(value[1]);
+        target.push_back(value[2]);
+    }
+}
+
+void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& target)
+{
+    const int count = field.getNum();
+    target.reserve(target.size() + static_cast<std::size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        target.push_back(static_cast<std::uint32_t>(field[index]));
+    }
+}
+
+}  // namespace
+
+bool ViewProviderPartExt::capturePresentationRenderBuffer(
+    const Gui::ViewProviderPresentationCaptureRequest& request,
+    Gui::PresentationRenderBuffer& buffer) const
+{
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        return false;
+    }
+    buffer = Gui::PresentationRenderBuffer {};
+    buffer.stableObjectIdentity = request.stableObjectIdentity;
+    if (!pcObject) {
+        return !request.stableObjectIdentity.empty();
+    }
+
+    const TopoDS_Shape shape = getRenderedShape().getShape();
+    if (Part::Tools::isShapeEmpty(shape)) {
+        return !request.stableObjectIdentity.empty();
+    }
+
+    // Coin node destructors are protected — allocate with refcounting.
+    auto* tempCoords = new SoCoordinate3;
+    auto* tempFaces = new SoBrepFaceSet;
+    auto* tempNorm = new SoNormal;
+    auto* tempLines = new SoBrepEdgeSet;
+    auto* tempNodes = new SoBrepPointSet;
+    tempCoords->ref();
+    tempFaces->ref();
+    tempNorm->ref();
+    tempLines->ref();
+    tempNodes->ref();
+    ViewProviderPartExt::setupCoinGeometry(
+        shape,
+        tempCoords,
+        tempFaces,
+        tempNorm,
+        tempLines,
+        tempNodes,
+        Deviation.getValue(),
+        AngularDeflection.getValue(),
+        NormalsFromUV);
+
+    appendCoinVec3Field(tempCoords->point, buffer.vertices);
+    appendCoinVec3Field(tempNorm->vector, buffer.normals);
+    appendCoinInt32Field(tempFaces->coordIndex, buffer.indices);
+    appendCoinInt32Field(tempFaces->partIndex, buffer.topology);
+    tempNodes->unref();
+    tempLines->unref();
+    tempNorm->unref();
+    tempFaces->unref();
+    tempCoords->unref();
+    return !buffer.vertices.empty() || !request.stableObjectIdentity.empty();
 }

@@ -547,11 +547,13 @@ def makeWindowPreset(windowtype, width, height, h1, h2, h3, w1, w2, o1, o2, plac
         import Arch
 
         default = makeSketch(windowtype, width, height, h1, h2, h3, w1, w2, o1, o2)
-        FreeCAD.ActiveDocument.recompute()
+        import ArchCommands
+
+        ArchCommands.recompute_active_document()
         if default:
             if placement:
                 default[0].Placement = placement
-                FreeCAD.ActiveDocument.recompute()
+                ArchCommands.recompute_active_document()
             obj = Arch.makeWindow(default[0], width, height, default[1])
             obj.Preset = WindowPresets.index(windowtype) + 1
             obj.Frame = w2
@@ -563,7 +565,7 @@ def makeWindowPreset(windowtype, width, height, h1, h2, h3, w1, w2, o1, o2, plac
             elif "opening" in windowtype.lower():
                 obj.IfcType = "Opening Element"
                 obj.Label = translate("Arch", "Opening")
-            FreeCAD.ActiveDocument.recompute()
+            ArchCommands.recompute_active_document()
             return obj
 
     print("Arch: Unknown window type")

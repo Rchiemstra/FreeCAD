@@ -867,3 +867,36 @@ TEST_F(RecomputeHandleTest, mergingANestedRemovalOfANewlyAddedObjectDestroysItWi
     }
     EXPECT_EQ(_document->getObject(objectName.c_str()), nullptr);
 }
+
+
+TEST_F(RecomputeHandleTest, nativeErrorSnapshotSurvivesNestedRecomputeAndReplay)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("NestedColumn");
+    feature->Column.setValue("B");
+    _document->recompute();
+    const int before = feature->Value.getValue();
+    auto* error = _document->addObject<App::FeatureTest>("ExistingError");
+    error->ExceptionType.setValue(1);
+    _document->recompute();
+    error->purgeTouched();
+    const std::string diagnostic = _document->getErrorDescription(error);
+    const auto status = error->getStatus();
+    _document->clearUndos();
+    _document->openTransaction("nested recompute with existing error");
+    feature->Column.setValue("E");
+    ASSERT_EQ(_document->recompute({feature}), 1);
+    const int after = feature->Value.getValue();
+    ASSERT_NE(before, after);
+    _document->commitTransaction();
+    ASSERT_EQ(_document->getAvailableUndos(), 1);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(_document->undo());
+        EXPECT_EQ(feature->Value.getValue(), before);
+        EXPECT_STREQ(_document->getErrorDescription(error), diagnostic.c_str());
+        EXPECT_EQ(error->getStatus(), status);
+        ASSERT_TRUE(_document->redo());
+        EXPECT_EQ(feature->Value.getValue(), after);
+        EXPECT_STREQ(_document->getErrorDescription(error), diagnostic.c_str());
+        EXPECT_EQ(error->getStatus(), status);
+    }
+}

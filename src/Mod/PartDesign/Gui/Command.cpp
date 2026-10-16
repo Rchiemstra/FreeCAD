@@ -73,7 +73,7 @@
 
 // TODO Remove this header after fixing code so it won;t be needed here (2015-10-20, Fat-Zer)
 #include "ui_DlgReference.h"
-
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 FC_LOG_LEVEL_INIT("PartDesign", true, true)
 
 using namespace std;
@@ -175,10 +175,7 @@ void UnifiedDatumCommand(Gui::Command& cmd, Base::Type type, std::string name)
                     );
                 }
             }
-            cmd.doCommand(
-                Gui::Command::Doc,
-                "App.activeDocument().recompute()"
-            );  // recompute the feature based on its references
+            PartGui::submitActiveDocumentRecomputeOrReport(nullptr);  // recompute the feature based on its references
             PartDesignGui::setEdit(Feat, pcActiveBody);
         }
         else {
@@ -665,7 +662,7 @@ static void finishFeature(
         cmd->updateActive();
     }
     else {
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 
     auto base = dynamic_cast<PartDesign::Feature*>(feature);
@@ -921,7 +918,7 @@ void prepareProfileBased(
         // profile then make sure that it is recomputed when cancelling the operation
         // otherwise it might be impossible to see that it's broken.
         if (feature->isTouched()) {
-            feature->recomputeFeature();
+            PartGui::submitDocumentRecomputeOrReport(*feature);
         }
 
         std::string FeatName = cmd->getUniqueObjectName(which.c_str(), pcActiveBody);

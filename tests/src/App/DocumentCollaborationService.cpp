@@ -9,14 +9,19 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/DocumentCommitCoordinator.h"
+#include "App/DocumentExecutionLane.h"
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
+#include "App/Expression.h"
+#include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
+#include "App/private/PreparedLabelReferenceUpdates.h"
 #include <src/App/InitApplication.h>
 
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -49,9 +54,24 @@ void publishPreReservationWildcard()
 namespace App::Internal
 {
 
+class LabelReferenceUpdatesTestAccess
+{
+public:
+    static void finalization(void (*hook)(Document&))
+    { PreparedLabelReferenceUpdates::finalizationTestHook.store(hook); }
+    static void rewrite(void (*hook)())
+    { PreparedLabelReferenceUpdates::rewriteTestHook.store(hook); }
+};
+
 class DocumentCommitCoordinatorTestAccess
 {
 public:
+    static CollaborationRollbackResult rollback(Document& document)
+    {
+        DocumentCommitCoordinator coordinator(document);
+        return coordinator.rollbackNativeCommitTransaction(false);
+    }
+
     static void setPostReservationHook(void (*hook)())
     {
         DocumentCommitCoordinator::_postReservationTestHook.store(
@@ -130,7 +150,27 @@ public:
         return document.commitCollaborationCommitTransaction(true);
     }
 
-    static std::string grantDiagnostic(Document& document)
+    static CollaborationRollbackResult failedStabilization(
+        Document& document, DocumentObject& target, bool clearError = false)
+    {
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            if (clearError) {
+                auto* existing = static_cast<FeatureTest*>(document.getObject("ExistingError"));
+                existing->ExceptionType.setValue(0);
+                auto derived = document.openCollaborationDerivedRecomputeGrant();
+                document.recompute({existing});
+            }
+            target.Label.setValue("Transient label");
+            document.applyCollaborationRecomputeFailure(target, "transient mutation error");
+            const auto result = DocumentCommitCoordinatorTestAccess::rollback(document);
+            endBoundary(document);
+            return result;
+        });
+    }
+
+    /** Probe grant on the calling thread (no lane hop). */
+    static std::string grantDiagnosticOnCallingThread(Document& document)
     {
         try {
             auto grant = document.openCollaborationStructuralMutationGrant();
@@ -141,66 +181,94 @@ public:
         }
     }
 
+    /** Probe grant on the document owner thread (lane when present). */
+    static std::string grantDiagnostic(Document& document)
+    {
+        return onOwner(document, [&] { return grantDiagnosticOnCallingThread(document); });
+    }
+
     static std::string withoutTransaction(Document& document)
     {
-        document.beginCollaborationCommitNotificationBarrier();
-        document.setCollaborationRevisionPublicationSuppressed(true);
-        const auto diagnostic = grantDiagnostic(document);
-        document.setCollaborationRevisionPublicationSuppressed(false);
-        document.finishCollaborationCommitNotificationBarrier(false);
-        return diagnostic;
+        return onOwner(document, [&] {
+            document.beginCollaborationCommitNotificationBarrier();
+            document.setCollaborationRevisionPublicationSuppressed(true);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.setCollaborationRevisionPublicationSuppressed(false);
+            document.finishCollaborationCommitNotificationBarrier(false);
+            return diagnostic;
+        });
     }
 
     static std::string withoutRevisionSuppression(Document& document)
     {
-        beginBoundary(document, false);
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, false);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string withForeignStableRead(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationStableReadCapture();
-        const auto diagnostic = grantDiagnostic(document);
-        document.finishCollaborationStableReadCapture();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationStableReadCapture();
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.finishCollaborationStableReadCapture();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string duringAtomicPresentationAudit(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationAtomicPresentationAudit({});
-        const auto diagnostic = grantDiagnostic(document);
-        document.endCollaborationAtomicPresentationAudit();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationAtomicPresentationAudit({});
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.endCollaborationAtomicPresentationAudit();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string onPoisonedDocument(Document& document)
     {
-        beginBoundary(document, true);
-        document.poisonCollaborationCommit("test poison");
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.poisonCollaborationCommit("test poison");
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string reentrant(Document& document)
     {
-        beginBoundary(document, true);
-        std::string diagnostic;
-        {
-            auto grant = document.openCollaborationStructuralMutationGrant();
-            diagnostic = grantDiagnostic(document);
-        }
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            std::string diagnostic;
+            {
+                auto grant = document.openCollaborationStructuralMutationGrant();
+                diagnostic = grantDiagnosticOnCallingThread(document);
+            }
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
 private:
+    template<typename Fn>
+    static auto onOwner(Document& document, Fn&& fn) -> decltype(fn())
+    {
+        if (DocumentExecutionLane* lane = document.executionLane();
+            lane && !lane->isOwnerThread()) {
+            return lane->dispatchToOwner(std::forward<Fn>(fn));
+        }
+        return std::forward<Fn>(fn)();
+    }
+
     static void beginBoundary(Document& document, bool suppressRevisions)
     {
         document.beginCollaborationCommitNotificationBarrier();
@@ -426,6 +494,13 @@ public:
         _changed.notify_all();
     }
 
+    void reset()
+    {
+        std::lock_guard lock(_mutex);
+        _entered = false;
+        _released = false;
+    }
+
 private:
     static inline HookBarrier* Active {nullptr};
     std::mutex _mutex;
@@ -619,10 +694,11 @@ public:
         task->changed.notify_all();
     }
 
-    void waitUntilQueued()
+    [[nodiscard]] bool waitUntilQueued(
+        std::chrono::milliseconds timeout = std::chrono::seconds(5))
     {
         std::unique_lock lock(_mutex);
-        _changed.wait(lock, [&] { return !_tasks.empty(); });
+        return _changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); });
     }
 
 private:
@@ -713,6 +789,341 @@ protected:
 
 static_assert(!std::is_constructible_v<DocumentCollaborationService, Document&>);
 static_assert(!std::is_copy_constructible_v<DocumentCollaborationService>);
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationCompatibilityHappyPathAppliesExactlyOnce)
+{
+    int calls = 0;
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto before = _document->collaborationRevisions().current(wildcard);
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            ++calls;
+            _target->Label.setValue("After");
+        });
+    EXPECT_EQ(result.status, DocumentCommitStatus::Committed) << result.message;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersCompatibilityWithoutApplyingThenCommitsOnce)
+{
+    std::atomic_int calls {0};
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto before = _document->collaborationRevisions().current(wildcard);
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before);
+    refresh.reset();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersPreexistingEagerRecomputeBeforeCompatibility)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executionsBefore = target->ExecCount.getValue();
+    target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    std::atomic_int calls {0};
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    EXPECT_EQ(target->ExecCount.getValue(), executionsBefore);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        Base::PyGILStateLocker gil;
+        return _document->collaborationService().sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshDefersPreparedEditAndPreservesPayload)
+{
+    auto prepared = prepare("presentation-deferral", "After", "record-thread");
+    {
+        std::lock_guard lock(InstrumentationMutex);
+        ApplyThreads.clear();
+    }
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    refresh.reset();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(committed.operationId, "presentation-deferral");
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    std::lock_guard lock(InstrumentationMutex);
+    ASSERT_EQ(ApplyThreads.size(), 1U);
+    EXPECT_EQ(ApplyThreads.front(), _document->executionLane()->ownerThreadId());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshRevalidatesSessionCancellationBeforePreparedApply)
+{
+    auto prepared = prepare("presentation-cancel", "Must Not Apply");
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "refresh cancelled"));
+    refresh.reset();
+    const auto cancelled = result.get();
+    EXPECT_EQ(cancelled.status, DocumentCommitStatus::Cancelled) << cancelled.message;
+    EXPECT_EQ(cancelled.message, "refresh cancelled");
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshRevalidatesRevisionBeforePreparedApply)
+{
+    auto prepared = prepare("presentation-conflict", "Must Not Apply");
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    _target->Label.setValue("Intervening change");
+    refresh.reset();
+    const auto conflict = result.get();
+    EXPECT_EQ(conflict.status, DocumentCommitStatus::Conflict) << conflict.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Intervening change");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshOwnerReentryReturnsBusyWithoutApplying)
+{
+    int calls = 0;
+    const auto result = _document->executionLane()->dispatchToOwner([&] {
+        LivePresentationRefreshScope refresh;
+        EXPECT_TRUE(refresh.acquired());
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] { ++calls; });
+    });
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationUnrelatedTransactionBusyRemainsTerminal)
+{
+    _document->openTransaction("caller transaction");
+    int calls = 0;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { ++calls; });
+    _document->abortTransaction();
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationNestedSerializedCompatibilityNeverWaitsWithOuterLock)
+{
+    int calls = 0;
+    DocumentCommitResult nested;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().serializeCompatibilityCallback([&] {
+            nested = _document->collaborationService().commitCompatibilityMutation(
+                {}, [&] { ++calls; });
+        });
+    });
+    started.wait();
+    // A nested call cannot drop the serializer's recursive lock depth, so
+    // admission must return Busy rather than await the foreign refresh.
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    const auto serialized = result.get();
+    EXPECT_TRUE(serialized.committed()) << serialized.message;
+    EXPECT_EQ(nested.status, DocumentCommitStatus::Busy) << nested.message;
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationAtomicEagerSettlementReleasesGilAndCommitMutex)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executionsBefore = target->ExecCount.getValue();
+    const auto visibilityBefore = target->Visibility.getValue();
+    target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    auto& service = _document->collaborationService();
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+    std::atomic_int calls {0};
+    std::optional<CollaborationAtomicCommitPointResult> committedStep;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+            service,
+            [&] {
+                ++calls;
+                target->Visibility.setValue(!visibilityBefore);
+                committedStep.emplace(
+                    Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+            },
+            allowedWrites);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        Base::PyGILStateLocker gil;
+        return service.sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    const auto committed = result.get();
+    EXPECT_TRUE(committed.committed()) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    ASSERT_TRUE(committedStep.has_value());
+    EXPECT_TRUE(committedStep->committed) << committedStep->diagnostic;
+    EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+    EXPECT_EQ(target->Visibility.getValue(), !visibilityBefore);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationForeignDocumentCompatibilityHappyPathCommitsOnce)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("foreignCompatibility");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto* target = foreign->addObject<FeatureTest>("ForeignTarget");
+    foreign->recompute();
+    int calls = 0;
+    const auto result = _document->executionLane()->dispatchToOwner([&] {
+        return foreign->collaborationService().commitCompatibilityMutation({}, [&] {
+            ++calls;
+            target->Label.setValue("After");
+        });
+    });
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(target->Label.getStrValue(), "After");
+    App::GetApplication().closeDocument(name.c_str());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationNestedForeignDocumentCompatibilityReturnsBusyBeforeDispatch)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("foreignSerializedCompatibility");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto* target = foreign->addObject<FeatureTest>("ForeignTarget");
+    target->Label.setValue("Before");
+    foreign->recompute();
+    int calls = 0;
+    DocumentCommitResult nested;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().serializeCompatibilityCallback([&] {
+            nested = foreign->collaborationService().commitCompatibilityMutation(
+                {}, [&] {
+                    ++calls;
+                    target->Label.setValue("Must Not Apply");
+                });
+        });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        return _document->collaborationService().sessionStatus(_session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    auto gilAccess = std::async(std::launch::async, [] {
+        Base::PyGILStateLocker gil;
+        return PyGILState_Check() != 0;
+    });
+    EXPECT_EQ(gilAccess.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(gilAccess.get());
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    EXPECT_TRUE(result.get().committed());
+    EXPECT_EQ(nested.status, DocumentCommitStatus::Busy) << nested.message;
+    EXPECT_FALSE(nested.presentationAdmissionDeferred);
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(target->Label.getStrValue(), "Before");
+    App::GetApplication().closeDocument(name.c_str());
+}
 
 TEST_F(DocumentCollaborationServiceTest,
        compatibilityPostconditionRunsAfterRecomputeBeforeCommit)
@@ -924,7 +1335,6 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
         &HookBarrier::invoke);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
         &HookBarrier::releaseActive);
-    BlockingTestDispatcher dispatcher;
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -932,22 +1342,24 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        return;
+    }
 
-    bool hookEntered = false;
     bool closeResult = true;
     std::thread closeThread([&] {
-        hookEntered = barrier.waitUntilEntered();
-        if (hookEntered) {
-            closeResult = App::GetApplication().closeDocument(_documentName.c_str());
-        }
+        closeResult = App::GetApplication().closeDocument(_documentName.c_str());
     });
-    dispatcher.runOne();
     closeThread.join();
     Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
 
-    EXPECT_TRUE(hookEntered);
     EXPECT_TRUE(closeResult);
     static_cast<void>(preparationFuture.get());
     if (closeResult) {
@@ -957,7 +1369,14 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
 
 TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCallback)
 {
-    BlockingTestDispatcher dispatcher;
+    // Install MainThreadSignal hooks so the test thread is treated as the GUI
+    // owner: close must reject while a collaboration admission is held.
+    // prepareEditAsync hops through the document execution lane; use the
+    // post-submit hook as the pin barrier instead of waiting for a
+    // MainThreadSignal queue that the lane path never fills.
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(
+        &HookBarrier::invoke);
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -965,11 +1384,22 @@ TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCa
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        return;
+    }
 
-    EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    {
+        BlockingTestDispatcher dispatcher;
+        EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    }
 
-    dispatcher.runOne();
+    barrier.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     const auto executionId = preparationFuture.get();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     std::optional<PreparedEditExecutionSnapshot> status;
@@ -1317,7 +1747,8 @@ TEST_F(DocumentCollaborationServiceTest,
                   .pollPublications(cursor, 0)
                   .latestSequence,
               sequenceBefore);
-    EXPECT_EQ(_document->getAvailableUndos(), undosBefore + 1);
+    // Successful admission without a change must not create an undo step.
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
     EXPECT_TRUE(_document->getMutationReadiness().ready);
 }
 
@@ -1584,13 +2015,19 @@ TEST_F(DocumentCollaborationServiceTest, cancellationRejectsPreparedCommit)
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmission)
 {
     auto prepared = prepare("queued-cancellation", "Must Not Apply");
-    BlockingTestDispatcher dispatcher;
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    // cancelEdit also constructs LifecyclePin; clear the blocking hook first or the
+    // test thread re-enters HookBarrier::invoke while the owner is already waiting
+    // for release (deadlock). Cancel still wins: session is marked before release.
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "queued"));
-    dispatcher.runOne();
+    barrier.release();
 
     const auto result = future.get();
     EXPECT_EQ(result.status, DocumentCommitStatus::Cancelled);
@@ -1599,31 +2036,40 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmis
 
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadAdmission)
 {
-    BlockingTestDispatcher dispatcher;
-
+    // beginEditSession also pins; open sessions before installing the blocking hook or
+    // the test thread deadlocks inside beginEditSession waiting for its own release.
     const auto snapshotSession =
         _document->collaborationService().beginEditSession("queued snapshot");
+    const auto prepareSession =
+        _document->collaborationService().beginEditSession("queued preparation");
+    const auto preparedIntent = intent("Must Not Prepare");
+
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             snapshotSession.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(snapshotSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
     EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
 
-    const auto prepareSession =
-        _document->collaborationService().beginEditSession("queued preparation");
-    const auto preparedIntent = intent("Must Not Prepare");
+    barrier.reset();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto prepareFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEdit(prepareSession.sessionId(),
                                                              "queued-preparation",
                                                              preparedIntent,
                                                              "native-test");
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(prepareSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
     EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
 }
 
@@ -1739,7 +2185,7 @@ TEST_F(DocumentCollaborationServiceTest, structuralGrantPreconditionsHaveDistinc
               std::string::npos);
 
     auto ownerDiagnostic = std::async(std::launch::async, [&] {
-        return Access::grantDiagnostic(*_document);
+        return Access::grantDiagnosticOnCallingThread(*_document);
     });
     EXPECT_NE(ownerDiagnostic.get().find("owner thread"), std::string::npos);
 }
@@ -1859,25 +2305,29 @@ TEST_F(DocumentCollaborationServiceTest, reentrantObserverCommitReturnsBusy)
     EXPECT_EQ(_target->Label.getStrValue(), "Outer");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerCommitIsRejectedOffOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, offOwnerCommitSucceedsViaExecutionLane)
 {
+    // Documents own a DocumentExecutionLane; off-owner commitEdit hops to the
+    // owner instead of returning Unsupported (pre-lane MainThreadSignal-only path).
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto prepared = prepare("off-owner", "Worker");
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
 
     const auto result = future.get();
-    EXPECT_EQ(result.status, DocumentCommitStatus::Unsupported);
-    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Worker");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRejected)
+TEST_F(DocumentCollaborationServiceTest, offOwnerSnapshotAndPreparationSucceedViaExecutionLane)
 {
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             _session.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(snapshotFuture.get()));
 
     const auto preparedIntent = intent("Worker");
     auto prepareFuture = std::async(std::launch::async, [&] {
@@ -1886,12 +2336,19 @@ TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRe
                                                              preparedIntent,
                                                              "native-test");
     });
-    EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(prepareFuture.get()));
     EXPECT_EQ(_target->Label.getStrValue(), "Before");
 }
 
-TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, laneSerializesConcurrentAdmissionsOnOwnerThread)
 {
+    // invokeCollaborationOnDocumentThread prefers the execution lane over
+    // MainThreadSignal hooks, so BlockingTestDispatcher::runOne would deadlock
+    // waiting for a queue that never fills.
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto ownerId = lane->ownerThreadId();
+
     auto* other = _document->addObject<FeatureTest>("Other");
     other->Label.setValue("BeforeOther");
     _document->recompute();
@@ -1902,26 +2359,23 @@ TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwn
         ApplyThreads.clear();
     }
 
-    BlockingTestDispatcher dispatcher;
     auto firstFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), first);
     });
     auto secondFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), second);
     });
-    dispatcher.runOne();
-    dispatcher.runOne();
 
     const auto firstResult = firstFuture.get();
     const auto secondResult = secondFuture.get();
-    EXPECT_TRUE(firstResult.committed());
-    EXPECT_TRUE(secondResult.committed());
+    EXPECT_TRUE(firstResult.committed()) << firstResult.message;
+    EXPECT_TRUE(secondResult.committed()) << secondResult.message;
     EXPECT_EQ(_target->Label.getStrValue(), "First");
     EXPECT_EQ(other->Label.getStrValue(), "Second");
     std::lock_guard lock(InstrumentationMutex);
     ASSERT_EQ(ApplyThreads.size(), 2U);
-    EXPECT_EQ(ApplyThreads[0], std::this_thread::get_id());
-    EXPECT_EQ(ApplyThreads[1], std::this_thread::get_id());
+    EXPECT_EQ(ApplyThreads[0], ownerId);
+    EXPECT_EQ(ApplyThreads[1], ownerId);
 }
 
 TEST_F(DocumentCollaborationServiceTest,
@@ -2075,4 +2529,684 @@ TEST_F(DocumentCollaborationServiceTest,
     EXPECT_NE(privateCommit->diagnostic.find("undeclared"), std::string::npos);
     EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
     EXPECT_EQ(other->Visibility.getValue(), otherBefore);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameWithoutReferencesIsOneUndoStep)
+{
+    const auto undos = _document->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_document->getAvailableUndos(), undos + 1);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameUpdatesExpressionInOneUndoStep)
+{
+    auto* dependent = _document->addObject<FeatureTest>("Dependent");
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto undos = _document->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    const auto expression = [&] {
+        return dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+            .expression->toString();
+    };
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(expression().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(_document->getAvailableUndos(), undos + 1);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(expression().find("<<Before>>"), std::string::npos);
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(expression().find("<<After>>"), std::string::npos);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameUpdatesSavedExternalExpression)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    const auto sourceFile = std::string("/tmp/") + _documentName + ".FCStd";
+    const auto dependentFile = std::string("/tmp/") + name + ".FCStd";
+    ASSERT_TRUE(_document->saveAs(sourceFile.c_str()));
+    ASSERT_TRUE(foreign->saveAs(dependentFile.c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    const auto revision = foreign->collaborationRevisions().current(
+        DocumentRevisionKey::unknownModelMutation());
+    bool observed = false;
+    auto connection = foreign->signalChangedObject.connect(
+        [&](const DocumentObject&, const Property&) { observed = true; });
+    const auto result = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("After"); }, [&] { return !observed; });
+    connection.disconnect();
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_TRUE(observed);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(foreign->collaborationRevisions().current(
+                  DocumentRevisionKey::unknownModelMutation()), revision + 1);
+    EXPECT_EQ(foreign->getTransactionID(true), _document->getTransactionID(true));
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameExternalEffectsRollbackWithSource)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelRollbackDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    ASSERT_TRUE(_document->saveAs((std::string("/tmp/") + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs((std::string("/tmp/") + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    const auto undos = foreign->getAvailableUndos();
+    const auto revision = foreign->collaborationRevisions().current(
+        DocumentRevisionKey::unknownModelMutation());
+    const auto result = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("After"); }, [] { return false; });
+    EXPECT_EQ(result.status, DocumentCommitStatus::PostconditionFailed) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Before>>"), std::string::npos);
+    EXPECT_EQ(foreign->getAvailableUndos(), undos);
+    EXPECT_EQ(foreign->collaborationRevisions().current(
+                  DocumentRevisionKey::unknownModelMutation()), revision);
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenameRefusesBusyExternalOwnerBeforeItsMutation)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("LabelBusyDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    ASSERT_TRUE(_document->saveAs((std::string("/tmp/") + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs((std::string("/tmp/") + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, _documentName + "#<<Before>>.Float + 1"));
+    foreign->recompute();
+    foreign->openTransaction("Keep this pending edit");
+    dependent->String.setValue("Pending edit");
+    const auto undos = foreign->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("has active work"), std::string::npos);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Before>>"), std::string::npos);
+    EXPECT_EQ(dependent->String.getStrValue(), "Pending edit");
+    EXPECT_EQ(foreign->getAvailableUndos(), undos);
+    foreign->abortTransaction();
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRenamePreparedOperationPublishesReferenceEffects)
+{
+    auto* dependent = _document->addObject<FeatureTest>("Dependent");
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+                            Expression::parse(dependent, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto revision = _document->collaborationRevisions().current(wildcard);
+    auto prepared = prepare("rename-with-reference", "After");
+    const auto result = _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    ASSERT_TRUE(result.committed()) << result.message;
+    EXPECT_GT(_document->collaborationRevisions().current(wildcard), revision);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+}
+
+namespace
+{
+class LabelGroupRegressionTest: public DocumentCollaborationServiceTest
+{
+protected:
+    void SetUp() override
+    {
+        DocumentCollaborationServiceTest::SetUp();
+        ASSERT_TRUE(_document->saveAs(("/tmp/" + _documentName + ".FCStd").c_str()));
+        for (int i = 0; i < 2; ++i) {
+            auto name = App::GetApplication().getUniqueDocumentName("LabelGroupDependent");
+            auto* doc = App::GetApplication().newDocument(name.c_str());
+            documents.push_back(doc);
+            ASSERT_TRUE(doc->saveAs(("/tmp/" + name + ".FCStd").c_str()));
+            auto* object = doc->addObject<FeatureTest>("Dependent");
+            for (const char* prop : {"Float", "Integer"}) {
+                object->setExpression(ObjectIdentifier::parse(object, prop),
+                    Expression::parse(object, _documentName + "#<<Before>>.Float + 1"));
+            }
+            doc->recompute();
+        }
+        documents.insert(documents.begin(), _document);
+        for (auto* doc : documents) {
+            undos.push_back(doc->getAvailableUndos());
+            redos.push_back(doc->getAvailableRedos());
+            revisions.push_back(doc->collaborationRevisions().current(
+                DocumentRevisionKey::unknownModelMutation()));
+            sequences.push_back(publicationSequence(*doc));
+        }
+    }
+    void TearDown() override
+    {
+        Internal::LabelReferenceUpdatesTestAccess::finalization(nullptr);
+        Internal::LabelReferenceUpdatesTestAccess::rewrite(nullptr);
+        for (std::size_t i = 1; i < documents.size(); ++i) {
+            App::GetApplication().closeDocument(documents[i]->getName());
+        }
+        DocumentCollaborationServiceTest::TearDown();
+    }
+    void expectModel(const char* label)
+    {
+        EXPECT_EQ(_target->Label.getStrValue(), label);
+        for (std::size_t i = 1; i < documents.size(); ++i) {
+            auto* object = documents[i]->getObject("Dependent");
+            for (const char* prop : {"Float", "Integer"}) {
+                EXPECT_NE(object->getExpression(ObjectIdentifier::parse(object, prop))
+                              .expression->toString().find(std::string("<<") + label + ">>"),
+                          std::string::npos);
+            }
+        }
+    }
+    static DocumentPublicationSequence publicationSequence(Document& doc)
+    {
+        const auto identity = doc.collaborationRevisions().documentIdentity().value();
+        return doc.collaborationRevisions().pollPublications(
+            {identity.documentInstanceId, identity.lifecycleEpoch, 0}, 0).latestSequence;
+    }
+    void expectUnchanged()
+    {
+        expectModel("Before");
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+            EXPECT_EQ(publicationSequence(*documents[i]), sequences[i]);
+            EXPECT_EQ(documents[i]->collaborationRevisions().current(
+                DocumentRevisionKey::unknownModelMutation()), revisions[i]);
+        }
+    }
+    std::vector<Document*> documents;
+    std::vector<unsigned int> undos, redos;
+    std::vector<DocumentRevision> revisions;
+    std::vector<DocumentPublicationSequence> sequences;
+};
+}
+
+TEST_F(LabelGroupRegressionTest, crossDocumentRenameUndoRedoRestoresEveryHistory)
+{
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+    }
+    ASSERT_TRUE(_document->undo());
+    expectModel("Before");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+    }
+    // Start redo at a dependent: either end must find the whole group.
+    ASSERT_GT(documents.back()->getAvailableRedos(), 0);
+    ASSERT_TRUE(documents.back()->redo());
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+    }
+}
+
+// Round 27: the source's own expression also participates in Label replay.
+TEST_F(LabelGroupRegressionTest, localAndExternalReferencesRedoFromSource)
+{
+    auto* local = _document->addObject<FeatureTest>("LocalDependent");
+    local->setExpression(ObjectIdentifier::parse(local, "Float"),
+                         Expression::parse(local, "<<Before>>.Float + 1"));
+    _document->recompute();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        expectModel("After");
+        EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                      .expression->toString().find("<<After>>"), std::string::npos);
+        ASSERT_TRUE(_document->undo());
+        expectModel("Before");
+        EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                      .expression->toString().find("<<Before>>"), std::string::npos);
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+        }
+        ASSERT_TRUE(_document->redo());
+        expectModel("After");
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+            EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+        }
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, labelRedoWithSourceBeforeDependent)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("zzzLabelDependent");
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto close = Base::ScopeGuard([&] { App::GetApplication().closeDocument(name.c_str()); });
+    auto* dependent = foreign->addObject<FeatureTest>("Dependent");
+    auto* local = _document->addObject<FeatureTest>("LocalDependent");
+    _target->Label.setValue("Target");
+    ASSERT_TRUE(_document->saveAs(("/tmp/" + _documentName + ".FCStd").c_str()));
+    ASSERT_TRUE(foreign->saveAs(("/tmp/" + name + ".FCStd").c_str()));
+    dependent->setExpression(ObjectIdentifier::parse(dependent, "Float"),
+        Expression::parse(dependent, _documentName + "#<<Target>>.Float + 1"));
+    local->setExpression(ObjectIdentifier::parse(local, "Float"),
+        Expression::parse(local, "<<Target>>.Float + 1"));
+    _document->recompute();
+    foreign->recompute();
+    const auto sourceUndos = _document->getAvailableUndos();
+    const auto foreignUndos = foreign->getAvailableUndos();
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_TRUE(_document->undo());
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<Target>>"), std::string::npos);
+    EXPECT_EQ(foreign->getAvailableUndos(), foreignUndos);
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_NE(local->getExpression(ObjectIdentifier::parse(local, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_NE(dependent->getExpression(ObjectIdentifier::parse(dependent, "Float"))
+                  .expression->toString().find("<<After>>"), std::string::npos);
+    EXPECT_EQ(_document->getAvailableUndos(), sourceUndos + 1);
+    EXPECT_EQ(foreign->getAvailableUndos(), foreignUndos + 1);
+    EXPECT_EQ(_document->getAvailableRedos(), 0);
+    EXPECT_EQ(foreign->getAvailableRedos(), 0);
+}
+
+TEST_F(LabelGroupRegressionTest, readOnlyCompatibilityCommitPreservesGroupedRedo)
+{
+    const auto renamed = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(renamed.committed()) << renamed.message;
+    ASSERT_TRUE(_document->undo());
+    const auto inspected = documents.back()->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+            EXPECT_GT(documents.back()->getAvailableUndos(), 0);
+        });
+    ASSERT_TRUE(inspected.committed()) << inspected.message;
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i]);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i] + 1);
+    }
+    ASSERT_TRUE(_document->redo());
+    expectModel("After");
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        EXPECT_EQ(documents[i]->getAvailableUndos(), undos[i] + 1);
+        EXPECT_EQ(documents[i]->getAvailableRedos(), redos[i]);
+    }
+}
+
+// Review regressions: branching must retire the complete Label history group.
+class LabelBranchRegressionTest: public LabelGroupRegressionTest,
+                                public ::testing::WithParamInterface<bool>
+{};
+
+TEST_P(LabelBranchRegressionTest, realBranchInvalidatesEveryRedo)
+{
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); }).committed());
+    ASSERT_TRUE(_document->undo());
+    auto* branch = GetParam() ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(branch->getObject(
+        GetParam() ? "Dependent" : "Target"));
+    ASSERT_TRUE(branch->collaborationService().commitCompatibilityMutation(
+        {}, [&] { object->String.setValue("New branch"); }).committed());
+    for (auto* doc : documents) {
+        EXPECT_EQ(doc->getAvailableRedos(), 0u);
+        EXPECT_FALSE(doc->redo());
+    }
+    expectModel("Before");
+}
+
+TEST_P(LabelBranchRegressionTest, missingMemberRefusesReplayBeforeAnyMutation)
+{
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); }).committed());
+    if (GetParam()) {
+        ASSERT_TRUE(_document->undo());
+    }
+    documents.back()->clearUndos();
+    // Explicit transaction IDs must enforce membership too.
+    const int id = _document->getTransactionID(!GetParam());
+    if (GetParam()) {
+        // Clearing one member's redo invalidates the complete group.
+        for (auto* doc : documents) { EXPECT_EQ(doc->getAvailableRedos(), 0u); }
+        EXPECT_FALSE(_document->redo(id));
+    }
+    else {
+        EXPECT_THROW(static_cast<void>(_document->undo(id)), Base::RuntimeError);
+    }
+    expectModel(GetParam() ? "Before" : "After");
+}
+
+TEST_P(LabelBranchRegressionTest, explicitRangeCannotSplitAnIntermediateGroup)
+{
+    auto* target = static_cast<FeatureTest*>(_target);
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { target->String.setValue("Before group"); }).committed());
+    const int beforeId = _document->getTransactionID(true);
+    for (auto* doc : documents) { doc->recompute(); }
+    const auto renamed = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(renamed.committed()) << renamed.message;
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { target->String.setValue("After group"); }).committed());
+    const int afterId = _document->getTransactionID(true);
+    for (auto* doc : documents) { doc->recompute(); }
+    if (GetParam()) {
+        ASSERT_TRUE(_document->undo());
+        ASSERT_TRUE(_document->undo());
+        ASSERT_TRUE(_document->undo());
+        const auto before = target->String.getStrValue();
+        EXPECT_THROW(static_cast<void>(_document->redo(afterId)), Base::RuntimeError);
+        EXPECT_EQ(target->String.getStrValue(), before);
+        expectModel("Before");
+    }
+    else {
+        EXPECT_THROW(static_cast<void>(_document->undo(beforeId)), Base::RuntimeError);
+        EXPECT_EQ(target->String.getStrValue(), "After group");
+        expectModel("After");
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(SourceAndDependent, LabelBranchRegressionTest, ::testing::Bool());
+
+// Every category also runs against an ordinary single-document redo branch.
+class RedoMutationRegressionTest: public LabelGroupRegressionTest,
+    public ::testing::WithParamInterface<std::tuple<bool, int>>
+{};
+
+TEST_P(RedoMutationRegressionTest, changedCompatibilityCommitDiscardsRedo)
+{
+    const auto [grouped, kind] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(doc->getObject(grouped ? "Dependent" : "Target"));
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    ASSERT_GT(doc->getAvailableRedos(), 0u);
+    const auto changed = doc->collaborationService().commitCompatibilityMutationWithPolicy(
+        {}, [&] {
+            switch (kind) {
+                case 0: doc->Comment.setValue("A real document edit"); break;
+                case 1: doc->Label.setValue("A new document label"); break;
+                case 2: object->touch(); break;
+                case 3:
+                    object->setExpression(ObjectIdentifier::parse(object, "Float"),
+                                          Expression::parse(object, "42"));
+                    break;
+                case 4: {
+                    // Solvers suppress property recompute while applying Placement.
+                    Base::ObjectStatusLocker<Property::Status, Property> guard(
+                        Property::NoRecompute, &object->Placement);
+                    object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
+                                                               Base::Rotation()));
+                    break;
+                }
+            }
+        }, CollaborationCompatibilityRecomputePolicy::Deferred);
+    ASSERT_TRUE(changed.committed()) << changed.message;
+    if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
+    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
+        EXPECT_EQ(member->getAvailableRedos(), 0u);
+        EXPECT_FALSE(member->redo());
+    }
+    if (grouped && kind != 3) { expectModel("Before"); }
+}
+
+TEST_P(RedoMutationRegressionTest, nativeMutationRespectsGroupedRedoMembership)
+{
+    const auto [grouped, kind] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    auto* object = static_cast<FeatureTest*>(doc->getObject(grouped ? "Dependent" : "Target"));
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    ASSERT_GT(doc->getAvailableRedos(), 0u);
+    {
+        switch (kind) {
+            case 0: doc->Comment.setValue("A real document edit"); break;
+            case 1: doc->Label.setValue("A new document label"); break;
+            case 2: object->touch(); break;
+            case 3:
+                object->setExpression(ObjectIdentifier::parse(object, "Float"),
+                                      Expression::parse(object, "42"));
+                break;
+            case 4: {
+                // Solvers suppress property recompute while applying Placement.
+                Base::ObjectStatusLocker<Property::Status, Property> guard(
+                    Property::NoRecompute, &object->Placement);
+                object->Placement.setValue(Base::Placement(Base::Vector3d(12, 0, 0),
+                                                           Base::Rotation()));
+                break;
+            }
+        }
+    }
+    if (kind == 2) { EXPECT_TRUE(object->isTouched()); }
+    if (grouped) {
+        for (auto* member : documents) {
+            EXPECT_EQ(member->getAvailableRedos(), 0u);
+            EXPECT_FALSE(member->redo());
+        }
+    }
+    else {
+        // Legacy unbooked native edits leave ordinary history available. A
+        // compatibility callback is the single-document commit boundary above.
+        EXPECT_EQ(_document->getAvailableRedos(), 1u);
+    }
+    if (grouped && kind != 3) { expectModel("Before"); }
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, RedoMutationRegressionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Range(0, 5)));
+
+// Failed callbacks can leave non-transactional document metadata changed.
+// Such a boundary is not an unchanged rollback and cannot keep its old redo.
+class FailedMetadataRedoRegressionTest: public LabelGroupRegressionTest,
+    public ::testing::WithParamInterface<std::tuple<bool, bool>>
+{};
+
+TEST_P(FailedMetadataRedoRegressionTest, unrestoredDocumentMetadataDiscardsRedo)
+{
+    const auto [grouped, label] = GetParam();
+    auto* doc = grouped ? documents.back() : _document;
+    ASSERT_TRUE(_document->collaborationService().commitCompatibilityMutation({}, [&] {
+        if (grouped) { _target->Label.setValue("After"); }
+        else { static_cast<FeatureTest*>(_target)->String.setValue("History"); }
+    }).committed());
+    ASSERT_TRUE(_document->undo());
+    auto& property = label ? doc->Label : doc->Comment;
+    const auto result = doc->collaborationService().commitCompatibilityMutation({}, [&] {
+        property.setValue("Metadata changed before failure");
+        throw std::runtime_error("after document metadata change");
+    });
+    ASSERT_FALSE(result.committed());
+    ASSERT_EQ(property.getStrValue(), "Metadata changed before failure");
+    for (auto* member : grouped ? documents : std::vector<Document*> {_document}) {
+        EXPECT_EQ(member->getAvailableRedos(), 0u);
+        EXPECT_FALSE(member->redo());
+    }
+    if (grouped) { expectModel("Before"); }
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleAndGrouped, FailedMetadataRedoRegressionTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool()));
+
+TEST_F(LabelGroupRegressionTest, caughtAdmissionFailureCannotCommitHalfRename)
+{
+    documents.back()->openTransaction("Busy dependent");
+    documents.back()->getObject("Dependent")->Label.setValue("Busy");
+    // The pending user edit is the boundary this failed rename must preserve.
+    undos.back() = documents.back()->getAvailableUndos();
+    sequences.back() = publicationSequence(*documents.back());
+    bool caught = false;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            try { _target->Label.setValue("After"); }
+            catch (...) { caught = true; }
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+        });
+    EXPECT_TRUE(caught);
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+    documents.back()->abortTransaction();
+}
+
+TEST_F(LabelGroupRegressionTest, caughtRewriteFailureForcesGroupRollback)
+{
+    Internal::LabelReferenceUpdatesTestAccess::rewrite([] { throw std::runtime_error("rewrite injection"); });
+    bool caught = false;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] {
+            try { _target->Label.setValue("After"); }
+            catch (...) { caught = true; }
+        });
+    EXPECT_TRUE(caught);
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, finalizationFailureRestoresAllParticipants)
+{
+    Internal::LabelReferenceUpdatesTestAccess::finalization([](Document& doc) {
+        if (std::string(doc.getName()).find("LabelGroupDependent") == 0) {
+            throw std::runtime_error("finalization injection");
+        }
+    });
+    try {
+        const auto result = _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] { _target->Label.setValue("After"); });
+        EXPECT_FALSE(result.committed());
+    }
+    catch (...) {} // Baseline throws after the source transaction has been consumed.
+    Internal::LabelReferenceUpdatesTestAccess::finalization(nullptr);
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, poisonedDependentRejectedBeforeAnyMutation)
+{
+    Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*documents.back());
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+}
+
+TEST_F(LabelGroupRegressionTest, poisonedDependentPreservesExistingRedoBranches)
+{
+    for (std::size_t i = 0; i < documents.size(); ++i) {
+        auto* doc = documents[i];
+        auto* object = i == 0 ? _target : doc->getObject("Dependent");
+        doc->openTransaction("Existing redo branch");
+        static_cast<FeatureTest*>(object)->String.setValue("Existing redo value");
+        doc->commitTransaction();
+        ASSERT_TRUE(doc->undo());
+        doc->recompute();
+        undos[i] = doc->getAvailableUndos();
+        redos[i] = doc->getAvailableRedos();
+        ASSERT_GT(redos[i], 0u);
+        revisions[i] = doc->collaborationRevisions().current(
+            DocumentRevisionKey::unknownModelMutation());
+        sequences[i] = publicationSequence(*doc);
+    }
+    Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*documents.back());
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    EXPECT_FALSE(result.committed());
+    expectUnchanged();
+}
+
+TEST_F(DocumentCollaborationServiceTest, failedStabilizationRestoresOwnErrorSnapshot)
+{
+    auto* pending = _document->addObject<App::FeatureTest>("Pending");
+    auto* existing = _document->addObject<App::FeatureTest>("ExistingError");
+    existing->ExceptionType.setValue(1);
+    _document->recompute();
+    existing->purgeTouched();
+    const std::string originalError = _document->getErrorDescription(existing);
+    const auto originalStatus = existing->getStatus();
+    pending->ExceptionType.setValue(1);
+    const auto pendingStatus = pending->getStatus();
+    const auto undos = _document->getAvailableUndos();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto result = App::Internal::DocumentStructuralCompatibilityTestAccess::failedStabilization(
+            *_document, *pending, attempt == 1);
+        EXPECT_TRUE(result.restored) << result.diagnostic.data();
+        EXPECT_NE(std::string(result.diagnostic.data()).find("stabilization"), std::string::npos)
+            << result.diagnostic.data();
+        EXPECT_STREQ(_document->getErrorDescription(existing), originalError.c_str());
+        EXPECT_EQ(existing->getStatus(), originalStatus);
+        EXPECT_EQ(pending->getStatus(), pendingStatus);
+        EXPECT_EQ(_document->getErrorDescription(pending), nullptr);
+        EXPECT_STREQ(pending->Label.getValue(), "Pending");
+        EXPECT_FALSE(_document->hasPendingTransaction());
+        EXPECT_FALSE(_document->getMutationReadiness().poisoned);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+    }
+}
+
+
+TEST_F(LabelGroupRegressionTest, nativeErrorSnapshotsSurviveGroupedRollbackAndReplay)
+{
+    std::vector<App::FeatureTest*> errors;
+    std::vector<std::string> diagnostics;
+    std::vector<unsigned long> statuses;
+    for (auto* doc : documents) {
+        auto* error = doc->addObject<App::FeatureTest>("ExistingError");
+        error->ExceptionType.setValue(1);
+        doc->recompute();
+        error->purgeTouched();
+        errors.push_back(error);
+        diagnostics.emplace_back(doc->getErrorDescription(error));
+        statuses.push_back(error->getStatus());
+    }
+    const auto expectErrors = [&] {
+        for (std::size_t i = 0; i < documents.size(); ++i) {
+            EXPECT_STREQ(documents[i]->getErrorDescription(errors[i]), diagnostics[i].c_str());
+            EXPECT_EQ(errors[i]->getStatus(), statuses[i]);
+            EXPECT_FALSE(documents[i]->getMutationReadiness().poisoned);
+        }
+    };
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {}, [&] { _target->Label.setValue("After"); });
+    ASSERT_TRUE(result.committed()) << result.message;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(_document->undo());
+        expectModel("Before");
+        expectErrors();
+        ASSERT_TRUE(documents.back()->redo());
+        expectModel("After");
+        expectErrors();
+    }
+    const auto failed = _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+        {}, [&] { _target->Label.setValue("Rejected"); }, [] { return false; });
+    EXPECT_FALSE(failed.committed());
+    expectModel("After");
+    expectErrors();
 }

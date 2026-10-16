@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 
@@ -47,7 +48,7 @@ class DrawViewScaleTypeTest(unittest.TestCase):
     def testScaleTypePagePersistsOnReload(self):
         """ScaleType 'Page' must survive a save / close / reopen cycle (#30186)."""
         self._addPageSymbol()
-        self.document.recompute()
+        recompute_document(self.document)
 
         self.savedFile = os.path.join(tempfile.gettempdir(), "td_scaletype_30186.FCStd")
         self.document.saveAs(self.savedFile)

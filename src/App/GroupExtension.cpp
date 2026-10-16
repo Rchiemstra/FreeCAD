@@ -430,6 +430,12 @@ void GroupExtension::extensionOnChanged(const Property* p)
 void GroupExtension::slotChildChanged(const DocumentObject& obj, const Property& prop)
 {
     if (&prop == &obj.Visibility && !_togglingVisibility) {
+        // Same-thread object signal during replay. Touching the group from
+        // here re-enters document observers while transactions are refused.
+        if (auto* document = obj.getDocument();
+            document && document->collaborationNotificationsReplaying()) {
+            return;
+        }
         _GroupTouched.touch();
     }
 }

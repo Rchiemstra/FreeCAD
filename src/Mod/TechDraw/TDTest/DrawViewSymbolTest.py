@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import os
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
@@ -30,7 +31,7 @@ class DrawViewSymbolTest(unittest.TestCase):
         sym.X = 220.0
         sym.Y = 150.0
 
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         self.assertTrue("Up-to-date" in sym.State)
 
@@ -49,7 +50,7 @@ class DrawViewSymbolTest(unittest.TestCase):
         sym.X = 220.0
         sym.Y = 150.0
 
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         self.assertTrue("Up-to-date" in sym.State)
 

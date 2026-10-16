@@ -60,8 +60,11 @@ def make_shape_2d_view(baseobj, projection=None, facenumbers=[]):
         return
     obj = App.ActiveDocument.addObject("Part::Part2DObjectPython", "Shape2DView")
     Shape2DView(obj)
-    if App.GuiUp:
+
+    def setup_view():
         ViewProviderDraftAlt(obj.ViewObject)
+
+    gui_utils.run_gui_setup(obj, setup_view)
     obj.Base = baseobj
     if projection:
         obj.Projection = projection

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 
@@ -29,7 +30,7 @@ class DrawViewAnnotationTest(unittest.TestCase):
         self.page.addView(anno)
         anno.X = 30.0
         anno.Y = 150.0
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         self.assertTrue("Up-to-date" in anno.State)
 

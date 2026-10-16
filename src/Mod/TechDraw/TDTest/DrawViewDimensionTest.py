@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 from PySide import QtCore
@@ -35,7 +36,7 @@ class DrawViewDimensionTest(unittest.TestCase):
         self.view1.X = 220
         self.view1.Y = 150
 
-        self.document.recompute()
+        recompute_document(self.document)
 
         #wait for threads to complete before checking result
         loop = QtCore.QEventLoop()
@@ -49,7 +50,11 @@ class DrawViewDimensionTest(unittest.TestCase):
 
     def tearDown(self):
         print("DVDTest.tearDown()")
-        FreeCAD.closeDocument("TDDimTest")
+        if "TDDimTest" in FreeCAD.listDocuments():
+            if getattr(FreeCAD, "GuiUp", False):
+                close_document(FreeCAD.getDocument("TDDimTest"))
+            else:
+                FreeCAD.closeDocument("TDDimTest")
 
     def testLengthDimension(self):
         """Tests if a length dimension can be added to view"""
@@ -61,7 +66,7 @@ class DrawViewDimensionTest(unittest.TestCase):
         dimension.Type = "Distance"
         dimension.References2D = [(self.view, "Edge1")]
         print("finished length dimension")
-        self.document.recompute()
+        recompute_document(self.document)
         self.assertTrue("Up-to-date" in dimension.State)
 
     def testRadiusDimension(self):
@@ -72,7 +77,7 @@ class DrawViewDimensionTest(unittest.TestCase):
         dimension.Type = "Radius"
         dimension.MeasureType = "Projected"
         dimension.References2D = [(self.view1, "Edge0")]
-        self.document.recompute()
+        recompute_document(self.document)
         self.assertTrue("Up-to-date" in dimension.State)
 
 

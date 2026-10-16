@@ -24,6 +24,8 @@
 
 #include <Mod/Part/PartGlobal.h>
 
+#include <Standard_Failure.hxx>
+#include <BRep_Tool.hxx>
 #include <TopTools_SequenceOfShape.hxx>
 #include <TopoDS.hxx>
 
@@ -32,11 +34,56 @@
 #include "ShapeFix/ShapeFix_FacePy.cpp"
 #include "ShapeFix/ShapeFix_WirePy.h"
 #include <Mod/Part/App/GeometrySurfacePy.h>
+#include <Mod/Part/App/OCCError.h>
 #include <Mod/Part/App/TopoShapeFacePy.h>
 #include <Mod/Part/App/TopoShapeWirePy.h>
 
 
 using namespace Part;
+
+namespace
+{
+
+const char* shapeFixFaceNeedsSurface = "ShapeFix.Face requires a face with a surface";
+
+bool faceHasSurface(PyObject* face)
+{
+    const TopoDS_Shape& shape = static_cast<TopoShapePy*>(face)->getTopoShapePtr()->getShape();
+    return !shape.IsNull() && !BRep_Tool::Surface(TopoDS::Face(shape)).IsNull();
+}
+
+// Translate even in debug builds: the generated wrappers omit catch(...) there.
+void translateFaceException()
+{
+    try {
+        throw;
+    }
+    catch (const Standard_Failure& error) {
+        const char* message = error.GetMessageString();
+        PyErr_SetString(PartExceptionOCCError, message ? message : "OCCT failure in ShapeFix.Face");
+    }
+    catch (const Base::Exception& error) {
+        error.setPyException();
+    }
+    catch (const Py::Exception&) {
+        // The Python error is already set.
+    }
+    catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+    }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception in ShapeFix.Face");
+    }
+}
+
+void requireFaceSurface(const ShapeFix_Face& tool)
+{
+    if (tool.Face().IsNull() || BRep_Tool::Surface(tool.Face()).IsNull()) {
+        throw Base::ValueError(shapeFixFaceNeedsSurface);
+    }
+}
+
+}  // namespace
 
 // returns a string which represents the object e.g. when printed in python
 std::string ShapeFix_FacePy::representation() const
@@ -52,11 +99,18 @@ PyObject* ShapeFix_FacePy::PyMake(struct _typeobject*, PyObject*, PyObject*)  //
 
 // constructor method
 int ShapeFix_FacePy::PyInit(PyObject* args, PyObject* /*kwds*/)
+try
 {
     PyObject* face = nullptr;
     if (PyArg_ParseTuple(args, "|O!", &TopoShapeFacePy::Type, &face)) {
         setHandle(new ShapeFix_Face());
         if (face) {
+            // A null face (Part.Face()) has no TShape. ShapeFix_Face::Init calls
+            // BRep_Tool::Surface, which segfaults instead of throwing.
+            if (!faceHasSurface(face)) {
+                PyErr_SetString(PyExc_ValueError, shapeFixFaceNeedsSurface);
+                return -1;
+            }
             getShapeFix_FacePtr()->Init(
                 TopoDS::Face(static_cast<TopoShapePy*>(face)->getTopoShapePtr()->getShape())
             );
@@ -74,6 +128,9 @@ int ShapeFix_FacePy::PyInit(PyObject* args, PyObject* /*kwds*/)
             Handle(Geom_Surface) surf = Handle(Geom_Surface)::DownCast(
                 static_cast<GeometrySurfacePy*>(face)->getGeomSurfacePtr()->handle()
             );
+            if (surf.IsNull()) {
+                throw Base::ValueError("ShapeFix.Face requires a non-null surface");
+            }
             getShapeFix_FacePtr()->Init(surf, prec, Base::asBoolean(fwd));
         }
 
@@ -84,17 +141,26 @@ int ShapeFix_FacePy::PyInit(PyObject* args, PyObject* /*kwds*/)
         PyExc_TypeError,
         "Supported arguments are:\n"
         "-- Face\n"
-        "-- Surface, Precision, [Forward=True}\n"
+        "-- Surface, Precision, [Forward=True]\n"
         "   Precision is a Float\n"
         "   If Forward is the orientation will be FORWARD or REVERSED otherwise"
     );
     return -1;
 }
+catch (...) {
+    translateFaceException();
+    return -1;
+}
 
 PyObject* ShapeFix_FacePy::init(PyObject* args)
+try
 {
     PyObject* face;
     if (PyArg_ParseTuple(args, "O!", &TopoShapeFacePy::Type, &face)) {
+        if (!faceHasSurface(face)) {
+            PyErr_SetString(PyExc_ValueError, shapeFixFaceNeedsSurface);
+            return nullptr;
+        }
         getShapeFix_FacePtr()->Init(
             TopoDS::Face(static_cast<TopoShapePy*>(face)->getTopoShapePtr()->getShape())
         );
@@ -109,6 +175,9 @@ PyObject* ShapeFix_FacePy::init(PyObject* args)
             Handle(Geom_Surface) surf = Handle(Geom_Surface)::DownCast(
                 static_cast<GeometrySurfacePy*>(face)->getGeomSurfacePtr()->handle()
             );
+            if (surf.IsNull()) {
+                throw Base::ValueError("ShapeFix.Face requires a non-null surface");
+            }
             getShapeFix_FacePtr()->Init(surf, prec, Base::asBoolean(fwd));
         }
 
@@ -119,14 +188,19 @@ PyObject* ShapeFix_FacePy::init(PyObject* args)
         PyExc_TypeError,
         "Supported arguments are:\n"
         "-- Face\n"
-        "-- Surface, Precision, [Forward=True}\n"
+        "-- Surface, Precision, [Forward=True]\n"
         "   Precision is a Float\n"
         "   If Forward is the orientation will be FORWARD or REVERSED otherwise"
     );
     return nullptr;
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixWireTool(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
@@ -137,8 +211,13 @@ PyObject* ShapeFix_FacePy::fixWireTool(PyObject* args)
     wire->setHandle(tool);
     return wire;
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::clearModes(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
@@ -147,68 +226,109 @@ PyObject* ShapeFix_FacePy::clearModes(PyObject* args)
     getShapeFix_FacePtr()->ClearModes();
     Py_Return;
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::add(PyObject* args)
+try
 {
     PyObject* wire;
     if (!PyArg_ParseTuple(args, "O!", &TopoShapeWirePy::Type, &wire)) {
         return nullptr;
     }
 
-    getShapeFix_FacePtr()->Add(
-        TopoDS::Wire(static_cast<TopoShapePy*>(wire)->getTopoShapePtr()->getShape())
-    );
+    const TopoDS_Shape& wireShape =
+        static_cast<TopoShapePy*>(wire)->getTopoShapePtr()->getShape();
+    // ShapeFix_Face::Add uses TopoDS_Builder::Add, which segfaults when the
+    // tool was never given a face (the default constructor, or Init failed).
+    if (wireShape.IsNull()) {
+        throw Base::ValueError("ShapeFix.Face.add requires a non-null wire");
+    }
+    requireFaceSurface(*getShapeFix_FacePtr());
+    getShapeFix_FacePtr()->Add(TopoDS::Wire(wireShape));
     Py_Return;
+}
+catch (...) {
+    translateFaceException();
+    return nullptr;
 }
 
 PyObject* ShapeFix_FacePy::fixOrientation(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixOrientation();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixAddNaturalBound(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixAddNaturalBound();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixMissingSeam(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixMissingSeam();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixSmallAreaWire(PyObject* args)
+try
 {
     PyObject* removeSmall;
     if (!PyArg_ParseTuple(args, "O!", &PyBool_Type, &removeSmall)) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixSmallAreaWire(Base::asBoolean(removeSmall));
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixLoopWire(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
     TopTools_SequenceOfShape aResWires;
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixLoopWire(aResWires);
     Py::List list;
     for (int index = aResWires.Lower(); index <= aResWires.Upper(); index++) {
@@ -217,48 +337,77 @@ PyObject* ShapeFix_FacePy::fixLoopWire(PyObject* args)
     }
     return Py::new_reference_to(Py::TupleN(Py::Boolean(ok), list));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixIntersectingWires(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixIntersectingWires();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixWiresTwoCoincidentEdges(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixWiresTwoCoincEdges();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::fixPeriodicDegenerated(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->FixPeriodicDegenerated();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::perform(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
 
+    requireFaceSurface(*getShapeFix_FacePtr());
     Standard_Boolean ok = getShapeFix_FacePtr()->Perform();
     return Py::new_reference_to(Py::Boolean(ok));
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::face(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
@@ -267,8 +416,13 @@ PyObject* ShapeFix_FacePy::face(PyObject* args)
     TopoShape shape = getShapeFix_FacePtr()->Face();
     return shape.getPyObject();
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 PyObject* ShapeFix_FacePy::result(PyObject* args)
+try
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
@@ -277,115 +431,229 @@ PyObject* ShapeFix_FacePy::result(PyObject* args)
     TopoShape shape = getShapeFix_FacePtr()->Result();
     return shape.getPyObject();
 }
+catch (...) {
+    translateFaceException();
+    return nullptr;
+}
 
 Py::Boolean ShapeFix_FacePy::getFixWireMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixWireMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixWireMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixWireMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixOrientationMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixOrientationMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixOrientationMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixOrientationMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixAddNaturalBoundMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixAddNaturalBoundMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixAddNaturalBoundMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixAddNaturalBoundMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixMissingSeamMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixMissingSeamMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixMissingSeamMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixMissingSeamMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixSmallAreaWireMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixSmallAreaWireMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixSmallAreaWireMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixSmallAreaWireMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getRemoveSmallAreaFaceMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->RemoveSmallAreaFaceMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setRemoveSmallAreaFaceMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->RemoveSmallAreaFaceMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixIntersectingWiresMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixIntersectingWiresMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixIntersectingWiresMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixIntersectingWiresMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixLoopWiresMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixLoopWiresMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixLoopWiresMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixLoopWiresMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixSplitFaceMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixSplitFaceMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixSplitFaceMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixSplitFaceMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getAutoCorrectPrecisionMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->AutoCorrectPrecisionMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setAutoCorrectPrecisionMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->AutoCorrectPrecisionMode() = arg;
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 Py::Boolean ShapeFix_FacePy::getFixPeriodicDegeneratedMode() const
+try
 {
     return Py::Boolean(getShapeFix_FacePtr()->FixPeriodicDegeneratedMode());
 }
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
+}
 
 void ShapeFix_FacePy::setFixPeriodicDegeneratedMode(Py::Boolean arg)
+try
 {
     getShapeFix_FacePtr()->FixPeriodicDegeneratedMode() = arg;
+}
+catch (...) {
+    translateFaceException();
+    throw Py::Exception();
 }
 
 PyObject* ShapeFix_FacePy::getCustomAttributes(const char* /*attr*/) const

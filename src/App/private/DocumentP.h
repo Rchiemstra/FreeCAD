@@ -74,10 +74,15 @@ using Path = std::vector<size_t>;
 
 namespace App
 {
+namespace Internal
+{
+class SpreadsheetDerivedCacheOperation;
+}
 using HasherMap = boost::bimap<StringHasherRef, int>;
 class Document;
 class Transaction;
 class DocumentCollaborationService;
+class DocumentExecutionLane;
 class DocumentRecomputeCoordinator;
 enum class DocumentSaveIntent;
 struct DocumentSaveOutcome;
@@ -99,6 +104,8 @@ enum class CollaborationDeferredNotificationKind
     OpenTransaction,
     CommitTransaction,
     AbortTransaction,
+    Undo,
+    Redo,
     BecameStable,
     NewObject,
     DeletedObject,
@@ -240,14 +247,18 @@ struct DocumentP
     bool opentransaction {false};
     bool suppressCollaborationRevisionPublication {true};
     bool collaborationCommitNotificationBarrier {false};
+    bool collaborationBoundaryConsumed {false};
+    int collaborationBoundaryTransactionId {0};
     bool collaborationTransactionControlGranted {false};
     bool collaborationCompatibilityStructuralMutationGranted {false};
     bool collaborationDerivedRecomputeGranted {false};
+    const Internal::SpreadsheetDerivedCacheOperation* collaborationSpreadsheetDerivedCache {nullptr};
     bool collaborationDeferredRecomputeBlocked {false};
     bool collaborationRecomputeStableNotificationDeferred {false};
     bool collaborationImportDeferralActive {false};
-    bool collaborationReplayingNotifications {false};
+    std::atomic<bool> collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
+    bool collaborationRollbackVerification {false};
     bool collaborationAtomicPresentationAuditActive {false};
     std::atomic_bool collaborationAtomicPresentationAuditViolated {false};
     bool collaborationAtomicPresentationAuditReadOnly {false};
@@ -278,6 +289,7 @@ struct DocumentP
     DocumentRevisionIndex collaborationRevisions;
     std::unique_ptr<DocumentCollaborationService> collaborationService;
     std::unique_ptr<DocumentRecomputeCoordinator> recomputeCoordinator;
+    std::shared_ptr<DocumentExecutionLane> executionLane;
     std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
     std::unordered_map<const DocumentObject*, std::uint64_t>
         collaborationBoundaryObjectIdentities;
@@ -305,7 +317,28 @@ struct DocumentP
     std::vector<DocumentRevisionPublicationRequest> collaborationObservedStructuralEffects;
     std::shared_ptr<Internal::CollaborationImportReplay> collaborationActiveImportReplay;
     const DocumentObject* collaborationSpreadsheetRecomputeSchemaObject {nullptr};
+    // A ledger/reentry guard only. Public mutation gates must never treat this
+    // as a grant; the removal handoff is a private, consumed stack value.
+    const Internal::SpreadsheetCellClearOperation* collaborationSpreadsheetCellClear {nullptr};
     std::list<Transaction*> collaborationPreparedUndoSlot;
+    // Membership outlives any one participant's transaction record. Resolve
+    // addresses through the live application map before dereferencing, then
+    // check instance identity so a reused address cannot join an old group.
+    struct HistoryGroupMember
+    {
+        Document* document;
+        DocumentRevisionIdentityBinding identity;
+    };
+    using HistoryGroup = std::vector<HistoryGroupMember>;
+    std::map<int, std::shared_ptr<const HistoryGroup>> historyGroups;
+    bool collaborationHistoryChanged {false};
+    // Native rollback restores transactional properties and scheduler state,
+    // but document metadata and sticky dirty-state tokens remain changed.
+    bool collaborationUnrecordedDocumentChange {false};
+    std::array<std::uint64_t, 3> collaborationBoundaryStickyTokens {};
+    bool collaborationRedoHistoryParked {false};
+    std::list<Transaction*> collaborationParkedRedos;
+    std::map<int, Transaction*> collaborationParkedRedoMap;
 
     StringHasherRef Hasher {new StringHasher};
 

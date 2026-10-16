@@ -29,9 +29,15 @@
 #include <App/PropertyLinks.h>
 #include <Base/BoundBox.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
+#include <fastsignals/signal.h>
 
 #include "DrawViewSymbol.h"
 
+
+namespace App
+{
+class Document;
+}
 
 namespace TechDraw
 {
@@ -43,7 +49,7 @@ class TechDrawExport DrawViewDraft : public TechDraw::DrawViewSymbol
 public:
     /// Constructor
     DrawViewDraft();
-    ~DrawViewDraft() override = default;
+    ~DrawViewDraft() override;
 
     App::PropertyLink         Source;
     App::PropertyFloat        LineWidth;
@@ -69,11 +75,22 @@ public:
 
     bool snapsToPosition() const override { return true; }
 
+    /** Build Symbol from the linked Draft source (GUI / main thread only). */
+    void updateSymbolFromDraft();
+
 protected:
 /*    virtual void onChanged(const App::Property* prop) override;*/
     Base::BoundBox3d bbox;
     std::string getSVGHead();
     std::string getSVGTail();
+
+    /** After owner-thread execute, fill Symbol once the document is stable. */
+    void scheduleDeferredSymbolUpdate();
+    void onDocumentBecameStable(const App::Document& document);
+    void runDeferredSymbolUpdate();
+
+    fastsignals::connection m_stableConnection;
+    bool m_symbolUpdatePending {false};
 };
 
 using DrawViewDraftPython = App::FeaturePythonT<DrawViewDraft>;

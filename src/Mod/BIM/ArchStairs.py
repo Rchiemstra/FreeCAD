@@ -70,6 +70,13 @@ class _Stairs(ArchComponent.Component):
 
     def setProperties(self, obj):
 
+        # Committed construction-wire identities, independent of nested Base
+        # notifications. Output does not introduce a dependency on the railings.
+        if "RailingWireIds" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyIntegerList", "RailingWireIds",
+                            "Segment and Parts", "Generated railing construction wires",
+                            attr=8, read_only=True, hidden=True, locked=True)
+
         # http://en.wikipedia.org/wiki/Stairs
 
         pl = obj.PropertiesList
@@ -874,7 +881,8 @@ class _Stairs(ArchComponent.Component):
 
         railingLeftObject, railWireL = None, None
         railingRightObject, railWireR = None, None
-        doc = FreeCAD.ActiveDocument
+        doc = obj.Document
+        generated = []
 
         if obj.RailingLeft:
             railingLeftObject = obj.RailingLeft
@@ -896,9 +904,8 @@ class _Stairs(ArchComponent.Component):
                     if railingLeftObject.Base:
                         doc.removeObject(railingLeftObject.Base.Name)
                     railingLeftWireObject = doc.addObject("Part::Feature", "RailingWire")
-                    if FreeCAD.GuiUp:
-                        railingLeftWireObject.ViewObject.hide()
                     railingLeftObject.Base = railingLeftWireObject
+                    generated.append(railingLeftWireObject.ID)
                 # update the Base object shape
                 railingLeftObject.Base.Shape = railWireL
             else:
@@ -924,9 +931,8 @@ class _Stairs(ArchComponent.Component):
                     if railingRightObject.Base:
                         doc.removeObject(railingRightObject.Base.Name)
                     railingRightWireObject = doc.addObject("Part::Feature", "RailingWire")
-                    if FreeCAD.GuiUp:
-                        railingRightWireObject.ViewObject.hide()
                     railingRightObject.Base = railingRightWireObject
+                    generated.append(railingRightWireObject.ID)
                 # update the Base object shape
                 railingRightObject.Base.Shape = railWireR
             else:
@@ -935,6 +941,14 @@ class _Stairs(ArchComponent.Component):
         # compute step data
         if obj.NumberOfSteps > 1:
             obj.BlondelRatio = obj.RiserHeight.Value * 2 + obj.TreadDepth.Value
+
+        # Publish only after both Base links, wire Shapes and step data exist.
+        current = {rail.Base.ID for rail in (obj.RailingLeft, obj.RailingRight)
+                   if rail and rail.Base}
+        ids = [identifier for identifier in obj.RailingWireIds if identifier in current]
+        ids.extend(generated)
+        if ids != obj.RailingWireIds:
+            obj.RailingWireIds = ids
 
     def onChanged(self, obj, prop):
 
@@ -2449,6 +2463,34 @@ class _ViewProviderStairs(ArchComponent.ViewProviderComponent):
     def __init__(self, vobj):
 
         ArchComponent.ViewProviderComponent.__init__(self, vobj)
+
+    def finishRestoring(self):
+        # Persisted wire visibility is authoritative on reopen, including a
+        # user's explicit show after the initial construction hide.
+        self._hidden_wire_ids = set(getattr(self.Object, "RailingWireIds", []))
+
+    def updateData(self, obj, prop):
+        ArchComponent.ViewProviderComponent.updateData(self, obj, prop)
+        if obj != self.Object or prop != "RailingWireIds" or "Restore" in obj.State:
+            return
+        doc = obj.Document
+        identity = doc.collaborationIdentity()
+        if identity["state"] != "Live" or obj.Removing:
+            return
+        binding = (identity["instance_id"], identity["lifecycle_epoch"], obj.ID)
+        if getattr(self, "_wire_binding", binding) != binding:
+            return
+        self._wire_binding = binding
+        hidden = getattr(self, "_hidden_wire_ids", set())
+        for rail in (obj.RailingLeft, obj.RailingRight):
+            wire = rail.Base if rail else None
+            if (wire and wire.Document == doc and not wire.Removing
+                    and wire.ID in obj.RailingWireIds and wire.ID not in hidden):
+                # Native updateData/catch-up runs on GUI main after commit.
+                # Resolve from the current linked object, never a saved name.
+                wire.ViewObject.hide()
+                hidden.add(wire.ID)
+        self._hidden_wire_ids = hidden
 
     def getIcon(self):
 

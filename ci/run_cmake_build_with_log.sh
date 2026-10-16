@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-  echo "usage: $0 <build-dir> [label]" >&2
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 <build-dir> [label] [command ...]" >&2
   exit 2
 fi
 
 build_dir="$1"
 label="${2:-$(basename "$build_dir")}"
+if [ "$#" -ge 2 ]; then
+  shift 2
+else
+  shift
+fi
 jobs="${FREECAD_BUILD_JOBS:-$(nproc)}"
 log="/tmp/freecad-${label}-build.log"
 build_pid=""
@@ -40,10 +45,20 @@ on_int() {
 trap on_term TERM HUP
 trap on_int INT
 
-echo "== ${label}: cmake --build ${build_dir} -j${jobs} =="
+if [ "$#" -gt 0 ]; then
+  printf '== %s: running' "$label"
+  printf ' %q' "$@"
+  printf ' ==\n'
+else
+  echo "== ${label}: cmake --build ${build_dir} -j${jobs} =="
+fi
 rm -f "$log"
 
-cmake --build "$build_dir" -j"$jobs" >"$log" 2>&1 &
+if [ "$#" -gt 0 ]; then
+  "$@" >"$log" 2>&1 &
+else
+  cmake --build "$build_dir" -j"$jobs" >"$log" 2>&1 &
+fi
 build_pid=$!
 
 while kill -0 "$build_pid" 2>/dev/null; do

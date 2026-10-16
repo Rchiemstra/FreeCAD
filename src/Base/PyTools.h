@@ -177,6 +177,11 @@ extern int
 
 extern void PP_Fetch_Error_Text();    /* fetch (and clear) exception */
 
+/* Set while a C++ exception is crossing a live Python frame. PyFrame_GetCode
+ * SIGSEGVs on that frame (CPython 3.11+ f_frame is gone). */
+extern void PP_SetPythonFrameInspectionUnsafe(int unsafe);
+extern int PP_PythonFrameInspectionUnsafe(void);
+
 extern char PP_last_error_type[];     /* exception name text */
 extern char PP_last_error_info[];     /* exception data text */
 extern char PP_last_error_trace[];    /* exception traceback text */

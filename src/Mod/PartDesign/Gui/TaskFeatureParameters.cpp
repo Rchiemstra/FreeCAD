@@ -40,6 +40,7 @@
 
 #include "TaskFeatureParameters.h"
 #include "TaskSketchBasedParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 using namespace PartDesignGui;
 using namespace Gui;
@@ -171,7 +172,7 @@ void TaskFeatureParameters::recomputeFeature()
         auto* feature = getObject<PartDesign::Feature>();
         assert(feature);
 
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
         feature->recomputePreview();
     }
 }
@@ -211,26 +212,22 @@ bool TaskDlgFeatureParameters::accept()
         }
 
         if (isUpdateBlocked) {
-            Gui::cmdAppDocument(feature, "recompute()");
+            if (!PartGui::submitDocumentRecomputeOrReport(*feature)) {
+                return false;
+            }
         }
         else {
             // object was already computed, nothing more to do with it...
             Gui::cmdAppDocument(feature, "purgeTouched()");
-
-            if (!feature->isValid()) {
-                throw Base::RuntimeError(getObject()->getStatusString());
-            }
 
             // ...but touch parents to signal the change...
             for (auto obj : feature->getInList()) {
                 obj->touch();
             }
             // ...and recompute them
-            Gui::cmdAppDocument(feature->getDocument(), "recompute()");
-        }
-
-        if (!feature->isValid()) {
-            throw Base::RuntimeError(getObject()->getStatusString());
+            if (!PartGui::submitDocumentRecomputeOrReport(*feature->getDocument())) {
+                return false;
+            }
         }
 
         App::DocumentObject* previous = static_cast<PartDesign::Feature*>(feature)->getBaseObject(
@@ -314,10 +311,9 @@ bool TaskDlgFeatureParameters::reject()
         }
     }
 
-    Gui::cmdAppDocument(document, "recompute()");
+    PartGui::submitDocumentRecomputeOrReport(*document);
     Gui::cmdGuiDocument(document, "resetEdit()");
 
     return true;
 }
-
 #include "moc_TaskFeatureParameters.cpp"

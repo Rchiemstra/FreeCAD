@@ -195,6 +195,9 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
         QStringList list;
         list << QString::fromUtf8(Reason.pDocName);
         list << QString::fromUtf8(Reason.pObjectName);
+        if (Reason.pSubName && Reason.pSubName[0]) {
+            list << QString::fromUtf8(Reason.pSubName);
+        }
         App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);
         App::DocumentObject* obj = doc->getObject(Reason.pObjectName);
         getSelectionName(str, Reason.pDocName, Reason.pObjectName, Reason.pSubName, obj);
@@ -220,13 +223,21 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
         }
     }
     else if (Reason.Type == SelectionChanges::RmvSelection) {
-        App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);
-        App::DocumentObject* obj = doc->getObject(Reason.pObjectName);
-        getSelectionName(str, Reason.pDocName, Reason.pObjectName, Reason.pSubName, obj);
-        // remove all items
-        QList<QListWidgetItem*> l = selectionView->findItems(selObject, Qt::MatchStartsWith);
-        if (l.size() == 1) {
-            delete l[0];
+        // Labels and live name lookup cannot identify a retired row: recompute
+        // may already have installed a different object under the same name.
+        // An empty subname removes all of that object's selected elements;
+        // otherwise remove only the exact element carried by the notification.
+        const auto docName = QString::fromUtf8(Reason.pDocName);
+        const auto objectName = QString::fromUtf8(Reason.pObjectName);
+        const auto subName = QString::fromUtf8(Reason.pSubName ? Reason.pSubName : "");
+        for (int i = selectionView->count() - 1; i >= 0; --i) {
+            auto* item = selectionView->item(i);
+            const auto identity = item->data(Qt::UserRole).toStringList();
+            const auto itemSubName = identity.size() > 2 ? identity[2] : QString();
+            if (identity.size() >= 2 && identity[0] == docName && identity[1] == objectName
+                && (subName.isEmpty() || itemSubName == subName)) {
+                delete item;
+            }
         }
     }
     else if (Reason.Type == SelectionChanges::SetSelection) {
@@ -239,6 +250,9 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
             QStringList list;
             list << QString::fromUtf8(it.DocName);
             list << QString::fromUtf8(it.FeatName);
+            if (it.SubName && it.SubName[0]) {
+                list << QString::fromUtf8(it.SubName);
+            }
 
             App::Document* doc = App::GetApplication().getDocument(it.DocName);
             App::DocumentObject* obj = doc->getObject(it.FeatName);

@@ -1152,13 +1152,21 @@ PropertyShapeCache* PropertyShapeCache::get(const App::DocumentObject* obj, bool
         return 0;
     }
 
-    prop = static_cast<PropertyShapeCache*>(const_cast<App::DocumentObject*>(obj)->addDynamicProperty(
-        "Part::PropertyShapeCache",
-        SHAPE_CACHE_NAME,
-        "Part",
-        "Shape cache",
-        App::Prop_NoPersist | App::Prop_Output | App::Prop_Hidden
-    ));
+    // The cache is an optimization. The document may refuse new properties,
+    // e.g. while a collaboration commit is publishing: then do not cache.
+    try {
+        prop = static_cast<PropertyShapeCache*>(const_cast<App::DocumentObject*>(obj)->addDynamicProperty(
+            "Part::PropertyShapeCache",
+            SHAPE_CACHE_NAME,
+            "Part",
+            "Shape cache",
+            App::Prop_NoPersist | App::Prop_Output | App::Prop_Hidden
+        ));
+    }
+    catch (const Base::Exception& e) {
+        FC_LOG("No shape cache for " << obj->getFullName() << ": " << e.what());
+        return nullptr;
+    }
     if (!prop) {
         FC_ERR("Failed to add shape cache for " << obj->getFullName());
     }

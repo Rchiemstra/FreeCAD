@@ -38,6 +38,7 @@
 
 #include "TaskOffset.h"
 #include "ui_TaskOffset.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -142,7 +143,7 @@ void OffsetWidget::onSpinOffsetValueChanged(double val)
 {
     d->offset->Value.setValue(val);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -150,7 +151,7 @@ void OffsetWidget::onModeTypeActivated(int val)
 {
     d->offset->Mode.setValue(val);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -158,7 +159,7 @@ void OffsetWidget::onJoinTypeActivated(int val)
 {
     d->offset->Join.setValue((long)val);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -166,7 +167,7 @@ void OffsetWidget::onIntersectionToggled(bool on)
 {
     d->offset->Intersection.setValue(on);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -174,7 +175,7 @@ void OffsetWidget::onSelfIntersectionToggled(bool on)
 {
     d->offset->SelfIntersection.setValue(on);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -182,14 +183,14 @@ void OffsetWidget::onFillOffsetToggled(bool on)
 {
     d->offset->Fill.setValue(on);
     if (d->ui.updateView->isChecked()) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
 void OffsetWidget::onUpdateViewToggled(bool on)
 {
     if (on) {
-        d->offset->getDocument()->recomputeFeature(d->offset);
+        PartGui::submitDocumentRecomputeOrReport(*d->offset);
     }
 }
 
@@ -213,9 +214,8 @@ bool OffsetWidget::accept()
         );
         Gui::cmdAppObjectArgs(d->offset, "Fill = %s", d->ui.fillOffset->isChecked() ? "True" : "False");
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        if (!d->offset->isValid()) {
-            throw Base::CADKernelError(d->offset->getStatusString());
+        if (!PartGui::submitActiveDocumentRecomputeOrReport(this)) {
+            return false;
         }
 
         Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
@@ -289,5 +289,4 @@ bool TaskOffset::reject()
 {
     return widget->reject();
 }
-
 #include "moc_TaskOffset.cpp"

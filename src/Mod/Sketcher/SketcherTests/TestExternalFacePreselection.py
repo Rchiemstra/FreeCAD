@@ -77,12 +77,12 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         sketch.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
         sketch.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
         sketch.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         pad = body.newObject("PartDesign::Pad", "Pad")
         pad.Profile = sketch
         pad.Length = 20.0
-        self.doc.recompute()
+        self.recompute_gui_document()
         # The consumed profile stays pickable otherwise and wins over the Pad
         # face under Coin's vertex-over-face priority (pipeline 359:
         # SubElementNames=('BaseSketch.Vertex2',)).
@@ -93,10 +93,11 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         self.testSketch = body.newObject("Sketcher::SketchObject", "TestSketch")
         self.testSketch.AttachmentSupport = [(pad, "Face6")]
         self.testSketch.MapMode = "FlatFace"
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         self.body = body
         self.pad = pad
+        self.flush_gui(100)
 
     def hover_for_preselection(self, viewport, center_pos, span=6, step=2):
         fallback = None
@@ -117,7 +118,7 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
                 QtCore.Qt.NoModifier,
             )
             QtGui.QApplication.sendEvent(viewport, event)
-            self.pump(100)
+            self.flush_gui(100)
 
             presel = FreeCADGui.Selection.getPreselection()
             if not presel.ObjectName:
@@ -217,7 +218,7 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         while the External Geometry tool is active (#28639)."""
 
         FreeCADGui.ActiveDocument.setEdit(self.testSketch.Name)
-        self.pump(300)
+        self.flush_gui(300)
 
         # Add geometry + constraints so constraint icons are rendered.
         self.testSketch.addGeometry(
@@ -228,14 +229,15 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         )
         self.testSketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 0, 2, 20.0))
         self.testSketch.addConstraint(Sketcher.Constraint("DistanceY", 1, 1, 1, 2, 20.0))
-        self.doc.recompute()
-        self.pump(300)
+        self.recompute_gui_document()
+        self.flush_gui(300)
 
         view = FreeCADGui.ActiveDocument.ActiveView
         view.setAnimationEnabled(False)
         view.viewFront()
         view.fitAll()
-        self.pump(300)
+        view.redraw()
+        self.flush_gui(500)
 
         face_center_3d = FreeCAD.Vector(0, -20, 10)
 
@@ -265,13 +267,13 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
 
         # Activate External Geometry tool
         FreeCADGui.runCommand("Sketcher_Projection", 0)
-        self.pump(300)
+        self.flush_gui(300)
 
         # Simulate mouse hover over the front face center
         viewport = view.graphicsView().viewport()
         screen_pt = view.getPointOnScreen(face_center_3d)
         hover_pos = self.viewport_to_qpoint(view, viewport, screen_pt)
-        presel = self.hover_for_preselection(viewport, hover_pos, span=20, step=4)
+        presel = self.hover_for_preselection(viewport, hover_pos, span=40, step=4)
         self.assertNotEqual(
             presel.ObjectName,
             "",

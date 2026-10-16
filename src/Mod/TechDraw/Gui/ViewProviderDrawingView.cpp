@@ -29,7 +29,9 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/Metadata.h>
 #include <Base/Color.h>
 #include <Base/Console.h>
@@ -37,7 +39,9 @@
 #include <Gui/Application.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Utilities.h>
 
 #include <Mod/TechDraw/App/DrawPage.h>
 #include <Mod/TechDraw/App/DrawView.h>
@@ -78,6 +82,7 @@ ViewProviderDrawingView::ViewProviderDrawingView() :
 
 ViewProviderDrawingView::~ViewProviderDrawingView()
 {
+    connectBecameStable.disconnect();
 }
 
 void ViewProviderDrawingView::attach(App::DocumentObject *pcFeat)
@@ -314,16 +319,157 @@ Gui::MDIView *ViewProviderDrawingView::getMDIView() const
 
 void ViewProviderDrawingView::onGuiRepaint(const TechDraw::DrawView* dv)
 {
-    Gui::Document* guiDoc = Gui::Application::Instance->getDocument(getViewObject()->getDocument());
+    // DrawView::requestPaint() is a raw fastsignal. Owner-lane execute() can
+    // emit it while recomputing; QGraphics (QGCustomText) must not run there.
+    scheduleDeferredGuiPaint(dv);
+}
+
+void ViewProviderDrawingView::scheduleDeferredGuiPaint(const TechDraw::DrawView* dv)
+{
+    if (!dv || dv != getViewObject()) {
+        return;
+    }
+
+    App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+    if (!document) {
+        return;
+    }
+
+    m_guiPaintPending = true;
+
+    if (!connectBecameStable.connected()) {
+        connectBecameStable = document->signalBecameStable.connect(
+            [this](const App::Document& changed) {
+                onDocumentBecameStable(changed);
+            });
+    }
+
+    // Already on the GUI thread with an idle document: still defer one tick so
+    // we never touch QGraphics under an owner-thread blocking marshal.
+    if (App::DocumentWouldBlock::isGuiThread()
+        && !Gui::documentExecutionLaneBusy(*document)
+        && !document->mustExecute()
+        && !document->testStatus(App::Document::Recomputing)) {
+        const std::string documentName = document->getName();
+        const std::string objectName = m_myName;
+        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* vp = freecad_cast<ViewProviderDrawingView*>(guiDoc->getViewProvider(object));
+            if (vp) {
+                vp->runDeferredGuiPaint();
+            }
+        });
+    }
+}
+
+void ViewProviderDrawingView::onDocumentBecameStable(const App::Document& document)
+{
+    if (!getObject() || getObject()->getDocument() != &document || !m_guiPaintPending) {
+        return;
+    }
+
+    // signalBecameStable runs on the GUI thread still inside the owner's
+    // blocking marshal — defer past lock / commit barrier release.
+    const std::string documentName = document.getName();
+    const std::string objectName = m_myName;
+    Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+        if (!Gui::Application::Instance) {
+            return;
+        }
+        App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+        if (!doc) {
+            return;
+        }
+        Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        App::DocumentObject* object = doc->getObject(objectName.c_str());
+        if (!object) {
+            return;
+        }
+        auto* vp = freecad_cast<ViewProviderDrawingView*>(guiDoc->getViewProvider(object));
+        if (vp) {
+            vp->runDeferredGuiPaint();
+        }
+    });
+}
+
+void ViewProviderDrawingView::runDeferredGuiPaint()
+{
+    if (!m_guiPaintPending) {
+        return;
+    }
+
+    TechDraw::DrawView* feature = getViewObject();
+    App::Document* document = feature ? feature->getDocument() : nullptr;
+    if (!document) {
+        m_guiPaintPending = false;
+        return;
+    }
+
+    if (!App::DocumentWouldBlock::isGuiThread()) {
+        scheduleDeferredGuiPaint(feature);
+        return;
+    }
+
+    const bool documentBusy = document->mustExecute()
+        || document->testStatus(App::Document::Recomputing)
+        || Gui::documentExecutionLaneBusy(*document);
+    if (documentBusy) {
+        const std::string documentName = document->getName();
+        const std::string objectName = m_myName;
+        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* vp = freecad_cast<ViewProviderDrawingView*>(guiDoc->getViewProvider(object));
+            if (vp) {
+                vp->runDeferredGuiPaint();
+            }
+        });
+        return;
+    }
+
+    m_guiPaintPending = false;
+
+    Gui::Document* guiDoc = Gui::Application::Instance->getDocument(document);
     if (!guiDoc) {
         return;
     }
 
-    std::vector<TechDraw::DrawPage*> pages = getViewObject()->findAllParentPages();
+    std::vector<TechDraw::DrawPage*> pages = feature->findAllParentPages();
     if (pages.size() > 1) {
         multiParentPaint(pages);
-    } else if (dv == getViewObject()) {
-        singleParentPaint(dv);
+    }
+    else {
+        singleParentPaint(feature);
     }
 }
 

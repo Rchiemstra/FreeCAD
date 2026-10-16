@@ -11,6 +11,7 @@
  *   version 2 of the License, or (at your option) any later version.      *
  ***************************************************************************/
 
+#include <chrono>
 #include <cstring>
 #include <cstddef>
 #include <filesystem>
@@ -21,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -48,6 +50,7 @@
 # include <winioctl.h>
 #else
 # include <fcntl.h>
+# include <sys/wait.h>
 # include <sys/stat.h>
 # include <unistd.h>
 #endif
@@ -2908,6 +2911,61 @@ TEST_F(DocumentFileWriterTest, ActiveDisplacedLeaseAdmitsReadersWithoutSurrender
     // the evidence through the handle it has held all along.
     EXPECT_TRUE(result.retainDisplacedFileForRecovery());
     EXPECT_EQ(readUserVisibleFile(displaced), "old bytes");
+}
+#endif
+
+#ifndef FC_OS_WIN32
+// Every save left "<file>.FreeCAD-save.lock" next to the document it wrote.
+TEST_F(DocumentFileWriterTest, ReleasedDocumentLockLeavesNoSidecar)
+{
+    const auto destination = path("model.FCStd");
+    {
+        App::Internal::DocumentFileLock lock(pathToUtf8(destination), 0);
+        ASSERT_TRUE(lock.isLocked());
+    }
+
+    EXPECT_FALSE(fs::exists(path("model.FCStd.FreeCAD-save.lock")));
+}
+
+// Removing the sidecar must not weaken cross-process exclusion: a waiter that
+// locked the unlinked file has to retry on the file now at the path.
+TEST_F(DocumentFileWriterTest, DocumentLockStaysExclusiveAcrossProcesses)
+{
+    const auto destination = pathToUtf8(path("shared.FCStd"));
+    const auto marker = path("inside");
+    constexpr int processes = 4;
+    constexpr int rounds = 40;
+    std::vector<pid_t> children;
+    for (int child = 0; child < processes; ++child) {
+        const pid_t pid = ::fork();
+        ASSERT_GE(pid, 0);
+        if (pid == 0) {
+            int status = 0;
+            for (int round = 0; round < rounds && status == 0; ++round) {
+                App::Internal::DocumentFileLock lock(destination, 10000);
+                if (!lock.isLocked()) {
+                    status = 2;
+                    break;
+                }
+                const int fd = ::open(marker.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+                if (fd < 0) {
+                    status = 3;  // another process is inside the lock
+                    break;
+                }
+                ::close(fd);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                ::unlink(marker.c_str());
+            }
+            ::_exit(status);
+        }
+        children.push_back(pid);
+    }
+    for (const pid_t pid : children) {
+        int status = -1;
+        ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+        ASSERT_TRUE(WIFEXITED(status));
+        EXPECT_EQ(WEXITSTATUS(status), 0);
+    }
 }
 #endif
 

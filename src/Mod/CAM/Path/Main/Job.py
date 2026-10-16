@@ -109,6 +109,9 @@ Notification = NotificationClass()
 
 
 class ObjectJob:
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def __init__(self, obj, models, templateFile=None):
         self.obj = obj
         self.tooltip = None

@@ -223,9 +223,16 @@ void ViewProviderImagePlane::setPlaneSize(const QSizeF& size, const QImage& img)
         Image::ImagePlane* imagePlane = static_cast<Image::ImagePlane*>(pcObject);
         // When restoring the document or importing a ImagePlane by eg. pasting it
         // preserve the X and Y size.
+        // Assign only changed sizes: every assignment touches the plane, and the
+        // image is reloaded whenever the view is refreshed (e.g. after each
+        // recompute), which would otherwise leave recompute work pending forever.
         if (!isRestoring() && !pcObject->testStatus(App::ObjectStatus::ObjImporting)) {
-            imagePlane->XSize.setValue(size.width());
-            imagePlane->YSize.setValue(size.height());
+            if (imagePlane->XSize.getValue() != size.width()) {
+                imagePlane->XSize.setValue(size.width());
+            }
+            if (imagePlane->YSize.getValue() != size.height()) {
+                imagePlane->YSize.setValue(size.height());
+            }
         }
 
         imagePlane->XPixelsPerMeter = img.dotsPerMeterX();

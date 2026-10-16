@@ -41,6 +41,7 @@
 
 #include "ui_TaskFilletParameters.h"
 #include "TaskFilletParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -137,7 +138,7 @@ void TaskFilletParameters::onCheckBoxUseAllEdgesToggled(bool checked)
         ui->buttonRefSel->setEnabled(!checked);
         ui->listWidgetReferences->setEnabled(!checked);
         fillet->UseAllEdges.setValue(checked);
-        fillet->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*fillet);
     }
 }
 
@@ -164,9 +165,7 @@ void TaskFilletParameters::onLengthChanged(double len)
         setSelectionMode(none);
         setupTransaction();
         fillet->Radius.setValue(len);
-        fillet->recomputeFeature();
-        // hide the fillet if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*fillet);
     }
 }
 
@@ -289,5 +288,4 @@ bool TaskDlgFilletParameters::accept()
 
     return TaskDlgDressUpParameters::accept();
 }
-
 #include "moc_TaskFilletParameters.cpp"

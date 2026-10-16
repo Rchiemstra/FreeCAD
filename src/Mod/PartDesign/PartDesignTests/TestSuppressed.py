@@ -47,6 +47,7 @@ import FreeCADGui
 import TestSketcherApp
 
 from PySide import QtGui
+from Test.GuiRecompute import close_document, recompute_document, save_document_as
 
 
 class TestSuppressed(unittest.TestCase):
@@ -54,7 +55,7 @@ class TestSuppressed(unittest.TestCase):
         self.Doc = FreeCAD.newDocument("PartDesignTestSuppressed")
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
     def _createBodyWithPadAndFillet(self):
         """Create a Body with a Pad (10x10x10 box) and a Fillet."""
@@ -62,17 +63,17 @@ class TestSuppressed(unittest.TestCase):
         self.PadSketch = self.Doc.addObject("Sketcher::SketchObject", "SketchPad")
         self.Body.addObject(self.PadSketch)
         TestSketcherApp.CreateRectangleSketch(self.PadSketch, (0, 0), (10, 10))
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.Pad = self.Doc.addObject("PartDesign::Pad", "Pad")
         self.Body.addObject(self.Pad)
         self.Pad.Profile = self.PadSketch
         self.Pad.Length = 10
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.Fillet = self.Doc.addObject("PartDesign::Fillet", "Fillet")
         self.Body.addObject(self.Fillet)
         self.Fillet.Base = (self.Pad, ["Edge1"])
         self.Fillet.Radius = 1.0
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
     def testSuppressibleExtensionExists(self):
         """PartDesign features should have SuppressibleExtension."""
@@ -92,7 +93,7 @@ class TestSuppressed(unittest.TestCase):
         volumeWithFillet = self.Body.Shape.Volume
 
         self.Fillet.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertTrue(self.Fillet.Suppressed)
 
         volumeWithoutFillet = self.Body.Shape.Volume
@@ -105,7 +106,7 @@ class TestSuppressed(unittest.TestCase):
 
         # Unsuppress should restore
         self.Fillet.Suppressed = False
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertFalse(self.Fillet.Suppressed)
         self.assertAlmostEqual(
             self.Body.Shape.Volume,
@@ -119,14 +120,14 @@ class TestSuppressed(unittest.TestCase):
         self._createBodyWithPadAndFillet()
 
         self.Fillet.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         volumeSuppressed = self.Body.Shape.Volume
 
         # Save, close, reopen
         with tempfile.TemporaryDirectory(prefix="freecad_test_suppressed_") as tmpdir:
             filepath = os.path.join(tmpdir, "test_suppressed.FCStd")
-            self.Doc.saveAs(filepath)
-            FreeCAD.closeDocument(self.Doc.Name)
+            save_document_as(self.Doc, filepath)
+            close_document(self.Doc)
             self.Doc = FreeCAD.openDocument(filepath)
 
         filletReloaded = self.Doc.getObject("Fillet")
@@ -154,15 +155,15 @@ class TestSuppressed(unittest.TestCase):
         self._createBodyWithPadAndFillet()
 
         self.Fillet.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.Fillet.Suppressed = False
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         volumeActive = self.Body.Shape.Volume
 
         with tempfile.TemporaryDirectory(prefix="freecad_test_suppressed_") as tmpdir:
             filepath = os.path.join(tmpdir, "test_unsuppressed.FCStd")
-            self.Doc.saveAs(filepath)
-            FreeCAD.closeDocument(self.Doc.Name)
+            save_document_as(self.Doc, filepath)
+            close_document(self.Doc)
             self.Doc = FreeCAD.openDocument(filepath)
 
         filletReloaded = self.Doc.getObject("Fillet")
@@ -188,16 +189,16 @@ class TestSuppressed(unittest.TestCase):
         self.Body.addObject(self.Chamfer)
         self.Chamfer.Base = (self.Fillet, ["Edge2"])
         self.Chamfer.Size = 0.5
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         self.Fillet.Suppressed = True
         self.Chamfer.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         with tempfile.TemporaryDirectory(prefix="freecad_test_suppressed_") as tmpdir:
             filepath = os.path.join(tmpdir, "test_multi_suppressed.FCStd")
-            self.Doc.saveAs(filepath)
-            FreeCAD.closeDocument(self.Doc.Name)
+            save_document_as(self.Doc, filepath)
+            close_document(self.Doc)
             self.Doc = FreeCAD.openDocument(filepath)
 
         self.assertTrue(
@@ -258,7 +259,7 @@ class TestSuppressedStrikethrough(unittest.TestCase):
         FreeCADGui.activateView("Gui::View3DInventor", True)
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
     def _createBodyWithBox(self):
         self.Body = self.Doc.addObject("PartDesign::Body", "Body")
@@ -268,7 +269,7 @@ class TestSuppressedStrikethrough(unittest.TestCase):
         self.Box.Length = 10.0
         self.Box.Width = 10.0
         self.Box.Height = 10.0
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         QtGui.QApplication.processEvents()
 
     def testSuppressedShowsStrikethrough(self):
@@ -276,7 +277,7 @@ class TestSuppressedStrikethrough(unittest.TestCase):
         self._createBodyWithBox()
 
         self.Box.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         QtGui.QApplication.processEvents()
 
         tree = _findTreeWidget()
@@ -302,11 +303,11 @@ class TestSuppressedStrikethrough(unittest.TestCase):
         self._createBodyWithBox()
 
         self.Box.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         QtGui.QApplication.processEvents()
 
         self.Box.Suppressed = False
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         QtGui.QApplication.processEvents()
 
         tree = _findTreeWidget()
@@ -330,16 +331,16 @@ class TestSuppressedStrikethrough(unittest.TestCase):
         self._createBodyWithBox()
 
         self.Box.Suppressed = True
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         QtGui.QApplication.processEvents()
 
         # Save
         with tempfile.TemporaryDirectory(prefix="freecad_test_suppressed_") as tmpdir:
             filepath = os.path.join(tmpdir, "test_strikethrough.FCStd")
-            self.Doc.saveAs(filepath)
+            save_document_as(self.Doc, filepath)
 
             # Close
-            FreeCAD.closeDocument(self.Doc.Name)
+            close_document(self.Doc)
             QtGui.QApplication.processEvents()
 
             # Reopen

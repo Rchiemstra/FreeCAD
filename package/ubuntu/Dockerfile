@@ -51,6 +51,10 @@ RUN /tmp/install-apt-packages.sh \
 #                  Material (cardutils) and FEM yml-mesh tests all `import yaml`
 #                  at runtime. GitHub's ubuntu-24.04 runners ship PyYAML in the
 #                  runner env, which is why upstream CI never hits this.
+#   ifcopenshell - BIM nativeifc tests. Pinned below 0.9: 0.9.0 removed
+#                  file/entity_instance.wrapped_data, which nativeifc still
+#                  uses. The python3 -c check fails the image build if the
+#                  installed version lacks that API.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          clang-format \
@@ -58,7 +62,13 @@ RUN apt-get update \
          python3-yaml \
          git \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir --break-system-packages ifcopenshell
+    && pip install --no-cache-dir --break-system-packages "ifcopenshell<0.9" \
+    && python3 -c "import ifcopenshell, ifcopenshell.guid; \
+f = ifcopenshell.file(schema='IFC4'); \
+e = f.createIfcProject(ifcopenshell.guid.new()); \
+f.wrapped_data.schema_name(); \
+e.wrapped_data.declaration().as_entity().all_attributes(); \
+print('ifcopenshell', ifcopenshell.version, 'provides the nativeifc API')"
 
 # UTF-8 locale: with no LANG set, CPython's filesystem encoding degrades to
 # 'ascii' inside the container -- BaseTests.FileSystem.testEncoding asserts

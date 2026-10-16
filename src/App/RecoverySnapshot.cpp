@@ -42,6 +42,7 @@
 #include "Application.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "RecoverySnapshot.h"
 
 namespace
@@ -450,6 +451,21 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
                                          const RecoverySnapshotSaveOptions& options)
 {
     auto& mutableDocument = const_cast<Document&>(doc);
+    // Headless and GUI callers may be off the lane owner thread. Hop first so
+    // lifecycle pins, commit locks, and serialization all run on the owner.
+    if (!doc.isCollaborationOwnerThread()) {
+        if (auto* lane = mutableDocument.executionLane()) {
+            return lane->dispatchToOwner(
+                [&doc, &options] {
+                    return writeRecoverySnapshotToTransientDir(doc, options);
+                },
+                true,
+                true);
+        }
+        throw Base::RuntimeError(
+            "Recovery snapshots must be written on the document owner thread");
+    }
+
     // A recovery archive is still a document serialization.  Reject it at
     // the prepared-commit boundary before pinning lifecycle state, reading
     // document identity, or deriving/touching any filesystem path.
@@ -459,15 +475,12 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
         throw Base::RuntimeError(
             "Recovery snapshots cannot start while document close is sealed");
     }
-    if (!doc.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError("Recovery snapshots must be written on the document owner thread");
-    }
 
     std::unique_lock<std::recursive_mutex> commitLock(
         mutableDocument.collaborationCommitMutex()
     );
     const auto identity = doc.collaborationIdentity();
-    if (!doc.canWriteRecoverySnapshot() || doc.collaborationStableReadBlocked()
+    if (!doc.canWriteRecoverySnapshot()
         || doc.collaborationNotificationsReplaying()
         || doc.collaborationLifecycleMutationBlocked()
         || identity.state != DocumentLifecycleState::Live) {
@@ -508,7 +521,7 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
         }
 
         const auto identityAfterSerialization = doc.collaborationIdentity();
-        if (!doc.canWriteRecoverySnapshot() || doc.collaborationStableReadBlocked()
+        if (!doc.canWriteRecoverySnapshot()
             || doc.collaborationNotificationsReplaying()
             || identityAfterSerialization.state != DocumentLifecycleState::Live
             || captureRecoverySnapshotMetadata(doc) != metadata) {

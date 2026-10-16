@@ -24,8 +24,13 @@
 #include <limits>
 #include <boost/algorithm/string/predicate.hpp>
 
+#include <App/Document.h>
+#include <App/DocumentCommand.h>
+#include <App/DocumentObject.h>
 #include <Base/Tools.h>
+#include <Base/Type.h>
 
+#include "DocumentExecutionIngress.h"
 #include "PropertyItem.h"
 #include "PropertyModel.h"
 #include "PropertyView.h"
@@ -86,6 +91,18 @@ bool PropertyModel::setData(const QModelIndex& index, const QVariant& value, int
     // we check whether the data has really changed, otherwise we ignore it
     if (role == Qt::EditRole) {
         auto item = static_cast<PropertyItem*>(index.internalPointer());
+        // Model edits go through trySubmit; reject while the document lane is busy.
+        for (App::Property* prop : item->getPropertyData()) {
+            auto* object = prop ? freecad_cast<App::DocumentObject*>(prop->getContainer()) : nullptr;
+            auto* document = object ? object->getDocument() : nullptr;
+            if (document && documentExecutionLaneBusy(*document)) {
+                App::DocumentCommandSubmitOutcome outcome;
+                outcome.result = App::DocumentCommandSubmitResult::Busy;
+                outcome.diagnostic = "document execution lane is busy";
+                reportDocumentCommandSubmitBlocked(*document, outcome);
+                return false;
+            }
+        }
         QVariant data = item->data(index.column(), role);
         if (data.userType() == QMetaType::Double && value.userType() == QMetaType::Double) {
             // since we store some properties as floats we get some round-off

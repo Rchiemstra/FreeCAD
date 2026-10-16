@@ -32,7 +32,9 @@
 
 #include <Base/Persistence.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
+#include <Gui/DocumentPresentationCache.h>
 #include <Gui/PersonalViewContext.h>
+#include <Gui/PresentationApplyScheduler.h>
 #include <Gui/SharedPresentationCoordinator.h>
 #include <Gui/TreeItemMode.h>
 
@@ -47,6 +49,9 @@ class Matrix4D;
 namespace App
 {
 class Document;
+enum class DocumentCommandKind;
+enum class DocumentCommandState;
+using DocumentCommandId = std::uint64_t;
 struct DocumentSaveOutcome;
 class DocumentObject;
 class DocumentObjectGroup;
@@ -180,11 +185,19 @@ public:
 
     /** @name I/O of the document */
     //@{
+    /** Which close should be re-issued when an in-flight lane Save finishes. */
+    enum class PendingLaneCloseKind
+    {
+        None,
+        Document,
+        Application
+    };
+
     unsigned int getMemSize() const override;
     /// Save the document
     bool save();
     /// Save the document under a new file name
-    bool saveAs();
+    bool saveAs(PendingLaneCloseKind closeAfter = PendingLaneCloseKind::None);
     /// Save a copy of the document under a new file name
     bool saveCopy();
     /// Save all open document
@@ -230,6 +243,46 @@ public:
     /** Pointer-free revision provider for deliberately shared ViewProvider state. */
     [[nodiscard]] SharedPresentationRevisionIndex& sharedPresentationRevisions();
     [[nodiscard]] const SharedPresentationRevisionIndex& sharedPresentationRevisions() const;
+
+    /**
+     * GUI-owned committed presentation cache for tree/property/selection/scene.
+     * Observation-only while the document execution lane is busy.
+     */
+    [[nodiscard]] DocumentPresentationCache& presentationCache();
+    [[nodiscard]] const DocumentPresentationCache& presentationCache() const;
+    [[nodiscard]] PresentationApplyScheduler& presentationApplyScheduler();
+    /** Pump bounded presentation apply slices (~4 ms default). */
+    [[nodiscard]] PresentationApplyPumpResult pumpPresentationApply(int budgetMs = 4);
+    /** Enqueue one pointer-free presentation packet for incremental apply. */
+    void enqueuePresentationDelta(PresentationDelta&& delta);
+    /**
+     * Capture one immutable presentation revision at a stable model boundary
+     * (post-recompute) and enqueue it for GUI apply. Pointer-free only.
+     */
+    void publishPresentationRevisionFromModel();
+    /** Install the cache's committed Coin root into all 3D views for this document. */
+    void syncCommittedPresentationInViewers();
+    /** True after a successful presentation commit until idle live updateData. */
+    [[nodiscard]] bool prefersCommittedPresentation() const noexcept;
+    /**
+     * After the document is stable and the lane is idle, clear committed-Coin
+     * preference and refresh live ViewProvider Coin (skipped while busy).
+     */
+    void catchUpIdleLivePresentation();
+    /**
+     * Live Coin and main-window updates must wait. True off the GUI thread,
+     * while collaboration notifications replay, while the stable signal still
+     * holds the document lock, or while the execution lane is busy.
+     */
+    [[nodiscard]] bool deferLivePresentationUpdates() const;
+    /** Queue catchUpIdleLivePresentation() for after replay and the lock clear. */
+    void scheduleLivePresentationCatchUp();
+    /**
+     * Record that a show()/hide() of \a viewProvider was deferred, so the next
+     * catch-up re-syncs its scene visibility with Visibility. Providers not
+     * recorded keep their scene state (e.g. scene-only temporary visibility).
+     */
+    void noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider);
     /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
     void publishSharedPresentationSchemaMutation(
         const Gui::ViewProvider& viewProvider,
@@ -383,6 +436,35 @@ public:
     void undo(int iSteps);
     /// Will REDO one or more steps
     void redo(int iSteps);
+    /** Finalize redo view-provider children after lane redo completes. */
+    void onExecutionLaneRedoCompleted();
+    /** Clear transacting state after a terminal lane undo/redo command. */
+    void finishExecutionLaneUndoRedo(App::DocumentCommandKind kind,
+                                     App::DocumentCommandState state,
+                                     App::DocumentCommandId commandId);
+    /** Refresh modified state after a terminal lane save command. */
+    void finishExecutionLaneSave(App::DocumentCommandState state);
+
+    /** Mark this document to close after the in-flight lane Save completes. */
+    void setPendingLaneCloseAfterSave(PendingLaneCloseKind kind) noexcept;
+    /** Return true if a close is waiting on an in-flight lane Save. */
+    bool isPendingLaneClose() const noexcept;
+    /** Return and clear the pending close. None if nothing was pending. */
+    PendingLaneCloseKind consumePendingLaneClose() noexcept;
+    /**
+     * Skip the next save prompt in canClose(). Used when a document close is
+     * re-issued after the save already finished or the user chose discard.
+     */
+    void suppressNextSavePrompt() noexcept;
+    /**
+     * Application close should not prompt for or attempt to save this document
+     * (stalled-lane skip, or "close without saving" after a failed app-close save).
+     */
+    void markSkipSaveOnClose() noexcept;
+    bool skipsSaveOnClose() const noexcept;
+    bool consumeSkipSaveOnClose() noexcept;
+    /** Close this document's views again, without an application quit. */
+    void reissueDocumentClose();
     /** Check if the document is performing undo/redo transaction
      *
      * Unlike App::Document::isPerformingTransaction(), Gui::Document will
@@ -415,6 +497,7 @@ private:
     void resetIfEditing();
     // handles the scene graph nodes to correctly group child and parents
     void handleChildren3D(ViewProvider* viewProvider, bool deleting = false);
+    void slotBecameStable(const App::Document& doc);
 
     /// Check other documents for the same transaction ID
     bool checkTransactionID(bool undo, int iSteps);

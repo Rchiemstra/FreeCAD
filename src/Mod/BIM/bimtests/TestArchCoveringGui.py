@@ -23,6 +23,7 @@ import Arch
 import Draft
 import ArchCoveringGui
 import FreeCAD as App
+from Test.GuiRecompute import recompute_document, close_document
 import FreeCADGui as Gui
 from FreeCAD import Qt
 from draftutils import params
@@ -50,7 +51,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
     def setUp(self):
         super().setUp()
         self.box = self.document.addObject("Part::Box", "BaseBox")
-        self.document.recompute()
+        recompute_document(self.document)
         self.panel = None
         # Snapshot the hardcoded defaults and immediately write them into the param store so that
         # every test begins with the same known values, even if a prior test (or a prior run of the
@@ -224,7 +225,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
         """Verify that a covering cannot be assigned as its own base."""
         self.printTestMessage("self-dependency filter...")
         covering = Arch.makeCovering(self.box)
-        self.document.recompute()
+        recompute_document(self.document)
 
         # Open in Edit Mode
         self.panel = ArchCoveringGui.ArchCoveringTaskPanel(obj=covering)
@@ -253,7 +254,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
         # test-specific values. _compute_texture_mapping reads properties directly without
         # recomputing, so JointWidth=0 (chosen for clean period math: period = TileLength) is safe
         # here but would trigger JOINT_TOO_SMALL if execute() saw it.
-        self.document.recompute()
+        recompute_document(self.document)
         covering.TileLength = 200.0
         covering.TileWidth = 200.0
         covering.JointWidth = 0.0
@@ -292,7 +293,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
         # The full Placement object must be assigned. This is done after recompute(), because
         # execute() resets Placement from the geometry engine result. _compute_texture_mapping reads
         # Placement directly and does not trigger a recompute, so the value is stable.
-        self.document.recompute()
+        recompute_document(self.document)
         covering.Placement = App.Placement(
             covering.Placement.Base, App.Rotation(App.Vector(0, 0, 1), 45)
         )
@@ -327,7 +328,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
         # Setup
         base = (self.box, ["Face6"])
         covering = Arch.makeCovering(base)
-        self.document.recompute()
+        recompute_document(self.document)
 
         # Minimal 1x1 PNG to prevent "division by zero" errors in gui_utils and "could not be read"
         # warnings in Coin3D.
@@ -394,7 +395,7 @@ class TestArchCoveringGui(TestArchBaseGui.TestArchBaseGui):
         self.printTestMessage("edit mode accept...")
         covering = Arch.makeCovering(self.box)
         covering.TileWidth = 300.0
-        self.document.recompute()
+        recompute_document(self.document)
 
         self.panel = ArchCoveringGui.ArchCoveringTaskPanel(obj=covering)
 

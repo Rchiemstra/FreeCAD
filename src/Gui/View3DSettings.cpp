@@ -29,6 +29,7 @@
 
 #include <Base/Builder3D.h>
 #include <Base/Color.h>
+#include <App/DocumentWouldBlock.h>
 
 #include "NaviCube.h"
 #include "Navigation/NavigationStyle.h"
@@ -36,6 +37,7 @@
 #include "SoFCSelectionAction.h"
 #include "View3DSettings.h"
 #include "View3DInventorViewer.h"
+#include "Utilities.h"
 
 #include <Base/Tools.h>
 
@@ -563,8 +565,24 @@ NaviCubeSettings::NaviCubeSettings(ParameterGrp::handle hGrp, View3DInventorView
     , _viewer(view)
 {
     connectParameterChanged = hGrp->Manager()->signalParamChanged.connect(
-        [this](ParameterGrp*, ParameterGrp::ParamType, const char* Name, const char*) {
-            parameterChanged(Name);
+        [this](ParameterGrp* grp, ParameterGrp::ParamType, const char* Name, const char*) {
+            // The manager signal fires for every parameter of every group.
+            if (grp != static_cast<ParameterGrp*>(this->hGrp) || !Name) {
+                return;
+            }
+            if (App::DocumentWouldBlock::isGuiThread()) {
+                parameterChanged(Name);
+                return;
+            }
+            // Python features may set parameters while recomputing on the
+            // document execution lane; the NaviCube and Coin are GUI-thread only.
+            schedulePassiveGuiRefresh(
+                [alive = std::weak_ptr<bool>(lifetime), this, name = std::string(Name)] {
+                    if (!alive.expired()) {
+                        parameterChanged(name.c_str());
+                    }
+                }
+            );
         }
     );
 }

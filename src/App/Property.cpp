@@ -103,6 +103,33 @@ void publishPropertyMutation(Property& property, bool structural)
     static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 
+constexpr unsigned long serializedPropertyStatusMask()
+{
+    return (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+}
+
+void capturePersistedStaticStatus(Property& property,
+                                  Document& document,
+                                  unsigned long oldStatus,
+                                  unsigned long newStatus)
+{
+    if (property.testStatus(Property::PropDynamic)) {
+        return;
+    }
+    if (((oldStatus ^ newStatus) & serializedPropertyStatusMask()) == 0) {
+        return;
+    }
+    auto* object = dynamic_cast<DocumentObject*>(property.getContainer());
+    if (!object || object->getDocument() != &document) {
+        return;
+    }
+    document.captureActiveTransactionProperty(object, &property);
+}
+
 }  // namespace
 
 
@@ -442,10 +469,20 @@ void Property::setStatusValue(unsigned long status)
         |(1<<Busy);
     // clang-format on
 
+    // User1..User3 are runtime re-entrancy lockers (Base::ObjectStatusLocker,
+    // e.g. ViewProviderDocumentObject::updateView); they are never persisted
+    // and are not observable state, so they are neither guarded nor published.
+    // Otherwise another thread's or document's atomic presentation admission,
+    // taken while a locker is alive, throws from the locker's destructor and
+    // terminates. (User4 does not fit in StatusBits.)
+    static constexpr unsigned long runtimeLockerMask =
+        (1UL << User1) | (1UL << User2) | (1UL << User3);
+
     status &= ~mask;
     status |= StatusBits.to_ulong() & mask;
     unsigned long oldStatus = StatusBits.to_ulong();
-    if (status != oldStatus && father) {
+    const bool onlyRuntimeLockerBits = ((status ^ oldStatus) & ~runtimeLockerMask) == 0;
+    if (status != oldStatus && father && !onlyRuntimeLockerBits) {
         if (auto* document = documentFromPropertyContainer(father)) {
             enforceAtomicPresentationMutationTarget(document);
             // User3/Touched and other non-schema flags are temporary lockers
@@ -454,6 +491,7 @@ void Property::setStatusValue(unsigned long status)
             // ensurePropertyStatusMutationAllowed ignores those runtime bits.
             Internal::CollaborationStructuralMutationRecorder::
                 ensurePropertyStatusMutationAllowed(*document, *this, oldStatus, status);
+            capturePersistedStaticStatus(*this, *document, oldStatus, status);
         }
         else {
             // ViewProvider properties are GUI-owned containers. Their existing
@@ -465,7 +503,7 @@ void Property::setStatusValue(unsigned long status)
     StatusBits = decltype(StatusBits)(status);
 
     if (father) {
-        if (status != oldStatus) {
+        if (status != oldStatus && !onlyRuntimeLockerBits) {
             publishPropertyMutation(*this, true);
         }
         if (status != oldStatus) {

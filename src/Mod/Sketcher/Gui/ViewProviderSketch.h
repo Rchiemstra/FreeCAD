@@ -680,6 +680,11 @@ public:
     void attach(App::DocumentObject*) override;
     void updateData(const App::Property*) override;
 
+    [[nodiscard]] Gui::ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const Gui::ViewProviderPresentationCaptureRequest& request,
+        Gui::PresentationRenderBuffer& buffer) const override;
+
     void setActive(bool active) override;
 
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;

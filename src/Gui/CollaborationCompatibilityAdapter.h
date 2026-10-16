@@ -6,7 +6,6 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <thread>
 
 namespace Gui
 {
@@ -93,10 +92,14 @@ using CollaborationCompatibilityCommit = std::function<
 class GuiExport CollaborationCompatibilityAdapter
 {
 public:
+    using OwnerThreadPredicate = std::function<bool()>;
+
     CollaborationCompatibilityAdapter();
 
     CollaborationCompatibilityAdapter(const CollaborationCompatibilityAdapter&) = delete;
     CollaborationCompatibilityAdapter& operator=(const CollaborationCompatibilityAdapter&) = delete;
+
+    void bindOwnerThreadPredicate(OwnerThreadPredicate predicate);
 
     [[nodiscard]] CollaborationCompatibilityMutationOutcome execute(
         CollaborationCompatibilityMutationDeclaration declaration,
@@ -111,7 +114,7 @@ public:
         const CollaborationCompatibilityMutationDeclaration& declaration);
 
 private:
-    const std::thread::id _ownerThread;
+    OwnerThreadPredicate _isOwnerThread;
     bool _executing {false};
 };
 

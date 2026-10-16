@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <functional>
 #include <initializer_list>
 #include <tuple>
 #include <memory>
@@ -30,12 +31,16 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <cctype>
 #include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <QApplication>
+#include <QMdiSubWindow>
+#include <QPointer>
+#include <QCoreApplication>
 #include <QBuffer>
 #include <QCheckBox>
 #include <QFileInfo>
@@ -43,6 +48,7 @@
 #include <QOpenGLWidget>
 #include <QTextStream>
 #include <QStatusBar>
+#include <QThread>
 #include <QTimer>
 #include <Inventor/actions/SoSearchAction.h>
 #include <Inventor/SoDB.h>
@@ -61,11 +67,17 @@
 
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
+#include <App/DocumentHandle.h>
 #include <App/DocumentCollaborationService.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/DocumentExecutionLane.h>
+#include <App/GeoFeature.h>
+#include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <App/ElementNamingUtils.h>
+#include <App/MutationClassification.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Matrix.h>
@@ -77,6 +89,8 @@
 #include "DocumentPy.h"
 #include "Application.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
+#include <App/DocumentPresentationBoundary.h>
 #include "Control.h"
 #include "FileDialog.h"
 #include "MainWindow.h"
@@ -85,10 +99,17 @@
 #include "Selection.h"
 #include "Thumbnail.h"
 #include "Tree.h"
+#include "Utilities.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
+#include "DocumentPresentationCache.h"
+#include "PresentationApplyScheduler.h"
+#include "PresentationDelta.h"
 #include "ViewProvider.h"
 #include "ViewProviderDocumentObject.h"
+#include "ViewProviderPresentationCapability.h"
+#include "GuiPythonGate.h"
+#include <App/DocumentRevisionIndex.h>
 #include "ViewProviderDocumentObjectGroup.h"
 #include "WaitCursor.h"
 #include "WindowLayout.h"
@@ -109,6 +130,13 @@ struct DocumentP
     SharedPresentationCoordinator sharedPresentationCoordinator;
     mutable SharedPresentationRevisionIndex sharedPresentationRevisions;
     mutable std::optional<SharedPresentationPersistenceCapture> pendingPresentationSave;
+    DocumentPresentationCache presentationCache;
+    std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
+    /** Keep committed Coin visible after apply until idle live updateData. */
+    bool _preferCommittedPresentation {false};
+    bool _livePresentationCatchUpQueued {false};
+    /** Providers whose show()/hide() was deferred; compared, never dereferenced. */
+    std::set<const ViewProviderDocumentObject*> _deferredVisibilitySync;
     PersonalViewContextStore personalViewContexts;
     bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
@@ -117,6 +145,14 @@ struct DocumentP
     bool _isClosing;
     bool _isModified;
     bool _isTransacting;
+    bool groupedUndoRedo {true};
+    /** Which close to re-issue when the in-flight lane Save reaches a terminal state. */
+    Document::PendingLaneCloseKind _pendingLaneClose {Document::PendingLaneCloseKind::None};
+    /** canClose() skips the save prompt once. */
+    bool _suppressSavePrompt {false};
+    /** closeAllDocuments() skips the save prompt for this document. */
+    bool _skipSaveOnClose {false};
+    std::shared_ptr<UndoRedoCompletionAnchor> undoRedoCompletionAnchor;
     bool _isActive;
     bool _restoredGuiDocument;
     bool _changeViewTouchDocument;
@@ -175,6 +211,7 @@ struct DocumentP
     Connection connectUndoDocument;
     Connection connectRedoDocument;
     Connection connectRecomputed;
+    Connection connectBecameStable;
     Connection connectSkipRecompute;
     Connection connectTransactionAppend;
     Connection connectTransactionRemove;
@@ -516,9 +553,17 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->_editWantsRestore = false;
     d->_editWantsRestorePrevious = false;
 
+    d->collaborationCompatibilityAdapter.bindOwnerThreadPredicate([this]() {
+        return d->_pcDocument && d->_pcDocument->isCollaborationOwnerThread();
+    });
+
     const auto collaborationIdentity = pcDocument->collaborationIdentity();
     d->sharedPresentationRevisions.bindDocumentIdentity(
         collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch);
+    d->presentationCache.bindDocumentIdentity(
+        collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch);
+    d->presentationApplyScheduler =
+        std::make_unique<PresentationApplyScheduler>(d->presentationCache);
 
     // NOLINTBEGIN
     //  Setup the connections
@@ -596,6 +641,9 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectRecomputed = pcDocument->signalRecomputed.connect(
         std::bind(&Gui::Document::slotRecomputed, this, sp::_1)
     );
+    d->connectBecameStable = pcDocument->signalBecameStable.connect(
+        std::bind(&Gui::Document::slotBecameStable, this, sp::_1)
+    );
     d->connectSkipRecompute = pcDocument->signalSkipRecompute.connect(
         std::bind(&Gui::Document::slotSkipRecompute, this, sp::_1, sp::_2)
     );
@@ -627,6 +675,10 @@ Document::Document(App::Document* pcDocument, Application* app)
 
 Document::~Document()
 {
+    if (d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor->active.store(false, std::memory_order_release);
+    }
+
     // disconnect everything to avoid to be double-deleted
     // in case an exception is raised somewhere
     d->connectNewObject.disconnect();
@@ -650,6 +702,7 @@ Document::~Document()
     d->connectUndoDocument.disconnect();
     d->connectRedoDocument.disconnect();
     d->connectRecomputed.disconnect();
+    d->connectBecameStable.disconnect();
     d->connectSkipRecompute.disconnect();
     d->connectTransactionAppend.disconnect();
     d->connectTransactionRemove.disconnect();
@@ -659,6 +712,8 @@ Document::~Document()
 
     // e.g. if document gets closed from within a Python command
     d->_isClosing = true;
+    d->_preferCommittedPresentation = false;
+    syncCommittedPresentationInViewers();
     // calls Document::detachView() and alter the view list
     std::list<Gui::BaseView*> temp = d->baseViews;
     for (auto& it : temp) {
@@ -1144,6 +1199,9 @@ void Document::slotNewObject(const App::DocumentObject& Obj)
 
 void Document::slotDeletedObject(const App::DocumentObject& Obj)
 {
+    // Replay may follow same-name replacement. Compare the deleted identity,
+    // never resolve its old name against the current document here.
+    d->personalViewContexts.retireObjectSelection(reinterpret_cast<std::uintptr_t>(&Obj));
     // cycling to all views of the document
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (!viewProvider) {
@@ -1196,8 +1254,29 @@ void Document::beforeDelete()
 
 void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)
 {
+    // Replay, the stable-signal lock, a busy lane, an atomic presentation
+    // admission, or a non-GUI caller must not touch Coin or getMainWindow().
+    // catchUpIdleLivePresentation() runs after scheduleGuiSingleShot once
+    // those are clear.
+    std::optional<App::LivePresentationRefreshScope> refresh;
+    if (!deferLivePresentationUpdates()) {
+        refresh.emplace();
+    }
+    if (!refresh || !refresh->acquired()) {
+        if (&Prop == &Obj.Visibility) {
+            noteDeferredVisibilityChange(
+                freecad_cast<ViewProviderDocumentObject*>(getViewProvider(&Obj)));
+        }
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (viewProvider) {
+        if (d->_preferCommittedPresentation) {
+            d->_preferCommittedPresentation = false;
+            syncCommittedPresentationInViewers();
+        }
         try {
             viewProvider->update(&Prop);
             if (d->_editingViewer && d->_editingObject && d->_editViewProviderParent
@@ -1234,7 +1313,9 @@ void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Prop
         }
     }
 
-    getMainWindow()->updateActions(true);
+    if (Application::Instance) {
+        Application::Instance->updateActions(true);
+    }
 }
 
 void Document::slotRelabelObject(const App::DocumentObject& Obj)
@@ -1310,8 +1391,173 @@ void Document::slotRecomputed(const App::Document& doc)
     if (d->_pcDocument != &doc) {
         return;
     }
-    getMainWindow()->updateActions();
-    TreeWidget::updateStatus();
+    // Presentation capture runs on the document owner thread via the boundary hook.
+    // Defer only passive GUI refresh so signal marshalling stays cheap.
+    const std::string docName = doc.getName();
+    const bool presentationBoundaryActive = App::hasDocumentPresentationBoundaryCallback();
+    Gui::schedulePassiveGuiRefresh([docName, presentationBoundaryActive]() {
+        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+        if (!appDoc) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        if (!presentationBoundaryActive) {
+            guiDoc->publishPresentationRevisionFromModel();
+        }
+        if (auto* window = getMainWindow()) {
+            window->updateActions();
+        }
+        TreeWidget::updateStatus();
+    });
+}
+
+void Document::slotBecameStable(const App::Document& doc)
+{
+    if (d->_pcDocument != &doc) {
+        return;
+    }
+
+    // Still inside the owner's blocking marshal. Defer past lock release before
+    // touching live Coin (same AutoSaver / DrawViewDraft pattern).
+    scheduleLivePresentationCatchUp();
+}
+
+bool Document::deferLivePresentationUpdates() const
+{
+    if (!d->_pcDocument || !App::MainThreadSignalConfig::isMainThread()) {
+        return true;
+    }
+    // Undo/redo apply on the lane owner through dispatchToOwner(), which
+    // does not mark the lane busy. Catch-up in that window writes view
+    // properties over the values Paste just restored.
+    return d->_pcDocument->collaborationNotificationsReplaying()
+        || d->_pcDocument->collaborationStableNotificationActive()
+        || documentExecutionLaneBusy(*d->_pcDocument)
+        || d->_pcDocument->isPerformingTransaction()
+        || App::atomicPresentationMutationAdmissionActive();
+}
+
+void Document::noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider)
+{
+    if (viewProvider) {
+        d->_deferredVisibilitySync.insert(viewProvider);
+    }
+}
+
+void Document::scheduleLivePresentationCatchUp()
+{
+    if (!d->_pcDocument || d->_livePresentationCatchUpQueued) {
+        return;
+    }
+    d->_livePresentationCatchUpQueued = true;
+    const std::string docName = d->_pcDocument->getName();
+    Gui::scheduleGuiSingleShot(0, [docName]() {
+        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+        if (!appDoc || !Application::Instance) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        guiDoc->d->_livePresentationCatchUpQueued = false;
+        guiDoc->catchUpIdleLivePresentation();
+    });
+}
+
+void Document::catchUpIdleLivePresentation()
+{
+    if (isAboutToClose() || !d->_pcDocument) {
+        return;
+    }
+
+    // updateView() restores property status bits from ObjectStatusLocker
+    // destructors. Under an atomic presentation admission (for any document)
+    // the mutation guard throws there, and a throw from a destructor
+    // terminates, so wait for the admission to end.
+    if (deferLivePresentationUpdates()
+        || d->_pcDocument->mustExecute()
+        || d->_pcDocument->testStatus(App::Document::Recomputing)
+        || App::atomicPresentationMutationAdmissionActive()) {
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
+    // Close the gap between the idle checks and provider callbacks. The
+    // reservation never holds its mutex while refreshing or redrawing, and
+    // refuses new admission until all live presentation work has returned.
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired()) {
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
+    // Live Coin was skipped while the lane was busy or notifications were
+    // replaying. Drop committed preference and refresh view providers so
+    // picking / materials / edit overlays match the post-recompute model.
+    d->_preferCommittedPresentation = false;
+    syncCommittedPresentationInViewers();
+
+    // Only re-apply show()/hide() calls that were actually deferred; other
+    // providers may hold intentional scene-only visibility (e.g. a PartDesign
+    // boolean exposing its active tool body) that Visibility does not mirror.
+    const auto deferredVisibility = std::exchange(d->_deferredVisibilitySync, {});
+    for (auto& entry : d->_ViewProviderMap) {
+        ViewProviderDocumentObject* viewProvider = entry.second;
+        if (!viewProvider) {
+            continue;
+        }
+        try {
+            // Deferred slotChangedObject records the provider but skips
+            // ViewProviderDocumentObject::update(), the only copy of App
+            // Visibility onto the view provider. updateView() below still
+            // refreshes every other App property through updateData().
+            const bool deferred = deferredVisibility.contains(viewProvider);
+            if (deferred) {
+                if (App::DocumentObject* object = viewProvider->getObject()) {
+                    viewProvider->update(&object->Visibility);
+                }
+            }
+            const bool wantVisible = viewProvider->Visibility.getValue();
+            if (deferred && wantVisible != viewProvider->isShow()) {
+                if (wantVisible) {
+                    viewProvider->show();
+                }
+                else {
+                    viewProvider->hide();
+                }
+            }
+            const bool sceneOnlyVisible = !deferred && !wantVisible && viewProvider->isShow();
+            viewProvider->updateView();
+            if (sceneOnlyVisible && !viewProvider->isShow()) {
+                // updateView() re-applies Visibility; keep the scene-only exposure.
+                viewProvider->Gui::ViewProvider::show();
+            }
+            handleChildren3D(viewProvider);
+        }
+        catch (const Base::Exception& exception) {
+            exception.reportException();
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("C++ exception refreshing live presentation: " << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Cannot refresh live presentation for view provider");
+        }
+    }
+
+    for (auto* view : d->baseViews) {
+        auto* inventorView = dynamic_cast<View3DInventor*>(view);
+        if (!inventorView) {
+            continue;
+        }
+        if (auto* viewer = inventorView->getViewer()) {
+            viewer->redraw();
+        }
+    }
 }
 
 // This function is called when some asks to recompute a document that is marked
@@ -1354,12 +1600,20 @@ void Document::slotSkipRecompute(const App::Document& doc, const std::vector<App
     if (!obj || !obj->isAttachedToDocument() || (!objs.empty() && objs.front() != obj)) {
         return;
     }
-    obj->recomputeFeature(true);
+    // Section 3: do not call recomputeFeature directly on the GUI thread.
+    // Submit via the async ingress so the lane serialises it correctly.
+    requestDocumentRecompute(
+        *d->_pcDocument, {obj}, /*force=*/true, /*options=*/0, /*quiet=*/true);
 }
 
 void Document::slotTouchedObject(const App::DocumentObject& Obj)
 {
-    getMainWindow()->updateActions(true);
+    if (deferLivePresentationUpdates()) {
+        scheduleLivePresentationCatchUp();
+    }
+    else if (auto* window = getMainWindow()) {
+        window->updateActions(true);
+    }
     FC_LOG(Obj.getFullName() << " touched");
 }
 
@@ -1693,6 +1947,159 @@ const SharedPresentationRevisionIndex& Document::sharedPresentationRevisions() c
     return d->sharedPresentationRevisions;
 }
 
+DocumentPresentationCache& Document::presentationCache()
+{
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    d->presentationCache.bindDocumentIdentity(
+        identity.instanceId, identity.lifecycleEpoch);
+    return d->presentationCache;
+}
+
+const DocumentPresentationCache& Document::presentationCache() const
+{
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    d->presentationCache.bindDocumentIdentity(
+        identity.instanceId, identity.lifecycleEpoch);
+    return d->presentationCache;
+}
+
+PresentationApplyScheduler& Document::presentationApplyScheduler()
+{
+    if (!d->presentationApplyScheduler) {
+        d->presentationApplyScheduler =
+            std::make_unique<PresentationApplyScheduler>(d->presentationCache);
+    }
+    return *d->presentationApplyScheduler;
+}
+
+PresentationApplyPumpResult Document::pumpPresentationApply(const int budgetMs)
+{
+    const auto result = presentationApplyScheduler().pump(budgetMs);
+    if (result.committedRevision) {
+        // The committed root is not pickable and only bridges until the live
+        // view providers catch up (a busy lane prefers it regardless, see
+        // syncCommittedPresentationInViewers()). If the live catch-up already
+        // ran before this revision was applied, nothing would clear the
+        // preference again and picking would stay dead until the next change.
+        d->_preferCommittedPresentation = d->_livePresentationCatchUpQueued;
+    }
+    syncCommittedPresentationInViewers();
+    return result;
+}
+
+bool Document::prefersCommittedPresentation() const noexcept
+{
+    return d->_preferCommittedPresentation;
+}
+
+void Document::syncCommittedPresentationInViewers()
+{
+    SoSeparator* committedRoot = presentationCache().committedCoinRoot();
+    const bool hasCommittedPresentation = presentationCache().current().has_value();
+    const bool preferCommitted = committedRoot != nullptr && hasCommittedPresentation
+        && (d->_preferCommittedPresentation
+            || documentExecutionLaneBusy(*d->_pcDocument));
+    for (auto* view : d->baseViews) {
+        auto* inventorView = dynamic_cast<View3DInventor*>(view);
+        if (!inventorView) {
+            continue;
+        }
+        if (auto* viewer = inventorView->getViewer()) {
+            // When not preferring committed, uninstall the committed Coin
+            // sibling so live objectGroup is the only navigable geometry.
+            viewer->installCommittedPresentationRoot(
+                preferCommitted ? committedRoot : nullptr, preferCommitted);
+        }
+    }
+}
+
+void Document::enqueuePresentationDelta(PresentationDelta&& delta)
+{
+    presentationApplyScheduler().enqueue(std::move(delta));
+    // Ensure the ~4 ms pump keeps running across event-loop turns.
+    if (auto* main = getMainWindow()) {
+        main->updateActions(/*delay=*/true);
+    }
+}
+
+void Document::publishPresentationRevisionFromModel()
+{
+    if (App::hasDocumentPresentationBoundaryCallback()) {
+        return;
+    }
+    auto& cache = presentationCache();
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    cache.bindDocumentIdentity(identity.instanceId, identity.lifecycleEpoch);
+
+    PresentationDelta delta;
+    delta.revision.documentInstanceId = identity.instanceId;
+    delta.revision.lifecycleEpoch = identity.lifecycleEpoch;
+    delta.revision.sequence = cache.committedSequence() + 1;
+    delta.revision.sourceModelRevision =
+        d->_pcDocument->collaborationRevisions().current(
+            App::DocumentRevisionKey::documentStructure());
+    if (delta.revision.sourceModelRevision == 0) {
+        delta.revision.sourceModelRevision = delta.revision.sequence;
+    }
+    delta.status.revision = delta.revision;
+    delta.status.state = DocumentPresentationState::Applying;
+    delta.status.statusMessage = "presentation revision captured at recompute boundary";
+
+    for (const auto& entry : d->_ViewProviderMap) {
+        const App::DocumentObject* object = entry.first;
+        ViewProviderDocumentObject* provider = entry.second;
+        if (!object || !provider) {
+            continue;
+        }
+        const std::string stableIdentity =
+            d->_pcDocument->collaborationObjectIdentity(*object);
+
+        PresentationTreeNode node;
+        node.stableObjectIdentity = stableIdentity;
+        node.label = object->Label.getValue();
+        node.visible = provider->isShow();
+        delta.tree.push_back(std::move(node));
+
+        const auto captureDisplayProperty =
+            [&](const char* propertyName, const std::string& displayValue) {
+                if (propertyName == nullptr || displayValue.empty()) {
+                    return;
+                }
+                PresentationPropertyValue propertyValue;
+                propertyValue.stableObjectIdentity = stableIdentity;
+                propertyValue.propertyName = propertyName;
+                propertyValue.displayValue = displayValue;
+                delta.properties.push_back(std::move(propertyValue));
+            };
+        captureDisplayProperty("Label", object->Label.getValue());
+        captureDisplayProperty("Label2", object->Label2.getValue());
+        captureDisplayProperty(
+            "Visibility",
+            object->Visibility.getValue() ? std::string("true") : std::string("false"));
+
+        const bool adaptedProvider =
+            provider->presentationClassification()
+            == ViewProviderPresentationClassification::Adapted;
+        const auto featureAdmission =
+            GuiPythonGate::verifyFeaturePythonExecution(*object);
+        if (adaptedProvider && featureAdmission.executed()) {
+            const auto admission =
+                GuiPythonGate::verifyViewProviderPythonExecution(*provider);
+            if (!admission.executed()) {
+                continue;
+            }
+            ViewProviderPresentationCaptureRequest request;
+            request.stableObjectIdentity = stableIdentity;
+            PresentationRenderBuffer buffer;
+            if (provider->capturePresentationRenderBuffer(request, buffer)) {
+                delta.renderBuffers.push_back(std::move(buffer));
+            }
+        }
+    }
+
+    enqueuePresentationDelta(std::move(delta));
+}
+
 void Document::publishSharedPresentationSchemaMutation(
     const Gui::ViewProvider& viewProvider,
     std::string_view propertyName,
@@ -1784,11 +2191,6 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     allowedGuiWrites.erase(
         std::unique(allowedGuiWrites.begin(), allowedGuiWrites.end()),
         allowedGuiWrites.end());
-    std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
-    allowedAppWrites.reserve(request.presentationWrites.size());
-    for (const auto& write : request.presentationWrites) {
-        allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
-    }
     callbacks.makeAppDurable = [this]() {
         if (Application::Instance
             && Application::Instance->sharedPresentationNotificationAuditViolated()) {
@@ -1807,20 +2209,33 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
                 ? "native App transaction could not commit"
                 : committed.diagnostic};
     };
-    callbacks.serialize = [this,
-                            &atomicBoundaryResult,
-                            allowedAppWrites = std::move(allowedAppWrites)](
-                               SharedPresentationCommitWork&& work,
-                               SharedPresentationCommitCompletion&& complete) mutable {
-        auto serialized = d->_pcDocument->collaborationService()
-                              .serializeAtomicCompatibilityCallback(
-                                        std::move(allowedAppWrites),
-                                        [&]() {
-                                            work();
-                                            complete({true, {}});
-                                        });
-        atomicBoundaryResult.emplace(std::move(serialized));
-    };
+    if (!callbacks.serialize) {
+        std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
+        allowedAppWrites.reserve(request.presentationWrites.size());
+        for (const auto& write : request.presentationWrites) {
+            allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
+        }
+        callbacks.serialize = [this,
+                               &atomicBoundaryResult,
+                               allowedAppWrites = std::move(allowedAppWrites)](
+                                  SharedPresentationCommitWork&& work,
+                                  SharedPresentationCommitCompletion&& complete) mutable {
+            if (App::DocumentWouldBlock::isGuiThread()) {
+                throw App::DocumentWouldBlock(
+                    "DocumentWouldBlock on GUI thread; use DocumentHandle::trySubmit() "
+                    "or async document APIs instead of synchronous "
+                    "serializeAtomicCompatibilityCallback");
+            }
+            auto serialized = d->_pcDocument->collaborationService()
+                                  .serializeAtomicCompatibilityCallback(
+                                      std::move(allowedAppWrites),
+                                      [&]() {
+                                          work();
+                                          complete({true, {}});
+                                      });
+            atomicBoundaryResult.emplace(std::move(serialized));
+        };
+    }
 
     struct PublicationSuppression final
     {
@@ -1969,11 +2384,6 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     return result;
 }
 
-void Document::storePersonalViewContext(std::string actorId, PersonalViewContext context)
-{
-    d->personalViewContexts.store(std::move(actorId), std::move(context));
-}
-
 std::optional<PersonalViewContext>
 Document::personalViewContext(const std::string& actorId) const
 {
@@ -2035,6 +2445,43 @@ PersonalSelectionTarget parsePersonalSelectionTarget(const App::Document& docume
     }
     return target;
 }
+
+}  // namespace
+
+void Document::storePersonalViewContext(std::string actorId, PersonalViewContext context)
+{
+    // Resolve and store on the serial model owner, so no object can disappear
+    // while its binding is copied. Deferred GUI retirement needs only tokens
+    // under the store mutex, and never waits for or reads the live model.
+    if (auto* lane = d->_pcDocument->executionLane(); lane && !lane->isOwnerThread()) {
+        return lane->dispatchToOwner(
+            [this, actorId = std::move(actorId), context = std::move(context)]() mutable {
+                storePersonalViewContext(std::move(actorId), std::move(context));
+            });
+    }
+    d->personalViewContexts.store(std::move(actorId), std::move(context),
+        [this](const PersonalViewContext& value, const std::string& path) {
+            PersonalViewContextStore::SelectionIdentity identity {};
+            try {
+                // Use the same document qualification and path parsing as projection.
+                const auto target = parsePersonalSelectionTarget(*d->_pcDocument, value, path);
+                auto* root = d->_pcDocument->getObject(target.object.c_str());
+                App::ElementNamePair elementName;
+                auto* resolved = App::GeoFeature::resolveElement(
+                    root, target.subname.c_str(), elementName);
+                identity = {reinterpret_cast<std::uintptr_t>(root),
+                            reinterpret_cast<std::uintptr_t>(resolved)};
+            }
+            catch (const Base::ValueError&) {
+                // Storage remains an opaque value boundary. Invalid/foreign
+                // paths are diagnosed by projection, never matched by name.
+            }
+            return identity;
+        });
+}
+
+namespace
+{
 
 std::vector<PersonalSelectionTarget> personalSelectionTargets(
     const App::Document& document,
@@ -2753,20 +3200,44 @@ bool Document::save()
                 return false;
             }
 
-            Gui::WaitCursor wc;
+            bool saveCompleted = true;
             // save all documents
             for (auto doc : docs) {
-                // Changed 'mustExecute' status may be triggered by saving external document
-                if (!dmap[doc] && doc->mustExecute()) {
-                    App::AutoTransaction trans(doc, "Recompute");
-                    Command::doCommand(
-                        Command::Doc,
-                        "App.getDocument(\"%s\").recompute()",
-                        doc->getName()
-                    );
+                if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                    saveCompleted = false;
+                    continue;
                 }
 
-                Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
+                if (doc->executionLane()) {
+                    const auto outcome =
+                        submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                    if (outcome.accepted()) {
+                        scheduleSaveCommandCompletion(
+                            doc->getName(),
+                            doc->executionHandle().identity(),
+                            outcome.commandId);
+                        reportDocumentSaveAdmitted(*doc);
+                        // Admission is not completion — callers must not treat save as finished.
+                        saveCompleted = false;
+                        continue;
+                    }
+                    std::string saveFailureDiagnostic = outcome.diagnostic;
+                    reportDocumentCommandSubmitBlocked(*doc, outcome);
+                    if (!saveFailureDiagnostic.empty()
+                        && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
+                        continue;
+                    }
+                    saveCompleted = false;
+                    continue;
+                }
+
+                Gui::WaitCursor wc;
+                if (!doc->save()) {
+                    saveCompleted = false;
+                }
+            }
+            if (!saveCompleted) {
+                return false;
             }
         }
         catch (const Base::FileException& e) {
@@ -2789,7 +3260,7 @@ bool Document::save()
 }
 
 /// Save the document under a new file name
-bool Document::saveAs()
+bool Document::saveAs(const PendingLaneCloseKind closeAfter)
 {
     getMainWindow()->showMessage(QObject::tr("Save document under new filename…"));
 
@@ -2820,20 +3291,43 @@ bool Document::saveAs()
         // save as new file name
         try {
             Gui::WaitCursor wc;
-            std::string escapedstr = Base::Tools::escapedUnicodeFromUtf8(fn.toUtf8());
-            escapedstr = Base::Tools::escapeEncodeFilename(escapedstr);
-            // The legacy Python saveAs() deliberately keeps its historical
-            // None-on-false behavior. The GUI needs an authoritative outcome
-            // so a failed Save As cannot fall through as success during close.
-            Command::doCommand(
-                Command::Doc,
-                "_save_outcome = App.getDocument(\"%s\").saveAsWithOutcome(u\"%s\", True)\n"
-                "if not _save_outcome['success']:\n"
-                "    raise RuntimeError(_save_outcome.get('message') or "
-                "'The document could not be saved under the requested path')",
-                DocName,
-                escapedstr.c_str()
-            );
+            const std::string nativePath = fn.toUtf8().constData();
+            auto* appDocument = getDocument();
+            if (appDocument->executionLane()) {
+                if (documentExecutionLaneBusy(*appDocument)) {
+                    App::DocumentCommandSubmitOutcome busy;
+                    busy.result = App::DocumentCommandSubmitResult::Busy;
+                    busy.diagnostic = "document execution lane is busy";
+                    reportDocumentCommandSubmitBlocked(*appDocument, busy);
+                    return false;
+                }
+                const auto outcome = submitDocumentSaveAs(
+                    *appDocument, nativePath, true);
+                if (!outcome.accepted()) {
+                    reportDocumentCommandSubmitBlocked(*appDocument, outcome);
+                    return false;
+                }
+                scheduleSaveCommandCompletion(
+                    DocName,
+                    appDocument->executionHandle().identity(),
+                    outcome.commandId);
+                reportDocumentSaveAdmitted(*appDocument);
+                // Admission is not completion. Record the close to re-issue only
+                // after the lane Save As reaches a terminal state (B3 / N2).
+                // Do not read FileName here; the lane writes it when the save finishes (N9).
+                if (closeAfter != PendingLaneCloseKind::None) {
+                    setPendingLaneCloseAfterSave(closeAfter);
+                }
+                return false;
+            }
+            const auto saveOutcome =
+                appDocument->saveAsWithOutcome(nativePath.c_str(), true);
+            if (!saveOutcome.succeeded()) {
+                throw Base::RuntimeError(
+                    saveOutcome.message.empty()
+                        ? "The document could not be saved under the requested path"
+                        : saveOutcome.message);
+            }
             // App::Document::saveAs() may modify the passed file name
             fi.setFile(QString::fromUtf8(d->_pcDocument->FileName.getValue()));
             getMainWindow()->appendRecentFile(fi.filePath());
@@ -2891,6 +3385,7 @@ void Document::saveAll()
         return;
     }
 
+    unsigned skippedSaves = 0;
     for (auto doc : docs) {
         if (doc->testStatus(App::Document::PartialDoc) || doc->testStatus(App::Document::TempDoc)) {
             continue;
@@ -2904,15 +3399,41 @@ void Document::saveAll()
                 break;
             }
         }
-        Gui::WaitCursor wc;
-
         try {
-            // Changed 'mustExecute' status may be triggered by saving external document
-            if (!dmap[doc] && doc->mustExecute()) {
-                App::AutoTransaction trans(doc, "Recompute");
-                Command::doCommand(Command::Doc, "App.getDocument('%s').recompute()", doc->getName());
+            if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                ++skippedSaves;
+                FC_ERR("Save All did not write document '"
+                       << doc->getName()
+                       << "' because model work is still running or recompute was deferred");
+                continue;
             }
-            Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
+            if (doc->executionLane()) {
+                const auto outcome =
+                    submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                if (!outcome.accepted()) {
+                    ++skippedSaves;
+                    reportDocumentCommandSubmitBlocked(*doc, outcome);
+                    FC_ERR("Save All did not write document '"
+                           << doc->getName()
+                           << "'"
+                           << (outcome.diagnostic.empty()
+                                   ? " because the document execution lane rejected or deferred save"
+                                   : (": " + outcome.diagnostic)));
+                    continue;
+                }
+                scheduleSaveCommandCompletion(
+                    doc->getName(),
+                    doc->executionHandle().identity(),
+                    outcome.commandId);
+                reportDocumentSaveAdmitted(*doc);
+                continue;
+            }
+
+            Gui::WaitCursor wc;
+            if (!doc->save()) {
+                ++skippedSaves;
+                FC_ERR("Save All did not write document '" << doc->getName() << "'");
+            }
         }
         catch (const Base::Exception& e) {
             QMessageBox::critical(
@@ -2922,6 +3443,16 @@ void Document::saveAll()
                 QString::fromLatin1(e.what())
             );
             break;
+        }
+    }
+
+    if (skippedSaves > 0) {
+        const auto message = QObject::tr(
+            "%1 document(s) were not saved because model work is still running. "
+            "Retry Save All when recompute finishes.")
+            .arg(QString::number(skippedSaves));
+        if (auto* window = getMainWindow()) {
+            window->showMessage(message, 5000);
         }
     }
 }
@@ -2990,7 +3521,11 @@ void Document::Save(Base::Writer& writer) const
         ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
             "User parameter:BaseApp/Preferences/Document"
         );
-        if (hGrp->GetBool("SaveThumbnail", true)) {
+        const bool saveThumbnail = hGrp->GetBool("SaveThumbnail", true);
+        const auto* qAppInstance = qobject_cast<QApplication*>(QCoreApplication::instance());
+        const bool onGuiThread =
+            qAppInstance && QThread::currentThread() == qAppInstance->thread();
+        if (saveThumbnail && onGuiThread) {
             int size = hGrp->GetInt("ThumbnailSize", 256);
             size = Base::clamp<int>(size, 64, 512);
             View3DInventorViewer* view = nullptr;
@@ -3009,6 +3544,8 @@ void Document::Save(Base::Writer& writer) const
             d->thumb.setFileName(d->_pcDocument->FileName.getValue());
             d->thumb.setSize(size);
             d->thumb.setViewer(view);
+            // Serialization may finish on a worker thread; render now.
+            d->thumb.capture();
             d->thumb.Save(writer);
         }
     }
@@ -3164,12 +3701,31 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
     }
 
     if (!d->_restoredGuiDocument) {
-        for (auto* mdiView : getMDIViews()) {
-            if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
-                view3D->viewAll();
-                break;
+        const auto fitViewsWithoutGuiDocument = [](Gui::Document& guiDocument) {
+            for (auto* mdiView : guiDocument.getMDIViews()) {
+                if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
+                    view3D->viewAll();
+                    return;
+                }
             }
-        }
+        };
+        fitViewsWithoutGuiDocument(*this);
+        const std::string documentName = doc.getName();
+        Gui::schedulePassiveGuiRefresh([documentName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            auto* guiDocument = Gui::Application::Instance->getDocument(documentName.c_str());
+            if (!guiDocument) {
+                return;
+            }
+            for (auto* mdiView : guiDocument->getMDIViews()) {
+                if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
+                    view3D->viewAll();
+                    return;
+                }
+            }
+        });
     }
 
     // Loading establishes the durable presentation baseline for this document
@@ -3186,7 +3742,7 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
     }
 
     const std::string documentName = doc.getName();
-    QTimer::singleShot(0, [documentName]() {
+    Gui::scheduleGuiSingleShot(0, [documentName]() {
         if (!Gui::Application::Instance || !Gui::getMainWindow()) {
             return;
         }
@@ -3684,6 +4240,11 @@ bool Document::canClose(bool checkModify, bool checkLink)
         return true;
     }
 
+    if (d->_suppressSavePrompt) {
+        d->_suppressSavePrompt = false;
+        checkModify = false;
+    }
+
     bool ok = true;
     if (checkModify && isModified() && !getDocument()->testStatus(App::Document::PartialDoc)) {
         int res = getMainWindow()->confirmSave(getDocument(), getActiveView());
@@ -3693,30 +4254,69 @@ bool Document::canClose(bool checkModify, bool checkLink)
                 break;
             case MainWindow::ConfirmSaveResult::SaveAll:
             case MainWindow::ConfirmSaveResult::Save:
-                ok = save();
-                if (!ok) {
-                    const QString docName = QString::fromStdString(getDocument()->Label.getStrValue());
-                    const QString text
-                        = (!docName.isEmpty()
-                               ? QObject::tr("Failed to save document '%1'. Would you like to cancel the closure?")
-                                     .arg(docName)
-                               : QObject::tr(
-                                     "Document saving failed. Would you like to cancel the closure?"
-                                 ));
-                    QMessageBox box(
-                        QMessageBox::Warning,
-                        QObject::tr("Unable to save document"),
-                        text,
-                        QMessageBox::Discard | QMessageBox::Cancel,
-                        getActiveView());
-                    box.setDefaultButton(QMessageBox::Cancel);
-                    box.setEscapeButton(QMessageBox::Cancel);
-                    if (auto* discard = box.button(QMessageBox::Discard)) {
-                        discard->setText(QObject::tr("Close Without Saving"));
+                // B3: if the document has no file name yet, run Save As on the GUI
+                // thread before attempting any lane-level save.
+                if (!getDocument()->isSaved()) {
+                    // B3: Save As is itself the lane write for an unnamed document.
+                    // A pending flag means the close continues when that Save As finishes.
+                    saveAs(PendingLaneCloseKind::Document);
+                    if (isPendingLaneClose()) {
+                        ok = false;
+                        break;
                     }
-                    const int ret = box.exec();
-                    if (ret == QMessageBox::Discard) {
-                        ok = true;
+                    if (!getDocument()->isSaved()) {
+                        ok = false;  // User cancelled Save As, or the lane rejected it
+                        break;
+                    }
+                    break;
+                }
+                if (getDocument()->executionLane()) {
+                    // Submit save asynchronously. Completion re-issues this document
+                    // close, not an application quit (N2).
+                    const auto outcome = submitDocumentKindCommand(
+                        *getDocument(), App::DocumentCommandKind::Save);
+                    if (outcome.accepted()) {
+                        scheduleSaveCommandCompletion(
+                            getDocument()->getName(),
+                            getDocument()->executionHandle().identity(),
+                            outcome.commandId);
+                        setPendingLaneCloseAfterSave(PendingLaneCloseKind::Document);
+                        ok = false;  // Close deferred; completion will retry this document
+                    }
+                    else {
+                        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+                        ok = false;  // Lane rejected; cannot close yet
+                    }
+                }
+                else {
+                    ok = save();
+                    if (!ok) {
+                        const QString docName =
+                            QString::fromStdString(getDocument()->Label.getStrValue());
+                        const QString text =
+                            (!docName.isEmpty()
+                                 ? QObject::tr(
+                                       "Failed to save document '%1'. Would you like to "
+                                       "cancel the closure?")
+                                       .arg(docName)
+                                 : QObject::tr(
+                                       "Document saving failed. Would you like to cancel "
+                                       "the closure?"));
+                        QMessageBox box(
+                            QMessageBox::Warning,
+                            QObject::tr("Unable to save document"),
+                            text,
+                            QMessageBox::Discard | QMessageBox::Cancel,
+                            getActiveView());
+                        box.setDefaultButton(QMessageBox::Cancel);
+                        box.setEscapeButton(QMessageBox::Cancel);
+                        if (auto* discard = box.button(QMessageBox::Discard)) {
+                            discard->setText(QObject::tr("Close Without Saving"));
+                        }
+                        const int ret = box.exec();
+                        if (ret == QMessageBox::Discard) {
+                            ok = true;
+                        }
                     }
                 }
                 break;
@@ -4013,16 +4613,30 @@ Gui::MDIView* Document::getEditingViewOfViewProvider(Gui::ViewProvider* vp) cons
  */
 int Document::openCommand(const char* sName)
 {
+    // M1: replay must not throw through Qt slots. The App check stays fail-loud
+    // for every other caller; only the GUI transaction boundary absorbs replay.
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring openCommand while collaboration notifications replay");
+        return 0;
+    }
     return getDocument()->openTransaction(App::TransactionName {.name = sName, .temporary = false});
 }
 
 void Document::commitCommand()
 {
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring commitCommand while collaboration notifications replay");
+        return;
+    }
     getDocument()->commitTransaction();
 }
 
 void Document::abortCommand()
 {
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring abortCommand while collaboration notifications replay");
+        return;
+    }
     getDocument()->abortTransaction();
 }
 
@@ -4045,6 +4659,7 @@ std::vector<std::string> Document::getRedoVector() const
 
 bool Document::checkTransactionID(bool undo, int iSteps)
 {
+    d->groupedUndoRedo = true;
     if (!iSteps) {
         return false;
     }
@@ -4110,18 +4725,10 @@ bool Document::checkTransactionID(bool undo, int iSteps)
             return false;
         }
         if (ret == QMessageBox::No) {
+            d->groupedUndoRedo = false;
             return true;
         }
-    }
-    for (auto& v : dmap) {
-        for (int i = 0; i < v.second; ++i) {
-            if (undo) {
-                v.first->undo();
-            }
-            else {
-                v.first->redo();
-            }
-        }
+        // The lane admits and replays all participants as one group.
     }
     return true;
 }
@@ -4134,36 +4741,195 @@ bool Document::isPerformingTransaction() const
 /// Will UNDO one or more steps
 void Document::undo(int iSteps)
 {
-    Base::FlagToggler<> flag(d->_isTransacting);
-
     if (!checkTransactionID(true, iSteps)) {
         return;
     }
 
-    for (int i = 0; i < iSteps; i++) {
-        getDocument()->undo();
+    // Mark before trySubmit so AutoSaver / observers see the in-flight
+    // transaction even if the lane completes the undo before we return.
+    d->_isTransacting = true;
+    const auto outcome = submitDocumentKindCommand(
+        *getDocument(),
+        App::DocumentCommandKind::Undo,
+        iSteps, d->groupedUndoRedo);
+    if (!outcome.accepted()) {
+        d->_isTransacting = false;
+        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+        return;
     }
-    App::GetApplication().signalUndo();
+
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(
+        outcome.commandId,
+        std::memory_order_release);
+    scheduleUndoRedoCommandCompletion(
+        getDocument()->getName(),
+        getDocument()->executionHandle().identity(),
+        outcome.commandId,
+        App::DocumentCommandKind::Undo,
+        d->undoRedoCompletionAnchor);
 }
 
 /// Will REDO one or more steps
 void Document::redo(int iSteps)
 {
-    Base::FlagToggler<> flag(d->_isTransacting);
-
     if (!checkTransactionID(false, iSteps)) {
         return;
     }
 
-    for (int i = 0; i < iSteps; i++) {
-        getDocument()->redo();
+    d->_isTransacting = true;
+    const auto outcome = submitDocumentKindCommand(
+        *getDocument(),
+        App::DocumentCommandKind::Redo,
+        iSteps, d->groupedUndoRedo);
+    if (!outcome.accepted()) {
+        d->_isTransacting = false;
+        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+        return;
     }
-    App::GetApplication().signalRedo();
 
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(
+        outcome.commandId,
+        std::memory_order_release);
+    scheduleUndoRedoCommandCompletion(
+        getDocument()->getName(),
+        getDocument()->executionHandle().identity(),
+        outcome.commandId,
+        App::DocumentCommandKind::Redo,
+        d->undoRedoCompletionAnchor);
+}
+
+void Document::finishExecutionLaneSave(const App::DocumentCommandState state)
+{
+    if (state != App::DocumentCommandState::Completed || !d->_pcDocument) {
+        return;
+    }
+    slotFileChangeStateChanged(*d->_pcDocument);
+    const char* savedPath = d->_pcDocument->FileName.getValue();
+    if (savedPath && savedPath[0] != '\0') {
+        if (auto* window = getMainWindow()) {
+            window->appendRecentFile(QString::fromUtf8(savedPath));
+        }
+    }
+}
+
+void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,
+                                             const App::DocumentCommandState state,
+                                             const App::DocumentCommandId commandId)
+{
+    if (!d->undoRedoCompletionAnchor
+        || d->undoRedoCompletionAnchor->inFlightCommandId.load(std::memory_order_acquire)
+            != commandId) {
+        return;
+    }
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(0, std::memory_order_release);
+    d->_isTransacting = false;
+    if (state != App::DocumentCommandState::Completed) {
+        return;
+    }
+    // App undo/redo already emitted becameStable while Gui::_isTransacting was
+    // still true, so AutoSaver deferred. Re-emit now that the Gui transaction
+    // flag is clear so deferred recovery can proceed.
+    if (d->_pcDocument) {
+        d->_pcDocument->emitCollaborationBecameStable();
+    }
+    if (kind == App::DocumentCommandKind::Undo) {
+        App::GetApplication().signalUndo();
+    }
+    else if (kind == App::DocumentCommandKind::Redo) {
+        App::GetApplication().signalRedo();
+        onExecutionLaneRedoCompleted();
+    }
+}
+
+void Document::onExecutionLaneRedoCompleted()
+{
     for (auto it : d->_redoViewProviders) {
         handleChildren3D(it);
     }
     d->_redoViewProviders.clear();
+}
+
+void Document::setPendingLaneCloseAfterSave(const PendingLaneCloseKind kind) noexcept
+{
+    d->_pendingLaneClose = kind;
+}
+
+bool Document::isPendingLaneClose() const noexcept
+{
+    return d->_pendingLaneClose != PendingLaneCloseKind::None;
+}
+
+Document::PendingLaneCloseKind Document::consumePendingLaneClose() noexcept
+{
+    const auto kind = d->_pendingLaneClose;
+    d->_pendingLaneClose = PendingLaneCloseKind::None;
+    return kind;
+}
+
+void Document::suppressNextSavePrompt() noexcept
+{
+    d->_suppressSavePrompt = true;
+}
+
+void Document::markSkipSaveOnClose() noexcept
+{
+    d->_skipSaveOnClose = true;
+}
+
+bool Document::skipsSaveOnClose() const noexcept
+{
+    return d->_skipSaveOnClose;
+}
+
+bool Document::consumeSkipSaveOnClose() noexcept
+{
+    const bool skip = d->_skipSaveOnClose;
+    d->_skipSaveOnClose = false;
+    return skip;
+}
+
+void Document::reissueDocumentClose()
+{
+    d->_suppressSavePrompt = true;
+    if (!d->_pcDocument) {
+        return;
+    }
+    const auto views = getMDIViews();
+    if (views.empty()) {
+        Command::doCommand(
+            Command::Doc,
+            "App.getDocument(\"%s\").closeAsync()",
+            d->_pcDocument->getName());
+        return;
+    }
+    QList<QPointer<QMdiSubWindow>> subWindows;
+    QList<QPointer<MDIView>> looseViews;
+    for (auto* view : views) {
+        if (auto* sub = qobject_cast<QMdiSubWindow*>(view->parentWidget())) {
+            subWindows.append(sub);
+        }
+        else {
+            looseViews.append(view);
+        }
+    }
+    for (const auto& sub : subWindows) {
+        if (sub) {
+            sub->close();
+        }
+    }
+    for (const auto& view : looseViews) {
+        if (view) {
+            view->close();
+        }
+    }
 }
 
 PyObject* Document::getPyObject()

@@ -41,7 +41,9 @@
 #include "ElementNamingUtils.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "DocumentObject.h"
+#include "NativeRecomputeErrors.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
@@ -218,6 +220,8 @@ void DocumentObject::setTouched(const char* name)
     // This function is not a replacement for touch(), it is only
     // used internally for fine-grained document recompute and replaces
     // the coarse grained equivalent of StatusBits.set(ObjectStatus::Touch);
+    if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
+    Internal::NativeRecomputeRequestCapture::record(*this);
     touchedProps.insert(name);
     StatusBits.set(ObjectStatus::Touch);
 }
@@ -225,6 +229,8 @@ void DocumentObject::setTouched(const char* name)
 void DocumentObject::touch(bool noRecompute)
 {
     enforceAtomicPresentationMutationTarget(_pDoc);
+    if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
+    Internal::NativeRecomputeRequestCapture::record(*this);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
@@ -241,6 +247,9 @@ void DocumentObject::touch(bool noRecompute)
 void DocumentObject::purgeTouched()
 {
     enforceAtomicPresentationMutationTarget(_pDoc);
+    if (_pDoc && (isTouched() || !touchedProps.empty())) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc);
+    }
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     StatusBits.reset(ObjectStatus::Touch);
     StatusBits.reset(ObjectStatus::Enforce);
@@ -335,7 +344,12 @@ void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
     if (StatusBits.test(static_cast<size_t>(pos)) == on) {
         return;
     }
-    enforceAtomicPresentationMutationTarget(_pDoc);
+    // Destroy only marks an object right before it is deleted (~Document(),
+    // transaction cleanup). Another document's atomic presentation admission
+    // must not refuse that: the throw would escape a destructor and terminate.
+    if (pos != ObjectStatus::Destroy) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
     StatusBits.set(static_cast<size_t>(pos), on);
 }
 
@@ -912,30 +926,45 @@ bool DocumentObject::removeDynamicProperty(const char* name)
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
-
     if (prop->testStatus(App::Property::LockDynamic)) {
         return false;
     }
+    return removeDynamicPropertyImpl(name, *prop, nullptr);
+}
 
+bool DocumentObject::removeDynamicPropertyForCellClear(
+    Internal::SpreadsheetCellClearOperation& operation)
+{
+    if (&operation._object != this) {
+        throw Base::RuntimeError("spreadsheet cell removal Entry owner mismatch");
+    }
+    Internal::SpreadsheetCellRemovalPhysical capability(operation);
+    return removeDynamicPropertyImpl(operation._name.c_str(), *operation._property, &capability);
+}
+
+bool DocumentObject::removeDynamicPropertyImpl(
+    const char* name, Property& property,
+    Internal::SpreadsheetCellRemovalPhysical* capability)
+{
+    auto* prop = &property;
     if (prop->isDerivedFrom<PropertyLinkBase>()) {
         clearOutListCache();
     }
-
     _pDoc->addOrRemovePropertyOfObject(this, prop, false);
 
     auto expressions = ExpressionEngine.getExpressions();
     std::vector<App::ObjectIdentifier> removeExpr;
-
     for (const auto& it : expressions) {
         if (it.first.getProperty() == prop) {
             removeExpr.push_back(it.first);
         }
     }
-
     for (const auto& it : removeExpr) {
         ExpressionEngine.setValue(it, std::shared_ptr<Expression>());
     }
-
+    if (capability) {
+        return dynamicProps.removeDynamicPropertyForCellClear(name, *capability);
+    }
     return TransactionalObject::removeDynamicProperty(name);
 }
 
@@ -1340,6 +1369,8 @@ void DocumentObject::onChanged(const Property* prop)
         // set object touched if it is not an output property
         if (!testStatus(ObjectStatus::NoTouch) && !(prop->getType() & Prop_Output)
             && !prop->testStatus(Property::Output)) {
+            if (_pDoc) { Internal::PreparedLabelReferenceUpdates::noteMutation(*_pDoc); }
+            Internal::NativeRecomputeRequestCapture::record(*this);
             if (!StatusBits.test(ObjectStatus::Touch)) {
                 FC_TRACE("touch '" << getFullName() << "' on change of '" << prop->getName() << "'");
                 StatusBits.set(ObjectStatus::Touch);
@@ -2038,16 +2069,19 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
         const bool affectsPersistence = serializedDelta
             && !prop.testStatus(Property::PropNoPersist);
         if (affectsPersistence) {
-            // Existing-object status changes are not part of Transaction's
-            // property payload and therefore remain sticky. A
-            // transaction-owned new object is removed as a whole on
-            // abort/undo, including its serialized property status.
+            // Static property status is stored in the open transaction and
+            // follows its file token. Dynamic-property status stays outside
+            // that payload and remains sticky. A transaction-owned new
+            // object is removed as a whole on abort/undo, including its
+            // serialized property status.
             const bool transactionOwnedNewObject =
                 Internal::CollaborationStructuralMutationRecorder::
                     isTransactionOwnedNewObject(*getDocument(), *this);
+            const bool transactionOwnedStaticStatus = !prop.testStatus(Property::PropDynamic)
+                && getDocument()->hasPendingTransaction();
             getDocument()->markFileChange(
                 DocumentFileChange::Model,
-                transactionOwnedNewObject
+                (transactionOwnedNewObject || transactionOwnedStaticStatus)
                     ? DocumentFileChangeOwnership::AutoTransaction
                     : DocumentFileChangeOwnership::Sticky);
         }

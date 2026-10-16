@@ -62,6 +62,44 @@ PropertyExpressionContainer::PropertyExpressionContainer()
             PropertyExpressionContainer::slotRenameDynamicProperty);
         GetApplication().signalMoveDynamicProperty.connect(
             PropertyExpressionContainer::slotMoveDynamicProperty);
+        GetApplication().signalUndoDocument.connect([](const Document& source) {
+            // Engines rebuild their property-specific and hidden edges below.
+            // Other expression containers (notably Spreadsheet Cells) need
+            // the same restoration, with their own runtime dependency hooks.
+            for (auto* container : _ExprContainers) {
+                if (dynamic_cast<PropertyExpressionEngine*>(container)) {
+                    continue;
+                }
+                auto* owner = dynamic_cast<DocumentObject*>(container->getContainer());
+                if (!owner || !owner->isAttachedToDocument()
+                    || owner->getDocument() == &source) {
+                    continue;
+                }
+                const auto expressions = container->getExpressions();
+                bool affected = false;
+                for (const auto& binding : expressions) {
+                    if (!binding.second) {
+                        continue;
+                    }
+                    for (const auto& identifier : binding.second->getIdentifiers()) {
+                        affected |= identifier.first.getDocument() == &source;
+                    }
+                }
+                if (affected) {
+                    std::map<DocumentObject*, bool> deps;
+                    std::vector<std::string> labels;
+                    for (const auto& binding : expressions) {
+                        if (binding.second) {
+                            binding.second->getDepObjects(deps, &labels);
+                        }
+                    }
+                    container->registerLabelReferences(std::move(labels));
+                    container->updateDeps(std::move(deps));
+                    owner->clearOutListCache();
+                    container->StatusBits.set(Property::Touched);
+                }
+            }
+        });
     }
     _ExprContainers.insert(this);
 }
@@ -135,6 +173,53 @@ struct PropertyExpressionEngine::Private
     // defined in header, hence the private structure here.
     std::vector<fastsignals::scoped_connection> conns;
     std::unordered_map<std::string, std::vector<ObjectIdentifier>> propMap;
+    struct ExternalSource
+    {
+        // Relabeling rewrites expressions in place without rebuilding dependencies.
+        // Weak ownership identifies surviving bindings without retaining removed
+        // expressions or mistaking newly allocated expressions for old ones.
+        std::set<std::weak_ptr<Expression>, std::owner_less<std::weak_ptr<Expression>>> bindings;
+        std::string filePath;
+        std::string objectName;
+        LinkScope scope = LinkScope::Global;
+    };
+    std::map<std::string, ExternalSource> externalSources;
+
+    static void copyExternalSources(const PropertyExpressionEngine& from,
+                                    PropertyExpressionEngine& to)
+    {
+        if (!from.pimpl || from.pimpl->externalSources.empty()) {
+            return;
+        }
+        if (!to.pimpl) {
+            to.pimpl = std::make_unique<Private>();
+        }
+        for (const auto& [key, source] : from.pimpl->externalSources) {
+            ExternalSource copy;
+            copy.filePath = source.filePath;
+            copy.objectName = source.objectName;
+            copy.scope = source.scope;
+            // Capture current file identity, including a Save As since the last
+            // dependency rebuild. History owns no live PropertyXLink callbacks.
+            const auto link = from._XLinks.find(key);
+            if (link != from._XLinks.end()) {
+                copy.filePath = link->second->getDocumentPath();
+                copy.objectName = link->second->getObjectName();
+                copy.scope = link->second->getScope();
+            }
+            for (const auto& [path, info] : from.expressions) {
+                if (info.expression && source.bindings.contains(info.expression)) {
+                    const auto target = to.expressions.find(path);
+                    if (target != to.expressions.end() && target->second.expression) {
+                        copy.bindings.insert(target->second.expression);
+                    }
+                }
+            }
+            if (!copy.bindings.empty()) {
+                to.pimpl->externalSources.emplace(key, std::move(copy));
+            }
+        }
+    }
 
     static bool shouldEvaluateOnRestore(const Property* prop,
                                         const std::shared_ptr<Expression>& expression)
@@ -274,7 +359,40 @@ TYPESYSTEM_SOURCE(App::PropertyExpressionEngine, App::PropertyExpressionContaine
 
 PropertyExpressionEngine::PropertyExpressionEngine()
     : validator(0)
-{}
+{
+    static const auto undoConnection = GetApplication().signalUndoDocument.connect(
+        [](const Document& source) {
+            // Source deletion retains foreign expression text, but retires its
+            // runtime graph. Undo reattaches the source before this signal. The
+            // replay admission keeps these owners pinned and locked; rebuild
+            // only runtime state, without foreign property mutation callbacks.
+            for (auto* container : _ExprContainers) {
+                auto* engine = dynamic_cast<PropertyExpressionEngine*>(container);
+                auto* owner = engine
+                    ? dynamic_cast<DocumentObject*>(engine->getContainer()) : nullptr;
+                if (!owner || !owner->isAttachedToDocument()
+                    || owner->getDocument() == &source) {
+                    continue;
+                }
+                bool affected = false;
+                for (const auto& binding : engine->expressions) {
+                    if (!binding.second.expression) {
+                        continue;
+                    }
+                    for (const auto& identifier : binding.second.expression->getIdentifiers()) {
+                        if (identifier.first.getDocument() == &source) {
+                            affected = true;
+                        }
+                    }
+                }
+                if (affected) {
+                    engine->rebuildDependencies();
+                    owner->clearOutListCache();
+                    engine->StatusBits.set(Property::Touched);
+                }
+            }
+        });
+}
 
 PropertyExpressionEngine::~PropertyExpressionEngine() = default;
 
@@ -297,6 +415,7 @@ Property* PropertyExpressionEngine::Copy() const
     }
 
     engine->validator = validator;
+    Private::copyExternalSources(*this, *engine);
 
     return engine;
 }
@@ -330,15 +449,69 @@ void PropertyExpressionEngine::rebuildDependencies()
     std::map<App::DocumentObject*, bool> deps;
     std::map<std::pair<std::string, App::DocumentObject*>, bool> propDeps;
     std::vector<std::string> labels;
+    std::map<std::string, Private::ExternalSource> externalSources;
+    const auto* owner = freecad_cast<DocumentObject*>(getContainer());
     for (auto& e : expressions) {
         auto expr = e.second.expression;
         if (expr) {
-            expr->getDepObjects(deps, &labels, &propDeps);
+            std::map<App::DocumentObject*, bool> expressionDeps;
+            expr->getDepObjects(expressionDeps, &labels, &propDeps);
+            for (const auto& [source, hidden] : expressionDeps) {
+                const auto [it, inserted] = deps.emplace(source, hidden);
+                if (!hidden || inserted) {
+                    it->second = hidden;
+                }
+                if (owner && source && source->getDocument() != owner->getDocument()) {
+                    externalSources[source->getFullName()].bindings.insert(expr);
+                }
+            }
+            if (pimpl) {
+                for (const auto& [source, info] : pimpl->externalSources) {
+                    const auto link = _XLinks.find(source);
+                    if (info.bindings.contains(expr) && link != _XLinks.end()
+                        && !link->second->getValue()) {
+                        externalSources[source].bindings.insert(expr);
+                    }
+                }
+            }
         }
     }
     registerLabelReferences(std::move(labels));
 
-    updateDeps(std::move(deps), &propDeps);
+    // A closed source has no live dependency objects. Retained bindings still
+    // need their detached file links so reopening can reattach and rebuild the
+    // graph. Drop links whose last binding was removed, as before.
+    decltype(_XLinks) retainedLinks;
+    for (auto it = _XLinks.begin(); it != _XLinks.end();) {
+        if (!it->second->getValue() && externalSources.contains(it->first)) {
+            retainedLinks.insert(_XLinks.extract(it++));
+        }
+        else {
+            ++it;
+        }
+    }
+    try {
+        updateDeps(std::move(deps), &propDeps);
+    }
+    catch (...) {
+        _XLinks.merge(retainedLinks);
+        throw;
+    }
+    _XLinks.merge(retainedLinks);
+    for (auto& [key, source] : externalSources) {
+        const auto link = _XLinks.find(key);
+        if (link != _XLinks.end()) {
+            source.filePath = link->second->getDocumentPath();
+            source.objectName = link->second->getObjectName();
+            source.scope = link->second->getScope();
+        }
+    }
+    if (!externalSources.empty() && !pimpl) {
+        pimpl = std::make_unique<Private>();
+    }
+    if (pimpl) {
+        pimpl->externalSources = std::move(externalSources);
+    }
 
     if (pimpl) {
         pimpl->conns.clear();
@@ -469,6 +642,22 @@ void PropertyExpressionEngine::Paste(const Property& from)
         expressionChanged(e.first);
     }
     validator = fromee.validator;
+    if (pimpl) {
+        pimpl->externalSources.clear();
+    }
+    Private::copyExternalSources(fromee, *this);
+    if (pimpl) {
+        // Recreate detached links before hasSetValue rebuilds dependencies.
+        // Their normal restore callback will rebuild the graph on source reopen.
+        for (const auto& [key, source] : pimpl->externalSources) {
+            if (!_XLinks.contains(key) && !source.filePath.empty() && !source.objectName.empty()) {
+                std::unique_ptr<PropertyXLink> link(createXLink());
+                link->setScope(source.scope);
+                link->setValue(std::string(source.filePath), std::string(source.objectName), {});
+                _XLinks.emplace(key, std::move(link));
+            }
+        }
+    }
     signaller.tryInvoke();
 }
 

@@ -2,15 +2,20 @@
 """Small FreeCAD build wrapper for this checkout.
 
 The script prefers Pixi because this repository already defines the FreeCAD
-Conda toolchain there. It falls back to system CMake/Git when --no-pixi is
-given, or when Pixi is not on PATH.
+Conda toolchain there. It upgrades an outdated Pixi executable to the minimum
+declared by the repository, then synchronizes the environment before building.
+It falls back to system CMake/Git when --no-pixi is given, or when Pixi is not
+on PATH.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -45,14 +50,30 @@ def format_command(command: list[str]) -> str:
     return shlex.join(command)
 
 
-def run(command: list[str], *, cwd: Path, env: dict[str, str] | None, dry_run: bool) -> None:
+def run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    dry_run: bool,
+    retries: int = 0,
+) -> None:
     print(f"> {format_command(command)}", flush=True)
     if dry_run:
         return
 
-    completed = subprocess.run(command, cwd=cwd, env=env)
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
+    for attempt in range(retries + 1):
+        completed = subprocess.run(command, cwd=cwd, env=env)
+        if completed.returncode == 0:
+            return
+        if attempt < retries:
+            print(
+                f"Command failed with exit code {completed.returncode}; retrying once.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    raise SystemExit(completed.returncode)
 
 
 def configure_environment() -> dict[str, str]:
@@ -60,6 +81,108 @@ def configure_environment() -> dict[str, str]:
     for name in ("CFLAGS", "CXXFLAGS", "DEBUG_CFLAGS", "DEBUG_CXXFLAGS"):
         env[name] = ""
     return env
+
+
+def required_pixi_version(repo_root: Path) -> str | None:
+    """Return the simple minimum version declared by requires-pixi, if any."""
+    manifest = repo_root / "pixi.toml"
+    try:
+        contents = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    match = re.search(
+        r'^\s*requires-pixi\s*=\s*["\']\s*>=\s*(\d+(?:\.\d+){1,2})',
+        contents,
+        flags=re.MULTILINE,
+    )
+    return match.group(1) if match else None
+
+
+def installed_pixi_version(pixi: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [pixi, "--version"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+
+    output = f"{completed.stdout}\n{completed.stderr}"
+    match = re.search(r"\bpixi\s+(\d+(?:\.\d+){1,2})", output)
+    return match.group(1) if match else None
+
+
+def version_key(version: str) -> tuple[int, int, int]:
+    parts = [int(part) for part in version.split(".")]
+    normalized = (parts + [0, 0, 0])[:3]
+    return normalized[0], normalized[1], normalized[2]
+
+
+def configure_preset(config: str, use_pixi: bool) -> str:
+    if use_pixi:
+        return f"conda-{host_platform_name()}-{config}"
+    return config
+
+
+def configure_fingerprint(
+    repo_root: Path,
+    *,
+    preset: str,
+    cmake_args: list[str],
+    use_pixi: bool,
+) -> str:
+    """Identify inputs that can invalidate configure-time generated files."""
+    inputs: dict[str, object] = {
+        "preset": preset,
+        "cmake_args": cmake_args,
+        "use_pixi": use_pixi,
+    }
+    if use_pixi:
+        for filename in ("pixi.toml", "pixi.lock"):
+            path = repo_root / filename
+            try:
+                inputs[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                inputs[filename] = None
+    encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def configured_with_fingerprint(stamp_file: Path, fingerprint: str) -> bool:
+    try:
+        stamp = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(stamp, dict) and stamp.get("fingerprint") == fingerprint
+
+
+def write_configure_fingerprint(stamp_file: Path, fingerprint: str) -> None:
+    stamp_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = stamp_file.with_suffix(stamp_file.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps({"fingerprint": fingerprint}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(stamp_file)
+
+
+def ensure_compatible_pixi(pixi: str, repo_root: Path, dry_run: bool) -> None:
+    required = required_pixi_version(repo_root)
+    installed = installed_pixi_version(pixi)
+    if required is None or installed is None:
+        return
+    if version_key(installed) >= version_key(required):
+        return
+
+    print(f"Pixi {installed} is older than the required {required}; updating Pixi.")
+    run(
+        [pixi, "self-update", "--version", required],
+        cwd=repo_root,
+        env=None,
+        dry_run=dry_run,
+    )
 
 
 def flatten_targets(targets: list[list[str]]) -> list[str]:
@@ -95,12 +218,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--configure",
         action="store_true",
-        help="Run CMake configure even when build/<config>/CMakeCache.txt exists.",
+        help="Force CMake configure even when the cached environment is current.",
     )
     parser.add_argument(
         "--no-configure",
         action="store_true",
         help="Skip CMake configure. Fails if the build tree is not configured.",
+    )
+    parser.add_argument(
+        "--configure-only",
+        action="store_true",
+        help="Configure the selected build tree without building it.",
     )
     parser.add_argument(
         "--cmake-arg",
@@ -160,6 +288,12 @@ def main() -> int:
 
     if args.configure and args.no_configure:
         parser.error("--configure and --no-configure cannot be used together")
+    if args.configure_only and args.no_configure:
+        parser.error("--configure-only and --no-configure cannot be used together")
+    if args.configure_only and (args.target or args.clean_first or args.test or args.install):
+        parser.error(
+            "--configure-only cannot be combined with build targets, cleaning, tests, or install"
+        )
     if args.cmake_arg and args.no_configure:
         parser.error("--cmake-arg requires configure; remove --no-configure")
     if (args.test_filter or args.ctest_arg) and not args.test:
@@ -173,11 +307,6 @@ def main() -> int:
 
     build_dir = Path("build") / args.config
     cache_file = repo_root / build_dir / "CMakeCache.txt"
-    needs_configure = (
-        args.configure
-        or bool(args.cmake_arg)
-        or (not args.no_configure and not cache_file.exists())
-    )
 
     if args.no_configure and not cache_file.exists():
         raise SystemExit(
@@ -189,6 +318,32 @@ def main() -> int:
         raise SystemExit("cmake was not found on PATH. Install CMake or run with Pixi available.")
 
     configure_env = configure_environment()
+    if prefix:
+        ensure_compatible_pixi(prefix[0], repo_root, args.dry_run)
+        # Keep the local environment in sync with pixi.toml/pixi.lock before
+        # any tool from that environment is used for the build.
+        run(
+            [prefix[0], "install"],
+            cwd=repo_root,
+            env=None,
+            dry_run=args.dry_run,
+            retries=1,
+        )
+
+    preset = configure_preset(args.config, bool(prefix))
+    fingerprint = configure_fingerprint(
+        repo_root,
+        preset=preset,
+        cmake_args=args.cmake_arg,
+        use_pixi=bool(prefix),
+    )
+    stamp_file = repo_root / build_dir / ".build_freecad_configure.json"
+    needs_configure = not args.no_configure and (
+        args.configure
+        or not cache_file.exists()
+        or not configured_with_fingerprint(stamp_file, fingerprint)
+    )
+
     if needs_configure:
         if not args.skip_submodules:
             if not prefix and shutil.which("git") is None:
@@ -200,12 +355,20 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
 
-        preset = f"conda-{host_platform_name()}-{args.config}"
         configure_cmd = prefix + ["cmake", "--preset", preset]
         if sys.platform.startswith("win") and preset.startswith("conda-windows-"):
             configure_cmd.extend(["-DCMAKE_GENERATOR_PLATFORM=", "-DCMAKE_GENERATOR_TOOLSET="])
         configure_cmd.extend(args.cmake_arg)
         run(configure_cmd, cwd=repo_root, env=configure_env, dry_run=args.dry_run)
+        if not args.dry_run:
+            write_configure_fingerprint(stamp_file, fingerprint)
+
+    if args.configure_only:
+        if args.dry_run:
+            print("Configure dry run finished.")
+        else:
+            print("Configure finished successfully.")
+        return 0
 
     targets = flatten_targets(args.target)
     build_cmd = prefix + ["cmake", "--build", str(build_dir)]

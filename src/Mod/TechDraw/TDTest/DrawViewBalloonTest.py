@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 from FreeCAD import Units
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
@@ -35,7 +36,7 @@ class DrawViewBalloonTest(unittest.TestCase):
         self.page.addView(self.view2)
         self.view2.X = Units.Quantity(220.0, Units.Length)
         self.view2.Y = Units.Quantity(150.0, Units.Length)
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
     def tearDown(self):
         FreeCAD.closeDocument("TDBalloon")
@@ -57,7 +58,7 @@ class DrawViewBalloonTest(unittest.TestCase):
         print("adding balloon1 to page")
         self.page.addView(balloon1)
 
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
         self.assertTrue("Up-to-date" in balloon1.State)
 
         balloon2 = FreeCAD.ActiveDocument.addObject(
@@ -74,7 +75,7 @@ class DrawViewBalloonTest(unittest.TestCase):
         print("adding balloon2 to page")
         self.page.addView(balloon2)
 
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
         self.assertTrue("Up-to-date" in balloon2.State)
 
 

@@ -34,6 +34,7 @@
 #include "Action.h"
 #include "Application.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Control.h"
 #include "Document.h"
 #include "MainWindow.h"
@@ -567,7 +568,7 @@ static void linkConvert(bool unlink)
             }
         }
         if (!recomputes.empty()) {
-            recomputes.front()->getDocument()->recompute(recomputes);
+            requestDocumentRecompute(*recomputes.front()->getDocument(), recomputes);
         }
 
         App::GetApplication().commitTransaction(tid);

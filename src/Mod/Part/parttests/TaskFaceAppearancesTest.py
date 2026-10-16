@@ -4,6 +4,7 @@ import unittest
 import FreeCAD
 import FreeCADGui
 from PySide import QtWidgets
+from Test.GuiRecompute import close_document, recompute_document
 
 
 class TaskFaceAppearancesGuiTest(unittest.TestCase):
@@ -11,12 +12,12 @@ class TaskFaceAppearancesGuiTest(unittest.TestCase):
         """Set up the test document and a basic shape."""
         self.doc = FreeCAD.newDocument("FaceAppTest")
         self.box = self.doc.addObject("Part::Box", "Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
     def tearDown(self):
         """Clean up the selection and close the document."""
         FreeCADGui.Selection.clearSelection()
-        FreeCAD.closeDocument(self.doc.Name)
+        close_document(self.doc)
 
     def test_face_selection_updates_widget_state(self):
         """Test if the material widget state synchronizes with face selection (#27716)."""

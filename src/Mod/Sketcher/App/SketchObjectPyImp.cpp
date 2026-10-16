@@ -35,6 +35,7 @@
 #include <Base/VectorPy.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Part/App/LinePy.h>
+#include <Mod/Part/App/OCCError.h>
 
 #include "PythonConverter.h"
 
@@ -1042,9 +1043,24 @@ PyObject* SketchObjectPy::setDatum(PyObject* args)
     if (status != SketchSolveStatus::Success) {
         std::stringstream str;
         switch (status) {
-            case SketchSolveStatus::SolverError:
-                str << "Invalid constraint index: " << Index;
+            case SketchSolveStatus::SolverError: {
+                // setDatum reports both a bad index and an unsolvable value as
+                // SolverError; only the first is an index problem.
+                const auto& constraints = this->getSketchObjectPtr()->Constraints.getValues();
+                if (Index < 0 || Index >= static_cast<int>(constraints.size())) {
+                    str << "Invalid constraint index: " << Index;
+                }
+                else if (!constraints[Index]->isDimensional()
+                         && constraints[Index]->Type != Sketcher::Tangent
+                         && constraints[Index]->Type != Sketcher::Perpendicular) {
+                    str << "The constraint with index " << Index << " has no datum";
+                }
+                else {
+                    str << "The sketch cannot be solved with datum " << Quantity.getUserString()
+                        << " for the constraint with index " << Index;
+                }
                 break;
+            }
             case SketchSolveStatus::ConflictingConstraints:
                 str << "Cannot set the datum because the sketch contains conflicting constraints";
                 break;
@@ -1725,13 +1741,19 @@ PyObject* SketchObjectPy::trim(PyObject* args)
 
     Base::Vector3d v1 = static_cast<Base::VectorPy*>(pcObj)->value();
 
-    if (this->getSketchObjectPtr()->trim(GeoId, v1, Base::asBoolean(includeAxes))
-        != SketchSolveStatus::Success) {
-        std::stringstream str;
-        str << "Not able to trim curve with the given index: " << GeoId;
-        PyErr_SetString(PyExc_ValueError, str.str().c_str());
-        return nullptr;
+    // OpenCASCADE failures (e.g. StdFail_NotDone for a point far off the curve)
+    // must become Python errors; escaping C++ exceptions abort debug builds.
+    PY_TRY
+    {
+        if (this->getSketchObjectPtr()->trim(GeoId, v1, Base::asBoolean(includeAxes))
+            != SketchSolveStatus::Success) {
+            std::stringstream str;
+            str << "Not able to trim curve with the given index: " << GeoId;
+            PyErr_SetString(PyExc_ValueError, str.str().c_str());
+            return nullptr;
+        }
     }
+    PY_CATCH_OCC;
 
     Py_Return;
 }
@@ -1743,14 +1765,18 @@ PyObject* SketchObjectPy::extend(PyObject* args)
     int GeoId;
 
     if (PyArg_ParseTuple(args, "idi", &GeoId, &increment, &endPoint)) {
-        if (this->getSketchObjectPtr()->extend(GeoId, increment, static_cast<Sketcher::PointPos>(endPoint))
-            != SketchSolveStatus::Success) {
-            std::stringstream str;
-            str << "Not able to extend geometry with id : (" << GeoId << ") for increment ("
-                << increment << ") and point position (" << endPoint << ")";
-            PyErr_SetString(PyExc_ValueError, str.str().c_str());
-            return nullptr;
+        PY_TRY
+        {
+            if (this->getSketchObjectPtr()->extend(GeoId, increment, static_cast<Sketcher::PointPos>(endPoint))
+                != SketchSolveStatus::Success) {
+                std::stringstream str;
+                str << "Not able to extend geometry with id : (" << GeoId << ") for increment ("
+                    << increment << ") and point position (" << endPoint << ")";
+                PyErr_SetString(PyExc_ValueError, str.str().c_str());
+                return nullptr;
+            }
         }
+        PY_CATCH_OCC;
         Py_Return;
     }
 
@@ -1782,6 +1808,15 @@ PyObject* SketchObjectPy::split(PyObject* args)
     }
     catch (const Base::ValueError& e) {
         throw Py::ValueError(e.getMessage());
+    }
+    catch (Standard_Failure& e) {
+        std::string message = "Not able to split curve with the given index: ";
+        message += std::to_string(GeoId);
+        if (const Standard_CString detail = e.GetMessageString(); detail && *detail) {
+            message += ": ";
+            message += detail;
+        }
+        throw Py::ValueError(message);
     }
 
     Py_Return;
@@ -1829,9 +1864,14 @@ PyObject* SketchObjectPy::addSymmetric(PyObject* args)
             }
         }
 
-        int ret = this->getSketchObjectPtr()
+        int ret = 0;
+        PY_TRY
+        {
+            ret = this->getSketchObjectPtr()
                       ->addSymmetric(geoIdList, refGeoId, static_cast<Sketcher::PointPos>(refPosId))
-            + 1;
+                + 1;
+        }
+        PY_CATCH_OCC;
 
         if (ret == -1) {
             throw Py::TypeError("Symmetric operation unsuccessful!");

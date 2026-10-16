@@ -20,6 +20,7 @@
 ################################################################################
 
 import FreeCAD as App
+from Test.GuiRecompute import recompute_document, close_document
 import Arch
 import ArchAxis
 from bimtests import TestArchBaseGui
@@ -29,13 +30,13 @@ class TestArchAxisGui(TestArchBaseGui.TestArchBaseGui):
 
     def test_axis_bubble_data_link_parity(self):
         axis = Arch.makeAxis(num=2, size=1500)
-        self.document.recompute()
+        recompute_document(self.document)
 
         link = self.document.addObject("App::Link", "AxisLink")
         link.LinkedObject = axis
         link.LinkTransform = True
         link.Placement.Base = App.Vector(1000, 2000, 0)
-        self.document.recompute()
+        recompute_document(self.document)
 
         parent_shapes, parent_texts = ArchAxis.get_axis_bubble_data(axis, axis.ViewObject)
         link_shapes, link_texts = ArchAxis.get_axis_bubble_data(link, axis.ViewObject)

@@ -41,12 +41,13 @@ def setup(ifcfile, ifcbin, scale):
     structural_nodes = {}
     scaling = scale
     import ifcopenshell
+    from nativeifc import ifc_tools as _ifc_tools
 
     uid = ifcopenshell.guid.new
     ownerHistory = ifcfile.by_type("IfcOwnerHistory")[0]
     project = ifcfile.by_type("IfcProject")[0]
     structContext = createStructuralContext(ifcfile)
-    if ifcfile.wrapped_data.schema_name() == "IFC2X3":
+    if _ifc_tools.ifc_schema_name(ifcfile) == "IFC2X3":
         mod = ifcfile.createIfcStructuralAnalysisModel(
             uid(),
             ownerHistory,
@@ -101,6 +102,7 @@ def createStructuralNode(ifcfile, ifcbin, point):
     """Creates a connection node at the given point"""
 
     import ifcopenshell
+    from nativeifc import ifc_tools as _ifc_tools
 
     uid = ifcopenshell.guid.new
     ownerHistory = ifcfile.by_type("IfcOwnerHistory")[0]
@@ -118,7 +120,7 @@ def createStructuralNode(ifcfile, ifcbin, point):
     # for now we don't create any boundary condition
     appliedCondition = None
     localPlacement = ifcbin.createIfcLocalPlacement()
-    if ifcfile.wrapped_data.schema_name() == "IFC2X3":
+    if _ifc_tools.ifc_schema_name(ifcfile) == "IFC2X3":
         structPntConn = ifcfile.createIfcStructuralPointConnection(
             uid(),
             ownerHistory,
@@ -193,6 +195,7 @@ def createStructuralMember(ifcfile, ifcbin, obj):
     import Part
     import ifcopenshell
     import FreeCAD
+    from nativeifc import ifc_tools as _ifc_tools
 
     uid = ifcopenshell.guid.new
     ownerHistory = ifcfile.by_type("IfcOwnerHistory")[0]
@@ -250,7 +253,7 @@ def createStructuralMember(ifcfile, ifcbin, obj):
         localPlacement = ifcbin.createIfcLocalPlacement()
         localZAxis = ifcbin.createIfcDirection((0, 0, 1))
         # create structural member
-        if ifcfile.wrapped_data.schema_name() == "IFC2X3":
+        if _ifc_tools.ifc_schema_name(ifcfile) == "IFC2X3":
             structuralMember = ifcfile.createIfcStructuralCurveMember(
                 uid(),
                 ownerHistory,

@@ -38,6 +38,7 @@
 #include <Gui/Command.h>
 #include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/FileDialog.h>
 #include <Gui/MainWindow.h>
 #include <Gui/PreferencePages/DlgSettingsPDF.h>
@@ -151,17 +152,15 @@ bool SheetView::onMsg(const char* pMsg)
 {
     if (strcmp("Undo", pMsg) == 0) {
         getGuiDocument()->undo(1);
-        App::Document* doc = getAppDocument();
-        if (doc) {
-            doc->recompute();
+        if (App::Document* doc = getAppDocument()) {
+            Gui::requestDocumentRecompute(*doc);
         }
         return true;
     }
     else if (strcmp("Redo", pMsg) == 0) {
         getGuiDocument()->redo(1);
-        App::Document* doc = getAppDocument();
-        if (doc) {
-            doc->recompute();
+        if (App::Document* doc = getAppDocument()) {
+            Gui::requestDocumentRecompute(*doc);
         }
         return true;
     }

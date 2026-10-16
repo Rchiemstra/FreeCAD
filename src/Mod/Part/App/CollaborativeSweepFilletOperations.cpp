@@ -593,7 +593,7 @@ App::GeometryArchive executeFillet(const App::GeometryArchive& input,
             || radius1 <= 0.0 || radius2 <= 0.0) {
             throw std::invalid_argument("isolated Part Fillet edge selection is invalid");
         }
-        fillet.Add(radius1, radius2, TopoDS::Edge(edges.FindKey(index)));
+        fillet.Add(radius1, radius2, TopoDS::Edge(edges.FindKey(static_cast<int>(index))));
     }
     const TopoDS_Shape raw = fillet.Shape();
     if (raw.IsNull()) {

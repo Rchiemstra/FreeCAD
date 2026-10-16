@@ -47,6 +47,22 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def test_existing_static_property_status_returns_before_the_restricted_gate() -> None:
+    """Presentation flags on an existing static property are not structural.
+
+    The return has to stay ahead of the live-object predicate chain. Folding it
+    into that chain would make it another grant and would let dynamic-property
+    status through the same path.
+    """
+    recorder = _read(RECORDER_SOURCE)
+    early, marker, _rest = recorder.partition("const bool removalOwnedStatus")
+    assert marker
+    assert "property.testStatus(Property::PropDynamic)" in early
+    tail = early.split("property.testStatus(Property::PropDynamic)", 1)[1]
+    assert "getPropertyByName(propertyName) == &property" in tail
+    assert "return;" in tail
+
+
 def test_only_the_enumerated_predicates_escape_restricted() -> None:
     recorder = _read(RECORDER_SOURCE)
     selection = _compact(

@@ -122,8 +122,14 @@ public:
 private:
     void multiParentPaint(std::vector<TechDraw::DrawPage*>& pages);
     void singleParentPaint(const TechDraw::DrawView* dv);
+    /** Queue QGraphics updates after owner-thread requestPaint (DrawViewDraft pattern). */
+    void scheduleDeferredGuiPaint(const TechDraw::DrawView* dv);
+    void onDocumentBecameStable(const App::Document& document);
+    void runDeferredGuiPaint();
 
     std::string m_myName;
+    Connection connectBecameStable;
+    bool m_guiPaintPending {false};
 };
 
 } // namespace TechDrawGui

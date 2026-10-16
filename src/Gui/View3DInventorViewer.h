@@ -301,6 +301,12 @@ public:
     bool containsViewProvider(const ViewProvider*) const;
     /// adds an ViewProvider to the view, e.g. from a feature
     void addViewProvider(ViewProvider*);
+    /**
+     * Swap the immutable committed presentation Coin root into the navigable
+     * scene. When @p showCommittedGeometry is true, live object geometry is
+     * hidden until the next call restores it.
+     */
+    void installCommittedPresentationRoot(class SoSeparator* coinRoot, bool showCommittedGeometry);
     /// remove a ViewProvider
     void removeViewProvider(ViewProvider*);
     /// get view provider by path
@@ -712,7 +718,9 @@ private:
     // Scene graph root
     SoSeparator* pcViewProviderRoot;
     // Child group in the scene graph that contains view providers related to the physical object
+    SoSwitch* objectGroupSwitch;
     SoGroup* objectGroup;
+    SoSeparator* pcCommittedPresentationRoot;
 
     std::unique_ptr<View3DInventorSelection> inventorSelection;
 

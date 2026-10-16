@@ -40,6 +40,7 @@ through Coin (pivy).
 
 ## \addtogroup draftobjects
 # @{
+from draftutils import gui_utils
 from draftutils.messages import _log
 
 
@@ -61,6 +62,8 @@ class DraftAnnotation(object):
         Check if new properties are present after the object is restored
         in order to migrate older objects.
         """
+        if gui_utils.defer_gui_setup(obj, lambda: self.onDocumentRestored(obj)):
+            return
         vobj = getattr(obj, "ViewObject", None)
         if vobj is None:
             return

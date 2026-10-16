@@ -37,6 +37,7 @@ import numpy as np
 
 import FreeCAD as App
 import Arch
+import ArchCommands
 import BOPTools.SplitFeatures
 import BOPTools.BOPFeatures
 import Draft
@@ -685,7 +686,7 @@ class SH3DImporter:
         return self.handlers["level"].create_default_floor()
 
     def _create_ground_mesh(self, elm):
-        self.building.recompute(True)
+        ArchCommands.recompute_object_gui_safe(self.building, True)
 
         ground = None
         if self.preferences["MERGE"]:
@@ -1309,14 +1310,14 @@ class LevelHandler(BaseHandler):
             """
             if self.importer.preferences["DEBUG_GEOMETRY"]:
                 _log(f"Extruding {obj_to_extrude.Label}…")
-            obj_to_extrude.recompute(True)
+            ArchCommands.recompute_object_gui_safe(obj_to_extrude, True)
             projection = TechDraw.project(obj_to_extrude.Shape, Z_NORM)[0]
             face = Part.Face(Part.Wire(projection.Edges))
             extrude = face.extrude(-Z_NORM * floor.floorThickness.Value)
             part = Part.show(extrude, "Extrusion")
             # part.Placement.Base.z = floor.Placement.Base.z
             part.Label = f"{floor.Label}-{obj_to_extrude.Label}-extrusion"
-            part.recompute(True)
+            ArchCommands.recompute_object_gui_safe(part, True)
             part.Visibility = False
             part.ViewObject.ShowInTree = False
 
@@ -1341,7 +1342,7 @@ class LevelHandler(BaseHandler):
                     bf = BOPTools.BOPFeatures.BOPFeatures(App.ActiveDocument)
                     slab_base = bf.make_multi_fuse([o.Name for o in extrusions])
                     slab_base.Label = f"{floor.Label}-footprint"
-                    slab_base.recompute()
+                    ArchCommands.recompute_object_gui_safe(slab_base)
                 else:
                     slab_base = extrusions[0]
                     slab_base.Label = f"{floor.Label}-footprint"
@@ -1439,7 +1440,7 @@ class RoomHandler(BaseHandler):
             reference_face = Draft.make_wire(points, closed=True, face=True, support=None)
             reference_face.Label = f"{name}-reference"
             reference_face.Visibility = False
-            reference_face.recompute()
+            ArchCommands.recompute_object_gui_safe(reference_face)
 
             floor.getObject(floor.ReferenceFacesGroupName).addObject(reference_face)
 
@@ -1707,7 +1708,7 @@ class WallHandler(BaseHandler):
             floor.Name,
         )
 
-        wall.recompute(True)
+        ArchCommands.recompute_object_gui_safe(wall, True)
 
         floor.addObject(wall)
         if base_object:
@@ -1846,7 +1847,7 @@ class WallHandler(BaseHandler):
             )
 
         base_object = None
-        App.ActiveDocument.recompute([section_start, section_end, spine])
+        ArchCommands.recompute_objects_gui_safe(App.ActiveDocument, [section_start, section_end, spine])
         if debug_geometry:
             _log(
                 f"_create_wall(): wall => section_start={self._ps(section_start)}, section_end={self._ps(section_end)}"
@@ -1929,7 +1930,7 @@ class WallHandler(BaseHandler):
         section_start.Visibility = False
         section_end.Visibility = False
         spine.Visibility = False
-        sweep.recompute(True)
+        ArchCommands.recompute_object_gui_safe(sweep, True)
         return sweep
 
     def _make_compound(self, section_start, section_end, spine):
@@ -1948,10 +1949,10 @@ class WallHandler(BaseHandler):
         ruled_surface = App.ActiveDocument.addObject("Part::RuledSurface")
         ruled_surface.Curve1 = section_start
         ruled_surface.Curve2 = section_end
-        ruled_surface.recompute()
+        ArchCommands.recompute_object_gui_safe(ruled_surface)
         compound = App.activeDocument().addObject("Part::Compound")
         compound.Links = [ruled_surface, section_start, section_end, spine]
-        compound.recompute()
+        ArchCommands.recompute_object_gui_safe(compound)
 
         compound_solid = App.ActiveDocument.addObject("Part::Feature", "WallShape")
         compound_solid.Shape = Part.Solid(Part.Shell(compound.Shape.Faces))
@@ -2122,7 +2123,7 @@ class WallHandler(BaseHandler):
             Draft.rotate([section], z_rotation, ORIGIN, Z_NORM)
             Draft.move([section], center)
 
-        section.recompute()
+        ArchCommands.recompute_object_gui_safe(section)
         if debug_geometry:
             _color_section(section)
 
@@ -2285,7 +2286,7 @@ class WallHandler(BaseHandler):
 
         reference_face.Label = f"{wall.Name}-reference"
         reference_face.Visibility = False
-        reference_face.recompute()
+        ArchCommands.recompute_object_gui_safe(reference_face)
         return reference_face
 
     def post_process(self, obj):
@@ -2438,7 +2439,7 @@ class WallHandler(BaseHandler):
             wall.Name,
         )
 
-        baseboard.recompute(True)
+        ArchCommands.recompute_object_gui_safe(baseboard, True)
         floor.getObject(floor.DecorationBaseboardsGroupName).addObject(baseboard)
 
 

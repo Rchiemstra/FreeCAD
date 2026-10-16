@@ -107,6 +107,11 @@ protected:
     void setVertexNormalMode(Points::PropertyNormalList*);
     virtual void cut(const std::vector<SbVec2f>& picked, Gui::View3DInventorViewer& Viewer) = 0;
 
+    [[nodiscard]] Gui::ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const Gui::ViewProviderPresentationCaptureRequest& request,
+        Gui::PresentationRenderBuffer& buffer) const override;
+
 protected:
     Gui::SoFCSelection* pcHighlight;
     SoCoordinate3* pcPointsCoord;

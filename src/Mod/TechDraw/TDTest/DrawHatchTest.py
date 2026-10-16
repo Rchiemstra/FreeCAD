@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import os
 import unittest
 
@@ -31,7 +32,7 @@ class DrawHatchTest(unittest.TestCase):
         self.view = FreeCAD.ActiveDocument.addObject("TechDraw::DrawViewPart", "View")
         FreeCAD.ActiveDocument.View.Source = [box]
         self.page.addView(self.view)
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
     def tearDown(self):
         FreeCAD.closeDocument("TDHatch")
@@ -48,7 +49,7 @@ class DrawHatchTest(unittest.TestCase):
             hatchFileSpec
         )
         print("finished hatch")
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         self.assertTrue("Up-to-date" in hatch.State)
 

@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <Inventor/elements/SoReplacedElement.h>
 #include <Inventor/fields/SoSFUInt32.h>
 #include <Inventor/fields/SoSFVec3f.h>
@@ -245,6 +247,11 @@ private:
     std::vector<int32_t> index_array;
     std::vector<float> vertex_array;
     SbBool updateGLArray {false};
+    // Track the mesh pointer and its point-content generation. A sibling
+    // SoFCMeshObjectNode edit of the same MeshObject* does not notify this
+    // node, and an in-place point edit keeps the pointer stable (L2).
+    const Mesh::MeshObject* _lastMesh {nullptr};
+    std::uint64_t _lastPointGeneration {0};
 };
 
 class MeshGuiExport SoFCMeshSegmentShape: public SoShape

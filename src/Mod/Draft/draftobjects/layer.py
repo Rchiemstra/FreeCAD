@@ -125,7 +125,7 @@ class Layer:
     def onChanged(self, obj, prop):
         if prop != "Group":
             return
-        vobj = getattr(obj, "ViewObject", None)
+        vobj = getattr(obj, "ViewObject", None) if gui_utils.gui_available() else None
         old_grp = getattr(self, "oldGroup", [])
         for child in obj.Group:
             if child in old_grp:

@@ -33,6 +33,8 @@ __url__ = "https://www.freecad.org"
 #  This module provides general functions used by Arch tools
 #  and utility commands
 
+import time
+
 import FreeCAD
 import ArchComponent
 import Draft
@@ -47,6 +49,7 @@ if FreeCAD.GuiUp:
     import FreeCADGui
     from draftutils.translate import translate
 else:
+    QtCore = None  # type: ignore[assignment,misc]
     # \cond
     def translate(ctxt, txt):
         return txt
@@ -55,6 +58,120 @@ else:
 
 
 # module functions ###############################################
+
+
+def _is_document_would_block(exc):
+    return type(exc).__name__ == "DocumentWouldBlock"
+
+
+def _recompute_state(handle):
+    status = handle.status()
+    if isinstance(status, dict):
+        recompute = status.get("recompute")
+        if isinstance(recompute, dict) and isinstance(recompute.get("state"), str):
+            return recompute["state"]
+        if isinstance(status.get("state"), str):
+            return status["state"]
+    return None
+
+
+def _left_commit(document):
+    """True once the document is out of the recompute commit (pending work aside).
+
+    A transaction the caller still holds open is not part of the commit.
+    """
+    readiness = document.getMutationReadiness()
+    busy_flags = (
+        "recomputing",
+        "commit_barrier",
+        "notification_replay",
+        "pending_removal",
+    )
+    return not any(readiness.get(flag) for flag in busy_flags)
+
+
+def _pump_gui_until(predicate, deadline, what):
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"{what} timed out on the GUI thread")
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        try:
+            FreeCADGui.updateGui()
+        except Exception:
+            pass
+        time.sleep(0.01)
+
+
+def _submit_recompute(document, deadline):
+    while True:
+        try:
+            return document.recomputeAsync()
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            busy = "lane is busy" in message or "was not admitted" in message
+            if not busy or time.monotonic() >= deadline:
+                raise
+            QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+            time.sleep(0.01)
+
+
+def recompute_document_gui_safe(document, timeout_seconds=120.0):
+    """Recompute on the document owner without calling the blocking GUI-thread API.
+
+    Off the GUI thread this is Document.recompute(). On the GUI thread the
+    recompute is submitted to the owner and Qt is pumped until the document has
+    left the commit, so callers may mutate it again; like Document.recompute(),
+    failed features simply stay touched.
+    """
+    try:
+        document.recompute()
+        return
+    except RuntimeError as exc:
+        if not _is_document_would_block(exc):
+            raise
+    deadline = time.monotonic() + timeout_seconds
+    # A request can come back cancelled when the lane dropped or superseded it,
+    # and onChanged hooks replayed after the commit can touch other objects; a
+    # synchronous recompute absorbs both, so run a few passes.
+    for _ in range(3):
+        _pump_gui_until(lambda: _left_commit(document), deadline, "document commit")
+        if not document.mustExecute():
+            return
+        handle = _submit_recompute(document, deadline)
+        _pump_gui_until(handle.done, deadline, "document recompute")
+        _pump_gui_until(lambda: _left_commit(document), deadline, "document commit")
+        if _recompute_state(handle) == "partial_failure":
+            return
+
+
+def recompute_objects_gui_safe(document, objects, timeout_seconds=120.0):
+    """Document.recompute(objects) that does not block the GUI thread."""
+    try:
+        return document.recompute(objects)
+    except RuntimeError as exc:
+        if not _is_document_would_block(exc):
+            raise
+    for obj in objects:
+        obj.enforceRecompute()
+    recompute_document_gui_safe(document, timeout_seconds)
+
+
+def recompute_active_document(timeout_seconds=120.0):
+    document = FreeCAD.ActiveDocument
+    if document:
+        recompute_document_gui_safe(document, timeout_seconds)
+
+
+def recompute_object_gui_safe(obj, recursive=False, timeout_seconds=120.0):
+    """Recompute obj now; on the GUI thread recompute its document on the owner instead."""
+    try:
+        return obj.recompute(recursive)
+    except RuntimeError as exc:
+        if not _is_document_would_block(exc):
+            raise
+    obj.enforceRecompute()
+    recompute_document_gui_safe(obj.Document, timeout_seconds)
+    return True
 
 
 def is_type_or_link(obj, type_name):

@@ -9,6 +9,8 @@
 #include "App/Application.h"
 #include "App/AutoTransaction.h"
 #include "App/Document.h"
+#include "App/DocumentCollaborationService.h"
+#include "App/DocumentExecutionLane.h"
 #include "App/DocumentObserverPython.h"
 #include "App/DocumentPy.h"
 #include "App/DocumentRevisionIndex.h"
@@ -24,12 +26,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -641,6 +645,7 @@ struct CallbackProbe
     bool recomputeDocument {false};
     bool recomputeTarget {false};
     bool changeTargetLabel {false};
+    bool markAppearanceFileChange {false};
     bool attemptThreadedMutations {false};
     bool threadedTargetMutationRejected {false};
     bool threadedForeignMutationRejected {false};
@@ -987,6 +992,9 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
         }
         if (probe->changeTargetLabel && probe->target) {
             probe->target->Label.setValue("Compatibility callback");
+        }
+        if (probe->markAppearanceFileChange) {
+            probe->nativeDocument->markFileChange(App::DocumentFileChange::Appearance);
         }
         if (probe->saveAttempt != SaveAttempt::None) {
             if (!probe->nativeDocument) {
@@ -1621,6 +1629,31 @@ public:
         return true;
     }
 
+    /**
+     * Drain MainThreadSignal tasks until @p pred is true.
+     *
+     * Off-owner collaboration now hops through DocumentExecutionLane; the lane
+     * thread may re-enter MainThreadSignal while the worker waits. A single
+     * waitUntilQueued/runOne pair can race past that hop and leave worker.join
+     * deadlocked — keep pumping until the worker signals completion.
+     */
+    template<typename Pred>
+    [[nodiscard]] bool pumpUntil(Pred&& pred,
+                                 std::chrono::milliseconds timeout = 10s)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                abortPending();
+                return false;
+            }
+            if (waitUntilQueued(50ms)) {
+                static_cast<void>(runOne(50ms));
+            }
+        }
+        return true;
+    }
+
     void abortPending()
     {
         std::deque<std::shared_ptr<Task>> tasks;
@@ -1787,6 +1820,299 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_FALSE(std::filesystem::exists(attempted.path));
 }
 
+// The undo history shows a caller-supplied label instead of the operation UUID.
+TEST_F(DocumentCollaborationPythonCompatibilityTest, labelNamesTheUndoTransaction)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    CallbackProbe probe;
+    probe.target = _target;
+    probe.document = document.get();
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_NE(callback.get(), nullptr);
+    PyObjectRef method(PyObject_GetAttrString(document.get(), "commitCompatibilityMutation"));
+    ASSERT_NE(method.get(), nullptr);
+    PyObjectRef positional(PyTuple_Pack(1, callback.get()));
+    PyObjectRef keywords(Py_BuildValue("{s:s}", "label", "MCP: set_label"));
+    ASSERT_NE(keywords.get(), nullptr);
+
+    PyObjectRef labelled(PyObject_Call(method.get(), positional.get(), keywords.get()));
+    ASSERT_NE(labelled.get(), nullptr);
+    PyObject* status = PyDict_GetItemString(labelled.get(), "status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+    auto undoNames = _document->getAvailableUndoNames();
+    ASSERT_FALSE(undoNames.empty());
+    EXPECT_EQ(undoNames.front(), "MCP: set_label");
+
+    // Restore the original value so the unlabelled callback records a real
+    // change rather than repeating the same property value.
+    ASSERT_TRUE(_document->undo());
+    PyObjectRef unlabelled(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", callback.get()));
+    ASSERT_NE(unlabelled.get(), nullptr);
+    undoNames = _document->getAvailableUndoNames();
+    ASSERT_FALSE(undoNames.empty());
+    EXPECT_EQ(undoNames.front().rfind("Collaborative operation ", 0), 0U);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       emptyCompatibilityMutationPreservesUndoHead)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    CallbackProbe changed;
+    changed.target = _target;
+    changed.document = document.get();
+    PyObjectRef change(makeCompatibilityCallback(changed));
+    PyObjectRef committed(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", change.get()));
+    ASSERT_TRUE(pythonObjectAvailable(committed.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(committed.get(), "status")),
+                 "Committed");
+    const auto undoCount = _document->getAvailableUndos();
+    const auto undoNames = _document->getAvailableUndoNames();
+    ASSERT_GT(undoCount, 0);
+
+    // With no target the callback only returns None, like a print-only script.
+    CallbackProbe unchanged;
+    unchanged.document = document.get();
+    PyObjectRef noop(makeCompatibilityCallback(unchanged));
+    PyObjectRef result(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", noop.get()));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(_document->getAvailableUndos(), undoCount);
+    EXPECT_EQ(_document->getAvailableUndoNames(), undoNames);
+    ASSERT_TRUE(_document->undo());
+    EXPECT_NE(_target->Label.getStrValue(), "Compatibility callback");
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       emptyCrossDocumentMarkerSurvivesOpeningNextTransaction)
+{
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("crossDocumentUndoPeer");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    ASSERT_NE(foreign, nullptr);
+    auto* target = foreign->addObject<App::FeatureTest>("Target");
+    ASSERT_NE(target, nullptr);
+    target->Label.setValue("Before");
+    _document->clearUndos();
+    foreign->clearUndos();
+
+    // A only books the ID; B's edit creates the empty grouping marker in A.
+    const auto id = _document->openTransaction("shared edit");
+    ASSERT_NE(id, App::NullTransaction);
+    ASSERT_EQ(foreign->openTransaction("shared edit", id), id);
+    target->Label.setValue("Changed in B");
+    ASSERT_TRUE(_document->hasPendingTransaction());
+    ASSERT_EQ(_document->getTransactionID(true), id);
+    ASSERT_EQ(foreign->getTransactionID(true), id);
+
+    ASSERT_NE(_document->openTransaction("next"), App::NullTransaction);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(foreign->hasPendingTransaction());
+    EXPECT_EQ(_document->getAvailableUndos(), 1);
+    EXPECT_EQ(_document->getAvailableUndos(id), 1);
+    EXPECT_EQ(_document->getAvailableUndoNames(),
+              std::vector<std::string>({"-> shared edit"}));
+    const auto jointUndoId = _document->getTransactionID(true);
+    ASSERT_EQ(jointUndoId, id);
+    ASSERT_EQ(foreign->getAvailableUndos(jointUndoId), 1);
+
+    // App callers can undo both participants using A's preserved marker ID.
+    ASSERT_TRUE(_document->undo(jointUndoId));
+    ASSERT_TRUE(foreign->undo(jointUndoId));
+    EXPECT_STREQ(target->Label.getValue(), "Before");
+    EXPECT_STREQ(_target->Label.getValue(), "Before");
+    EXPECT_EQ(_document->getAvailableUndos(), 0);
+    EXPECT_EQ(foreign->getAvailableUndos(), 0);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       fileOnlyCompatibilityMutationRemainsUndoable)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    const auto undoCount = _document->getAvailableUndos();
+    ASSERT_FALSE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.document = document.get();
+    probe.markAppearanceFileChange = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    PyObjectRef result(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", callback.get()));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    ASSERT_EQ(_document->getAvailableUndos(), undoCount + 1);
+    EXPECT_TRUE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_TRUE(_document->redo());
+    EXPECT_TRUE(
+        _document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       idlePresentationWaitReleasesPythonGilAndCommitMutexBeforeCallbackApplies)
+{
+    PyObject* document = nullptr;
+    PyObject* callback = nullptr;
+    CallbackProbe probe;
+    probe.target = _target;
+    {
+        Base::PyGILStateLocker gil;
+        document = _document->getPyObject();
+        ASSERT_NE(document, nullptr);
+        probe.document = document;
+        callback = makeCompatibilityCallback(probe);
+        ASSERT_NE(callback, nullptr);
+    }
+    const auto wildcardBefore = wildcardRevision();
+    const auto session = _document->collaborationService().beginEditSession("presentation-probe");
+    std::optional<App::LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return PyObject_CallMethod(document, "commitCompatibilityMutation", "O", callback);
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(100ms), std::future_status::timeout);
+    // A GUI provider may need both the GIL and the document mutex to finish
+    // its reserved refresh. Probe them before releasing that reservation.
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        Base::PyGILStateLocker gil;
+        const auto status = _document->collaborationService().sessionStatus(session.sessionId());
+        return status.has_value() && _target->Label.getStrValue() == "Before";
+    });
+    EXPECT_EQ(callbackAccess.wait_for(100ms), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(callbackAccess.get());
+    PyObject* committed = result.get();
+    {
+        Base::PyGILStateLocker gil;
+        ASSERT_NE(committed, nullptr);
+        EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(committed, "status")), "Committed");
+        EXPECT_EQ(probe.calls, 1);
+        EXPECT_TRUE(probe.gilHeld);
+        EXPECT_EQ(probe.callbackThread, _document->executionLane()->ownerThreadId());
+        EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+        EXPECT_EQ(wildcardRevision(), wildcardBefore + 1);
+        Py_DECREF(committed);
+        Py_DECREF(callback);
+        Py_DECREF(document);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       idlePresentationForeignAsyncCompatibilityHappyPathCommitsOnce)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe probe;
+    probe.target = _target;
+    probe.document = document.get();
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    PyObjectRef handle(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutationAsync", "O", callback.get()));
+    ASSERT_NE(handle.get(), nullptr);
+    ASSERT_TRUE(PyDict_Check(handle.get()));
+    PyObject* wait = PyDict_GetItemString(handle.get(), "wait");
+    ASSERT_NE(wait, nullptr);
+    PyObjectRef result(PyObject_CallFunction(wait, "d", 5.0));
+    ASSERT_NE(result.get(), nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")), "Committed");
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       idlePresentationNestedForeignAsyncCompatibilityRetainsTerminalBusyContext)
+{
+    const auto name = App::GetApplication().getUniqueDocumentName("foreignAsyncSerialized");
+    ScopedDocumentClose closeForeign(name);
+    auto* foreign = App::GetApplication().newDocument(name.c_str());
+    auto* target = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    target->Label.setValue("Before");
+    foreign->recompute();
+    PyObject* document = nullptr;
+    PyObject* callback = nullptr;
+    CallbackProbe probe;
+    probe.target = target;
+    {
+        Base::PyGILStateLocker gil;
+        document = foreign->getPyObject();
+        ASSERT_NE(document, nullptr);
+        probe.document = document;
+        callback = makeCompatibilityCallback(probe);
+        ASSERT_NE(callback, nullptr);
+    }
+    const auto session = _document->collaborationService().beginEditSession("foreign-async-probe");
+    PyObject* nested = nullptr;
+    bool callFailed = false;
+    std::optional<App::LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().serializeCompatibilityCallback([&] {
+            PyObjectRef handle(PyObject_CallMethod(
+                document, "commitCompatibilityMutationAsync", "O", callback));
+            PyObject* wait = handle.get() && PyDict_Check(handle.get())
+                ? PyDict_GetItemString(handle.get(), "wait") : nullptr;
+            nested = wait ? PyObject_CallFunction(wait, "d", 5.0) : nullptr;
+            callFailed = nested == nullptr;
+            if (callFailed) {
+                PyErr_Clear();
+            }
+        });
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(100ms), std::future_status::ready);
+    auto callbackAccess = std::async(std::launch::async, [&] {
+        return _document->collaborationService().sessionStatus(session.sessionId());
+    });
+    EXPECT_EQ(callbackAccess.wait_for(100ms), std::future_status::ready);
+    auto gilAccess = std::async(std::launch::async, [] {
+        Base::PyGILStateLocker gil;
+        return PyGILState_Check() != 0;
+    });
+    EXPECT_EQ(gilAccess.wait_for(100ms), std::future_status::ready);
+    refresh.reset();
+    EXPECT_TRUE(gilAccess.get());
+    EXPECT_TRUE(callbackAccess.get().has_value());
+    EXPECT_TRUE(result.get().committed());
+    {
+        Base::PyGILStateLocker gil;
+        EXPECT_FALSE(callFailed);
+        if (nested) {
+            EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(nested, "status")), "Busy");
+        }
+        EXPECT_EQ(probe.calls, 0);
+        EXPECT_EQ(target->Label.getStrValue(), "Before");
+        Py_XDECREF(nested);
+        Py_DECREF(callback);
+        Py_DECREF(document);
+    }
+}
+
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        surfaceCommitsExactCallbackAndPublishesOnlyUnknownModel)
 {
@@ -1828,7 +2154,9 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_STREQ(PyUnicode_AsUTF8(publicationKind), "UnknownModelMutation");
     EXPECT_EQ(probe.calls, 1);
     EXPECT_TRUE(probe.gilHeld);
-    EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+    const auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
     EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
     EXPECT_EQ(wildcardRevision(), wildcardBefore + 1);
     EXPECT_EQ(Py_REFCNT(callback.get()), callbackReferences);
@@ -2840,7 +3168,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       eagerPolicyStillRejectsPreexistingPendingRecomputeByDefault)
+       eagerPolicySettlesPreexistingPendingRecomputeBeforeCompatibilityCommit)
 {
     Base::PyGILStateLocker gil;
     PyObjectRef document(_document->getPyObject());
@@ -2858,9 +3186,9 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     PyObject* status = PyDict_GetItemString(result.get(), "status");
     ASSERT_NE(status, nullptr);
-    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Busy");
-    EXPECT_EQ(probe.calls, 0);
-    EXPECT_TRUE(_document->mustExecute());
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_FALSE(_document->mustExecute());
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
@@ -4399,21 +4727,17 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 
     PyObject* result = nullptr;
     bool callFailed = false;
+    std::atomic_bool workerFinished {false};
     std::thread worker([&] {
         Base::PyGILStateLocker gil;
         result = PyObject_CallMethod(document, "commitCompatibilityMutation", "O", callback);
         callFailed = result == nullptr;
+        workerFinished.store(true, std::memory_order_release);
     });
 
-    const bool queued = dispatcher.waitUntilQueued();
-    const bool dispatched = queued && dispatcher.runOne();
-    if (!dispatched) {
-        dispatcher.abortPending();
-    }
+    ASSERT_TRUE(dispatcher.pumpUntil(
+        [&] { return workerFinished.load(std::memory_order_acquire); }));
     worker.join();
-
-    ASSERT_TRUE(queued);
-    ASSERT_TRUE(dispatched);
 
     {
         Base::PyGILStateLocker gil;
@@ -4422,7 +4746,10 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result, "status")), "Committed");
         EXPECT_EQ(probe.calls, 1);
         EXPECT_TRUE(probe.gilHeld);
-        EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+        const auto* lane = _document->executionLane();
+        ASSERT_NE(lane, nullptr);
+        EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
+        EXPECT_NE(probe.callbackThread, std::this_thread::get_id());
         Py_DECREF(result);
         Py_DECREF(callback);
         Py_DECREF(document);
@@ -4453,6 +4780,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObject* result = nullptr;
     bool exactType = false;
     std::string message;
+    std::atomic_bool workerFinished {false};
     std::thread worker([&] {
         Base::PyGILStateLocker gil;
         result = PyObject_CallMethod(document, "commitCompatibilityMutation", "O", callback);
@@ -4473,23 +4801,22 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
             Py_XDECREF(value);
             Py_XDECREF(traceback);
         }
+        workerFinished.store(true, std::memory_order_release);
     });
 
-    const bool queued = dispatcher.waitUntilQueued();
-    const bool dispatched = queued && dispatcher.runOne();
-    if (!dispatched) {
-        dispatcher.abortPending();
-    }
+    ASSERT_TRUE(dispatcher.pumpUntil(
+        [&] { return workerFinished.load(std::memory_order_acquire); }));
     worker.join();
 
-    ASSERT_TRUE(queued);
-    ASSERT_TRUE(dispatched);
     EXPECT_EQ(result, nullptr);
     EXPECT_TRUE(exactType);
     EXPECT_EQ(message, "compatibility callback failed");
     EXPECT_EQ(probe.calls, 1);
     EXPECT_TRUE(probe.gilHeld);
-    EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+    const auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
+    EXPECT_NE(probe.callbackThread, std::this_thread::get_id());
     EXPECT_EQ(_target->Label.getStrValue(), "Before");
     EXPECT_EQ(wildcardRevision(), wildcardBefore);
     {
@@ -4501,7 +4828,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       rejectedOffOwnerCallDoesNotInvokeOrRetainTheCallback)
+       offOwnerCallWithoutMainThreadHooksUsesLaneAndCommits)
 {
     PyObject* document = nullptr;
     PyObject* callback = nullptr;
@@ -4529,8 +4856,13 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         ASSERT_NE(result, nullptr);
         PyObject* status = PyDict_GetItemString(result, "status");
         ASSERT_NE(status, nullptr);
-        EXPECT_STREQ(PyUnicode_AsUTF8(status), "Unsupported");
-        EXPECT_EQ(probe.calls, 0);
+        // Headless App tests install no MainThreadSignal hooks; the execution
+        // lane still owns the document and must admit the off-owner commit.
+        EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+        EXPECT_EQ(probe.calls, 1);
+        const auto* lane = _document->executionLane();
+        ASSERT_NE(lane, nullptr);
+        EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
         EXPECT_EQ(Py_REFCNT(callback), callbackReferences);
         Py_DECREF(result);
         Py_DECREF(callback);

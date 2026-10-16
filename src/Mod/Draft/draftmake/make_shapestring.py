@@ -61,13 +61,15 @@ def make_shape_string(string, fontfile, size=100, tracking=0):
     obj.Size = size
     obj.Tracking = tracking
 
-    if App.GuiUp:
+    def setup_view():
         ViewProviderShapeString(obj.ViewObject)
         gui_utils.format_object(obj)
         obrep = obj.ViewObject
         if "PointSize" in obrep.PropertiesList:
             obrep.PointSize = 1  # hide the segment end points
         gui_utils.select(obj)
+
+    gui_utils.run_gui_setup(obj, setup_view)
     obj.recompute()
     return obj
 

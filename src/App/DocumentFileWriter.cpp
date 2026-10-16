@@ -2729,7 +2729,8 @@ struct DocumentFileLock::Impl
         : normalized(normalizeFinalEntry(destination, false))
         , processMutex(processMutexFor(processLockKey(normalized)))
         , processLock(*processMutex, std::defer_lock)
-        , filesystemLock(lockPathFor(normalized))
+        // Removed on release so no sidecar lingers next to the document.
+        , filesystemLock(lockPathFor(normalized), true)
     {
         bool processLocked = false;
         if (timeoutMs < 0) {

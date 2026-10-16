@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "MutationClassification.h"
+#include "RecoveryAdmission.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
+#include "DocumentWouldBlock.h"
 #include "PropertyContainer.h"
 
 #include <Base/Exception.h>
+#include <Base/PyObjectBase.h>
 
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -20,6 +27,7 @@ namespace
 struct AtomicPresentationMutationAdmission
 {
     std::mutex mutex;
+    std::condition_variable refreshChanged;
     const App::Document* target {nullptr};
     const App::DocumentRevisionIndex* targetRevisionIndex {nullptr};
     std::thread::id owner;
@@ -27,6 +35,9 @@ struct AtomicPresentationMutationAdmission
     unsigned int preparedDepth {0};
     unsigned int legacyReadOnlyDepth {0};
     unsigned int preparedReadOnlyDepth {0};
+    std::thread::id refreshOwner;
+    unsigned int refreshDepth {0};
+    std::deque<App::RecoveryAdmission*> recoveryQueue;
 };
 
 thread_local const App::DocumentRevisionIndex* coordinatorRevisionGrantIndex {nullptr};
@@ -77,6 +88,14 @@ void beginMutationTarget(App::Document& document, bool prepared, bool readOnly)
     auto& admission = atomicPresentationMutationAdmission();
     std::lock_guard lock(admission.mutex);
     const auto caller = std::this_thread::get_id();
+    // A refresh may call back into admission on its own thread. Refuse that
+    // too: otherwise its remaining provider work would run under the new
+    // target, or a worker could hold locks while waiting for the GUI callback.
+    if (admission.refreshDepth != 0
+        || (!admission.target && !admission.recoveryQueue.empty())) {
+        throw App::LivePresentationRefreshInProgress(
+            admission.refreshOwner != caller && !App::DocumentWouldBlock::isGuiThread());
+    }
     if (admission.target
         && (admission.target != &document || admission.owner != caller)) {
         throw Base::RuntimeError(
@@ -114,26 +133,34 @@ void endMutationTarget(const App::Document& document,
                        bool readOnly) noexcept
 {
     try {
-        auto& admission = atomicPresentationMutationAdmission();
-        std::lock_guard lock(admission.mutex);
-        auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
-        auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
-                                       : admission.legacyReadOnlyDepth;
-        if (admission.target != &document
-            || admission.owner != std::this_thread::get_id() || depth == 0
-            || (readOnly && readOnlyDepth == 0)) {
-            return;
+        const App::Document* releasedDocument = nullptr;
+        {
+            auto& admission = atomicPresentationMutationAdmission();
+            std::lock_guard lock(admission.mutex);
+            auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
+            auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
+                                           : admission.legacyReadOnlyDepth;
+            if (admission.target != &document
+                || admission.owner != std::this_thread::get_id() || depth == 0
+                || (readOnly && readOnlyDepth == 0)) {
+                return;
+            }
+            if (readOnly) {
+                --readOnlyDepth;
+            }
+            --depth;
+            if (mutationTargetDepth(admission) == 0) {
+                releasedDocument = admission.target;
+                admission.target = nullptr;
+                admission.targetRevisionIndex = nullptr;
+                admission.owner = std::thread::id {};
+                admission.legacyReadOnlyDepth = 0;
+                admission.preparedReadOnlyDepth = 0;
+            }
         }
-        if (readOnly) {
-            --readOnlyDepth;
-        }
-        --depth;
-        if (mutationTargetDepth(admission) == 0) {
-            admission.target = nullptr;
-            admission.targetRevisionIndex = nullptr;
-            admission.owner = std::thread::id {};
-            admission.legacyReadOnlyDepth = 0;
-            admission.preparedReadOnlyDepth = 0;
+        if (releasedDocument) {
+            atomicPresentationMutationAdmission().refreshChanged.notify_all();
+            notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
         }
     }
     catch (...) {
@@ -215,6 +242,167 @@ App::Document* App::documentFromPropertyContainer(const PropertyContainer* conta
     return nullptr;
 }
 
+App::RecoveryAdmission::RecoveryAdmission()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    admission.recoveryQueue.push_back(this);
+}
+
+bool App::RecoveryAdmission::tryAcquire()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (acquired) {
+        return true;
+    }
+    if (admission.target || admission.refreshDepth != 0
+        || admission.recoveryQueue.empty() || admission.recoveryQueue.front() != this) {
+        return false;
+    }
+    admission.recoveryQueue.pop_front();
+    admission.refreshOwner = std::this_thread::get_id();
+    admission.refreshDepth = 1;
+    acquired = true;
+    return true;
+}
+
+void App::RecoveryAdmission::acquire()
+{
+    // Only recovery workers wait; never block the GUI or hold the Python GIL.
+    if (DocumentWouldBlock::isGuiThread()) {
+        throw Base::RuntimeError("recovery admission cannot wait on the GUI thread");
+    }
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    auto& admission = atomicPresentationMutationAdmission();
+    std::unique_lock lock(admission.mutex);
+    admission.refreshChanged.wait(lock, [&] {
+        if (acquired) {
+            return true;
+        }
+        if (admission.target || admission.refreshDepth != 0
+            || admission.recoveryQueue.empty() || admission.recoveryQueue.front() != this) {
+            return false;
+        }
+        admission.recoveryQueue.pop_front();
+        admission.refreshOwner = std::this_thread::get_id();
+        admission.refreshDepth = 1;
+        acquired = true;
+        return true;
+    });
+}
+
+App::RecoveryAdmission::~RecoveryAdmission() noexcept
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (acquired) {
+        // The final release belongs to the thread that acquired the reservation.
+        if (admission.refreshOwner != std::this_thread::get_id()
+            || admission.refreshDepth != 1) {
+            std::terminate();
+        }
+        admission.refreshDepth = 0;
+        admission.refreshOwner = {};
+    }
+    else {
+        const auto it = std::find(admission.recoveryQueue.begin(),
+                                  admission.recoveryQueue.end(), this);
+        if (it != admission.recoveryQueue.end()) {
+            admission.recoveryQueue.erase(it);
+        }
+    }
+    admission.refreshChanged.notify_all();
+}
+
+App::LivePresentationRefreshScope::LivePresentationRefreshScope() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::unique_lock lock(admission.mutex, std::try_to_lock);
+        const auto caller = std::this_thread::get_id();
+        if (!lock.owns_lock() || admission.target
+            || (!admission.recoveryQueue.empty() && admission.refreshDepth == 0)
+            || (admission.refreshDepth != 0 && admission.refreshOwner != caller)
+            || admission.refreshDepth == std::numeric_limits<unsigned int>::max()) {
+            return;
+        }
+        admission.refreshOwner = caller;
+        ++admission.refreshDepth;
+        _acquired = true;
+    }
+    catch (...) {
+        // Refresh is optional. Fail closed so the caller can defer it.
+    }
+}
+
+App::LivePresentationRefreshScope::~LivePresentationRefreshScope() noexcept
+{
+    if (!_acquired) {
+        return;
+    }
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        if (admission.refreshOwner != std::this_thread::get_id()
+            || admission.refreshDepth == 0) {
+            return;
+        }
+        if (--admission.refreshDepth == 0) {
+            admission.refreshOwner = std::thread::id {};
+            admission.refreshChanged.notify_all();
+        }
+    }
+    catch (...) {
+        // Teardown is noexcept and must not replace a provider exception.
+    }
+}
+
+bool App::Internal::PreparedLabelReferenceUpdates::presentationRefreshOnCallingThread() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.refreshDepth != 0
+            && admission.refreshOwner == std::this_thread::get_id();
+    }
+    catch (...) {
+        // Without proof of presentation replay, retain normal edit semantics.
+        return false;
+    }
+}
+
+App::LivePresentationRefreshInProgress::LivePresentationRefreshInProgress(bool deferrable)
+    : Base::RuntimeError("an idle live presentation refresh is active in this process")
+    , _deferrable(deferrable)
+{}
+
+bool App::waitForLivePresentationRefresh()
+{
+    if (DocumentWouldBlock::isGuiThread()) {
+        return false;
+    }
+    // Declaration order also releases the admission mutex before reacquiring
+    // the GIL: Python-backed GUI refresh may itself need that mutex.
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    auto& admission = atomicPresentationMutationAdmission();
+    std::unique_lock lock(admission.mutex);
+    if (admission.refreshDepth != 0
+        && admission.refreshOwner == std::this_thread::get_id()) {
+        return false;
+    }
+    admission.refreshChanged.wait(lock, [&] {
+        return admission.refreshDepth == 0 && admission.recoveryQueue.empty();
+    });
+    return true;
+}
+
 void App::beginAtomicPresentationMutationTarget(Document& document)
 {
     beginMutationTarget(document, false, false);
@@ -223,6 +411,44 @@ void App::beginAtomicPresentationMutationTarget(Document& document)
 void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
 {
     endMutationTarget(document, false, false);
+}
+
+bool App::atomicPresentationMutationAdmissionHeldFor(const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0;
+    }
+    catch (...) {
+        return true;
+    }
+}
+
+bool App::atomicPresentationMutationAdmissionHeldByOtherThread(
+    const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0
+            && admission.owner != std::this_thread::get_id();
+    }
+    catch (...) {
+        return true;
+    }
+}
+
+bool App::atomicPresentationMutationAdmissionActive() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target != nullptr;
+    }
+    catch (...) {
+        return true;
+    }
 }
 
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
@@ -239,8 +465,14 @@ void App::enforceAtomicPresentationMutationTarget(const Document& document)
             "mutation is unavailable during a collaboration postcondition check");
     }
     if (admission.owner != std::this_thread::get_id()) {
-        throw Base::RuntimeError(
-            "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        // Off-owner callers that hold admission may hop document work onto the
+        // lane owner via dispatchToOwner; allow that owner to mutate the same
+        // target document while the admitting thread waits for the hop.
+        const DocumentExecutionLane* lane = document.executionLane();
+        if (!(lane && lane->isOwnerThread() && admission.target == &document)) {
+            throw Base::RuntimeError(
+                "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        }
     }
     if (admission.target != &document) {
         throw Base::RuntimeError(
@@ -501,4 +733,26 @@ App::MutationRevisionEffects App::classifyMutation(const MutationClassificationI
             return unknownMutation();
     }
     return unknownMutation();
+}
+
+App::Internal::LabelReferenceMutationTarget::LabelReferenceMutationTarget(
+    Document& source, Document& dependent)
+    : previous(&source)
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (admission.target != &source || admission.owner != std::this_thread::get_id()
+        || admission.preparedDepth == 0 || readOnlyTargetDepth(admission) != 0) {
+        throw Base::RuntimeError("label reference updates require the prepared mutation owner");
+    }
+    admission.target = &dependent;
+    admission.targetRevisionIndex = &dependent.collaborationRevisions();
+}
+
+App::Internal::LabelReferenceMutationTarget::~LabelReferenceMutationTarget()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    admission.target = previous;
+    admission.targetRevisionIndex = &previous->collaborationRevisions();
 }

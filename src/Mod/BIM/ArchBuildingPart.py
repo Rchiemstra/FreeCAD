@@ -207,6 +207,84 @@ BuildingTypes = ['Undefined',
 # fmt: on
 
 
+def _schedule_autogroup_box(obj):
+    """Refresh the autogroup box without calling GUI APIs inside execute().
+
+    On the GUI thread this is the historical synchronous proxy call. On the
+    document owner thread the call is posted to the Qt GUI thread and retried
+    until the document lock is released (same contract as
+    Gui::scheduleGuiSingleShot plus live-presentation catch-up).
+    """
+
+    if not FreeCAD.GuiUp or obj is None or not getattr(obj, "Document", None):
+        return
+
+    from draftutils import gui_utils
+
+    def _apply():
+        view = getattr(obj, "ViewObject", None)
+        proxy = getattr(view, "Proxy", None) if view is not None else None
+        if proxy is not None and hasattr(proxy, "onChanged"):
+            proxy.onChanged(view, "AutoGroupBox")
+
+    if gui_utils.on_gui_thread():
+        _apply()
+        return
+
+    try:
+        from PySide import QtCore
+    except Exception:
+        return
+    app = QtCore.QCoreApplication.instance()
+    if app is None:
+        return
+
+    doc_name = obj.Document.Name
+    obj_name = obj.Name
+    attempts = {"n": 0}
+
+    def _run():
+        if doc_name not in FreeCAD.listDocuments():
+            return
+        doc = FreeCAD.getDocument(doc_name)
+        try:
+            readiness = doc.getMutationReadiness() or {}
+        except Exception:
+            attempts["n"] += 1
+            if attempts["n"] < 2400:
+                QtCore.QTimer.singleShot(50, app, _run)
+            return
+        if readiness.get("poisoned") or readiness.get("quarantined"):
+            return
+        # Lane lock / replay, not an open undo transaction. The box update is
+        # legal on the GUI thread once recompute has released the document.
+        if (
+            readiness.get("recomputing")
+            or readiness.get("must_execute")
+            or readiness.get("notification_replay")
+            or readiness.get("commit_barrier")
+        ):
+            attempts["n"] += 1
+            if attempts["n"] < 2400:
+                QtCore.QTimer.singleShot(50, app, _run)
+            return
+        target = doc.getObject(obj_name)
+        if target is None:
+            return
+        view = getattr(target, "ViewObject", None)
+        proxy = getattr(view, "Proxy", None) if view is not None else None
+        if proxy is not None and hasattr(proxy, "onChanged"):
+            proxy.onChanged(view, "AutoGroupBox")
+
+    # Receiver is the GUI-thread QApplication, so this is a queued hop
+    # (QTimer::singleShot(context, ...) / scheduleGuiSingleShot), not a
+    # timer on the owner thread and not a wait inside execute().
+    try:
+        QtCore.QTimer.singleShot(0, app, _run)
+    except Exception:
+        return
+
+
 class BuildingPart(ArchIFC.IfcProduct):
     "The BuildingPart object"
 
@@ -411,9 +489,9 @@ class BuildingPart(ArchIFC.IfcProduct):
             obj.Placement = pl
         obj.Area = self.getArea(obj)
         obj.MaterialsTable = materialstable
-        if obj.ViewObject:
-            # update the autogroup box if needed
-            obj.ViewObject.Proxy.onChanged(obj.ViewObject, "AutoGroupBox")
+        # Coin autogroup-box updates are GUI-thread work. Do not touch
+        # ViewObject from the document owner thread during execute().
+        _schedule_autogroup_box(obj)
 
     def getMovableChildren(self, obj):
         "recursively get movable children"

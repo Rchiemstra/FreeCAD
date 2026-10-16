@@ -5,8 +5,10 @@
 #include <App/Application.h>
 #include <App/CollaborativeOperation.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/FeatureTest.h>
+#include <App/MutationClassification.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
@@ -14,6 +16,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -109,6 +113,57 @@ public:
         return _captureOrder.size();
     }
 
+    void prepared(const std::string& feature)
+    {
+        std::lock_guard lock(_mutex);
+        _prepared.insert(feature);
+        _changed.notify_all();
+    }
+
+    bool waitPrepared(const std::string& feature,
+                      const std::chrono::milliseconds timeout = 2s)
+    {
+        std::unique_lock lock(_mutex);
+        return _changed.wait_for(lock, timeout, [&] {
+            return _prepared.contains(feature);
+        });
+    }
+
+    void applied(const std::string& feature)
+    {
+        std::lock_guard lock(_mutex);
+        ++_applyCount[feature];
+    }
+
+    std::size_t applyCount(const std::string& feature) const
+    {
+        std::lock_guard lock(_mutex);
+        const auto found = _applyCount.find(feature);
+        return found == _applyCount.end() ? 0 : found->second;
+    }
+
+    void onDestruction(const std::string& feature, std::function<void()> callback)
+    {
+        std::lock_guard lock(_mutex);
+        _destructionCallbacks[feature] = std::move(callback);
+    }
+
+    void destroyed(const std::string& feature)
+    {
+        std::function<void()> callback;
+        {
+            std::lock_guard lock(_mutex);
+            const auto found = _destructionCallbacks.find(feature);
+            if (found != _destructionCallbacks.end()) {
+                callback = std::move(found->second);
+                _destructionCallbacks.erase(found);
+            }
+        }
+        if (callback) {
+            callback();
+        }
+    }
+
 private:
     mutable std::mutex _mutex;
     std::condition_variable_any _changed;
@@ -116,6 +171,9 @@ private:
     std::vector<std::string> _captureOrder;
     std::set<std::string> _started;
     std::set<std::string> _released;
+    std::set<std::string> _prepared;
+    std::map<std::string, std::size_t> _applyCount;
+    std::map<std::string, std::function<void()>> _destructionCallbacks;
 };
 
 class RecomputeScenarioStore
@@ -152,12 +210,21 @@ public:
     RecomputeSetLabelOperation(std::string target,
                                std::string identity,
                                std::string value,
-                               std::string mode)
+                               std::string mode,
+                               std::shared_ptr<RecomputeScenario> scenario,
+                               std::string feature)
         : _target(std::move(target))
         , _identity(std::move(identity))
         , _value(std::move(value))
         , _mode(std::move(mode))
+        , _scenario(std::move(scenario))
+        , _feature(std::move(feature))
     {}
+
+    ~RecomputeSetLabelOperation() override
+    {
+        _scenario->destroyed(_feature);
+    }
 
     std::string_view typeId() const noexcept override
     {
@@ -174,6 +241,7 @@ public:
             || document.collaborationObjectIdentity(*target) != _identity) {
             throw std::runtime_error("recompute test target became stale");
         }
+        _scenario->applied(_feature);
         target->Label.setValue(_value);
     }
 
@@ -192,6 +260,8 @@ private:
     const std::string _identity;
     const std::string _value;
     const std::string _mode;
+    const std::shared_ptr<RecomputeScenario> _scenario;
+    const std::string _feature;
 };
 
 void ensureRecomputeTestAdapterRegistered()
@@ -257,8 +327,12 @@ void ensureRecomputeTestAdapterRegistered()
                             throw std::runtime_error(
                                 "requested recompute task failure");
                         }
-                        return std::make_unique<const RecomputeSetLabelOperation>(
-                            targetName, identity, capturedValue, mode);
+                        auto operation =
+                            std::make_unique<const RecomputeSetLabelOperation>(
+                                targetName, identity, capturedValue, mode,
+                                scenario, feature);
+                        scenario->prepared(feature);
+                        return operation;
                     };
                 return App::CollaborativeOperationPreparation {
                     std::move(reads),
@@ -437,6 +511,190 @@ TEST_F(DocumentRecomputeCoordinatorTest, independentRootsComplete)
     EXPECT_EQ(snapshot.completedFeatures, 2U);
     EXPECT_EQ(object("First").Label.getStrValue(), "first-after");
     EXPECT_EQ(object("Second").Label.getStrValue(), "second-after");
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       preparedRecomputeAppliesOnceWithoutLivePresentationRefresh)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("ready", {}, _scenarioToken, "First", "committed-once")}));
+    ASSERT_TRUE(_scenario->waitPrepared("ready"));
+
+    const auto snapshot = waitTerminal(coordinator, id);
+
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_EQ(featureSnapshot(snapshot, "ready").state,
+              App::DocumentRecomputeFeatureState::Committed);
+    EXPECT_EQ(_scenario->captureCount(), 1U);
+    EXPECT_EQ(_scenario->applyCount("ready"), 1U);
+    EXPECT_EQ(object("First").Label.getStrValue(), "committed-once");
+    EXPECT_FALSE(coordinator.poll(id));
+    EXPECT_EQ(_scenario->applyCount("ready"), 1U);
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       preparedRecomputeWaitsForLivePresentationRefreshAndAppliesOnce)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("ready", {}, _scenarioToken, "First", "committed-once")}));
+    ASSERT_TRUE(_scenario->waitPrepared("ready"));
+
+    {
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_TRUE(refresh.acquired());
+        // Drain the already-produced detached result while GUI refresh owns
+        // admission. poll() must return promptly, retaining work for a later
+        // owner-thread turn rather than failing or waiting inside this turn.
+        for (int turn = 0; turn < 30; ++turn) {
+            const auto start = std::chrono::steady_clock::now();
+            static_cast<void>(coordinator.poll(id));
+            EXPECT_LT(std::chrono::steady_clock::now() - start, 250ms);
+            std::this_thread::sleep_for(1ms);
+        }
+        const auto pending = coordinator.status(id);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_FALSE(pending->terminal()) << pending->diagnostic;
+        EXPECT_EQ(pending->completedFeatures, 0U);
+        EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+        EXPECT_EQ(object("First").Label.getStrValue(), "First-before");
+    }
+
+    const auto snapshot = waitTerminal(coordinator, id);
+
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_EQ(featureSnapshot(snapshot, "ready").state,
+              App::DocumentRecomputeFeatureState::Committed);
+    EXPECT_EQ(_scenario->captureCount(), 1U);
+    EXPECT_EQ(_scenario->applyCount("ready"), 1U);
+    EXPECT_EQ(object("First").Label.getStrValue(), "committed-once");
+    EXPECT_FALSE(coordinator.poll(id));
+    EXPECT_EQ(_scenario->applyCount("ready"), 1U);
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       preparedRecomputeRevalidatesRevisionAfterLivePresentationRefresh)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("ready", {}, _scenarioToken, "Stale", "must-not-apply")}));
+    ASSERT_TRUE(_scenario->waitPrepared("ready"));
+
+    {
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_TRUE(refresh.acquired());
+        for (int turn = 0; turn < 30; ++turn) {
+            static_cast<void>(coordinator.poll(id));
+            std::this_thread::sleep_for(1ms);
+        }
+        const auto pending = coordinator.status(id);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_FALSE(pending->terminal()) << pending->diagnostic;
+        EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+        EXPECT_EQ(object("Stale").Label.getStrValue(), "Stale-before");
+    }
+    object("Stale").Label.setValue("external-change-before-resume");
+
+    const auto snapshot = waitTerminal(coordinator, id);
+
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::PartialFailure);
+    EXPECT_EQ(featureSnapshot(snapshot, "ready").state,
+              App::DocumentRecomputeFeatureState::Stale);
+    EXPECT_EQ(_scenario->captureCount(), 1U);
+    EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+    EXPECT_EQ(object("Stale").Label.getStrValue(),
+              "external-change-before-resume");
+    EXPECT_FALSE(coordinator.hasPendingWork());
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       preparedRecomputeCancellationWhileAwaitingLivePresentationRefreshNeverApplies)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("ready", {}, _scenarioToken, "First", "must-not-apply")}));
+    ASSERT_TRUE(_scenario->waitPrepared("ready"));
+
+    {
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_TRUE(refresh.acquired());
+        for (int turn = 0; turn < 30; ++turn) {
+            static_cast<void>(coordinator.poll(id));
+            std::this_thread::sleep_for(1ms);
+        }
+        const auto pending = coordinator.status(id);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_FALSE(pending->terminal()) << pending->diagnostic;
+        EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+        EXPECT_EQ(object("First").Label.getStrValue(), "First-before");
+    }
+    EXPECT_TRUE(coordinator.cancel(id, "cancel while refresh admission is deferred"));
+
+    const auto snapshot = waitTerminal(coordinator, id);
+
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(featureSnapshot(snapshot, "ready").state,
+              App::DocumentRecomputeFeatureState::Cancelled);
+    EXPECT_EQ(_scenario->captureCount(), 1U);
+    EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+    EXPECT_EQ(object("First").Label.getStrValue(), "First-before");
+    EXPECT_FALSE(coordinator.hasPendingWork());
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       cancelledLivePresentationRefreshPayloadIsDestroyedWithoutHoldingStateMutex)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("ready", {}, _scenarioToken, "First", "must-not-apply")}));
+    ASSERT_TRUE(_scenario->waitPrepared("ready"));
+    {
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_TRUE(refresh.acquired());
+        for (int turn = 0; turn < 30; ++turn) {
+            static_cast<void>(coordinator.poll(id));
+            std::this_thread::sleep_for(1ms);
+        }
+        const auto pending = coordinator.status(id);
+        ASSERT_TRUE(pending.has_value());
+        ASSERT_FALSE(pending->terminal()) << pending->diagnostic;
+    }
+
+    std::promise<void> statusRead;
+    auto statusReady = statusRead.get_future();
+    std::jthread reader;
+    bool statusReadableDuringDestruction = false;
+    int destructions = 0;
+    _scenario->onDestruction("ready", [&] {
+        ++destructions;
+        // Payload teardown is arbitrary extension code. A separate status
+        // reader detects a retained state mutex without leaving this test
+        // deadlocked if the owner destroys the payload under that mutex.
+        reader = std::jthread([&] {
+            static_cast<void>(coordinator.status(id));
+            statusRead.set_value();
+        });
+        statusReadableDuringDestruction =
+            statusReady.wait_for(250ms) == std::future_status::ready;
+    });
+
+    const bool cancelled = _document->collaborationService().runOnOwnerThread([&] {
+        return coordinator.cancel(id, "dispose deferred payload safely");
+    });
+    const auto snapshot = waitTerminal(coordinator, id);
+    if (reader.joinable()) {
+        reader.join();
+    }
+
+    EXPECT_TRUE(cancelled);
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(destructions, 1);
+    EXPECT_TRUE(statusReadableDuringDestruction);
+    EXPECT_EQ(_scenario->applyCount("ready"), 0U);
+    EXPECT_EQ(object("First").Label.getStrValue(), "First-before");
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,

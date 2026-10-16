@@ -24,6 +24,7 @@
 
 #include <boost/tokenizer.hpp>
 #include <boost/regex.hpp>
+#include <algorithm>
 #include <deque>
 #include <memory>
 #include <sstream>
@@ -42,6 +43,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DynamicProperty.h>
+#include <App/private/CollaborationStructuralMutationRecorder.h>
 #include <App/ExpressionParser.h>
 #include <App/FeaturePythonPyImp.h>
 #include <Base/Exception.h>
@@ -82,6 +84,8 @@ using Edge = Traits::edge_descriptor;
 
 Sheet::Sheet()
     : DocumentObject()
+    , App::Internal::SpreadsheetDerivedCacheAdapter(
+          *this, Sheet::getClassTypeId(), &Sheet::refreshDerivedCache)
     , props(PropertyContainer::dynamicProps)
     , cells(this)
 {
@@ -590,24 +594,61 @@ void Sheet::onSettingDocument()
  *
  */
 
+DocumentObjectExecReturn* Sheet::refreshDerivedCache(DocumentObject& object)
+{
+    // The sealed adapter admits exactly native Sheet, never SheetPython. Do
+    // not dispatch execute(), recompute(), extensions, or a Python proxy.
+    return static_cast<Sheet&>(object).Sheet::execute();
+}
+
+Property* Sheet::addCellCache(CellAddress key, Base::Type nativePropertyType)
+{
+    if (App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        return App::Internal::CollaborationStructuralMutationRecorder::addSpreadsheetDerivedCache(
+            *this, key, nativePropertyType, propAddress);
+    }
+    const std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
+    return addDynamicProperty(nativePropertyType.getName(), name.c_str(), nullptr, nullptr,
+                              Prop_ReadOnly | Prop_Hidden | Prop_NoPersist);
+}
+
+void Sheet::removeCellCache(CellAddress key)
+{
+    const std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
+    if (!App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        this->removeDynamicProperty(name.c_str());
+        return;
+    }
+    auto* property = props.getDynamicPropertyByName(name.c_str());
+    const auto mapping = propAddress.find(property);
+    const std::optional<CellAddress> mapped = mapping == propAddress.end()
+        ? std::nullopt : std::optional<CellAddress>(mapping->second);
+    // Reuse the canonical Entry -> Physical removal, without clearing cell
+    // inputs or aliases. The private marker cannot be supplied by callbacks.
+    App::Internal::SpreadsheetCellClearOperation operation(
+        *this, property, key, mapped, propAddress, true);
+    operation.removeCache();
+    if (property) {
+        propAddress.erase(property);
+    }
+}
+
 Property* Sheet::setFloatProperty(CellAddress key, double value)
 {
     std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
     Property* prop = props.getDynamicPropertyByName(name.c_str());
+    if (prop && App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        App::Internal::CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+            *this, prop, key, App::PropertyFloat::getClassTypeId(), propAddress);
+    }
     PropertyFloat* floatProp;
 
     if (!prop || !prop->is<PropertyFloat>()) {
         if (prop) {
-            this->removeDynamicProperty(name.c_str());
+            removeCellCache(key);
             propAddress.erase(prop);
         }
-        floatProp = freecad_cast<PropertyFloat*>(addDynamicProperty(
-            "App::PropertyFloat",
-            name.c_str(),
-            nullptr,
-            nullptr,
-            Prop_ReadOnly | Prop_Hidden | Prop_NoPersist
-        ));
+        floatProp = freecad_cast<PropertyFloat*>(addCellCache(key, App::PropertyFloat::getClassTypeId()));
     }
     else {
         floatProp = static_cast<PropertyFloat*>(prop);
@@ -623,20 +664,18 @@ Property* Sheet::setIntegerProperty(CellAddress key, long value)
 {
     std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
     Property* prop = props.getDynamicPropertyByName(name.c_str());
+    if (prop && App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        App::Internal::CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+            *this, prop, key, App::PropertyInteger::getClassTypeId(), propAddress);
+    }
     PropertyInteger* intProp;
 
     if (!prop || !prop->is<PropertyInteger>()) {
         if (prop) {
-            this->removeDynamicProperty(name.c_str());
+            removeCellCache(key);
             propAddress.erase(prop);
         }
-        intProp = freecad_cast<PropertyInteger*>(addDynamicProperty(
-            "App::PropertyInteger",
-            name.c_str(),
-            nullptr,
-            nullptr,
-            Prop_ReadOnly | Prop_Hidden | Prop_NoPersist
-        ));
+        intProp = freecad_cast<PropertyInteger*>(addCellCache(key, App::PropertyInteger::getClassTypeId()));
     }
     else {
         intProp = static_cast<PropertyInteger*>(prop);
@@ -664,20 +703,18 @@ Property* Sheet::setQuantityProperty(CellAddress key, double value, const Base::
 {
     std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
     Property* prop = props.getDynamicPropertyByName(name.c_str());
+    if (prop && App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        App::Internal::CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+            *this, prop, key, Spreadsheet::PropertySpreadsheetQuantity::getClassTypeId(), propAddress);
+    }
     PropertySpreadsheetQuantity* quantityProp;
 
     if (!prop || !prop->is<PropertySpreadsheetQuantity>()) {
         if (prop) {
-            this->removeDynamicProperty(name.c_str());
+            removeCellCache(key);
             propAddress.erase(prop);
         }
-        Property* p = addDynamicProperty(
-            "Spreadsheet::PropertySpreadsheetQuantity",
-            name.c_str(),
-            nullptr,
-            nullptr,
-            Prop_ReadOnly | Prop_Hidden | Prop_NoPersist
-        );
+        Property* p = addCellCache(key, Spreadsheet::PropertySpreadsheetQuantity::getClassTypeId());
         quantityProp = freecad_cast<PropertySpreadsheetQuantity*>(p);
     }
     else {
@@ -707,20 +744,18 @@ Property* Sheet::setStringProperty(CellAddress key, const std::string& value)
 {
     std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
     Property* prop = props.getDynamicPropertyByName(name.c_str());
+    if (prop && App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        App::Internal::CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+            *this, prop, key, App::PropertyString::getClassTypeId(), propAddress);
+    }
     PropertyString* stringProp = freecad_cast<PropertyString*>(prop);
 
     if (!stringProp) {
         if (prop) {
-            this->removeDynamicProperty(name.c_str());
+            removeCellCache(key);
             propAddress.erase(prop);
         }
-        stringProp = freecad_cast<PropertyString*>(addDynamicProperty(
-            "App::PropertyString",
-            name.c_str(),
-            nullptr,
-            nullptr,
-            Prop_ReadOnly | Prop_Hidden | Prop_NoPersist
-        ));
+        stringProp = freecad_cast<PropertyString*>(addCellCache(key, App::PropertyString::getClassTypeId()));
     }
 
     propAddress[stringProp] = key;
@@ -733,20 +768,18 @@ Property* Sheet::setObjectProperty(CellAddress key, Py::Object object)
 {
     std::string name = key.toString(CellAddress::Cell::ShowRowColumn);
     Property* prop = props.getDynamicPropertyByName(name.c_str());
+    if (prop && App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        App::Internal::CollaborationStructuralMutationRecorder::validateSpreadsheetDerivedCacheReuse(
+            *this, prop, key, App::PropertyPythonObject::getClassTypeId(), propAddress);
+    }
     PropertyPythonObject* pyProp = freecad_cast<PropertyPythonObject*>(prop);
 
     if (!pyProp) {
         if (prop) {
-            this->removeDynamicProperty(name.c_str());
+            removeCellCache(key);
             propAddress.erase(prop);
         }
-        pyProp = freecad_cast<PropertyPythonObject*>(addDynamicProperty(
-            "App::PropertyPythonObject",
-            name.c_str(),
-            nullptr,
-            nullptr,
-            Prop_ReadOnly | Prop_Hidden | Prop_NoPersist
-        ));
+        pyProp = freecad_cast<PropertyPythonObject*>(addCellCache(key, App::PropertyPythonObject::getClassTypeId()));
     }
 
     propAddress[pyProp] = key;
@@ -801,7 +834,7 @@ void Sheet::updateProperty(CellAddress key)
                 output = std::make_unique<StringExpression>(this, s);
             }
             else {
-                this->removeDynamicProperty(key.toString().c_str());
+                removeCellCache(key);
                 return;
             }
         }
@@ -844,7 +877,12 @@ void Sheet::updateProperty(CellAddress key)
         }
     }
     else {
-        clear(key);
+        if (App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+            removeCellCache(key);
+        }
+        else {
+            clear(key);
+        }
     }
 
     cellUpdated(key);
@@ -889,6 +927,20 @@ Property* Sheet::getDynamicPropertyByName(const char* name) const
     }
 }
 
+bool Sheet::removeDynamicProperty(const char* name)
+{
+    auto* property = getDynamicPropertyByName(name);
+    if (!DocumentObject::removeDynamicProperty(name)) {
+        return false;
+    }
+    // Transaction replay removes cell caches through this virtual entry point,
+    // without going through clear() or removeCellCache(). Do not leave a retired
+    // property in the address map for the following authoritative recompute.
+    // Erase only after successful removal: denied and locked removals retain it.
+    propAddress.erase(property);
+    return true;
+}
+
 void Sheet::getPropertyNamedList(std::vector<std::pair<const char*, Property*>>& List) const
 {
     DocumentObject::getPropertyNamedList(List);
@@ -921,6 +973,9 @@ void Sheet::touchCells(Range range)
 
 void Sheet::recomputeCells(Range range)
 {
+    if (App::Internal::CollaborationStructuralMutationRecorder::spreadsheetDerivedCacheActive(*this)) {
+        throw Base::RuntimeError("spreadsheet derived cache callbacks cannot recompute cells");
+    }
     do {
         recomputeCell(*range);
     } while (range.next());
@@ -944,8 +999,8 @@ void Sheet::recomputeCell(CellAddress p)
 
         updateProperty(p);
 
+        cells.clearDirty(p);
         if (!cell || !cell->hasException()) {
-            cells.clearDirty(p);
             cellErrors.erase(p);
         }
     }
@@ -960,8 +1015,13 @@ void Sheet::recomputeCell(CellAddress p)
             e.reportException();
         }
 
-        // Mark as erroneous
+        // This request reached a terminal result. Keep the diagnostic and
+        // cellErrors retry set, but consume its dirty work before callbacks
+        // can request another evaluation of the same cell. Abort stays pending.
         cellErrors.insert(p);
+        if (!e.isDerivedFrom<Base::AbortException>()) {
+            cells.clearDirty(p);
+        }
         cellUpdated(p);
 
         if (e.isDerivedFrom<Base::AbortException>()) {
@@ -1132,6 +1192,7 @@ DocumentObjectExecReturn* Sheet::execute()
             if (cell) {
                 cellErrors.insert(v.first);
                 cell->setException("Pending computation due to cyclic dependency", true);
+                cells.clearDirty(v.first);
                 cellUpdated(v.first);
             }
         }
@@ -1229,7 +1290,24 @@ DocumentObjectExecReturn* Sheet::execute()
         return DocumentObject::StdReturn;
     }
     else {
-        return new DocumentObjectExecReturn("One or more cells failed contains errors.", this);
+        // Name the failing cells: a bare "cells contain errors" left callers
+        // guessing which formula to fix.
+        std::string message = "Cells with errors:";
+        std::size_t listed = 0;
+        for (const auto& address : cellErrors) {
+            if (listed == 5) {
+                message += "; ...";
+                break;
+            }
+            message += listed == 0 ? " " : "; ";
+            message += address.toString();
+            const Cell* cell = cells.getValue(address);
+            if (cell && cell->hasException()) {
+                message += " (" + cell->getException() + ")";
+            }
+            ++listed;
+        }
+        return new DocumentObjectExecReturn(message, this);
     }
 }
 
@@ -1259,20 +1337,62 @@ short Sheet::mustExecute() const
 
 void Sheet::clear(CellAddress address, bool /*all*/)
 {
-    if (auto cell = getCell(address)) {
-        // Remove alias, if defined
-        std::string aliasStr;
-        if (cell->getAlias(aliasStr)) {
-            this->removeDynamicProperty(aliasStr.c_str());
+    if (!App::Internal::SpreadsheetCellClearOperation::requiresBoundary(getDocument())) {
+        if (auto cell = getCell(address)) {
+            // Remove alias, if defined
+            std::string aliasStr;
+            if (cell->getAlias(aliasStr)) {
+                this->removeDynamicProperty(aliasStr.c_str());
+            }
+            cells.clear(address);
         }
-        cells.clear(address);
+
+        std::string addr = address.toString();
+        if (auto prop = props.getDynamicPropertyByName(addr.c_str())) {
+            propAddress.erase(prop);
+            this->removeDynamicProperty(addr.c_str());
+        }
+        return;
     }
 
-    std::string addr = address.toString();
-    if (auto prop = props.getDynamicPropertyByName(addr.c_str())) {
-        propAddress.erase(prop);
-        this->removeDynamicProperty(addr.c_str());
+    // Only the collaboration-boundary path preflights and retires the exact
+    // canonical cache before stored-cell callbacks. Ordinary ordering above
+    // remains unchanged, including detached and LockDynamic behavior.
+    const std::string name = address.toString(CellAddress::Cell::ShowRowColumn);
+    auto* property = props.getDynamicPropertyByName(name.c_str());
+    std::optional<CellAddress> mappedAddress;
+    if (property) {
+        const auto mapping = propAddress.find(property);
+        if (mapping != propAddress.end()) {
+            mappedAddress = mapping->second;
+        }
     }
+    if (!property && std::ranges::any_of(propAddress, [address](const auto& entry) {
+            return entry.second == address;
+        })) {
+        throw Base::RuntimeError("spreadsheet cell clear has a noncanonical address mapping");
+    }
+    // Native aliases resolve to the same canonical property; they are not a
+    // second removable schema entry. Never remove an unrelated raw alias name.
+    if (auto* cell = getCell(address)) {
+        std::string alias;
+        if (cell->getAlias(alias)) {
+            auto* rawAlias = props.getDynamicPropertyByName(alias.c_str());
+            if ((rawAlias && rawAlias != property)
+                || getDynamicPropertyByName(alias.c_str()) != property) {
+                throw Base::RuntimeError("spreadsheet cell clear alias is not its canonical cache");
+            }
+        }
+    }
+    App::Internal::SpreadsheetCellClearOperation operation(
+        *this, property, address, mappedAddress, propAddress);
+    operation.removeCache();
+    // Both Entry and Physical have been consumed. Only the non-granting
+    // reentry/ledger guard spans cells.clear() and its onChanged callbacks.
+    if (property) {
+        propAddress.erase(property);
+    }
+    cells.clear(address);
 }
 
 /**

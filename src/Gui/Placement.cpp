@@ -38,6 +38,7 @@
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/DockWindowManager.h>
 #include <Gui/Document.h>
 #include <Gui/PythonWrapper.h>
@@ -428,11 +429,10 @@ std::tuple<Base::Vector3d, std::vector<Base::Vector3d>> PlacementHandler::getSel
 
 void PlacementHandler::tryRecompute(Gui::Document* document)
 {
-    try {
-        document->getDocument()->recompute();
+    if (!document) {
+        return;
     }
-    catch (...) {
-    }
+    requestDocumentRecompute(*document->getDocument());
 }
 
 void PlacementHandler::setupDocument()

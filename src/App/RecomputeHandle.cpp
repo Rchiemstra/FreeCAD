@@ -3,7 +3,9 @@
 #include "RecomputeHandle.h"
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObserver.h"
+#include "DocumentWouldBlock.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -102,8 +104,14 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
     if (!owner) {
         return closedDocumentSnapshot();
     }
-    static_cast<void>(owner->recomputeCoordinator().poll(_id));
-    auto snapshot = owner->recomputeCoordinator().status(_id);
+
+    if (const auto* lane = owner->executionLane()) {
+        if (const auto published = lane->recomputeStatus(_id)) {
+            return *published;
+        }
+    }
+
+    const auto snapshot = owner->recomputeCoordinator().status(_id);
     if (!snapshot) {
         DocumentRecomputeSnapshot unavailable;
         unavailable.id = _id;
@@ -111,7 +119,6 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         unavailable.diagnostic = "recompute result is unavailable";
         return unavailable;
     }
-    finalizeIfTerminal(*owner, *snapshot);
     return *snapshot;
 }
 
@@ -126,25 +133,49 @@ bool RecomputeHandle::cancel(std::string reason)
     if (!owner) {
         return false;
     }
-    const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
-    static_cast<void>(status());
-    return accepted;
+
+    return owner->recomputeCoordinator().cancel(_id, std::move(reason));
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds timeout)
 {
     const auto boundedTimeout = std::max(timeout, 0ms);
     const auto deadline = std::chrono::steady_clock::now() + boundedTimeout;
-    while (true) {
-        auto snapshot = status();
-        if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
-            return snapshot;
-        }
-        if (QCoreApplication::instance()) {
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
-        }
-        std::this_thread::sleep_for(2ms);
+
+    auto* owner = document();
+    if (!owner) {
+        return closedDocumentSnapshot();
     }
+    // With an execution lane a GUI-thread wait hops to the owner and waits
+    // without running the Qt event loop (DocumentExecutionLane::dispatchToOwner());
+    // without one, waitOnOwner() would pump Qt on the GUI thread.
+    if (!owner->executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
+    }
+
+    const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
+        while (true) {
+            // Pump coordinator work on the owner thread only inside wait().
+            static_cast<void>(owner->recomputeCoordinator().poll(_id));
+            auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
+            if (!coordinatorSnapshot) {
+                return closedDocumentSnapshot();
+            }
+            finalizeIfTerminal(*owner, *coordinatorSnapshot);
+            const auto snapshot = status();
+            if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
+                return snapshot;
+            }
+            if (QCoreApplication::instance()) {
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+            }
+            std::this_thread::sleep_for(2ms);
+        }
+    };
+    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
+        return owner->executionLane()->dispatchToOwner(waitOnOwner, true, true);
+    }
+    return waitOnOwner();
 }
 
 }  // namespace App

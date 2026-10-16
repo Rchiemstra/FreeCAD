@@ -2,6 +2,7 @@
 
 #include "CollaborationCompatibilityAdapter.h"
 
+#include <thread>
 #include <utility>
 
 namespace Gui
@@ -31,8 +32,17 @@ private:
 }  // namespace
 
 CollaborationCompatibilityAdapter::CollaborationCompatibilityAdapter()
-    : _ownerThread(std::this_thread::get_id())
-{}
+{
+    const auto ownerThread = std::this_thread::get_id();
+    _isOwnerThread = [ownerThread]() { return std::this_thread::get_id() == ownerThread; };
+}
+
+void CollaborationCompatibilityAdapter::bindOwnerThreadPredicate(OwnerThreadPredicate predicate)
+{
+    if (predicate) {
+        _isOwnerThread = std::move(predicate);
+    }
+}
 
 bool CollaborationCompatibilityAdapter::isPersonalContext(
     CollaborationCompatibilityMutationKind kind) noexcept
@@ -102,9 +112,9 @@ CollaborationCompatibilityMutationOutcome CollaborationCompatibilityAdapter::exe
         return {CollaborationCompatibilityMutationStatus::RejectedPersonalContext,
                 "personal GUI context is revision-neutral and bypasses compatibility mutation"};
     }
-    if (std::this_thread::get_id() != _ownerThread) {
+    if (!_isOwnerThread || !_isOwnerThread()) {
         return {CollaborationCompatibilityMutationStatus::RejectedWrongThread,
-                "compatibility mutation must run on its document owner/GUI thread"};
+                "compatibility mutation must run on the document execution lane owner thread"};
     }
     if (_executing) {
         return {CollaborationCompatibilityMutationStatus::RejectedReentrant,

@@ -270,6 +270,20 @@ steps:
     commands:
       - sh ci/woodpecker/ci-images-verify.sh
 
+  # Architecture tier: pure-Python pytest of tests/architecture -- no FreeCAD
+  # build required. Runs beside configure (same depends_on: lint + submodules)
+  # so failures surface early without waiting for the ~20-minute debug build.
+  # The freecad-ci-deps image ships Python 3.12; pytest is self-installed by
+  # the script when absent (matching what the arch runner does locally).
+  # -fvisibility=hidden is NOT set: App/Gui are not visibility-annotated.
+  - name: freecad-arch-tests
+    image: python:3.12
+    depends_on: [all-submodules-check, freecad-lint]
+    environment:
+      TIER: arch
+    commands:
+      - sh ci/woodpecker/freecad-nonblocking-tests.sh
+
   - name: freecad-configure-debug
     image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
     pull: true
@@ -368,6 +382,16 @@ steps:
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
+
+  # Live GUI stress scenarios: this branch's debug FreeCAD GUI under Xvfb,
+  # driven through the real MCP server. Fails on MCP errors and on any new
+  # FreeCAD warning/error output (scripts/run_live_gui_tests.sh).
+  - name: freecad-mcp-live-gui
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-live-gui.sh
 
   # core: four sequential shards (collab → sketch → part → rest). One ~2.5 h
   # MARKER=core step used to stay red until every native test finished. Later

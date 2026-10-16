@@ -30,8 +30,13 @@ import PySide.QtGui as QtGui
 
 import FreeCADGui as Gui
 
-from draftguitools.gui_hatch import Draft_Hatch_TaskPanel
+from draftutils import gui_utils
 from draftutils.translate import translate
+
+if gui_utils.on_gui_thread():
+    # Preserve command registration for macros importing Draft before activating
+    # the workbench. Owner-thread model imports must not register GUI commands.
+    from draftguitools.gui_hatch import Draft_Hatch_TaskPanel  # noqa: F401
 
 
 class ViewProviderDraftHatch:
@@ -64,6 +69,10 @@ class ViewProviderDraftHatch:
 
         if mode == 1 or mode == 2:
             return None
+
+        # An owner-thread import skips eager GUI registration. Import the task
+        # panel when editing later on the main thread.
+        from draftguitools.gui_hatch import Draft_Hatch_TaskPanel
 
         self.taskd = Draft_Hatch_TaskPanel(vobj.Object)
         self.taskd.form.File.setFileName(vobj.Object.File)

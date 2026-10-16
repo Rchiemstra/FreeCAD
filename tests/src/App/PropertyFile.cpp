@@ -3,16 +3,19 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <fstream>
 #include <ranges>
 #include <sstream>
 #include <string>
 
 #include <Base/Exception.h>
+#include <Base/FileInfo.h>
 #include <Base/Reader.h>
 
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectFileIncluded.h>
 #include <App/PropertyFile.h>
 
 #include "InitApplication.h"
@@ -120,4 +123,50 @@ TEST_F(PropertyFileIncludedTest, acceptsPlainBasename)
     std::string transientDir = _doc->TransientDir.getValue();
     std::ranges::replace(transientDir, '\\', '/');
     EXPECT_EQ(std::string(_property->getValue()), transientDir + "/PartShape.brp");
+}
+
+// Same-document copy/paste restores the included file onto the basename the
+// source already owns. Destroying the copy used to delete that shared file and
+// leave the original property pointing at a missing transient path.
+TEST(PropertyFileIncludedOwnership, destroyingACopyKeepsTheOriginalFile)
+{
+    tests::initApplication();
+    App::Document* doc = App::GetApplication().newDocument("IncludedFileOwnership");
+    const std::string docName = doc->getName();
+    const auto closeDocument = [&docName]() {
+        if (App::GetApplication().getDocument(docName.c_str())) {
+            App::GetApplication().closeDocument(docName.c_str());
+        }
+    };
+    try {
+        auto* original = dynamic_cast<App::DocumentObjectFileIncluded*>(
+            doc->addObject("App::DocumentObjectFileIncluded", "Original"));
+        ASSERT_NE(original, nullptr);
+        const std::string source = std::string(doc->TransientDir.getValue()) + "/source.txt";
+        {
+            std::ofstream out(source);
+            out << "template-bytes";
+        }
+        original->File.setValue(source.c_str(), "Embedded.txt");
+        const std::string live = original->File.getValue();
+        ASSERT_TRUE(Base::FileInfo(live).exists());
+
+        const auto copies = doc->copyObject({original}, false);
+        ASSERT_EQ(copies.size(), 1u);
+        ASSERT_NE(copies.front(), nullptr);
+        doc->removeObject(copies.front()->getNameInDocument());
+        doc->clearUndos();
+
+        EXPECT_EQ(std::string(original->File.getValue()), live);
+        EXPECT_TRUE(Base::FileInfo(live).exists());
+        std::ifstream in(live);
+        std::string text;
+        std::getline(in, text);
+        EXPECT_EQ(text, "template-bytes");
+    }
+    catch (...) {
+        closeDocument();
+        throw;
+    }
+    closeDocument();
 }

@@ -39,6 +39,7 @@
 #include <Base/Vector3D.h>
 
 #include "TreeItemMode.h"
+#include "ViewProviderPresentationCapability.h"
 
 class SbVec2s;
 class SbVec3f;
@@ -600,6 +601,30 @@ public:
      */
     virtual void update(const App::Property*);
     virtual void updateData(const App::Property*);
+
+    /**
+     * Wave 3 presentation contract: providers either expose pointer-free capture
+     * hooks or report explicit Unsupported. Synchronous updateData(Property*)
+     * is not a fallback for async presentation apply.
+     */
+    [[nodiscard]] virtual ViewProviderPresentationClassification presentationClassification() const;
+    [[nodiscard]] virtual bool capturePresentationRenderBuffer(
+        const ViewProviderPresentationCaptureRequest& request,
+        PresentationRenderBuffer& buffer) const;
+
+    /**
+     * Python view providers must opt in before async presentation capture.
+     * Native providers return false / true respectively.
+     */
+    [[nodiscard]] virtual bool requiresAsyncPresentationDeclaration() const
+    {
+        return false;
+    }
+    [[nodiscard]] virtual bool declaresAsyncPresentation() const
+    {
+        return true;
+    }
+
     bool isUpdatesEnabled() const;
     void setUpdatesEnabled(bool enable);
 

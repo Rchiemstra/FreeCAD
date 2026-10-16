@@ -10,7 +10,7 @@ signatures use.
 from __future__ import annotations
 
 import FreeCAD as App
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import IntEnum
 from typing import Any, ClassVar, Literal, Protocol, TypeAlias, overload
 from Base.Metadata import deprecated
@@ -547,6 +547,20 @@ def editDocument() -> Document | None:
 def getDocument(doc: str | App.Document, /) -> Document:
     """Return one GUI document by name or application document."""
     ...
+
+def tryRunPresentationCallback(
+    callback: Callable[[], object], document: App.Document | None = None, /
+) -> bool:
+    """Run a callback under an idle live-presentation reservation on Qt's main thread.
+
+    Return False without calling it while atomic mutation admission is active
+    or the optional target document cannot run live presentation hooks.
+    The reservation keeps new admission out until the callback returns; it does
+    not grant document mutation authority. Callback exceptions propagate.
+    A deleted or unavailable GUI document raises ReferenceError.
+    """
+    ...
+
 
 def storePersonalViewContext(
     document_name: str, actor_id: str, context: dict[str, object], /

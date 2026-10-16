@@ -22,7 +22,6 @@
 
 #include <Inventor/nodes/SoCamera.h>
 #include <algorithm>
-#include <memory>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -30,7 +29,6 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QTextStream>
-#include <QTimer>
 #include <QTreeWidgetItem>
 
 #include <boost/regex.hpp>
@@ -41,7 +39,6 @@
 #include <App/DocumentObject.h>
 #include <App/Expression.h>
 #include <App/GeoFeature.h>
-#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
@@ -52,6 +49,7 @@
 #include "BitmapFactory.h"
 #include "Command.h"
 #include "Control.h"
+#include "DocumentExecutionIngress.h"
 #include "DockWindowManager.h"
 #include "FileDialog.h"
 #include "MainWindow.h"
@@ -1757,7 +1755,7 @@ void StdCmdDelete::activated(int iMsg)
                 }
             }
             for (auto doc : docs) {
-                FCMD_DOC_CMD(doc, "recompute()");
+                requestDocumentRecompute(*doc);
             }
         }
     }
@@ -1824,57 +1822,9 @@ StdCmdRefresh::StdCmdRefresh()
 namespace
 {
 
-bool shouldProceedAfterDependencyCycle()
-{
-    return QMessageBox::warning(
-               getMainWindow(),
-               QObject::tr("Dependency error"),
-               qApp->translate(
-                   "Std_Refresh",
-                   "The document contains dependency cycles.\n"
-                   "Check the report view for more details.\n\n"
-                   "Proceed?"
-               ),
-               QMessageBox::Yes,
-               QMessageBox::No
-           )
-        == QMessageBox::Yes;
-}
-
-void scheduleDocumentRecomputePoll(std::shared_ptr<App::RecomputeHandle> handle)
-{
-    QTimer::singleShot(5, qApp, [handle = std::move(handle)] {
-        const auto snapshot = handle->status();
-        if (!snapshot.terminal()) {
-            scheduleDocumentRecomputePoll(handle);
-            return;
-        }
-        if (snapshot.state != App::DocumentRecomputeState::Completed) {
-            FC_ERR("Detached document recompute "
-                   << App::documentRecomputeStateName(snapshot.state) << ": "
-                   << (snapshot.diagnostic.empty()
-                           ? "no diagnostic was provided"
-                           : snapshot.diagnostic));
-        }
-    });
-}
-
 void submitDocumentRecompute(App::Document& document, const int options)
 {
-    try {
-        auto handle = document.recomputeAsync({}, true, options);
-        scheduleDocumentRecomputePoll(
-            std::shared_ptr<App::RecomputeHandle>(std::move(handle)));
-    }
-    catch (Base::BadGraphError&) {
-        if ((options & App::Document::DepNoCycle) != 0
-            && shouldProceedAfterDependencyCycle()) {
-            submitDocumentRecompute(document, 0);
-        }
-    }
-    catch (Base::Exception& exception) {
-        exception.reportException();
-    }
+    requestDocumentRecompute(document, {}, true, options);
 }
 
 }  // namespace

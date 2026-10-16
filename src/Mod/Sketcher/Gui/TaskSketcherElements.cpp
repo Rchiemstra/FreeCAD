@@ -28,6 +28,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPixmap>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QShortcut>
@@ -42,12 +43,14 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentWouldBlock.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Notifications.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionObject.h>
+#include <Gui/Utilities.h>
 #include <Gui/ViewProvider.h>
 #include <Mod/Sketcher/App/GeometryFacade.h>
 #include <Mod/Sketcher/App/SketchObject.h>
@@ -1665,7 +1668,16 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
         if (!updateTimerPending) {
             updateTimerPending = true;
             // Schedule processing for the next event loop cycle (0ms)
-            QTimer::singleShot(0, this, &TaskSketcherElements::processSelectionBuffer);
+            if (App::DocumentWouldBlock::isGuiThread()) {
+                QTimer::singleShot(0, this, &TaskSketcherElements::processSelectionBuffer);
+            }
+            else {
+                Gui::scheduleGuiSingleShot(0, [guard = QPointer<TaskSketcherElements>(this)]() {
+                    if (guard) {
+                        guard->processSelectionBuffer();
+                    }
+                });
+            }
         }
     }
 }

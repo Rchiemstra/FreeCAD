@@ -83,7 +83,13 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "ExternalSourceDependency.h"
+#include "private/PreparedLabelReferenceUpdates.h"
+#include "DocumentPresentationBoundary.h"
+#include "DocumentExecutionLane.h"
+#include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
+#include "DocumentWouldBlock.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
 #include "Application.h"
@@ -632,6 +638,17 @@ DocumentCollaborationService& Document::collaborationService()
     return *d->collaborationService;
 }
 
+bool Document::collaborationCloseAdmissionActive() const noexcept
+{
+    if (atomicPresentationMutationAdmissionHeldFor(*this)) {
+        return true;
+    }
+    if (!d->collaborationService) {
+        return false;
+    }
+    return d->collaborationService->closeAdmissionActive();
+}
+
 DocumentRecomputeCoordinator& Document::recomputeCoordinator()
 {
     return *d->recomputeCoordinator;
@@ -685,7 +702,11 @@ void Document::beginCollaborationAtomicPresentationAuditImpl(
     bool readOnly,
     bool preparedOwner)
 {
-    if (!isCollaborationOwnerThread()) {
+    const bool readOnlyPostconditionAudit = readOnly && !preparedOwner;
+    const bool guiThreadLegacyAudit =
+        !preparedOwner && DocumentWouldBlock::isGuiThread();
+    if (!readOnlyPostconditionAudit && !guiThreadLegacyAudit
+        && !isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
             "atomic presentation mutation audit requires the document owner thread");
     }
@@ -789,7 +810,8 @@ void Document::recordCollaborationObservedStructuralEffects(
     const std::vector<DocumentRevisionPublicationRequest>& effects)
 {
     if (!d->collaborationCompatibilityStructuralMutationGranted
-        && !d->collaborationSpreadsheetRecomputeSchemaObject) {
+        && !d->collaborationSpreadsheetRecomputeSchemaObject
+        && !d->collaborationSpreadsheetDerivedCache) {
         return;
     }
     d->collaborationObservedStructuralEffects.insert(
@@ -824,6 +846,11 @@ bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
 void Document::endCollaborationAtomicPresentationAudit() noexcept
 {
     if (!isCollaborationOwnerThread()) {
+        if (d->collaborationAtomicPresentationAuditActive
+            && !d->collaborationAtomicPresentationAuditPreparedOwner) {
+            endCollaborationAtomicPresentationAuditImpl(false);
+            return;
+        }
         noteCollaborationReadOnlyMutationAttempt();
         return;
     }
@@ -924,14 +951,71 @@ std::recursive_mutex& Document::collaborationCommitMutex() noexcept
     return d->collaborationCommitMutex;
 }
 
+void Document::bindCollaborationOwnerThread(const std::thread::id threadId) noexcept
+{
+    d->collaborationOwnerThread = threadId;
+}
+
 bool Document::isCollaborationOwnerThread() const noexcept
 {
     return std::this_thread::get_id() == d->collaborationOwnerThread;
 }
 
+DocumentHandle Document::executionHandle() const
+{
+    if (d->executionLane) {
+        return d->executionLane->handle();
+    }
+    if (const auto identity = d->collaborationRevisions.documentIdentity()) {
+        return DocumentHandle(*identity);
+    }
+    return DocumentHandle {};
+}
+
+DocumentExecutionLane* Document::executionLane() noexcept
+{
+    return d->executionLane.get();
+}
+
+const DocumentExecutionLane* Document::executionLane() const noexcept
+{
+    return d->executionLane.get();
+}
+
+void Document::startExecutionLane(DocumentRevisionIdentityBinding identity)
+{
+    if (d->executionLane) {
+        return;
+    }
+    d->executionLane = DocumentExecutionLane::create(*this, identity);
+}
+
+void Document::shutdownExecutionLane()
+{
+    if (!d->executionLane) {
+        return;
+    }
+    d->executionLane->requestShutdown("document closing");
+    if (d->executionLane->isOwnerThread()) {
+        // The lane thread closes the document; it keeps itself alive until
+        // executeActiveCommand returns and must not destroy itself here.
+        return;
+    }
+    // Never join the lane on the GUI thread — that would stall painting.
+    if (DocumentWouldBlock::isGuiThread()) {
+        // Keep the shared_ptr alive via the lane's self-pin until the owner
+        // thread exits; drop the Document-owned reference without joining.
+        d->executionLane->detachThread();
+        d->executionLane.reset();
+        return;
+    }
+    d->executionLane->joinThread();
+    d->executionLane.reset();
+}
+
 bool Document::collaborationNotificationsReplaying() const noexcept
 {
-    return d->collaborationReplayingNotifications;
+    return d->collaborationReplayingNotifications.load(std::memory_order_acquire);
 }
 
 bool Document::collaborationStableReadBlocked() const noexcept
@@ -1024,6 +1108,12 @@ void Document::ensureCollaborationStructuralMutationAllowed(
     CollaborationStructuralMutationKind kind,
     const char* mutation) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     enforceAtomicPresentationMutationTarget(*this);
     if (d->rollback) {
         return;
@@ -1043,7 +1133,7 @@ void Document::ensureCollaborationStructuralMutationAllowed(
         && d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) == 1
         && !d->collaborationAtomicPresentationAuditActive
         && !d->collaborationCommitPoisoned
-        && !d->collaborationReplayingNotifications;
+        && !d->collaborationReplayingNotifications.load(std::memory_order_acquire);
     // The coordinator's authoritative recompute is the same controlled
     // boundary as the compatibility callback above -- owner thread, commit
     // notification barrier, an open undo transaction, revision publication
@@ -1092,6 +1182,12 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
     const DocumentObject& object,
     short propertyType) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     const bool spreadsheetTransientSchema =
         d->collaborationSpreadsheetRecomputeSchemaObject == &object
         && (propertyType & Prop_NoPersist) != 0;
@@ -1132,6 +1228,12 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
     const DocumentObject& object,
     const Property* property) const
 {
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
+    }
+    if (d->collaborationSpreadsheetCellClear) {
+        throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet cell-clear authority");
+    }
     const bool spreadsheetTransientSchema = property
         && d->collaborationSpreadsheetRecomputeSchemaObject == &object
         && (property->getType() & Prop_NoPersist) != 0;
@@ -1185,14 +1287,17 @@ Document::CollaborationSpreadsheetRecomputeSchemaScope::
     auto& state = *document->d;
     const bool authoritativeCommitRecompute = state.activeUndoTransaction
         && state.suppressCollaborationRevisionPublication;
+    // After a failed commit is rolled back, the coordinator re-executes the
+    // restored sheet to prove it is clean; that runs outside the transaction.
+    const bool rollbackVerification = state.collaborationRollbackVerification;
     if (!document->isCollaborationOwnerThread()
-        || !document->testStatus(Document::Recomputing)
+        || (!document->testStatus(Document::Recomputing) && !rollbackVerification)
         || state.collaborationCompatibilityStructuralMutationGranted
         || state.collaborationReplayingNotifications
         || state.collaborationCommitPoisoned
         || object.getDocument() != document
         || !document->containsObject(&object)
-        || !authoritativeCommitRecompute) {
+        || !(authoritativeCommitRecompute || rollbackVerification)) {
         throw Base::RuntimeError(
             "spreadsheet transient schema requires the authoritative collaboration recompute");
     }
@@ -1246,7 +1351,7 @@ Document::CollaborationStructuralMutationGrant::CollaborationStructuralMutationG
     if (state.collaborationCompatibilityStructuralMutationGranted) {
         throw Base::RuntimeError("structural compatibility mutation grant is not reentrant");
     }
-    if (state.collaborationReplayingNotifications) {
+    if (state.collaborationReplayingNotifications.load(std::memory_order_acquire)) {
         throw Base::RuntimeError(
             "structural compatibility mutation is unavailable while notifications replay");
     }
@@ -1455,6 +1560,37 @@ Document::takeCollaborationObservedStructuralEffects()
     return effects;
 }
 
+namespace
+{
+
+/// Wait (bounded) for another thread's collaboration notification replay to end.
+bool waitForNotificationReplay(const std::atomic<bool>& replaying)
+{
+    constexpr auto replayWaitLimit = std::chrono::seconds(10);
+    constexpr auto serviceSlice = std::chrono::milliseconds(2);
+    const bool onMainThread = MainThreadSignalConfig::isMainThread();
+    // Replayed observers may need the GIL on the owner thread.
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    const auto deadline = std::chrono::steady_clock::now() + replayWaitLimit;
+    while (replaying.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        if (onMainThread) {
+            static_cast<void>(MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice));
+        }
+        else {
+            std::this_thread::sleep_for(serviceSlice);
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
 void Document::ensureCollaborationTransactionControlAllowed() const
 {
     if (d->collaborationCommitNotificationBarrier
@@ -1466,9 +1602,17 @@ void Document::ensureCollaborationTransactionControlAllowed() const
         throw Base::RuntimeError(
             "transaction, undo, and redo control is unavailable during a prepared commit");
     }
-    if (d->collaborationReplayingNotifications) {
-        throw Base::RuntimeError(
-            "transaction, undo, and redo control is unavailable while collaboration notifications replay");
+    if (d->collaborationReplayingNotifications.load(std::memory_order_acquire)) {
+        // A slot running inside the replay (on the replaying owner thread, or in
+        // a blocking notification marshalled to the GUI thread) must not control
+        // transactions. Any other thread only raced the owner's replay: wait for
+        // it to finish, servicing marshalled notifications on the GUI thread.
+        const bool reentrant = isCollaborationOwnerThread()
+            || MainThreadSignalConfig::insideBlockingInvoke();
+        if (reentrant || !waitForNotificationReplay(d->collaborationReplayingNotifications)) {
+            throw Base::RuntimeError(
+                "transaction, undo, and redo control is unavailable while collaboration notifications replay");
+        }
     }
 }
 
@@ -1497,7 +1641,10 @@ int Document::openCollaborationCommitTransaction(
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _openTransaction(std::move(name), nestedCommitTransactionId(), !retainUndoHistory);
+    if (retainUndoHistory) {
+        Internal::PreparedLabelReferenceUpdates::preserveRedo(*this);
+    }
+    return _openTransaction(std::move(name), nestedCommitTransactionId(), true);
 }
 
 bool Document::commitCollaborationCommitTransaction(const bool retainUndoHistory)
@@ -1528,7 +1675,11 @@ void Document::applyCollaborationRecomputeFailure(
 
 void Document::beginCollaborationCommitNotificationBarrier()
 {
-    if (d->collaborationCommitNotificationBarrier) {
+    // A second transaction inside the same notification barrier (rollback
+    // stabilization) needs a new snapshot. Never reuse the consumed swaps.
+    const bool renewing = d->collaborationCommitNotificationBarrier
+        && d->collaborationBoundaryConsumed && !d->activeUndoTransaction;
+    if (d->collaborationCommitNotificationBarrier && !renewing) {
         throw Base::RuntimeError("collaboration commit notification barrier is already active");
     }
 
@@ -1559,6 +1710,19 @@ void Document::beginCollaborationCommitNotificationBarrier()
             std::make_unique<DocumentObjectExecReturn>(error->Why, error->Which));
     }
 
+    d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
+    d->collaborationBoundaryPendingRemove = std::move(boundaryPendingRemove);
+    d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
+    d->collaborationBoundaryObjectSchedulerStates =
+        std::move(boundaryObjectSchedulerStates);
+    d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
+    d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
+    d->collaborationBoundaryActiveObject = boundaryActiveObject;
+    d->collaborationBoundaryConsumed = false;
+    d->collaborationBoundaryTransactionId = 0;
+    if (renewing) {
+        return; // Keep deferred notifications and publication suppression.
+    }
     d->collaborationDeferredNotifications.clear();
     d->collaborationDeferredNotifications.reserve(64);
     d->collaborationDeferredExternalRecomputes.clear();
@@ -1571,15 +1735,12 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
-    d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
-    d->collaborationBoundaryPendingRemove = std::move(boundaryPendingRemove);
-    d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
-    d->collaborationBoundaryObjectSchedulerStates =
-        std::move(boundaryObjectSchedulerStates);
-    d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
-    d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
-    d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
+    d->collaborationHistoryChanged = false;
+    d->collaborationUnrecordedDocumentChange = false;
+    d->collaborationBoundaryStickyTokens = {d->fileChangeTokens.model.sticky,
+                                            d->fileChangeTokens.appearance.sticky,
+                                            d->fileChangeTokens.compatibility.sticky};
     d->collaborationCommitNotificationBarrier = true;
     d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
 }
@@ -1594,6 +1755,17 @@ void Document::prepareCollaborationCommitFinalization()
     if (d->collaborationPreparedUndoSlot.empty()) {
         d->collaborationPreparedUndoSlot.push_back(nullptr);
     }
+    if (const auto hook = Internal::PreparedLabelReferenceUpdates::finalizationTestHook.load()) {
+        hook(*this);
+    }
+    if (d->activeUndoTransaction && d->activeTransactionFileChanges) {
+        // rollback discards this hidden slot; final commitment only consumes it.
+        d->transactionFileChanges.insert_or_assign(d->activeUndoTransaction->getID(),
+                                                   *d->activeTransactionFileChanges);
+    }
+    if (d->nestedCommitParked && d->parkedNestedTransaction && d->activeUndoTransaction) {
+        d->activeUndoTransaction->prepareMergeInto(*d->parkedNestedTransaction);
+    }
 }
 
 void Document::finishCollaborationCommitNotificationBarrier(bool committed) noexcept
@@ -1604,6 +1776,41 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         return;
     }
 
+    // A read-only boundary keeps its branch; sticky properties and scheduler
+    // changes count even when the native transaction has no property records.
+    // A failed operation keeps redo only after a complete rollback; document
+    // metadata and sticky dirty state are outside the native transaction.
+    // Successful edits retire the branch only after model commitment.
+    std::list<Transaction*> retiredRedos;
+    if (d->collaborationRedoHistoryParked) {
+        if ((committed && d->collaborationHistoryChanged)
+            || Internal::PreparedLabelReferenceUpdates::hasUnrestoredChanges(*this)) {
+            Internal::PreparedLabelReferenceUpdates::clearRedos(*this, &retiredRedos);
+            retiredRedos.splice(retiredRedos.end(), d->collaborationParkedRedos);
+            d->collaborationParkedRedoMap.clear();
+        }
+        else {
+            mRedoTransactions.swap(d->collaborationParkedRedos);
+            mRedoMap.swap(d->collaborationParkedRedoMap);
+        }
+        d->collaborationRedoHistoryParked = false;
+    }
+    const auto deleteRetiredRedos = [this](std::list<Transaction*>* retired) noexcept {
+        for (auto* transaction : *retired) {
+            discardTransactionFileState(transaction->getID());
+            delete transaction;
+        }
+    };
+    // A deleter stored inline cannot allocate after durable commitment.
+    std::unique_ptr<std::list<Transaction*>, decltype(deleteRetiredRedos)> retiringRedoGuard(
+        &retiredRedos, deleteRetiredRedos);
+
+    // The preallocated finalization slot also owns a non-history transaction
+    // retired by recompute. Its removed objects must survive the entire replay:
+    // deletion observers still hold Selection and view-provider pointers to them.
+    std::unique_ptr<Transaction> retiringTransaction(
+        d->collaborationPreparedUndoSlot.empty()
+            ? nullptr : d->collaborationPreparedUndoSlot.front());
     auto notifications = std::move(d->collaborationDeferredNotifications);
     auto externalRecomputes = std::move(d->collaborationDeferredExternalRecomputes);
     d->collaborationDeferredNotifications.clear();
@@ -1626,6 +1833,8 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationBoundaryTouchedObjects.clear();
     d->collaborationBoundaryRecomputeLog.clear();
     d->collaborationBoundaryActiveObject = nullptr;
+    d->collaborationBoundaryConsumed = false;
+    d->collaborationBoundaryTransactionId = 0;
     try {
         GetApplication().endCollaborationTransactionSignalSuppression();
     }
@@ -1658,6 +1867,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     };
 
     if (!committed) {
+        retiringTransaction.reset();
         d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
         emitBecameStable();
         return;
@@ -1694,17 +1904,48 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         }
     }
 
-    d->collaborationReplayingNotifications = true;
+    d->collaborationReplayingNotifications.store(true, std::memory_order_release);
 
     bool globalBeforeCloseEmitted = false;
     const auto reportNotificationFailure = [](const char* stage, const std::exception* exception) {
         if (exception) {
-            FC_ERR("Deferred collaboration " << stage << " notification failed: "
-                                               << exception->what());
+            FC_WARN("Deferred collaboration " << stage << " notification failed: "
+                                              << exception->what());
         }
         else {
-            FC_ERR("Deferred collaboration " << stage
-                                               << " notification failed with unknown exception");
+            FC_WARN("Deferred collaboration " << stage
+                                              << " notification failed with unknown exception");
+        }
+    };
+    // Deletion replay is irrevocable: a failing extension must not skip
+    // Selection, view-provider teardown, or later deletion observers. Keep
+    // ordinary signal delivery unchanged and marshal the entire resilient
+    // delivery synchronously before releasing retirement ownership.
+    const auto emitDeletion = [&](auto& signal, auto&&... args) {
+        auto deliver = [&] {
+            signal.underlying().emit_resilient(
+                [&](std::exception_ptr failure) {
+                    try {
+                        std::rethrow_exception(failure);
+                    }
+                    catch (const std::exception& exception) {
+                        reportNotificationFailure("deletion observer", &exception);
+                    }
+                    catch (...) {
+                        reportNotificationFailure("deletion observer", nullptr);
+                    }
+                },
+                args...);
+        };
+        if (MainThreadSignalConfig::isMainThread()) {
+            deliver();
+        }
+        else {
+            std::optional<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) {
+                release.emplace();
+            }
+            MainThreadSignalConfig::invoke(std::move(deliver), /*blocking=*/true);
         }
     };
     const auto emit = [&](const CollaborationDeferredNotification& notification) {
@@ -1834,6 +2075,12 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                 }
                 signalCommitTransaction(*this);
                 break;
+            case CollaborationDeferredNotificationKind::Undo:
+                signalUndo(*this);
+                break;
+            case CollaborationDeferredNotificationKind::Redo:
+                signalRedo(*this);
+                break;
             case CollaborationDeferredNotificationKind::AbortTransaction:
                 signalAbortTransaction(*this);
                 break;
@@ -1851,7 +2098,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                     notification.object->pcNameInDocument = &notification.text;
                 }
                 try {
-                    signalDeletedObject(*notification.object);
+                    emitDeletion(signalDeletedObject, *notification.object);
                 }
                 catch (...) {
                     notification.object->pcNameInDocument = previousName;
@@ -1869,7 +2116,8 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                     notification.object->pcNameInDocument = &notification.text;
                 }
                 try {
-                    signalTransactionRemove(*notification.object, notification.transaction);
+                    emitDeletion(signalTransactionRemove, *notification.object,
+                                 notification.transaction);
                 }
                 catch (...) {
                     notification.object->pcNameInDocument = previousName;
@@ -2004,7 +2252,10 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             reportNotificationFailure("transaction-close", nullptr);
         }
     }
-    d->collaborationReplayingNotifications = false;
+    // Destroy the retiring objects only after every deletion observer has run,
+    // and before the stable notification can allow the document to be closed.
+    retiringTransaction.reset();
+    d->collaborationReplayingNotifications.store(false, std::memory_order_release);
     if (mUndoTransactions.size() > d->UndoMaxStackSize) {
         discardTransactionFileState(mUndoTransactions.front()->getID());
         mUndoMap.erase(mUndoTransactions.front()->getID());
@@ -2339,15 +2590,72 @@ bool Document::checkOnCycle()
     return false;
 }
 
+namespace
+{
+thread_local std::vector<Document*> replayParticipants;
+thread_local bool historyReplayActive = false;
+// Hold admission through the complete replay, including dependency rebuilding
+// in signalUndoDocument. Refuse before replay can remove backlinks, invoke
+// callbacks, create an inverse transaction, or consume a history entry.
+template<typename LifecyclePin>
+class ExternalSourceAdmission
+{
+public:
+    ExternalSourceAdmission(Document& source,
+                            const std::function<std::recursive_mutex&(Document&)>& commitMutex,
+                            const std::function<bool(const Document&)>& mutationBoundary,
+                            bool replay = false)
+    {
+        for (auto* dependent : externalSourceDependentDocuments(source, replay)) {
+            if (replay && std::ranges::find(replayParticipants, dependent) != replayParticipants.end()) {
+                continue; // The group already owns its pin, lock and barrier.
+            }
+            pins.push_back(std::make_unique<LifecyclePin>(
+                dependent->collaborationService()));
+            locks.emplace_back(commitMutex(*dependent), std::try_to_lock);
+            if (!*pins.back() || !locks.back().owns_lock()
+                || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+                || dependent->testStatus(Document::Recomputing)
+                || dependent->testStatus(Document::Restoring)
+                || dependent->recomputeCoordinator().hasPendingWork()
+                || mutationBoundary(*dependent)
+                || dependent->collaborationNotificationsReplaying()) {
+                throw Base::RuntimeError(
+                    "cannot remove external source: dependent document '"
+                    + std::string(dependent->getName())
+                    + "' is recomputing or has an active collaboration boundary; retry after it ends");
+            }
+        }
+    }
+
+private:
+    std::vector<std::unique_ptr<LifecyclePin>> pins;
+    std::vector<std::unique_lock<std::recursive_mutex>> locks;
+};
+}
+
 bool Document::undo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return undo(id); });
+    }
     return collaborationService().undoCompatibilityTransaction(id);
 }
 
 bool Document::undoCompatibilityTransactionImpl(const int id)
 {
+    // Replay must not throw across Qt.
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        }, true);
 
     if (id != 0) {
         const auto it = mUndoMap.find(id);
@@ -2397,7 +2705,12 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
     }
 
     restoreTransactionFileState(mRedoTransactions.back()->getID(), false);
-    signalUndo(*this);  // now signal the undo
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back({CollaborationDeferredNotificationKind::Undo});
+    }
+    else {
+        signalUndo(*this);
+    }
     emitCollaborationBecameStable();
 
     return true;
@@ -2405,6 +2718,9 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
 
 bool Document::redo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return redo(id); });
+    }
     return collaborationService().redoCompatibilityTransaction(id);
 }
 
@@ -2412,6 +2728,15 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        }, true);
 
     if (id != 0) {
         const auto it = mRedoMap.find(id);
@@ -2429,7 +2754,7 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
         _commitTransaction(true);
     }
 
-    assert(mRedoTransactions.size() != 0);
+    if (mRedoTransactions.empty()) { return false; }
 
     // undo
     d->activeUndoTransaction = new Transaction(mRedoTransactions.back()->getID());
@@ -2458,7 +2783,12 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
     }
 
     restoreTransactionFileState(mUndoTransactions.back()->getID(), true);
-    signalRedo(*this);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back({CollaborationDeferredNotificationKind::Redo});
+    }
+    else {
+        signalRedo(*this);
+    }
     emitCollaborationBecameStable();
     return true;
 }
@@ -2547,6 +2877,21 @@ std::vector<std::string> Document::getAvailableUndoNames() const
     return vList;
 }
 
+bool Document::undoStackRecordsProperty(const TransactionalObject* object,
+                                        const char* propertyName) const
+{
+    if (d->activeUndoTransaction
+        && d->activeUndoTransaction->recordsProperty(object, propertyName)) {
+        return true;
+    }
+    for (const Transaction* transaction : mUndoTransactions) {
+        if (transaction && transaction->recordsProperty(object, propertyName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string> Document::getAvailableRedoNames() const
 {
     std::vector<std::string> vList;
@@ -2630,6 +2975,12 @@ int Document::_openTransaction(
         _clearRedos();
     }
 
+    if (d->collaborationCommitNotificationBarrier
+        && d->collaborationBoundaryTransactionId != 0) {
+        d->collaborationBoundaryConsumed = true;
+        beginCollaborationCommitNotificationBarrier();
+    }
+
     // When id == 0, this creates a new id
     // for instance, when there is no global transaction
     // from the application to stick to
@@ -2643,6 +2994,7 @@ int Document::_openTransaction(
     id = d->activeUndoTransaction->getID();
 
     if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationBoundaryTransactionId = id;
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::OpenTransaction,
              nullptr,
@@ -2730,6 +3082,9 @@ void Document::lockTransactionInternal()
 }
 void Document::unlockTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     unlockTransactionInternal();
 }
@@ -2763,6 +3118,12 @@ bool Document::transacting() const
 
 void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What, int line)
 {
+    // Visibility sync and other observer echoes during replay must not open a
+    // transaction. ensureCollaborationTransactionControlAllowed() would throw,
+    // and a booked global transaction is how that echo reaches openTransaction().
+    if (d->collaborationReplayingNotifications.load(std::memory_order_acquire)) {
+        return;
+    }
     // if no transaction open, open one!
     if (isPerformingTransaction() || d->activeUndoTransaction) {
         return;
@@ -2822,12 +3183,7 @@ void Document::_clearRedos()
         return;
     }
 
-    mRedoMap.clear();
-    while (!mRedoTransactions.empty()) {
-        discardTransactionFileState(mRedoTransactions.back()->getID());
-        delete mRedoTransactions.back();
-        mRedoTransactions.pop_back();
-    }
+    Internal::PreparedLabelReferenceUpdates::invalidateRedos(*this);
 }
 
 void Document::commitTransaction() // NOLINT
@@ -2882,8 +3238,13 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
-            if (retainUndoHistory && d->activeTransactionFileChanges) {
+            if (retainUndoHistory && d->activeTransactionFileChanges
+                && !d->collaborationCommitNotificationBarrier) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
+            }
+            if (!d->activeUndoTransaction->isEmpty()
+                || d->activeTransactionFileChanges || d->transactionFileChanges.contains(id)) {
+                Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
             }
             d->activeTransactionFileChanges.reset();
 
@@ -2906,8 +3267,23 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                     discardTransactionFileState(id);
                     retargetCollaborationTransactionNotifications(
                         d->activeUndoTransaction, d->parkedNestedTransaction);
-                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-                    delete d->activeUndoTransaction;
+                    const bool retainCancelledObjects =
+                        d->collaborationCommitNotificationBarrier;
+                    if (retainCancelledObjects && d->collaborationPreparedUndoSlot.empty()) {
+                        throw Base::RuntimeError(
+                            "collaboration commit finalization was not prepared");
+                    }
+                    d->activeUndoTransaction->mergeInto(
+                        *d->parkedNestedTransaction, retainCancelledObjects);
+                    if (retainCancelledObjects && !d->activeUndoTransaction->isEmpty()) {
+                        // Only cancelled removals remain in the nested record.
+                        // Retire them with the same owner as a non-history
+                        // recompute, after deletion replay has cleared the GUI.
+                        d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                    }
+                    else {
+                        delete d->activeUndoTransaction;
+                    }
                 }
                 else if (!d->activeUndoTransaction->isEmpty()) {
                     // Nothing to fold into: the caller only had a booking, so
@@ -2934,15 +3310,36 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 }
                 d->activeUndoTransaction = nullptr;
             }
-            else if (!retainUndoHistory) {
-                // The transaction is discarded outright, so any deferred
-                // notification still naming it would replay through freed
-                // memory once the barrier lifts.
+            else if (!retainUndoHistory
+                     || (d->collaborationCommitNotificationBarrier
+                         && d->activeUndoTransaction->isEmpty()
+                         && !d->transactionFileChanges.contains(id))) {
+                // Redo restoration is decided at boundary finalization, using
+                // the mutation ledger as well as native transaction records.
+                // Native compatibility commits eagerly create a transaction,
+                // even when the callback only reads. Keep a file-only change,
+                // but retire empty records so one undo reaches the real edit.
+                // The transaction does not enter undo history. Keep deferred
+                // records from naming it after its undo-map registration is
+                // removed, whether it retires now or after replay.
                 retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
                                                               nullptr);
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
-                delete d->activeUndoTransaction;
+                if (d->collaborationCommitNotificationBarrier) {
+                    if (d->collaborationPreparedUndoSlot.empty()) {
+                        throw Base::RuntimeError(
+                            "collaboration commit finalization was not prepared");
+                    }
+                    // Recompute does not retain undo history. Keep its retiring
+                    // transaction in the prepared slot until deletion replay has
+                    // cleared Selection and the GUI's view providers instead of
+                    // destroying its removed objects here.
+                    d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                }
+                else {
+                    delete d->activeUndoTransaction;
+                }
                 d->activeUndoTransaction = nullptr;
             }
             else if (d->collaborationCommitNotificationBarrier) {
@@ -3122,6 +3519,14 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
     const bool previousSaveFailure = d->lastCanonicalSaveFailed;
     const auto transactionFileChanges = d->activeTransactionFileChanges;
     const int transactionId = transaction->getID();
+    if (d->collaborationBoundaryConsumed
+        || d->collaborationBoundaryTransactionId != transactionId) {
+        appendDiagnostic("collaboration rollback snapshot does not belong to the active transaction");
+        return result;
+    }
+    // Consume before checked apply: even a failed restore must never swap this
+    // transaction's snapshot a second time. A new transaction captures its own.
+    d->collaborationBoundaryConsumed = true;
     bool transactionRestoreSucceeded = true;
     bool boundaryStateRestored = false;
     {
@@ -3191,6 +3596,29 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
     }
     catch (...) {
         appendDiagnostic("abort notification failed with an unknown exception");
+    }
+
+    if (transactionRestoreSucceeded) {
+        // Like undo(): objects that rebuild derived state after a transaction
+        // (a sketch re-solves) were only marked while it was applied. Without
+        // this a sketch kept the failed attempt's malformed/conflicting
+        // constraint report although its constraints were restored. The status
+        // restore below resets the touch state this may leave behind.
+        for (auto* object : d->objectArray) {
+            if (!object || !object->testStatus(ObjectStatus::PendingTransactionUpdate)) {
+                continue;
+            }
+            object->setStatus(ObjectStatus::PendingTransactionUpdate, false);
+            try {
+                object->onUndoRedoFinished();
+            }
+            catch (const std::exception& exception) {
+                appendDiagnostic("post-rollback object update failed: ", exception.what());
+            }
+            catch (...) {
+                appendDiagnostic("post-rollback object update failed with an unknown exception");
+            }
+        }
     }
 
     if (boundaryStateRestored) {
@@ -3295,7 +3723,7 @@ void Document::clearDocument() // NOLINT
     d->activeObject = nullptr;
 
     if (!d->objectArray.empty()) {
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
         GetApplication().signalNewDocument(*this, false);
@@ -3438,6 +3866,10 @@ unsigned int Document::getMaxUndoStackSize() const
 
 void Document::onBeforeChange(const Property* prop)
 {
+    if (!d->collaborationCommitNotificationBarrier
+        && !saveBookkeepingPropertySuppressed(*d, prop)) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     if (prop == &Label) {
         oldLabel = Label.getValue();
     }
@@ -3459,6 +3891,12 @@ void Document::onChanged(const Property* prop)
 {
     const bool suppressBookkeepingProperty =
         saveBookkeepingPropertySuppressed(*d, prop);
+    if (!suppressBookkeepingProperty) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+        if (d->collaborationCommitNotificationBarrier && !d->rollback && !d->undoing) {
+            d->collaborationUnrecordedDocumentChange = true;
+        }
+    }
     if (shouldTrackFileChange(prop)) {
         // App::Document itself is not a TransactionalObject. Its persistent
         // properties therefore stay dirty independently of any object
@@ -3546,6 +3984,39 @@ void Document::onChanged(const Property* prop)
     }
 }
 
+void Document::captureActiveTransactionProperty(const TransactionalObject* who,
+                                                const Property* what)
+{
+    if (!who || !what || d->rollback || d->undoing) {
+        return;
+    }
+    // openTransaction() only books an id. The transaction object is created
+    // on the first recorded change. Status bits do not go through
+    // onBeforeChange, so open that booked transaction here.
+    if (!d->activeUndoTransaction) {
+        _checkTransaction(nullptr, what, __LINE__);
+    }
+    if (d->activeUndoTransaction) {
+        d->activeUndoTransaction->addObjectChange(who, what);
+        d->activeUndoTransaction->noteSerializedStatus(who, what);
+    }
+}
+
+void Document::captureInverseTransactionProperty(const TransactionalObject* who,
+                                                   const Property* what,
+                                                   bool restoreSerializedStatus)
+{
+    // Undo and redo apply one transaction while another records the inverse.
+    // Snapshot first so Paste side effects cannot rewrite that record.
+    if (!who || !what || d->rollback || !d->undoing || !d->activeUndoTransaction) {
+        return;
+    }
+    d->activeUndoTransaction->addObjectChange(who, what);
+    if (restoreSerializedStatus) {
+        d->activeUndoTransaction->noteSerializedStatus(who, what);
+    }
+}
+
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
     // ViewProvider properties reach the owning App document here even though
@@ -3553,6 +4024,9 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
     // capture or the property's value change so a foreign document cannot
     // escape an atomic presentation rollback boundary.
     enforceAtomicPresentationMutationTarget(*this);
+    if (!d->collaborationCommitNotificationBarrier) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     if (Who->isDerivedFrom<DocumentObject>()) {
         if (d->collaborationCommitNotificationBarrier) {
             d->collaborationDeferredNotifications.push_back(
@@ -3738,6 +4212,8 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: {} {}\n", getName(), this);
 #endif
+
+    shutdownExecutionLane();
 
     try {
         clearUndos();
@@ -4647,6 +5123,9 @@ void Document::ensureCollaborationSaveAllowed() const
 
 bool Document::saveAs(const char* _file)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, _file] { return saveAs(_file); });
+    }
     ensureCollaborationSaveAllowed();
     const std::string file = checkFileName(_file);
     return saveWithOutcomeImpl(
@@ -4676,6 +5155,9 @@ bool Document::saveCopy(const char* file) const
 
 DocumentSaveOutcome Document::saveWithOutcome()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return saveWithOutcome(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4698,6 +5180,9 @@ DocumentSaveOutcome Document::saveWithOutcome()
 
 DocumentSaveOutcome Document::forceSave()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return forceSave(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4728,6 +5213,11 @@ DocumentSaveOutcome Document::saveAsWithOutcome(
     const bool overwrite,
     const std::string& expectedDestinationSha256)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return saveAsWithOutcome(file, overwrite, expectedDestinationSha256);
+        });
+    }
     ensureCollaborationSaveAllowed();
     std::string checked;
     const auto preflightFailure = [this, file](const char* message) {
@@ -5008,6 +5498,9 @@ DocumentMutationReadiness Document::getMutationReadiness() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return save(); });
+    }
     ensureCollaborationSaveAllowed();
 
     if (testStatus(Document::PartialDoc)) {
@@ -5812,6 +6305,11 @@ void Document::markFileChange(const DocumentFileChange category,
         return;
     }
 
+    // Dirty-state bookkeeping alone is not a native model edit. Inside a
+    // prepared callback it still makes the boundary observably non-empty.
+    if (d->collaborationCommitNotificationBarrier) {
+        Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
+    }
     const auto previousState = getFileChangeState();
     const auto previousChanges = getPendingFileChanges();
     const bool previousFailure = d->lastCanonicalSaveFailed;
@@ -5943,6 +6441,7 @@ void Document::restoreTransactionFileState(const int transactionId, const bool a
 void Document::discardTransactionFileState(const int transactionId)
 {
     d->transactionFileChanges.erase(transactionId);
+    d->historyGroups.erase(transactionId);
 }
 
 void Document::establishCanonicalSavepoint(const std::array<std::uint64_t, 6> tokens,
@@ -5984,7 +6483,7 @@ void Document::restore(const char* filename,
     Document* activeDoc = GetApplication().getActiveDocument();
     if (!d->objectArray.empty()) {
         signal = true;
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
     }
@@ -6955,9 +7454,19 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const std::vector<DocumentObject*>& objs,
     const bool force,
     const int options,
-    const RecomputeVenue venue)
+    const RecomputeVenue venue,
+    const DocumentRecomputeId admissionId)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return recomputeAsync(objs, force, options, venue, admissionId);
+        });
+    }
+
     enforceAtomicPresentationMutationTarget(*this);
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("document recompute is blocked during native spreadsheet cache refresh");
+    }
 
     const auto submitEmpty = [this] {
         DocumentRecomputeRequest request;
@@ -6995,7 +7504,6 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         activeSubmissions.erase(this);
     };
 
-    d->clearRecomputeLog();
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::BeforeRecompute});
@@ -7004,6 +7512,12 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         signalBeforeRecompute(*this);
     }
 
+    // An eager commit bypasses SkipRecompute, but must not force clean
+    // branches merely because they share a container or an upstream input
+    // with the edited object. Keep explicit force semantics for ordinary
+    // recompute callers; the derived pass selects dirty work and downstream
+    // dependents only.
+    const bool forceFeatureExecution = force && !collaborationDerivedRecomputeGranted();
     const auto ordered = getDependencyList(
         objs.empty() ? d->objectArray : objs,
         DepSort | options);
@@ -7018,7 +7532,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (!object || !object->isAttachedToDocument()
             || object->getDocument() != this
-            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
+            || (!forceFeatureExecution && !object->isTouched() && object->mustRecompute() == 0)) {
             continue;
         }
         scheduled.insert(object);
@@ -7034,6 +7548,10 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (object && object->isAttachedToDocument() && object->getDocument() == this
             && scheduled.contains(object)) {
+            // A partial recompute must retain diagnostics for native error
+            // objects outside its plan, so unrelated compatibility repairs
+            // preserve the same terminal error boundary.
+            d->clearRecomputeLog(object);
             selected.push_back(object);
         }
     }
@@ -7045,21 +7563,25 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         "App::Document::recomputeAsync isolated compatibility facade",
         "generic-document:",
         !collaborationDerivedRecomputeGranted(),
-        force,
+        forceFeatureExecution,
         // The coordinator's own derived pass inside a structural commit is
-        // always isolated: refusing to run unserializable object code live is
-        // exactly what that venue is for. Every other plan takes the venue the
-        // caller asked for, and the default is the owner thread -- one
-        // FreeCADCmd spawn per feature is a cost neither an interactive
-        // session nor the test suite can carry.
+        // still isolated: each node is a prepared edit applied through
+        // commitDerivedRecomputeInActiveTransaction(), not a second legacy
+        // recompute loop. Venue follows the caller; the default owner thread
+        // avoids one FreeCADCmd spawn per feature, which neither an
+        // interactive session nor the test suite can carry.
         //
         // Either way a target that does not opt into worker execution falls
         // back to the owner thread inside GenericIsolatedRecompute.cpp:1714.
-        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread
-            && !collaborationDerivedRecomputeGranted());
+        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread);
+    if (collaborationDerivedRecomputeGranted()) {
+        for (auto& node : request.features) {
+            node.intent.arguments.emplace("derived_coordinator_recompute", "1");
+        }
+    }
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
-    const auto id = recomputeCoordinator().submit(std::move(request));
+    const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
     return std::make_unique<RecomputeHandle>(*this, id);
 }
 
@@ -7088,6 +7610,7 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             : node.diagnostic;
         d->addRecomputeLog(diagnostic.c_str(), object);
     }
+    invokeDocumentPresentationBoundary(*this);
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::Recomputed};
@@ -7268,6 +7791,10 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
+    // On the GUI thread recomputeAsync() and RecomputeHandle::wait() hop to the
+    // document owner and wait without running the Qt event loop (see
+    // DocumentExecutionLane::dispatchToOwner()), so this stays synchronous.
+
     // The legacy loop ran its topologically sorted plan up to twice --
     // "maximum two passes to allow some form of dependency inversion".
     // Settling an object touches its dependents, and a dependent the single
@@ -7509,6 +8036,16 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 {
     FC_LOG("Recomputing " << Feat->getFullName());
 
+    if (!DocumentWouldBlock::isGuiThread()
+        && !isCollaborationOwnerThread()
+        && Feat->requiresDocumentThreadExecutionDeclaration()
+        && !Feat->declaresDocumentThreadExecution()) {
+        d->addRecomputeLog(
+            "Python feature must declare supportsDocumentThreadExecution() before lane execution",
+            Feat);
+        return 1;
+    }
+
     DocumentObjectExecReturn* returnCode = nullptr;
     try {
         returnCode = Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);
@@ -7564,7 +8101,17 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 
 bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
+    // The coordinator loop below runs on the calling thread. On the GUI thread
+    // run it on the document owner instead and wait without the Qt event loop
+    // (synchronous compatibility, see DocumentExecutionLane::dispatchToOwner()).
+    if (d->executionLane && !isCollaborationOwnerThread() && DocumentWouldBlock::isGuiThread()) {
+        return d->executionLane->dispatchToOwner(
+            [this, feature, recursive] { return recomputeFeature(feature, recursive); });
+    }
     enforceAtomicPresentationMutationTarget(*this);
+    if (d->collaborationSpreadsheetDerivedCache) {
+        throw Base::RuntimeError("spreadsheet derived cache callbacks cannot recursively recompute features");
+    }
 
     // A feature that recomputes itself from inside its own execute() (CAM
     // operations do this after updateDepths() so StartDepth/FinalDepth pick up
@@ -7596,6 +8143,13 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     // that may execute object code for a structural compatibility commit.
     if (d->collaborationCompatibilityStructuralMutationGranted
         || d->collaborationDeferredRecomputeBlocked) {
+        if (!recursive && feature && containsObject(feature)
+            && feature->getDocument() == this && feature->isAttachedToDocument()) {
+            if (auto refreshed = Internal::CollaborationStructuralMutationRecorder::
+                    recomputeSpreadsheetCache(*this, *feature)) {
+                return *refreshed;
+            }
+        }
         return true;
     }
 
@@ -7617,7 +8171,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         Internal::ensureGenericIsolatedRecomputeRegistered();
         auto request = Internal::makeGenericIsolatedRecomputeRequest(
             *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true,
-            /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
+            /*ownerThreadExecution=*/true);
         for (const auto& node : request.features) {
             if (auto* object = getObject(node.featureId.c_str())) {
                 d->clearRecomputeLog(object);
@@ -7961,6 +8515,17 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         return;
     }
 
+    // Keep every affected dependent pinned and serialized through retirement.
+    ExternalSourceAdmission<DocumentCollaborationService::LifecyclePin> dependentAdmission(
+        *this,
+        [](Document& dependent) -> std::recursive_mutex& {
+            return dependent.collaborationCommitMutex();
+        },
+        [](const Document& dependent) {
+            return dependent.collaborationLifecycleMutationBlocked()
+                || dependent.d->collaborationCommitNotificationBarrier;
+        });
+
     InternalTransactionLockScope tlock(*this);
 
     _checkTransaction(pcObject, nullptr, __LINE__);
@@ -8108,6 +8673,12 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         }
     }
     catch (...) {
+        // Removal callbacks and dependency cleanup can refuse a mutation. If
+        // the object survived, release the recursion guard before returning
+        // the error; a later native removeObject must be able to retry.
+        if (getObject(removedObjectName.c_str()) == pcObject) {
+            pcObject->setStatus(ObjectStatus::Remove, false);
+        }
         d->collaborationPropertyPublicationSuppression.erase(&Tip);
         d->collaborationPropertyPublicationSuppression.erase(&TipName);
         d->collaborationInitializationSuppression.erase(pcObject);
@@ -8647,4 +9218,668 @@ bool Document::mustExecute() const
         }
     }
     return false;
+}
+
+// Native object relabeling may rewrite properties in saved dependent documents.
+// Enlist those effects, rather than granting extension code transaction control.
+namespace App::Internal
+{
+namespace
+{
+thread_local PreparedLabelReferenceUpdates* activeLabelReferenceUpdates = nullptr;
+thread_local bool groupedReplayEnabled = true;
+}
+
+std::atomic<void (*)(Document&)> PreparedLabelReferenceUpdates::finalizationTestHook {nullptr};
+std::atomic<void (*)()> PreparedLabelReferenceUpdates::rewriteTestHook {nullptr};
+
+struct PreparedLabelReferenceUpdates::State
+{
+    struct Participant
+    {
+        explicit Participant(Document& document)
+            : document(document), pin(document.collaborationService()),
+              lock(document.collaborationCommitMutex(), std::try_to_lock)
+        {}
+        Document& document;
+        DocumentCollaborationService::LifecyclePin pin;
+        std::unique_lock<std::recursive_mutex> lock;
+        bool suppressed {false};
+        bool barrier {false};
+        bool committed {false};
+        std::optional<DocumentRevisionPublicationReservation> reservation;
+        std::vector<DocumentRevisionObservation> published;
+    };
+    Document& source;
+    bool retainUndoHistory;
+    bool localUpdates {false};
+    bool failed {false};
+    std::vector<std::unique_ptr<Participant>> participants;
+    // Admit all branches whose redo can be retired before changing the model.
+    std::vector<std::unique_ptr<Participant>> historyAdmissions;
+    struct Membership
+    {
+        Document* document;
+        int id;
+        decltype(DocumentP::historyGroups)::node_type previous;
+    };
+    std::vector<Membership> memberships;
+    std::list<Transaction*> retiredRedos;
+    bool finished {false};
+    void admitRedoHistory(Document& document);
+};
+
+PreparedLabelReferenceUpdates::PreparedLabelReferenceUpdates(Document& source,
+                                                           bool retainUndoHistory)
+    : state(std::make_unique<State>(State {source, retainUndoHistory, false, false, {}, {}, {}, {}}))
+{
+    if (activeLabelReferenceUpdates) {
+        throw Base::RuntimeError("prepared label reference context is already active");
+    }
+    activeLabelReferenceUpdates = this;
+}
+
+PreparedLabelReferenceUpdates::ReplayMode::ReplayMode(bool grouped) noexcept
+    : previous(std::exchange(groupedReplayEnabled, grouped))
+{}
+
+PreparedLabelReferenceUpdates::ReplayMode::~ReplayMode()
+{
+    groupedReplayEnabled = previous;
+}
+
+PreparedLabelReferenceUpdates::~PreparedLabelReferenceUpdates()
+{
+    rollback();
+    finish(false);
+    for (auto* transaction : state->retiredRedos) { delete transaction; }
+    activeLabelReferenceUpdates = nullptr;
+}
+
+void PreparedLabelReferenceUpdates::admit(Document& source, Property& property)
+{
+    auto* context = activeLabelReferenceUpdates;
+    auto* dependent = documentFromPropertyContainer(property.getContainer());
+    if (!context || &context->state->source != &source || !dependent) {
+        return;
+    }
+    auto& state = *context->state;
+    if (dependent == &source) {
+        state.localUpdates = true;
+        return;
+    }
+    auto found = std::find_if(state.participants.begin(), state.participants.end(),
+                             [&](const auto& entry) { return &entry->document == dependent; });
+    if (found == state.participants.end()) {
+        auto entry = std::make_unique<State::Participant>(*dependent);
+        if (!entry->pin || !entry->lock.owns_lock()
+            || dependent->collaborationIdentity().state != DocumentLifecycleState::Live
+            || dependent->collaborationCommitPoisoned()
+            || dependent->collaborationStableReadBlocked()
+            || dependent->collaborationLifecycleMutationBlocked()
+            || dependent->recomputeCoordinator().hasPendingWork()
+            || dependent->testStatus(Document::Restoring)) {
+            throw Base::RuntimeError("cannot update label references: dependent document '"
+                                     + std::string(dependent->getName())
+                                     + "' has active work; retry after it ends");
+        }
+        state.participants.push_back(std::move(entry));
+    }
+}
+
+void PreparedLabelReferenceUpdates::noteMutation(Document& document)
+{
+    if (!document.d->rollback && !document.d->undoing
+        && !document.testStatus(Document::Restoring)) {
+        document.d->collaborationHistoryChanged = true;
+        if (!document.d->collaborationCommitNotificationBarrier
+            && !historyReplayActive && !document.testStatus(Document::Recomputing)
+            && !document.testStatus(Document::Importing)
+            && std::ranges::any_of(document.mRedoTransactions, [&](const auto* transaction) {
+                return document.d->historyGroups.contains(transaction->getID());
+            }) && !presentationRefreshOnCallingThread()) {
+            // Ordinary unbooked native edits retain their legacy history
+            // semantics. An explicitly recorded group cannot branch locally.
+            // Idle GUI material/visibility reflection is derived replay.
+            invalidateRedos(document);
+        }
+    }
+}
+
+bool PreparedLabelReferenceUpdates::hasUnrestoredChanges(const Document& document) noexcept
+{
+    // The snapshot belongs only to this active boundary, not to a subsequent
+    // observer's history operation or the context destructor's repeated finish.
+    if (!document.d->collaborationCommitNotificationBarrier) { return false; }
+    const auto& tokens = document.d->fileChangeTokens;
+    return document.d->collaborationUnrecordedDocumentChange
+        || document.d->collaborationBoundaryStickyTokens
+            != std::array<std::uint64_t, 3> {tokens.model.sticky,
+                                             tokens.appearance.sticky,
+                                             tokens.compatibility.sticky};
+}
+
+void PreparedLabelReferenceUpdates::clearRedos(Document& document,
+                                               std::list<Transaction*>* deferred) noexcept
+{
+    // Detach first: recursive group invalidation may come back to this member.
+    // No allocations or public transaction callbacks after durable commitment.
+    std::list<Transaction*> retired;
+    retired.splice(retired.end(), document.mRedoTransactions);
+    retired.splice(retired.end(), document.d->collaborationParkedRedos);
+    document.mRedoMap.clear();
+    document.d->collaborationParkedRedoMap.clear();
+    for (auto* transaction : retired) {
+        const int id = transaction->getID();
+        const auto found = document.d->historyGroups.find(id);
+        if (found != document.d->historyGroups.end()) {
+            const auto group = found->second;
+            for (const auto& member : *group) {
+                auto* peer = member.document;
+                if (peer && peer != &document && GetApplication().getDocumentName(peer)
+                    && peer->collaborationRevisions().documentIdentity() == member.identity) {
+                    clearRedos(*peer, deferred);
+                }
+            }
+        }
+        document.discardTransactionFileState(id);
+        if (!deferred) { delete transaction; }
+    }
+    if (deferred) { deferred->splice(deferred->end(), retired); }
+}
+
+void PreparedLabelReferenceUpdates::State::admitRedoHistory(Document& document)
+{
+    auto& admissions = historyAdmissions;
+    const auto admitHistory = [&](auto&& self, Document& doc) -> void {
+        if (std::ranges::any_of(admissions, [&](const auto& entry) {
+                return &entry->document == &doc;
+            })) {
+            return;
+        }
+        auto entry = std::make_unique<State::Participant>(doc);
+        if (!entry->pin || !entry->lock.owns_lock()
+            || doc.collaborationIdentity().state != DocumentLifecycleState::Live
+            || (&doc != &document && (doc.hasPendingTransaction()
+                || doc.collaborationLifecycleMutationBlocked()
+                || doc.recomputeCoordinator().hasPendingWork()))) {
+            throw Base::RuntimeError("grouped redo invalidation admission is busy; retry");
+        }
+        admissions.push_back(std::move(entry));
+        const auto scan = [&](const auto& transactions) {
+            for (auto* transaction : transactions) {
+                const auto found = doc.d->historyGroups.find(transaction->getID());
+                if (found == doc.d->historyGroups.end()) { continue; }
+                for (const auto& member : *found->second) {
+                    auto* peer = member.document;
+                    if (peer && GetApplication().getDocumentName(peer)
+                        && peer->collaborationRevisions().documentIdentity() == member.identity) {
+                        self(self, *peer);
+                    }
+                }
+            }
+        };
+        scan(doc.mRedoTransactions);
+        scan(doc.d->collaborationParkedRedos);
+    };
+    admitHistory(admitHistory, document);
+}
+
+void PreparedLabelReferenceUpdates::invalidateRedos(Document& document)
+{
+    if (document.mRedoTransactions.empty() && document.d->collaborationParkedRedos.empty()) {
+        return;
+    }
+    if (!GetApplication().getDocumentName(&document)) {
+        // Teardown has already sealed this document's service admission.
+        // Any replay involving this missing member will be refused.
+        clearRedos(document);
+    }
+    else if (auto* context = activeLabelReferenceUpdates) {
+        context->state->admitRedoHistory(document);
+        clearRedos(document, &context->state->retiredRedos);
+    }
+    else {
+        State admission {document, true, false, false, {}, {}, {}, {}};
+        admission.admitRedoHistory(document);
+        clearRedos(document);
+    }
+}
+
+void PreparedLabelReferenceUpdates::preserveRedo(Document& document)
+{
+    if (auto* context = activeLabelReferenceUpdates) {
+        context->state->admitRedoHistory(document);
+    }
+    if (!document.d->collaborationRedoHistoryParked) {
+        document.d->collaborationParkedRedos.splice(
+            document.d->collaborationParkedRedos.end(), document.mRedoTransactions);
+        document.d->collaborationParkedRedoMap.swap(document.mRedoMap);
+        document.d->collaborationRedoHistoryParked = true;
+    }
+}
+
+void PreparedLabelReferenceUpdates::activate(Document& source)
+{
+    auto* context = activeLabelReferenceUpdates;
+    if (!context || &context->state->source != &source) {
+        return;
+    }
+    auto& state = *context->state;
+    for (auto& entry : state.participants) {
+        auto& participant = *entry;
+        auto* dependent = &participant.document;
+        if (participant.barrier) {
+            continue;
+        }
+        dependent->beginCollaborationCommitNotificationBarrier();
+        participant.barrier = true;
+        participant.suppressed = dependent->collaborationRevisionPublicationSuppressed();
+        dependent->setCollaborationRevisionPublicationSuppressed(true);
+        LabelReferenceMutationTarget target(source, *dependent);
+        Base::FlagToggler<bool> grant(dependent->d->collaborationTransactionControlGranted, false);
+        const int transactionId = source.d->nestedCommitParked && source.d->parkedNestedTransaction
+            ? source.d->parkedNestedTransaction->getID() : source.getTransactionID(true);
+        if (state.retainUndoHistory) {
+            preserveRedo(*dependent);
+        }
+        if (!dependent->_openTransaction("Update object label references", transactionId, true)) {
+            throw Base::RuntimeError("dependent refused label reference transaction");
+        }
+    }
+}
+
+void PreparedLabelReferenceUpdates::failed(Document& source) noexcept
+{
+    if (activeLabelReferenceUpdates && &activeLabelReferenceUpdates->state->source == &source) {
+        activeLabelReferenceUpdates->state->failed = true;
+    }
+}
+
+bool PreparedLabelReferenceUpdates::failed() const noexcept
+{
+    return state->failed;
+}
+
+bool PreparedLabelReferenceUpdates::apply(Document& source, Property& property,
+                                         const Property& value)
+{
+    auto* context = activeLabelReferenceUpdates;
+    auto* dependent = documentFromPropertyContainer(property.getContainer());
+    if (!context || &context->state->source != &source || !dependent || dependent == &source) {
+        return false;
+    }
+    // Admission was completed for the entire rewrite set before the Label changed.
+    // Observers are deferred by the participant barrier. The process target
+    // remains bound and rejects writes back into the source or a third document.
+    LabelReferenceMutationTarget target(source, *dependent);
+    if (const auto hook = rewriteTestHook.load()) {
+        hook();
+    }
+    property.Paste(value);
+    return true;
+}
+
+bool PreparedLabelReferenceUpdates::hasLocalUpdates() const noexcept
+{
+    return state->localUpdates;
+}
+
+void PreparedLabelReferenceUpdates::prepare()
+{
+    if (state->failed) {
+        throw Base::RuntimeError("Label reference update failed");
+    }
+    if (state->retainUndoHistory && !state->participants.empty()) {
+        auto& source = state->source;
+        const int id = source.d->nestedCommitParked && source.d->parkedNestedTransaction
+            ? source.d->parkedNestedTransaction->getID() : source.getTransactionID(true);
+        auto group = std::make_shared<DocumentP::HistoryGroup>();
+        if (const auto old = source.d->historyGroups.find(id); old != source.d->historyGroups.end()) {
+            *group = *old->second;
+        }
+        const auto append = [&](Document& document) {
+            const auto identity = document.collaborationRevisions().documentIdentity().value();
+            if (!std::ranges::any_of(*group, [&](const auto& member) {
+                    return member.identity == identity;
+                })) {
+                group->push_back({&document, identity});
+            }
+        };
+        append(source);
+        for (auto& entry : state->participants) { append(entry->document); }
+        state->memberships.reserve(group->size());
+        for (const auto& member : *group) {
+            auto* document = member.document;
+            if (!document || !GetApplication().getDocumentName(document)
+                || document->collaborationRevisions().documentIdentity() != member.identity) {
+                throw Base::RuntimeError("incomplete grouped history membership");
+            }
+            auto previous = document->d->historyGroups.extract(id);
+            state->memberships.push_back({document, id, std::move(previous)});
+            document->d->historyGroups.emplace(id, group);
+        }
+    }
+    for (auto& entry : state->participants) {
+        auto& document = entry->document;
+        LabelReferenceMutationTarget target(state->source, document);
+        document.prepareCollaborationCommitFinalization();
+        CollaborationRevisionMutationGrant grant(document.collaborationRevisions());
+        entry->reservation.emplace(document.collaborationRevisions().reservePublication(
+            {}, {{DocumentRevisionKey::unknownModelMutation(), std::nullopt}}));
+        if (!entry->reservation->ready()) {
+            throw Base::RuntimeError("dependent label reference publication was refused");
+        }
+    }
+}
+
+void PreparedLabelReferenceUpdates::commit()
+{
+    for (auto& entry : state->participants) {
+        auto& document = entry->document;
+        LabelReferenceMutationTarget target(state->source, document);
+        if (!document.commitCollaborationCommitTransaction(state->retainUndoHistory)) {
+            throw Base::RuntimeError("dependent label reference commit was refused");
+        }
+        entry->committed = true;
+        if (!entry->reservation->commitPrepared(entry->published)) {
+            document.poisonCollaborationCommit("dependent label reference publication failed");
+            throw Base::RuntimeError("dependent label reference publication failed");
+        }
+        entry->reservation.reset();
+    }
+}
+
+bool PreparedLabelReferenceUpdates::rollback() noexcept
+{
+    bool restored = true;
+    for (auto& entry : state->participants) {
+        if (!entry->barrier || entry->committed) {
+            continue;
+        }
+        try {
+            LabelReferenceMutationTarget target(state->source, entry->document);
+            entry->reservation.reset();
+            const auto result = entry->document.rollbackCollaborationTransaction();
+            if (!result.restored) {
+                entry->document.poisonCollaborationCommit(result.diagnostic.data());
+                restored = false;
+            }
+        }
+        catch (...) {
+            entry->document.poisonCollaborationCommit("label reference rollback failed");
+            restored = false;
+        }
+    }
+    return restored;
+}
+
+void PreparedLabelReferenceUpdates::finish(bool committed) noexcept
+{
+    // The destructor repeats finish(false). It must not inspect a subsequent
+    // observer's new boundary in an already-released participant.
+    if (std::exchange(state->finished, true)) { return; }
+    if (activeLabelReferenceUpdates == this) {
+        activeLabelReferenceUpdates = nullptr;
+    }
+    if (!committed) {
+        for (auto& membership : state->memberships) {
+            membership.document->d->historyGroups.erase(membership.id);
+            if (!membership.previous.empty()) {
+                // Rollback may have erased the replacement slot. Restore the
+                // preallocated node, including nested membership, without allocation.
+                membership.document->d->historyGroups.insert(std::move(membership.previous));
+            }
+        }
+    }
+    state->memberships.clear();
+    const bool unrestored = hasUnrestoredChanges(state->source)
+        || std::ranges::any_of(state->participants, [](const auto& entry) {
+            return hasUnrestoredChanges(entry->document);
+        });
+    if (unrestored || (committed && state->retainUndoHistory
+        && (state->source.d->collaborationHistoryChanged
+            || std::ranges::any_of(state->participants, [](const auto& entry) {
+                return entry->document.d->collaborationHistoryChanged;
+            })))) {
+        // Settle the entire branch while admission locks still cover every
+        // affected member, before any observer can dispatch new work.
+        clearRedos(state->source, &state->retiredRedos);
+        for (auto& entry : state->participants) {
+            clearRedos(entry->document, &state->retiredRedos);
+        }
+    }
+    for (auto& entry : state->historyAdmissions) {
+        if (entry->lock.owns_lock()) { entry->lock.unlock(); }
+    }
+    // A stable observer may synchronously dispatch new work to a dependent's
+    // lane. Release all participant locks before replay; the barriers refuse
+    // premature admission and the lifecycle pins keep the documents alive.
+    for (auto& entry : state->participants) {
+        if (entry->barrier) {
+            entry->document.setCollaborationRevisionPublicationSuppressed(entry->suppressed);
+        }
+        if (entry->lock.owns_lock()) {
+            entry->lock.unlock();
+        }
+    }
+    for (auto& entry : state->participants) {
+        if (entry->barrier) {
+            entry->document.finishCollaborationCommitNotificationBarrier(committed);
+            entry->barrier = false;
+        }
+    }
+}
+}
+
+// A group is admitted in full before the first history entry moves. Native
+// replay runs under the same locks/barriers as reference rewriting; observers
+// see the complete group only after every revision has been published.
+bool App::Internal::PreparedLabelReferenceUpdates::replay(
+    Document& source, bool undo, int transactionId, bool grouped)
+{
+    // Even an empty stack must reject history control inside a prepared
+    // mutation or read-only postcondition before inspecting group membership.
+    source.ensureCollaborationTransactionControlAllowed();
+    enforceAtomicPresentationMutationTarget(source);
+    const bool wasReplaying = std::exchange(historyReplayActive, true);
+    const auto replayGuard = Base::ScopeGuard([&] { historyReplayActive = wasReplaying; });
+    const auto replayOne = [undo](Document& document, int id) {
+        return undo ? document.undoCompatibilityTransactionImpl(id)
+                    : document.redoCompatibilityTransactionImpl(id);
+    };
+    const int id = transactionId ? transactionId : source.getTransactionID(undo);
+    if (!id) { return false; }
+    const auto membership = source.d->historyGroups.find(id);
+    const auto group = membership == source.d->historyGroups.end()
+        ? nullptr : membership->second;
+    if (!group && transactionId) {
+        // An explicit range ending at an ordinary entry can still cross a
+        // recorded group. The native single-document loop must never replay
+        // that intermediate group without its members.
+        int remaining = undo ? source.getAvailableUndos(id) : source.getAvailableRedos(id);
+        if (undo && source.d->activeUndoTransaction) { --remaining; }
+        const auto& history = undo ? source.mUndoTransactions : source.mRedoTransactions;
+        for (auto it = history.rbegin(); remaining > 0 && it != history.rend(); ++it, --remaining) {
+            if (source.d->historyGroups.contains((*it)->getID())) {
+                throw Base::RuntimeError("grouped history range requires coordinated replay");
+            }
+        }
+    }
+    if (!group && (!grouped || !groupedReplayEnabled)) {
+        return replayOne(source, transactionId);
+    }
+    if (group) {
+        for (const auto& member : *group) {
+            auto* document = member.document;
+            if (!document || !GetApplication().getDocumentName(document)
+                || document->collaborationRevisions().documentIdentity() != member.identity
+                || !(undo ? document->getAvailableUndos(id) : document->getAvailableRedos(id))) {
+                throw Base::RuntimeError("incomplete grouped history; replay refused");
+            }
+        }
+    }
+    struct Participant
+    {
+        Document* document;
+        std::unique_ptr<DocumentCollaborationService::LifecyclePin> pin;
+        std::unique_lock<std::recursive_mutex> lock;
+        bool barrier {false};
+        bool suppressed {false};
+        int steps {0};
+        int completed {0};
+        std::optional<DocumentRevisionPublicationReservation> reservation;
+        std::vector<DocumentRevisionObservation> published;
+    };
+    std::vector<Participant> participants;
+    for (auto* document : GetApplication().getDocuments()) {
+        auto pin = std::make_unique<DocumentCollaborationService::LifecyclePin>(document->collaborationService());
+        if (!*pin) {
+            throw Base::RuntimeError("grouped history participant is closing");
+        }
+        std::unique_lock lock(document->collaborationCommitMutex(), std::try_to_lock);
+        if (!lock.owns_lock()) {
+            throw Base::RuntimeError("grouped history admission is busy; retry");
+        }
+        const int steps = undo ? document->getAvailableUndos(id) : document->getAvailableRedos(id);
+        if (steps) {
+            participants.push_back({document, std::move(pin), std::move(lock), false, false, steps, 0, {}, {}});
+        }
+    }
+    if (participants.size() <= 1) {
+        participants.clear();
+        return replayOne(source, transactionId);
+    }
+    for (auto& entry : participants) {
+        auto& document = *entry.document;
+        if (document.collaborationIdentity().state != DocumentLifecycleState::Live
+            || document.collaborationCommitPoisoned()
+            || document.collaborationNestedRecomputeCaptureBlocked()
+            || document.hasPendingTransaction()
+            || document.getBookedTransactionID() != 0
+            || document.testStatus(Document::Recomputing)
+            || document.collaborationLifecycleMutationBlocked()
+            || document.recomputeCoordinator().hasPendingWork()
+            || document.testStatus(Document::Restoring)) {
+            throw Base::RuntimeError("grouped history participant has active work; retry after it ends");
+        }
+    }
+    for (const auto& entry : participants) {
+        const auto& history = undo ? entry.document->mUndoTransactions : entry.document->mRedoTransactions;
+        int remaining = entry.steps;
+        for (auto it = history.rbegin(); remaining > 0 && it != history.rend(); ++it, --remaining) {
+            const auto found = entry.document->d->historyGroups.find((*it)->getID());
+            if (found == entry.document->d->historyGroups.end()) { continue; }
+            for (const auto& member : *found->second) {
+                if (!std::ranges::any_of(participants, [&](const auto& peer) {
+                    return peer.document->collaborationRevisions().documentIdentity() == member.identity
+                        && (undo ? peer.document->getAvailableUndos((*it)->getID())
+                                 : peer.document->getAvailableRedos((*it)->getID())) <= peer.steps
+                        && (undo ? peer.document->getAvailableUndos((*it)->getID())
+                                 : peer.document->getAvailableRedos((*it)->getID())) > 0;
+                })) {
+                    throw Base::RuntimeError("incomplete grouped history range; replay refused");
+                }
+            }
+        }
+    }
+    std::vector<Document*> admitted;
+    admitted.reserve(participants.size());
+    for (const auto& entry : participants) {
+        admitted.push_back(entry.document);
+    }
+    const auto finish = [&](bool committed) noexcept {
+        replayParticipants.clear();
+        for (auto& entry : participants) {
+            entry.reservation.reset();
+            if (entry.barrier) {
+                entry.document->setCollaborationRevisionPublicationSuppressed(entry.suppressed);
+            }
+            if (entry.lock.owns_lock()) {
+                entry.lock.unlock();
+            }
+        }
+        for (auto& entry : participants) {
+            if (entry.barrier) {
+                entry.document->finishCollaborationCommitNotificationBarrier(committed);
+                entry.barrier = false;
+            }
+        }
+    };
+    const auto rebuildDependencies = [&] {
+        // Paste may run before the referenced document's Label is restored.
+        // Rebuild runtime graphs once all values in the group are in place.
+        for (auto& entry : participants) {
+            for (auto* object : entry.document->getObjects()) {
+                std::vector<Property*> properties;
+                object->getPropertyList(properties);
+                for (auto* property : properties) {
+                    if (auto* expressions = dynamic_cast<PropertyExpressionContainer*>(property)) {
+                        expressions->onContainerRestored();
+                        object->clearOutListCache();
+                    }
+                }
+            }
+        }
+    };
+    try {
+        for (auto& entry : participants) {
+            auto& document = *entry.document;
+            document.beginCollaborationCommitNotificationBarrier();
+            entry.barrier = true;
+            entry.suppressed = document.collaborationRevisionPublicationSuppressed();
+            document.setCollaborationRevisionPublicationSuppressed(true);
+            entry.reservation.emplace(document.collaborationRevisions().reservePublication(
+                {}, {{DocumentRevisionKey::unknownModelMutation(), std::nullopt}}));
+            if (!entry.reservation->ready()) {
+                throw Base::RuntimeError("grouped history publication refused");
+            }
+        }
+        replayParticipants.swap(admitted);
+        for (auto& entry : participants) {
+            Base::FlagToggler<bool> grant(entry.document->d->collaborationTransactionControlGranted, false);
+            for (int i = 0; i < entry.steps; ++i) {
+                if (!replayOne(*entry.document, 0)) {
+                    throw Base::RuntimeError("grouped history replay refused");
+                }
+                ++entry.completed;
+            }
+        }
+        rebuildDependencies();
+    }
+    catch (...) {
+        // Keep barriers and admission until inverse replay has compensated every
+        // completed participant. An unprovable restore quarantines the group.
+        bool restored = true;
+        for (auto it = participants.rbegin(); it != participants.rend(); ++it) {
+            try {
+                Base::FlagToggler<bool> grant(it->document->d->collaborationTransactionControlGranted, false);
+                while (it->completed > 0) {
+                    const bool ok = undo ? it->document->redoCompatibilityTransactionImpl(0)
+                                         : it->document->undoCompatibilityTransactionImpl(0);
+                    if (!ok) { restored = false; break; }
+                    --it->completed;
+                }
+            }
+            catch (...) { restored = false; }
+        }
+        if (restored) {
+            try { rebuildDependencies(); }
+            catch (...) { restored = false; }
+        }
+        if (!restored) {
+            for (auto& entry : participants) {
+                entry.document->poisonCollaborationCommit("grouped history compensation failed");
+            }
+        }
+        finish(false);
+        throw;
+    }
+    for (auto& entry : participants) {
+        if (!entry.reservation->commitPrepared(entry.published)) {
+            entry.document->poisonCollaborationCommit("grouped history publication failed");
+        }
+    }
+    finish(true);
+    return true;
 }

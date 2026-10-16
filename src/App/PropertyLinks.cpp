@@ -37,6 +37,10 @@
 #include <Base/Tools.h>
 
 #include "PropertyLinks.h"
+#include "PropertyExpressionEngine.h"
+#include "ExternalSourceDependency.h"
+#include "Expression.h"
+#include "MutationClassification.h"
 #include "Application.h"
 #include "Document.h"
 #include "DocumentObject.h"
@@ -4714,6 +4718,51 @@ PropertyXLink::getDocumentInList(App::Document* doc)
     return ret;
 }
 
+std::set<Document*> App::externalSourceDependentDocuments(
+    const Document& source, bool includeRetiredExpressions)
+{
+    std::set<Document*> dependents;
+    for (auto& entry : _DocInfoMap) {
+        if (entry.second->pcDoc != &source) {
+            continue;
+        }
+        for (auto* link : entry.second->links) {
+            auto* owner = dynamic_cast<DocumentObject*>(link->getContainer());
+            if (owner && owner->isAttachedToDocument() && owner->getDocument() != &source) {
+                dependents.insert(owner->getDocument());
+            }
+        }
+    }
+    if (includeRetiredExpressions) {
+        for (auto* document : GetApplication().getDocuments()) {
+            if (document == &source) {
+                continue;
+            }
+            for (auto* owner : document->getObjects()) {
+                std::vector<Property*> properties;
+                owner->getPropertyList(properties);
+                for (auto* property : properties) {
+                    auto* container = dynamic_cast<PropertyExpressionContainer*>(property);
+                    if (!container) {
+                        continue;
+                    }
+                    for (const auto& binding : container->getExpressions()) {
+                        if (!binding.second) {
+                            continue;
+                        }
+                        for (const auto& identifier : binding.second->getIdentifiers()) {
+                            if (identifier.first.getDocument() == &source) {
+                                dependents.insert(document);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return dependents;
+}
+
 PyObject* PropertyXLink::getPyObject()
 {
     if (!_pcLink) {
@@ -5985,6 +6034,33 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
         if (it == _Deps.end()) {
             return;
         }
+        // A surviving external expression retains its text when a source is
+        // deleted. Retire only runtime dependency edges here, while the source
+        // is still attached; ordinary property notifications would enter the
+        // dependent's mutation boundary inside the source's atomic commit.
+        // Ordinary native deletion keeps the historical transaction capture
+        // and notifications below. Atomic deletion cannot grant foreign
+        // callbacks authority to edit either document.
+        if (dynamic_cast<PropertyExpressionContainer*>(this)
+            && obj->getDocument() != owner->getDocument()
+            && obj->testStatus(ObjectStatus::Remove)
+            && atomicPresentationMutationAdmissionHeldFor(*obj->getDocument())) {
+            for (auto prop = _PropDeps.begin(); prop != _PropDeps.end();) {
+                if (prop->first.second != obj) {
+                    ++prop;
+                    continue;
+                }
+                if (!prop->second) {
+                    obj->_removeBackLinkProp(getName(), owner, prop->first.first.c_str());
+                }
+                prop = _PropDeps.erase(prop);
+            }
+            _XLinks.erase(obj->getFullName());
+            _Deps.erase(it);
+            owner->clearOutListCache();
+            StatusBits.set(Property::Touched);
+            return;
+        }
         aboutToSetValue();
         onBreakLink(obj);
         if (obj->getDocument() != owner->getDocument()) {
@@ -6144,6 +6220,25 @@ void PropertyXLinkContainer::aboutToSetChildValue(App::Property& prop)
         if (_Deps.erase(obj)) {
             _onBreakLink(xlink->getValue());
             onRemoveDep(obj);
+        }
+        // Close detaches this link while the source object is still alive and
+        // then destroys it. Object-level deps are dropped above, but the
+        // fine-grained property edges are left in place because the expression
+        // engine skips rebuildDependencies() while it is marked LinkDetached.
+        // The next dependency walk would call into the freed object.
+        if (obj) {
+            auto* owner = freecad_cast<DocumentObject*>(getContainer());
+            for (auto it = _PropDeps.begin(); it != _PropDeps.end();) {
+                if (it->first.second != obj) {
+                    ++it;
+                    continue;
+                }
+                if (!it->second && owner && owner->isAttachedToDocument()
+                    && obj->isAttachedToDocument()) {
+                    obj->_removeBackLinkProp(getName(), owner, it->first.first.c_str());
+                }
+                it = _PropDeps.erase(it);
+            }
         }
     }
 }

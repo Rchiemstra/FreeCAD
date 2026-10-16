@@ -148,11 +148,18 @@ public:
     PersonalViewContextStore(const PersonalViewContextStore&) = delete;
     PersonalViewContextStore& operator=(const PersonalViewContextStore&) = delete;
 
-    /** Insert or replace actorId with an exact value copy. */
-    void store(std::string actorId, PersonalViewContext context);
+    // Opaque lifetime tokens, compared only; the store never dereferences them.
+    using SelectionIdentity = std::pair<std::uintptr_t, std::uintptr_t>;
+    using SelectionResolver =
+        std::function<SelectionIdentity(const PersonalViewContext&, const std::string&)>;
+
+    /** Copy the value and synchronously bind its paths; never retain the resolver. */
+    void store(std::string actorId, PersonalViewContext context,
+               const SelectionResolver& resolveSelection = {});
 
     /** Replace an existing actor value; return false without inserting if absent. */
-    [[nodiscard]] bool update(std::string actorId, PersonalViewContext context);
+    [[nodiscard]] bool update(std::string actorId, PersonalViewContext context,
+                              const SelectionResolver& resolveSelection = {});
 
     /** Return an independent value copy, or nullopt when actorId is absent. */
     [[nodiscard]] std::optional<PersonalViewContext> snapshot(
@@ -160,6 +167,9 @@ public:
 
     /** Remove actorId; return false when it was already absent. */
     [[nodiscard]] bool remove(const std::string& actorId);
+
+    /** Retire only paths bound to this deleted root or resolved object identity. */
+    void retireObjectSelection(std::uintptr_t objectIdentity);
 
     [[nodiscard]] bool contains(const std::string& actorId) const;
     [[nodiscard]] std::size_t actorCount() const;
@@ -181,8 +191,16 @@ public:
 private:
     static void requireActorId(const std::string& actorId);
 
+    struct StoredContext
+    {
+        PersonalViewContext value;
+        std::unordered_map<std::string, SelectionIdentity> selections;
+    };
+    static StoredContext bindSelections(PersonalViewContext context,
+                                       const SelectionResolver& resolveSelection);
+
     mutable std::mutex _contextsMutex;
-    std::unordered_map<std::string, PersonalViewContext> _contexts;
+    std::unordered_map<std::string, StoredContext> _contexts;
     // The renderer mutex is process-wide in the implementation because all
     // stores project onto the same shared GUI renderer.
 };

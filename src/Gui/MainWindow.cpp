@@ -23,6 +23,7 @@
 
 #include <QActionGroup>
 #include <QApplication>
+#include <QEventLoop>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QClipboard>
@@ -65,11 +66,13 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <vector>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentHandle.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/ImagePlane.h>
@@ -93,6 +96,8 @@
 #include "BitmapFactory.h"
 #include "ComboView.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
+#include "GuiPythonGate.h"
 #include "DockWindowManager.h"
 #include "DocumentChangesWidget.h"
 #include "DownloadManager.h"
@@ -1132,6 +1137,8 @@ bool MainWindow::closeAllDocuments(bool close)
     bool checkModify = true;
     bool saveAll = false;
     int failedSaves = 0;
+    // H4: set to true when any new async lane save is submitted this pass.
+    bool anyNewPendingSave = false;
 
     // moves the active document to the front
     MDIView* activeView = this->activeWindow();
@@ -1150,10 +1157,16 @@ bool MainWindow::closeAllDocuments(bool close)
         if (!gdoc) {
             continue;
         }
+        // H4: skip documents whose async lane save is already in flight.
+        // scheduleSaveCommandCompletion will call window->close() when done.
+        if (gdoc->isPendingLaneClose()) {
+            continue;
+        }
         if (!gdoc->canClose(false)) {
             return false;
         }
-        if (!gdoc->isModified() || doc->testStatus(App::Document::PartialDoc)
+        if (gdoc->skipsSaveOnClose() || !gdoc->isModified()
+            || doc->testStatus(App::Document::PartialDoc)
             || doc->testStatus(App::Document::TempDoc)) {
             continue;
         }
@@ -1174,8 +1187,64 @@ bool MainWindow::closeAllDocuments(bool close)
             }
         }
 
-        if (save && !gdoc->save()) {
-            failedSaves++;
+        if (save) {
+            // B3: if the document has no file name, run Save As on the GUI thread
+            // before attempting any lane-level save.
+            if (!doc->isSaved()) {
+                // saveAs() shows a dialog. An admitted lane Save As sets the
+                // application-close pending flag and must not be judged by
+                // FileName, which the lane has not written yet (N9 / B3).
+                gdoc->saveAs(Document::PendingLaneCloseKind::Application);
+                if (gdoc->isPendingLaneClose()) {
+                    anyNewPendingSave = true;
+                    continue;
+                }
+                if (!doc->isSaved()) {
+                    failedSaves++;
+                    continue;
+                }
+                continue;
+            }
+            if (doc->executionLane()) {
+                // Submit async save. Completion re-issues the application close.
+                const auto outcome =
+                    submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                if (outcome.accepted()) {
+                    scheduleSaveCommandCompletion(
+                        doc->getName(),
+                        doc->executionHandle().identity(),
+                        outcome.commandId);
+                    gdoc->setPendingLaneCloseAfterSave(
+                        Document::PendingLaneCloseKind::Application);
+                    anyNewPendingSave = true;
+                    reportDocumentSaveAdmitted(*doc);
+                }
+                else {
+                    failedSaves++;
+                }
+            }
+            else {
+                if (!gdoc->save()) {
+                    failedSaves++;
+                }
+            }
+        }
+    }
+
+    // H4: if any async lane save was submitted this pass, defer the close.
+    // scheduleSaveCommandCompletion will call window->close() when each save
+    // completes, which retries closeAllDocuments.  No event-loop pump here.
+    if (anyNewPendingSave) {
+        return false;
+    }
+
+    // Also defer if a doc from a prior pass still has its pending-close flag
+    // (its save completion callback hasn't fired yet).
+    for (auto* doc : docs) {
+        if (auto* gdoc = Application::Instance->getDocument(doc)) {
+            if (gdoc->isPendingLaneClose()) {
+                return false;
+            }
         }
     }
 
@@ -2010,6 +2079,14 @@ void MainWindow::delayedStartup()
             // delayedStartup().
             Base::Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADGuiTest"));
             if (App::Application::Config()["ExitTests"] == "yes") {
+                if (qApp) {
+                    for (int pass = 0; pass < 200; ++pass) {
+                        qApp->processEvents(QEventLoop::AllEvents, 25);
+                        if (App::GetApplication().getDocuments().empty()) {
+                            break;
+                        }
+                    }
+                }
                 Base::Interpreter().runString(
                     "import sys\n"
                     "sys.exit(0 if test_result.wasSuccessful() else 1)\n"
@@ -2192,10 +2269,41 @@ void MainWindow::updateActions(bool delay)
 
 void MainWindow::_updateActions()
 {
+    bool presentationNeedsPump = false;
+    // Bounded presentation apply (~4 ms) so Coin/tree/property packets cannot
+    // monopolize the GUI event loop while a document lane is publishing.
+    if (Application::Instance) {
+        for (auto* appDocument : App::GetApplication().getDocuments()) {
+            if (auto* guiDocument = Application::Instance->getDocument(appDocument)) {
+                const auto pumpResult = guiDocument->pumpPresentationApply(4);
+                if (guiDocument->presentationApplyScheduler().hasStagingWork()
+                    || (pumpResult.slicesApplied > 0 && !pumpResult.stagingComplete)) {
+                    presentationNeedsPump = true;
+                }
+            }
+        }
+    }
+
+    // Drain deferred GUI Python admissions without blocking for the GIL.
+    if (GuiPythonGate::pumpQueuedCallbacks() > 0) {
+        presentationNeedsPump = true;
+    }
+
     if (isVisible() && d->actionUpdateDelay <= 0) {
         FC_LOG("update actions");
-        d->activityTimer->stop();
-        Application::Instance->commandManager().testActive();
+        // Keep the timer alive while presentation slices remain; stopping it
+        // would leave multi-slice applies stranded until the next user action.
+        if (!presentationNeedsPump) {
+            d->activityTimer->stop();
+        }
+        if (Application::Instance) {
+            Application::Instance->commandManager().testActive();
+        }
+    }
+    else if (presentationNeedsPump) {
+        if (!d->activityTimer->isActive() || d->activityTimer->interval() > 4) {
+            d->activityTimer->start(4);
+        }
     }
 
     d->actionUpdateDelay = 0;
@@ -2594,7 +2702,7 @@ void MainWindow::insertFromMimeData(const QMimeData* mimeData)
                 if (obj) {
                     obj->Label.setValue("PastedImage");
                     static_cast<Image::ImagePlane*>(obj)->ImageFile.setValue(tempPath.c_str());
-                    doc->recompute();
+                    requestDocumentRecompute(*doc);
                 }
             }
             catch (const Base::Exception& e) {
@@ -2787,16 +2895,14 @@ void MainWindow::changeEvent(QEvent* e)
         App::GetApplication().retranslateExportTypes();
     }
     else if (e->type() == QEvent::ActivationChange) {
-        static SbTime savedRealTimeInterval = SoDB::getRealTimeInterval();
+        static MainWindowInternal::RealTimeSensorPause realTimeSensor;
         if (isActiveWindow()) {
             QMdiSubWindow* mdi = d->mdiArea->currentSubWindow();
             setActiveSubWindow(mdi);
-            SoDB::enableRealTimeSensor(true);
-            SoDB::setRealTimeInterval(savedRealTimeInterval);
+            realTimeSensor.windowActivated();
         }
         else {
-            savedRealTimeInterval = SoDB::getRealTimeInterval();
-            SoDB::enableRealTimeSensor(false);
+            realTimeSensor.windowDeactivated();
         }
     }
     else {

@@ -40,6 +40,8 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Document.h"
+
+#include <App/DocumentWouldBlock.h>
 #include "PythonWrapper.h"
 #include "View3DInventorViewer.h"
 #include "ViewProviderDocumentObjectPy.h"
@@ -674,9 +676,29 @@ void ViewProviderFeaturePythonImp::attach(App::DocumentObject* pcObject)
     }
 }
 
+namespace
+{
+bool deferViewProviderPython(ViewProviderDocumentObject* viewProvider)
+{
+    if (!viewProvider) {
+        return !App::MainThreadSignalConfig::isMainThread();
+    }
+    if (auto* guiDocument = viewProvider->getDocument()) {
+        return guiDocument->deferLivePresentationUpdates();
+    }
+    return !App::MainThreadSignalConfig::isMainThread();
+}
+}  // namespace
+
 void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)
 {
     if (py_updateData.isNone()) {
+        return;
+    }
+    if (deferViewProviderPython(object)) {
+        if (auto* guiDocument = object ? object->getDocument() : nullptr) {
+            guiDocument->scheduleLivePresentationCatchUp();
+        }
         return;
     }
 
@@ -710,6 +732,18 @@ void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)
 void ViewProviderFeaturePythonImp::onChanged(const App::Property* prop)
 {
     if (py_onChanged.isNone()) {
+        return;
+    }
+    // Arch/Draft visibility hooks call FreeCADGui.getMainWindow() and edit
+    // Coin (SoGroup::removeChild of Separator nodes). Neither is legal off the
+    // GUI thread or while collaboration replay still holds the document lock.
+    if (deferViewProviderPython(object)) {
+        if (auto* guiDocument = object ? object->getDocument() : nullptr) {
+            if (prop == &object->Visibility) {
+                guiDocument->noteDeferredVisibilityChange(object);
+            }
+            guiDocument->scheduleLivePresentationCatchUp();
+        }
         return;
     }
 
@@ -1385,6 +1419,27 @@ bool ViewProviderFeaturePythonImp::getLinkedViewProvider(
         e.reportException();
     }
     return true;
+}
+
+ViewProviderFeaturePythonImp::ValueT ViewProviderFeaturePythonImp::supportsAsyncPresentation() const
+{
+    _FC_PY_CALL_CHECK(supportsAsyncPresentation, return (NotImplemented));
+    Base::PyGILStateLocker lock;
+    try {
+        Py::Tuple args(1);
+        args.setItem(0, Py::Object(object->getPyObject(), true));
+        Py::Boolean ok(Base::pyCall(py_supportsAsyncPresentation.ptr(), args.ptr()));
+        return ok ? Accepted : Rejected;
+    }
+    catch (Py::Exception&) {
+        if (PyErr_ExceptionMatches(PyExc_NotImplementedError)) {
+            PyErr_Clear();
+            return NotImplemented;
+        }
+        Base::PyException e;  // extract the Python error text
+        e.reportException();
+        return Rejected;
+    }
 }
 
 bool ViewProviderFeaturePythonImp::editProperty(const char* name)

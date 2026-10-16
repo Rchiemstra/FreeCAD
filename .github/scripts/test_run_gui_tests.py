@@ -1,17 +1,27 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Regression tests for the three GUI-runner false-green cases.
+"""Regression tests for GUI-runner false greens and hung modules.
 
 These tests do not start FreeCAD. They feed canned listing/run output into
 run_gui_tests.py the way pipelines 341-343, a missing-suite listing, and a
-zero-test class unit would.
+zero-test class unit would. Short fake commands verify live output and watchdog cleanup.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import os
+import subprocess
+import struct
+import sys
+import tempfile
+import time
 import unittest
+import zlib
+from pathlib import Path
+from unittest import mock
 
+import run_gui_tests as runner
 from run_gui_tests import (
     EXPECTED_GUI_SUITES,
     SKETCHER_GUI_CLASS_UNITS,
@@ -21,6 +31,7 @@ from run_gui_tests import (
     parse_final_outcome,
     parse_registered_tests,
     run_gui_modules,
+    run_and_capture,
     units_for_module,
 )
 
@@ -57,6 +68,119 @@ def _fake_freecad(per_unit: dict[str, tuple[int, str]], default=(0, _unittest_ou
 
 
 FULL_SUITES = EXPECTED_GUI_SUITES
+
+
+class ModuleWatchdogTests(unittest.TestCase):
+    def test_attach_denied_uses_bounded_parent_rerun_after_killing_original(self):
+        with subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        ) as original:
+            calls = []
+
+            def gdb_capture(args, timeout, *, interrupt=False):
+                calls.append(args)
+                if "-p" in args:
+                    self.assertIsNone(original.poll())
+                    return 1, "ptrace: Operation not permitted.\n"
+                self.assertIsNotNone(original.poll())
+                self.assertEqual(args[-3:], ["FreeCAD", "-t", "FakeGui"])
+                self.assertEqual(timeout, 0.2)
+                self.assertTrue(interrupt)
+                self.assertIn("thread apply all bt 30", args)
+                return 0, "#0 native_hang\n"
+
+            try:
+                with mock.patch(
+                    "run_gui_tests.shutil.which", return_value="/usr/bin/gdb"
+                ), mock.patch(
+                    "run_gui_tests._gdb_capture", side_effect=gdb_capture
+                ), contextlib.redirect_stdout(
+                    io.StringIO()
+                ):
+                    output = runner._timeout_backtrace(
+                        original, ["catchsegv", "stdbuf", "-oL", "FreeCAD", "-t", "FakeGui"], 0.2
+                    )
+                self.assertIn("#0 native_hang", output)
+                self.assertEqual(len(calls), 2)
+            finally:
+                runner._kill_process_group(original)
+
+    def test_output_is_streamed_before_exit_and_still_returned(self):
+        # The child cannot finish until the runner delivers its first line.
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            script = (
+                "import pathlib, time\n"
+                "print('first line', flush=True)\n"
+                f"release = pathlib.Path({str(release)!r})\n"
+                "deadline = time.monotonic() + 2\n"
+                "while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
+                "print('streamed' if release.exists() else 'buffered', flush=True)\n"
+            )
+
+            class LiveOutput(io.StringIO):
+                def write(self, value):
+                    if "first line" in value:
+                        release.touch()
+                    return super().write(value)
+
+            stdout = LiveOutput()
+            with contextlib.redirect_stdout(stdout):
+                rc, output = run_and_capture([sys.executable, "-c", script])
+            self.assertEqual(rc, 0)
+            self.assertEqual(output, "first line\nstreamed\n")
+            self.assertEqual(stdout.getvalue(), output)
+
+    def test_timeout_is_failure_even_after_ok_summary(self):
+        script = "import time; print('Ran 1 test\\nOK', flush=True); time.sleep(2)"
+        started = time.monotonic()
+        with mock.patch("run_gui_tests.shutil.which", return_value=None), mock.patch.dict(
+            os.environ, FREECAD_GUI_TEST_MODULE_TIMEOUT="0.2"
+        ):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                rc, output = run_and_capture([sys.executable, "-c", script, "FakeGui"])
+        self.assertEqual(rc, 124)
+        self.assertNotEqual(evaluate_unit_result(rc, output)[0], 0)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("TIMEOUT: FakeGui after 0.2 s", stdout.getvalue())
+
+    def test_timeout_without_summary_keeps_timeout_diagnosis(self):
+        rc, error = evaluate_unit_result(124, "TIMEOUT: FakeGui after 900 s\n")
+        self.assertEqual(rc, 124)
+        self.assertIn("timed out", error)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process groups and /proc")
+    def test_timeout_kills_children_including_when_leader_exits(self):
+        for new_group in (False, True):
+            with self.subTest(new_group=new_group):
+                with tempfile.TemporaryDirectory() as tmp:
+                    pidfile = Path(tmp) / "child.pid"
+                    script = (
+                        "import subprocess, sys, pathlib, time, os\n"
+                        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], preexec_fn=os.setpgrp if {new_group} else None)\n"
+                        f"pathlib.Path({str(pidfile)!r}).write_text(str(child.pid))\n"
+                        "print('child started', flush=True)\n"
+                        # Leader exits, but its child keeps stdout open.
+                    )
+                    with mock.patch(
+                        "run_gui_tests.shutil.which", return_value=None
+                    ), mock.patch.dict(os.environ, FREECAD_GUI_TEST_MODULE_TIMEOUT="0.2"):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            rc, _ = run_and_capture([sys.executable, "-c", script, "FakeGui"])
+                    pid = int(pidfile.read_text())
+                    status = Path(f"/proc/{pid}/stat")
+                    deadline = time.monotonic() + 1
+                    while True:
+                        try:
+                            if status.read_text().split()[2] == "Z":
+                                break
+                        except (FileNotFoundError, ProcessLookupError):
+                            break
+                        if time.monotonic() > deadline:
+                            os.kill(pid, 9)
+                            self.fail(f"child {pid} survived module timeout (rc={rc})")
+                        time.sleep(0.01)
+                    self.assertNotEqual(rc, 0)
 
 
 class ParseTests(unittest.TestCase):
@@ -276,6 +400,148 @@ class EndToEndFakeFreeCAD(unittest.TestCase):
             return 0, _ran(1)
 
         self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 4)
+
+
+def _build_fcrash(path: Path, frames: list[tuple[str, int]], *, code: int) -> None:
+    """Write a v1 .fcrash with the same layout as src/Base/CrashReporter/Format.h."""
+    strings = bytearray()
+    packed_frames = bytearray()
+    for module, offset in frames:
+        encoded = module.encode()
+        strings += struct.pack("<H", len(encoded)) + encoded
+        string_offset = len(strings) - (2 + len(encoded))
+        packed_frames += struct.pack("<QQII", 0x1000 + offset, offset, string_offset, 0)
+    frame_table = 128
+    string_table = frame_table + len(packed_frames)
+    file_size = string_table + len(strings) + 4
+    header = struct.pack(
+        "<IIQQqIIIIIIIIIIBBBBB",
+        0x52434346,
+        1,
+        0,
+        1,
+        0,
+        42,
+        code,
+        len(frames),
+        file_size,
+        0,
+        frame_table,
+        string_table,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        2,
+        1,
+        27,
+        1,
+        0,
+    )
+    if len(header) != 77:
+        raise AssertionError(len(header))
+    body = header + bytes(51) + bytes(packed_frames) + bytes(strings)
+    if len(body) != file_size - 4:
+        raise AssertionError((len(body), file_size))
+    path.write_bytes(body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF))
+
+
+def _capture_modules(run, **kwargs) -> tuple[int, str, str]:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        rc = run_gui_modules("FreeCAD", run=run, crash_helper=False, **kwargs)
+    return rc, stdout.getvalue(), stderr.getvalue()
+
+
+class CrashReportDiagnostics(unittest.TestCase):
+    def test_signal_death_prints_decoded_frames(self):
+        cases = ((-11, 11, "SIGSEGV"), (-6, 6, "SIGABRT"), (245, 11, "SIGSEGV"))
+        for child_rc, fault, fault_name in cases:
+            with self.subTest(rc=child_rc):
+                with tempfile.TemporaryDirectory() as tmp:
+                    directory = Path(tmp)
+                    _build_fcrash(
+                        directory / "crash-1-1.fcrash",
+                        [("libStale.so", 0x10)],
+                        code=fault,
+                    )
+
+                    def run(cmd, _rc=child_rc, _fault=fault, _dir=directory):
+                        if Path(cmd[0]).name == "gdb":
+                            return 0, "thread apply all bt"
+                        if cmd[-1] == "-t":
+                            return 0, _listing(*FULL_SUITES)
+                        if cmd[-1] == "GuiDocument":
+                            _build_fcrash(
+                                _dir / "crash-9-9.fcrash",
+                                [("libFreeCADApp.so", 0x1234)],
+                                code=_fault,
+                            )
+                            return _rc, ""
+                        return 0, _ran(1)
+
+                    def symbolize(module: str, offset: int) -> str | None:
+                        if module == "libFreeCADApp.so" and offset == 0x1234:
+                            return "App::Document::recompute at src/App/Document.cpp:10"
+                        return None
+
+                    def which(name: str) -> str | None:
+                        return "/usr/bin/gdb" if name == "gdb" else None
+
+                    with mock.patch("run_gui_tests.shutil.which", side_effect=which):
+                        rc, _stdout, stderr = _capture_modules(
+                            run,
+                            crash_reports_dir=directory,
+                            symbolize=symbolize,
+                        )
+                    self.assertEqual(rc, 1)
+                    self.assertIn(
+                        "#0 libFreeCADApp.so+0x1234 "
+                        "App::Document::recompute at src/App/Document.cpp:10",
+                        stderr,
+                    )
+                    self.assertIn(fault_name, stderr)
+                    self.assertNotIn("libStale.so", stderr)
+                    self.assertLess(
+                        stderr.index("libFreeCADApp.so+0x1234"),
+                        stderr.index("Re-running GuiDocument under gdb"),
+                    )
+
+    def test_signal_death_without_report_prints_one_line(self):
+        def run(cmd):
+            if Path(cmd[0]).name == "gdb":
+                return 0, "thread apply all bt"
+            if cmd[-1] == "-t":
+                return 0, _listing(*FULL_SUITES)
+            if cmd[-1] == "GuiDocument":
+                return -11, ""
+            return 0, _ran(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _stdout, stderr = _capture_modules(
+                run, crash_reports_dir=Path(tmp)
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stderr.count("No crash report (.fcrash) found."), 1)
+        self.assertLess(
+            stderr.index("No crash report (.fcrash) found."),
+            stderr.index("Re-running") if "Re-running" in stderr else len(stderr),
+        )
+
+    def test_clean_exit_prints_nothing_about_crash_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            _build_fcrash(directory / "crash-1-1.fcrash", [("libStale.so", 0x10)], code=11)
+
+            def run(cmd):
+                if cmd[-1] == "-t":
+                    return 0, _listing(*FULL_SUITES)
+                return 0, _ran(1)
+
+            rc, _stdout, stderr = _capture_modules(run, crash_reports_dir=directory)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Crash report", stderr)
+        self.assertNotIn("No crash report", stderr)
+        self.assertNotIn("libStale.so", stderr)
 
 
 if __name__ == "__main__":

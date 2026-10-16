@@ -184,9 +184,18 @@ void ViewProviderGeometryObject::updateData(const App::Property* prop)
              */
             App::Material defaultMaterial;
             auto material = geometry->getMaterialAppearance();
+            // operator== is true for any shared uuid, so a ShapeColor edit of
+            // that material still compares equal. Compare the visible fields or
+            // presentation catch-up restores the material and drops the edit.
+            const auto sameVisualAppearance = [](App::Material lhs, App::Material rhs) {
+                lhs.uuid.clear();
+                rhs.uuid.clear();
+                return lhs == rhs;
+            };
             if ((ShapeAppearance.getSize() == 1)
-                && (ShapeAppearance[0] == defaultMaterial || ShapeAppearance[0] == materialAppearance)
-                && (material != defaultMaterial)) {
+                && (sameVisualAppearance(ShapeAppearance[0], defaultMaterial)
+                    || sameVisualAppearance(ShapeAppearance[0], materialAppearance))
+                && !sameVisualAppearance(material, defaultMaterial)) {
                 ShapeAppearance.setValue(material);
                 materialAppearance = material;
             }
@@ -448,4 +457,18 @@ void ViewProviderGeometryObject::handleChangedPropertyName(
     else {
         ViewProviderDragger::handleChangedPropertyName(reader, TypeName, PropName);
     }
+}
+
+ViewProviderPresentationClassification ViewProviderGeometryObject::presentationClassification() const
+{
+    // Identity-only stubs are not pointer-free geometry adapters. Subclasses
+    // must override with a real buffer capture or stay Unsupported.
+    return ViewProviderPresentationClassification::Unsupported;
+}
+
+bool ViewProviderGeometryObject::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
+{
+    return false;
 }

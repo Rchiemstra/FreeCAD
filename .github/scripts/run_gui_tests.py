@@ -15,17 +15,29 @@ If FREECAD_EXEC is an executable path, it is used directly.
 
 This script returns 0 if all GUI modules run successfully. Otherwise it returns the last non-zero
 exit code.
+
+Output is streamed live. FREECAD_GUI_TEST_MODULE_TIMEOUT sets the per-module wall-clock budget
+(default 900 seconds). A timeout collects bounded gdb diagnostics, kills the process group, and
+fails the module with exit code 124.
 """
 
 from __future__ import annotations
 import re
+import codecs
+import math
+import selectors
+import signal
+import struct
 import sys
 import subprocess
 import os
 import shutil
+import tempfile
+import time
+import zlib
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-
 
 # Suites Woodpecker pipeline 336 actually completed. Extra registered Gui
 # names are allowed; missing any of these is a discovery miss, not a skip.
@@ -122,12 +134,18 @@ def _format_rc(rc: int) -> str:
     """Describe a FreeCAD child exit, including Python's negative signal codes.
 
     A SIGSEGV child becomes ``returncode == -11``; ``sys.exit(-11)`` is 245.
+    SIGABRT is ``-6``.
     """
     if rc < 0:
         return f"{rc} (killed by signal {-rc})"
     if rc == 245:
         return "245 (unsigned SIGSEGV / sys.exit(-11))"
     return str(rc)
+
+
+def _died_from_signal(rc: int) -> bool:
+    """True when the child was killed by a signal, including SIGABRT (-6)."""
+    return rc < 0 or rc == 245
 
 
 def _ensure_headless_gl() -> None:
@@ -147,19 +165,198 @@ def _with_crash_helper(cmd: list[str]) -> list[str]:
     return cmd
 
 
-def run_and_capture(cmd: list[str]) -> tuple[int, str]:
-    """Run `cmd` and return (returncode, combined stdout+stderr string).
+def _line_buffered(cmd: list[str]) -> list[str]:
+    """Force line-buffered FreeCAD stdout/stderr when piped (Docker CI)."""
+    stdbuf = shutil.which("stdbuf")
+    if stdbuf:
+        return [stdbuf, "-oL", "-eL", *cmd]
+    return cmd
 
-    If the executable is not found a return code of 127 is returned and a small error string is
-    provided as output to aid diagnosis.
+
+# A separate launcher avoids preexec_fn (unsafe if the runner ever has threads).
+# Linux preserves PR_SET_PTRACER across exec, allowing sibling gdb to attach
+# under Yama without CAP_SYS_PTRACE. Seccomp can still deny it; see the fallback.
+_PTRACE_LAUNCHER = """
+import ctypes, os, sys
+if sys.platform == 'linux':
+    ctypes.CDLL(None).prctl(0x59616d61, ctypes.c_ulong(-1), 0, 0, 0)
+try:
+    os.execvp(sys.argv[1], sys.argv[1:])
+except OSError as exc:
+    print(str(exc), flush=True)
+    sys.exit(127)
+"""
+
+
+def _module_timeout() -> float:
+    value = float(os.environ.get("FREECAD_GUI_TEST_MODULE_TIMEOUT", "900"))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("FREECAD_GUI_TEST_MODULE_TIMEOUT must be finite and positive")
+    return value
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    # Do this even when the leader has exited: grandchildren may own the pipe.
+    # gdb puts its inferior in another group in the same session. Kill those
+    # groups too, before gdb, so even a stuck debugger cannot leave an orphan
+    # holding our output pipe open.
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            pid = int(entry.name)
+            if os.getsid(pid) == proc.pid:
+                group = os.getpgid(pid)
+                if group != proc.pid:
+                    os.killpg(group, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            continue
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+def _gdb_capture(args: list[str], timeout: float, *, interrupt: bool = False) -> tuple[int, str]:
+    """Bound gdb itself, including symbol loading and an optional inferior run."""
+    with subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+        env={**os.environ, "DEBUGINFOD_URLS": ""},
+    ) as debugger:
+        try:
+            try:
+                output, _ = debugger.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if not interrupt:
+                    raise
+                # Signal both gdb and its inferior, so `run` returns to the
+                # subsequent `thread apply all bt`, even inside Docker.
+                os.killpg(debugger.pid, signal.SIGINT)
+                output, _ = debugger.communicate(timeout=60)
+            return debugger.returncode, output
+        except subprocess.TimeoutExpired:
+            _kill_process_group(debugger)
+            output, _ = debugger.communicate()
+            return 124, output + "\ngdb diagnostic timed out.\n"
+        finally:
+            _kill_process_group(debugger)
+
+
+def _gdb_commands() -> list[str]:
+    return [
+        "-ex",
+        "set pagination off",
+        "-ex",
+        "set confirm off",
+    ]
+
+
+def _gdb_stacks() -> list[str]:
+    return [
+        "-ex",
+        "thread apply all bt 30",
+        "-ex",
+        "thread 1",
+        "-ex",
+        "py-bt",  # Best effort: depends on installed Python gdb helpers.
+    ]
+
+
+def _timeout_backtrace(proc: subprocess.Popen, cmd: list[str], timeout: float) -> str:
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return "Cannot collect native backtraces: gdb is not installed.\n"
+    # catchsegv can leave a shell as the group leader. Find the real FreeCAD
+    # in that group rather than attaching to its wrapper.
+    pid = proc.pid
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            if (
+                os.getpgid(int(entry.name)) == proc.pid
+                and entry.joinpath("exe").resolve().name == "FreeCAD"
+            ):
+                pid = int(entry.name)
+                break
+        except (OSError, ValueError):
+            continue
+    _log(f"Collecting all-thread native backtraces with gdb (pid {pid}).")
+    _, output = _gdb_capture(
+        [gdb, "-batch", *_gdb_commands(), "-p", str(pid), *_gdb_stacks(), "-ex", "detach"],
+        60,
+    )
+    if re.search(r"^#0\s", output, re.MULTILINE):
+        return output
+    _log(output)
+    _log("gdb attach failed; killing the hung group and re-running once under gdb as parent.")
+    _kill_process_group(proc)
+    # Skip stdbuf/catchsegv: gdb must parent the actual executable, not a
+    # shell wrapper that forks it (and may not be an ELF executable at all).
+    native_cmd = cmd[-3:] if len(cmd) >= 3 and cmd[-2] == "-t" else cmd
+    _, output = _gdb_capture(
+        [gdb, "-batch", *_gdb_commands(), "-ex", "run", *_gdb_stacks(), "--args", *native_cmd],
+        timeout,
+        interrupt=True,
+    )
+    return output
+
+
+def run_and_capture(cmd: list[str]) -> tuple[int, str]:
+    """Stream combined output live, retain it, and bound the entire process group.
+
+    A silent child, a partial line, and a pipe held open by an orphan are all
+    covered by the same wall-clock deadline. Timeout is always exit code 124.
     """
     try:
-        proc = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+        timeout = _module_timeout()
+    except ValueError as exc:
+        output = f"Invalid FREECAD_GUI_TEST_MODULE_TIMEOUT: {exc}\n"
+        _log(output.rstrip())
+        return 2, output
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _PTRACE_LAUNCHER, *cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-        return proc.returncode, proc.stdout
-    except FileNotFoundError:
-        return 127, f"Executable not found: {cmd[0]}\n"
+    except OSError as exc:
+        output = f"Could not launch {cmd[0]}: {exc}\n"
+        _log(output.rstrip())
+        return 127, output
+    chunks: list[str] = []
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            while selector.get_map() or proc.poll() is None:
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    message = f"TIMEOUT: {cmd[-1]} after {timeout:g} s\n"
+                    _log(message.rstrip())
+                    chunks.append(message)
+                    trace = _timeout_backtrace(proc, cmd, timeout)
+                    _log(trace.rstrip())
+                    chunks.append(trace)
+                    return 124, "".join(chunks)
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    data = os.read(key.fd, 65536)
+                    text = decoder.decode(data, final=not data)
+                    chunks.append(text)
+                    # Flush every read, including partial lines; readline()
+                    # would block the watchdog on a child without a newline.
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    if not data:
+                        selector.unregister(key.fileobj)
+            return proc.wait(), "".join(chunks)
+    finally:
+        _kill_process_group(proc)
+        proc.stdout.close()
 
 
 def parse_registered_tests(output: str) -> list[str]:
@@ -256,7 +453,9 @@ def evaluate_unit_result(rc: int, output: str, *, mandatory: bool = False) -> tu
 
     ``mandatory`` suites must also execute at least one test that is not skipped.
     """
-    if rc < 0 or rc == 245:
+    if rc == 124:
+        return 124, "Module timed out; see watchdog backtraces above."
+    if _died_from_signal(rc):
         return 1, f"GUI child segfaulted ({_format_rc(rc)})."
     completed = parse_completed_test_count(output)
     if completed is None:
@@ -275,11 +474,370 @@ def evaluate_unit_result(rc: int, output: str, *, mandatory: bool = False) -> tu
     return 0, ""
 
 
+# fcrash v1, written from the signal handler. See src/Base/CrashReporter/Format.h.
+# Little-endian header is 128 bytes; the first 77 are the fields below.
+_FCRASH_MAGIC = 0x52434346  # 'FCCR'
+_FCRASH_HEADER = struct.Struct("<IIQQqIIIIIIIIIIBBBBB")
+_FCRASH_FRAME = struct.Struct("<QQII")
+_FCRASH_NO_STRING = 0xFFFFFFFF
+_SIGNAL_NAMES = {4: "SIGILL", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 11: "SIGSEGV"}
+
+# Printed by FreeCADCmd between markers so startup logs can be ignored.
+_CRASH_DECODE_PY = """
+import FreeCAD as App
+print("FCRASH_BEGIN")
+reports = App.getCrashReports()
+if not reports:
+    print("FCRASH_EMPTY")
+else:
+    for report in reports:
+        print("SYMBOLICATED %s" % int(bool(report.symbolicated)))
+        print("FAULT %s %s" % (report.fault_code, report.fault_name))
+        for frame in report.stack_frames:
+            offset = frame.module_offset
+            offset_text = "" if offset is None else format(int(offset), "x")
+            symbol = frame.symbol or ""
+            location = ""
+            if frame.file:
+                line = 0 if frame.line is None else int(frame.line)
+                location = "%s:%s" % (frame.file, line)
+            module = frame.module or ""
+            print("FRAME\\t%s\\t%s\\t%s\\t%s" % (offset_text, module, symbol, location))
+print("FCRASH_END")
+"""
+
+Symbolize = Callable[[str, int], str | None]
+
+
+def crash_report_search_roots() -> list[Path]:
+    """Directories that can contain a ``CrashReports`` folder for this process.
+
+    ``Application::initCrashReporter`` writes ``crash-<time>-<pid>.fcrash`` under
+    ``getUserAppDataDir() + "CrashReports"``. The FreeCAD and FreeCADCmd mains set
+    ``AppDataSkipVendor``, so on Linux that data dir is ``$FREECAD_USER_DATA`` when
+    set, else ``$FREECAD_USER_HOME``, else ``$XDG_DATA_HOME/FreeCAD`` (default
+    ``~/.local/share/FreeCAD``) plus ``v<major>-<minor>`` when the tree is versioned.
+    Searching the FreeCAD data root finds ``v27-1/CrashReports`` without hard-coding
+    the version.
+    """
+    data = os.environ.get("FREECAD_USER_DATA")
+    home = os.environ.get("FREECAD_USER_HOME")
+    if data:
+        roots = [Path(data)]
+    elif home:
+        roots = [Path(home)]
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME")
+        base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+        roots = [base / "FreeCAD"]
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        unique.append(root)
+    return unique
+
+
+def _fcrash_files_under(roots: Sequence[Path]) -> set[Path]:
+    found: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.fcrash"):
+            if path.is_file():
+                found.add(path.resolve())
+    return found
+
+
+def _string_at(table: bytes, offset: int) -> str | None:
+    if offset == _FCRASH_NO_STRING:
+        return None
+    if offset < 0 or offset + 2 > len(table):
+        raise ValueError(f"string offset {offset} is outside the string table")
+    (length,) = struct.unpack_from("<H", table, offset)
+    start = offset + 2
+    end = start + length
+    if length > 4096 or end > len(table):
+        raise ValueError(f"string at {offset} does not fit in the string table")
+    return table[start:end].decode("utf-8", "replace")
+
+
+def parse_fcrash(path: Path) -> dict:
+    """Parse one v1 ``.fcrash`` file into fault metadata and stack frames.
+
+    Each frame keeps the module path stored in the file (a full path on Linux)
+    and the module-relative offset. Symbolication is separate.
+    """
+    data = path.read_bytes()
+    if len(data) < _FCRASH_HEADER.size + 4:
+        raise ValueError(f"crash report is too small: {path}")
+    if len(data) > (1 << 20):
+        raise ValueError(f"crash report is larger than 1 MiB: {path}")
+    header = _FCRASH_HEADER.unpack_from(data, 0)
+    (
+        magic,
+        version,
+        fault_address,
+        _thread_id,
+        _timestamp,
+        process_id,
+        code,
+        frame_count,
+        file_size,
+        flags,
+        frame_table_offset,
+        string_table_offset,
+        _build_id,
+        _suffix,
+        _minidump,
+        _os_id,
+        _arch,
+        _major,
+        _minor,
+        _patch,
+    ) = header
+    if magic != _FCRASH_MAGIC:
+        raise ValueError(f"unexpected fcrash magic in {path}")
+    if version != 1:
+        raise ValueError(f"unsupported fcrash version {version} in {path}")
+    if file_size != len(data):
+        raise ValueError(f"fcrash size mismatch in {path}")
+    if frame_count > 128:
+        raise ValueError(f"fcrash frame count {frame_count} is too large")
+    frame_bytes = frame_count * _FCRASH_FRAME.size
+    if frame_table_offset + frame_bytes > string_table_offset:
+        raise ValueError(f"fcrash frame table does not fit in {path}")
+    if string_table_offset + 4 > file_size:
+        raise ValueError(f"fcrash string table does not fit in {path}")
+    checksum = struct.unpack_from("<I", data, file_size - 4)[0]
+    calculated = zlib.crc32(data[: file_size - 4]) & 0xFFFFFFFF
+    string_table = data[string_table_offset : file_size - 4]
+    frames: list[dict] = []
+    for index in range(frame_count):
+        raw_address, module_offset, module_string, _pad = _FCRASH_FRAME.unpack_from(
+            data, frame_table_offset + index * _FCRASH_FRAME.size
+        )
+        module = _string_at(string_table, module_string) or ""
+        frames.append(
+            {
+                "address": raw_address,
+                "offset": module_offset,
+                "module": module,
+            }
+        )
+    return {
+        "path": path,
+        "code": code,
+        "fault_address": fault_address,
+        "pid": process_id,
+        "partial": calculated != checksum or bool(flags & (1 << 1)),
+        "frames": frames,
+    }
+
+
+def _freecad_cmd(freecad_exec: str) -> str | None:
+    path = Path(freecad_exec)
+    candidates: list[Path] = []
+    if path.name.endswith("FreeCADCmd"):
+        candidates.append(path)
+    if path.name == "FreeCAD":
+        candidates.append(path.with_name("FreeCADCmd"))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("FreeCADCmd")
+
+
+def _symbols_from_freecad(freecad_exec: str, report_path: Path) -> dict[int, list[str]]:
+    """Ask FreeCADCmd to parse and symbolicate a copy of ``report_path``.
+
+    Startup scans ``$FREECAD_USER_DATA/CrashReports`` and moves the copy into
+    ``archive/``. The original file is left in place. Empty when FreeCADCmd is
+    missing or the report does not match this build (no symbolication).
+    """
+    cmd = _freecad_cmd(freecad_exec)
+    if not cmd:
+        return {}
+    try:
+        with tempfile.TemporaryDirectory(prefix="fc-crash-decode-") as tmp:
+            data_dir = Path(tmp)
+            dest_dir = data_dir / "CrashReports"
+            dest_dir.mkdir()
+            shutil.copy2(report_path, dest_dir / report_path.name)
+            script_path = data_dir / "decode_crash.py"
+            script_path.write_text(_CRASH_DECODE_PY, encoding="utf-8")
+            env = os.environ.copy()
+            env["FREECAD_USER_DATA"] = str(data_dir)
+            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            proc = subprocess.run(
+                [cmd, "-c", f"exec(open({str(script_path)!r}).read())"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                env=env,
+                timeout=120,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    text = proc.stdout or ""
+    begin = text.find("FCRASH_BEGIN")
+    end = text.find("FCRASH_END")
+    if begin < 0 or end < begin or "FCRASH_EMPTY" in text[begin:end]:
+        return {}
+    if "SYMBOLICATED 1" not in text[begin:end]:
+        return {}
+    symbols: dict[int, list[str]] = defaultdict(list)
+    for line in text[begin:end].splitlines():
+        if not line.startswith("FRAME\t"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5 or not parts[1]:
+            continue
+        try:
+            offset = int(parts[1], 16)
+        except ValueError:
+            continue
+        symbol = parts[3].strip()
+        location = parts[4].strip()
+        if not symbol and not location:
+            continue
+        rendered = symbol
+        if location:
+            rendered = f"{symbol} at {location}".strip()
+        symbols[offset].append(rendered)
+    return symbols
+
+
+def _symbolize_native(module: str, offset: int) -> str | None:
+    """Resolve ``module+offset`` with addr2line, then gdb, when the file exists."""
+    if not module or not Path(module).is_file():
+        return None
+    address = hex(offset)
+    addr2line = shutil.which("addr2line")
+    if addr2line:
+        proc = subprocess.run(
+            [addr2line, "-f", "-C", "-i", "-p", "-e", module, address],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        rendered = []
+        for line in (proc.stdout or "").splitlines():
+            text = line.strip()
+            if not text or text == "??" or text.startswith("?? ") or text.startswith("??:"):
+                continue
+            rendered.append(text)
+        if rendered:
+            return " / ".join(rendered)
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return None
+    proc = subprocess.run(
+        [gdb, "-batch", "-nx", "-ex", "set pagination off", "-ex", f"info line *{address}", module],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Line ") or " is in " in stripped:
+            return stripped
+    return None
+
+
+def format_crash_report(
+    path: Path,
+    *,
+    freecad_exec: str | None = None,
+    symbolize: Symbolize | None = None,
+) -> str:
+    """Return a readable backtrace for one ``.fcrash`` file.
+
+    Frames always include module + offset. Symbols come from the injected
+    ``symbolize`` callable, otherwise from FreeCAD's parser
+    (``App.getCrashReports`` via FreeCADCmd) and then addr2line or gdb.
+    """
+    parsed = parse_fcrash(path)
+    freecad_symbols: dict[int, list[str]] = {}
+    if symbolize is None and freecad_exec:
+        freecad_symbols = _symbols_from_freecad(freecad_exec, path)
+    name = _SIGNAL_NAMES.get(parsed["code"], "signal")
+    partial = " partial" if parsed["partial"] else ""
+    count = len(parsed["frames"])
+    noun = "frame" if count == 1 else "frames"
+    lines = [
+        (
+            f"Crash report {parsed['path']}: {name} ({parsed['code']}) "
+            f"pid={parsed['pid']}{partial}, {count} {noun}"
+        )
+    ]
+    for index, frame in enumerate(parsed["frames"]):
+        module = frame["module"] or "?"
+        line = f"#{index} {module}+0x{frame['offset']:x}"
+        symbol: str | None = None
+        if symbolize is not None:
+            symbol = symbolize(module, frame["offset"])
+        else:
+            queued = freecad_symbols.get(frame["offset"])
+            if queued:
+                symbol = queued.pop(0)
+            if not symbol:
+                symbol = _symbolize_native(module, frame["offset"])
+        if symbol:
+            line = f"{line} {symbol}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _emit_crash_reports(
+    roots: Sequence[Path],
+    before: set[Path],
+    *,
+    freecad_exec: str,
+    symbolize: Symbolize | None,
+) -> None:
+    new_files = sorted(_fcrash_files_under(roots) - before)
+    if not new_files:
+        _log("No crash report (.fcrash) found.", error=True)
+        return
+    for path in new_files:
+        try:
+            text = format_crash_report(path, freecad_exec=freecad_exec, symbolize=symbolize)
+        except (OSError, ValueError, struct.error, subprocess.TimeoutExpired) as exc:
+            text = f"Could not decode crash report {path}: {exc}"
+        _log(text, error=True)
+
+
 def _rerun_under_gdb(freecad_exec: str, unit: str, run: RunCommand) -> str:
     gdb = shutil.which("gdb")
     if not gdb:
         return ""
     _log(f"Re-running {unit} under gdb for a backtrace.", error=True)
+    if run is run_and_capture:
+        _, output = _gdb_capture(
+            [
+                gdb,
+                "-batch",
+                *_gdb_commands(),
+                "-ex",
+                "run",
+                *_gdb_stacks(),
+                "--args",
+                freecad_exec,
+                "-t",
+                unit,
+            ],
+            _module_timeout(),
+            interrupt=True,
+        )
+        return output
     _, gdb_out = run(
         [
             gdb,
@@ -306,6 +864,8 @@ def run_gui_modules(
     run: RunCommand = run_and_capture,
     expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
     crash_helper: bool = True,
+    crash_reports_dir: Path | None = None,
+    symbolize: Symbolize | None = None,
 ) -> int:
     """Discover GUI suites and run them. Non-zero means the e2e gate failed."""
     listing_rc, listing_out = run([freecad_exec, "-t"])
@@ -314,7 +874,8 @@ def run_gui_modules(
             f"Warning: listing tests returned exit code {_format_rc(listing_rc)}.",
             error=True,
         )
-        _log(listing_out, error=True)
+        if run is not run_and_capture:
+            _log(listing_out, error=True)
     disc_rc, gui_tests, disc_err = discover_gui_suites(
         listing_rc, listing_out, expected_suites
     )
@@ -326,6 +887,9 @@ def run_gui_modules(
     for t in gui_tests:
         _log(f"  {t}")
 
+    report_roots = (
+        [crash_reports_dir] if crash_reports_dir is not None else crash_report_search_roots()
+    )
     last_rc = 0
     for mod in gui_tests:
         units = units_for_module(mod)
@@ -335,17 +899,25 @@ def run_gui_modules(
             )
         for unit in units:
             _log(f"\nRunning GUI tests for module: {unit}")
-            cmd = [freecad_exec, "-t", unit]
+            before_reports = _fcrash_files_under(report_roots)
+            cmd = _line_buffered([freecad_exec, "-t", unit])
             rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
-            _log(out)
+            if run is not run_and_capture:
+                _log(out)
             eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in expected_suites)
             if eval_rc != 0:
                 _log(f"Module {unit}: {eval_err}", error=True)
                 last_rc = eval_rc
-                if rc < 0 or rc == 245:
+                if _died_from_signal(rc):
                     _log(
                         f"Stopping after {unit}: FreeCAD GUI child segfaulted.",
                         error=True,
+                    )
+                    _emit_crash_reports(
+                        report_roots,
+                        before_reports,
+                        freecad_exec=freecad_exec,
+                        symbolize=symbolize,
                     )
                     gdb_out = _rerun_under_gdb(freecad_exec, unit, run)
                     if gdb_out:

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import os
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
@@ -25,7 +26,7 @@ class DrawViewImageTest(unittest.TestCase):
         img.ImageFile = imageFileSpec
         self.page.addView(img)
 
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         self.assertTrue("Up-to-date" in img.State)
 

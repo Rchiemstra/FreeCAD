@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 from PySide import QtCore
@@ -26,7 +27,7 @@ class DrawViewSectionTest(unittest.TestCase):
         self.view.Rotation = 0.0
         self.view.X = 30.0
         self.view.Y = 150.0
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         #wait for threads to complete before checking result
         loop = QtCore.QEventLoop()
@@ -42,7 +43,11 @@ class DrawViewSectionTest(unittest.TestCase):
 
     def tearDown(self):
         print("DrawViewSection test: finished")
-        FreeCAD.closeDocument("TDSection")
+        if "TDSection" in FreeCAD.listDocuments():
+            if getattr(FreeCAD, "GuiUp", False):
+                close_document(FreeCAD.getDocument("TDSection"))
+            else:
+                FreeCAD.closeDocument("TDSection")
 
     def testMakeDrawViewSection(self):
         """Tests if a DrawViewSection can be added to page"""
@@ -56,7 +61,7 @@ class DrawViewSectionTest(unittest.TestCase):
         section.SectionNormal = (0.0, 1.0, 0.0)
         section.SectionOrigin = (5.0, 5.0, 5.0)
         print("DrawViewSection test: section created")
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         #wait for threads to complete before checking result
         loop = QtCore.QEventLoop()

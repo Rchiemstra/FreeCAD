@@ -914,9 +914,28 @@ class _Site(ArchIFC.IfcProduct):
         self.computeAreas(obj)
 
         if FreeCAD.GuiUp:
+            from draftutils.gui_utils import on_gui_thread
+
+            if on_gui_thread():
+                self._updateTerrainSwitches(obj)
+            else:
+                # execute() runs on the document execution lane, but ViewObject
+                # is GUI-thread only: queue the display update to the GUI thread.
+                from PySide import QtCore
+
+                QtCore.QTimer.singleShot(
+                    0,
+                    QtCore.QCoreApplication.instance(),
+                    lambda: self._updateTerrainSwitches(obj),
+                )
+
+    def _updateTerrainSwitches(self, obj):
+        try:
             vobj = obj.ViewObject
-            if vobj.Proxy is not None:
-                vobj.Proxy.updateDisplaymodeTerrainSwitches(vobj)
+        except ReferenceError:
+            return  # deleted before the queued GUI update ran
+        if vobj and vobj.Proxy is not None:
+            vobj.Proxy.updateDisplaymodeTerrainSwitches(vobj)
 
     def onBeforeChange(self, obj, prop):
         ArchComponent.Component.onBeforeChange(self, obj, prop)

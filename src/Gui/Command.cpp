@@ -26,6 +26,7 @@
 #include <xercesc/util/XMLException.hpp>
 #include <xercesc/util/XMLString.hpp>
 #include <sstream>
+#include <string_view>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
@@ -47,6 +48,7 @@
 
 #include "Command.h"
 #include "Action.h"
+#include "DocumentExecutionIngress.h"
 #include "App/Application.h"
 #include "Application.h"
 #include "BitmapFactory.h"
@@ -542,6 +544,21 @@ void Command::_invoke(int id, bool disablelog)
     }
     catch (Base::AbortException&) {
     }
+    catch (const Base::RuntimeError& e) {
+        // M1: absorb transaction-control failures only while notifications are
+        // replaying. A prepared-commit error is not replay and must stay visible.
+        const auto* active = App::GetApplication().getActiveDocument();
+        if (active && active->collaborationNotificationsReplaying()) {
+            FC_WARN("Command '" << sName
+                                << "' attempted transaction control during notification replay: "
+                                << e.what());
+        }
+        else {
+            e.reportException();
+            QMessageBox::critical(
+                Gui::getMainWindow(), QObject::tr("Exception"), QLatin1String(e.what()));
+        }
+    }
     catch (Base::Exception& e) {
         e.reportException();
         // Pop-up a dialog for FreeCAD-specific exceptions
@@ -587,6 +604,21 @@ void Command::testActive()
         }
     }
 
+    // isActive() runs from the action-update timer, so an exception from it
+    // would propagate through Qt. Treat the command as inactive this round.
+    const auto safeIsActive = [](Command& cmd) {
+        try {
+            return cmd.isActive();
+        }
+        catch (const Base::Exception& e) {
+            FC_LOG("Command " << cmd.getName() << " isActive() failed: " << e.what());
+        }
+        catch (const std::exception& e) {
+            FC_LOG("Command " << cmd.getName() << " isActive() failed: " << e.what());
+        }
+        return false;
+    };
+
     auto pcAction = qobject_cast<Gui::ActionGroup*>(_pcAction);
     if (pcAction) {
         Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
@@ -598,12 +630,12 @@ void Command::testActive()
             }
             Command* cmd = rcCmdMgr.getCommandByName(name);
             if (cmd) {
-                action->setEnabled(cmd->isActive());
+                action->setEnabled(safeIsActive(*cmd));
             }
         }
     }
 
-    bool bActive = isActive();
+    bool bActive = safeIsActive(*this);
     _pcAction->setEnabled(bActive);
 }
 
@@ -722,6 +754,10 @@ int Command::openCommand(std::string name)
 int Command::openActiveDocumentCommand(App::TransactionName name, int tid)
 {
     if (Gui::Document* guidoc = getGuiApplication()->activeDocument()) {
+        if (guidoc->getDocument()->collaborationNotificationsReplaying()) {
+            FC_WARN("Ignoring openCommand while collaboration notifications replay");
+            return 0;
+        }
         return guidoc->getDocument()->setActiveTransaction(name, tid);
     }
     return 0;
@@ -745,9 +781,15 @@ void Command::commitCommand()
 }
 void Command::commitCommand(int tid)
 {
-    if (tid != App::NullTransaction) {
-        App::GetApplication().commitTransaction(tid);
+    if (tid == App::NullTransaction) {
+        return;
     }
+    if (auto* doc = App::GetApplication().getActiveDocument();
+        doc && doc->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring commitCommand while collaboration notifications replay");
+        return;
+    }
+    App::GetApplication().commitTransaction(tid);
 }
 void Command::abortCommand()
 {
@@ -756,9 +798,15 @@ void Command::abortCommand()
 }
 void Command::abortCommand(int tid)
 {
-    if (tid != App::NullTransaction) {
-        App::GetApplication().abortTransaction(tid);
+    if (tid == App::NullTransaction) {
+        return;
     }
+    if (auto* doc = App::GetApplication().getActiveDocument();
+        doc && doc->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring abortCommand while collaboration notifications replay");
+        return;
+    }
+    App::GetApplication().abortTransaction(tid);
 }
 int Command::transactionID() const
 {
@@ -805,6 +853,9 @@ void Command::printPyCaller()
     if (!FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
         return;
     }
+    if (Base::isPythonFrameInspectionUnsafe()) {
+        return;
+    }
     PyFrameObject* frame = PyEval_GetFrame();
     if (!frame) {
         return;
@@ -815,9 +866,9 @@ void Command::printPyCaller()
     printCaller(file ? file : "<no file>", line);
 #else
     PyCodeObject* code = PyFrame_GetCode(frame);
-    const char* file = PyUnicode_AsUTF8(code->co_filename);
+    const char* file = code ? PyUnicode_AsUTF8(code->co_filename) : nullptr;
     printCaller(file ? file : "<no file>", line);
-    Py_DECREF(code);
+    Py_XDECREF(code);
 #endif
 }
 
@@ -1040,8 +1091,11 @@ const std::string Command::strToPython(const char* Str)
 /// Updates the (active) document (propagate changes)
 void Command::updateActive()
 {
-    WaitCursor wc;
-    doCommand(App, "App.ActiveDocument.recompute()");
+    if (auto* active = Application::Instance->activeDocument()) {
+        if (auto* document = active->getDocument()) {
+            requestDocumentRecompute(*document);
+        }
+    }
 }
 
 bool Command::isActiveObjectValid()
@@ -1388,9 +1442,10 @@ void MacroCommand::activated(int iMsg)
     }
     else {
         Application::Instance->macroManager()->run(MacroManager::File, fi.filePath().toUtf8());
-        // after macro run recalculate the document
-        if (Application::Instance->activeDocument()) {
-            Application::Instance->activeDocument()->getDocument()->recompute();
+        if (auto* active = Application::Instance->activeDocument()) {
+            if (auto* document = active->getDocument()) {
+                requestDocumentRecompute(*document);
+            }
         }
     }
 }

@@ -7,15 +7,21 @@ add_subdirectory(propertyeditor)
 add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
+        BodyMaterial.cpp
         CollaborationCompatibilityAdapter.cpp
+        CollaborationGuiTestHelpers.cpp
         CollaborationLinkReplayGuard.cpp
         CollaborationAuthorityRemoval.cpp
         CollaborationDomainIntegration.cpp
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
         PersonalViewContext.cpp
+        PropertyEditorTransaction.cpp
         SharedPresentationCoordinator.cpp
+        DocumentPresentationCache.cpp
         DocumentRecovery.cpp
+        GuiPythonGate.cpp
+        UpdateGuiThread.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp
         StyleParameters/DiagnosticsCapture.h
@@ -43,6 +49,8 @@ add_executable(Gui_tests_run
         NavigationStylePinchTest.cpp
         NavigationStyleWheelTest.cpp
         SelectionTest.cpp
+        SelectionPythonThread.cpp
+        SelectionRecomputeDeletion.cpp
         SoMouseWheelEventTest.cpp
 )
 
@@ -52,6 +60,8 @@ setup_qt_test(TranslatorLocale)
 setup_qt_test(InputField)
 setup_qt_test(QuantitySpinBox)
 setup_qt_test(NumericLocaleConsumers)
+
+target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main

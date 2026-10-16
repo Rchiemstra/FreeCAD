@@ -43,7 +43,7 @@
 #include "EditDeltaPositionDialog.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
-
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 using namespace SketcherGui;
 
 namespace
@@ -195,7 +195,7 @@ int EditDeltaPositionDialog::exec(bool atCursor)
 
     QObject::connect(buttonBox, &QDialogButtonBox::rejected, [&]() {
         Gui::Command::abortCommand(transactionID);
-        sketch->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*sketch);
         dlg.reject();
     });
 

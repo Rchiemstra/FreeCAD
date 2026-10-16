@@ -24,6 +24,7 @@
 #pragma once
 
 #include <Base/Persistence.h>
+#include <QByteArray>
 #include <QUrl>
 
 class QImage;
@@ -41,6 +42,8 @@ public:
     void setViewer(View3DInventorViewer*);
     void setSize(int);
     void setFileName(const char*);
+    /// Render the thumbnail now; must run on the viewer's (GUI) thread.
+    void capture();
 
     /** @name I/O of the document */
     //@{
@@ -59,6 +62,8 @@ private:
     QUrl uri;
     View3DInventorViewer* viewer {nullptr};
     int size;
+    QByteArray rendered;
+    QByteArray fallback;
 };
 
 }  // namespace Gui

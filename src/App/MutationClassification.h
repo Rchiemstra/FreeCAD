@@ -5,6 +5,7 @@
 #include "MutationKind.h"
 
 #include <FCGlobal.h>
+#include <Base/Exception.h>
 
 #include <mutex>
 #include <optional>
@@ -13,6 +14,10 @@
 
 namespace App
 {
+namespace Internal
+{
+class PreparedLabelReferenceUpdates;
+}
 
 class Document;
 class DocumentCommitCoordinator;
@@ -42,6 +47,54 @@ private:
 
     std::unique_lock<std::mutex> _lock;
 };
+
+/**
+ * Nonblocking reservation for idle live presentation refresh.
+ *
+ * A successful reservation keeps new mutation-target admission out until the
+ * scope ends, without holding the admission mutex across provider callbacks.
+ * Reservations may nest on the same thread, independently of mutation-target
+ * depths. Callers must defer refresh when acquired() is false.
+ */
+class AppExport LivePresentationRefreshScope final
+{
+public:
+    LivePresentationRefreshScope() noexcept;
+    LivePresentationRefreshScope(const LivePresentationRefreshScope&) = delete;
+    LivePresentationRefreshScope& operator=(const LivePresentationRefreshScope&) = delete;
+    ~LivePresentationRefreshScope() noexcept;
+
+    [[nodiscard]] bool acquired() const noexcept
+    {
+        return _acquired;
+    }
+
+private:
+    bool _acquired {false};
+};
+
+/** Admission refused before a prepared operation can start applying. */
+class AppExport LivePresentationRefreshInProgress final: public Base::RuntimeError
+{
+public:
+    explicit LivePresentationRefreshInProgress(bool deferrable);
+
+    [[nodiscard]] bool deferrable() const noexcept
+    {
+        return _deferrable;
+    }
+
+private:
+    bool _deferrable;
+};
+
+/**
+ * Wait for a foreign refresh with the GIL released. The caller must hold no
+ * document locks. Returns false on the GUI/refresh thread, where waiting would
+ * prevent the reservation from ending. A resumed commit must revalidate its
+ * retained prepared edit before attempting admission again.
+ */
+[[nodiscard]] AppExport bool waitForLivePresentationRefresh();
 
 /**
  * Unforgeable process-target ownership used by the native commit coordinator.
@@ -93,6 +146,14 @@ AppExport void beginAtomicPresentationMutationTarget(Document& document);
 AppExport void endAtomicPresentationMutationTarget(const Document& document) noexcept;
 AppExport void enforceAtomicPresentationMutationTarget(const Document& document);
 AppExport void enforceAtomicPresentationMutationTarget(const Document* document);
+/** True while a mutation target is bound to \p document in this process. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionHeldFor(
+    const Document& document) noexcept;
+/** True when admission targets \p document on a thread other than the caller. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionHeldByOtherThread(
+    const Document& document) noexcept;
+/** True while any document holds admission, i.e. enforcement may throw. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionActive() noexcept;
 
 /** Nest a read-only validation callback on the current mutation target. */
 AppExport void beginCollaborationReadOnlyMutationTarget(Document& document);
@@ -131,6 +192,7 @@ public:
 
 private:
     friend class DocumentCommitCoordinator;
+    friend class Internal::PreparedLabelReferenceUpdates;
 
     explicit CollaborationRevisionMutationGrant(
         const DocumentRevisionIndex& index) noexcept;

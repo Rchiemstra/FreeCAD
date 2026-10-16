@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from BOPTools import BOPFeatures
 from pivy import coin
+from Test.GuiRecompute import close_document, recompute_document, save_document_as
 
 
 class ColorPerFaceTest(unittest.TestCase):
@@ -18,11 +19,11 @@ class ColorPerFaceTest(unittest.TestCase):
         self.doc = App.newDocument()
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document(self.doc)
 
     def testBox(self):
         box = self.doc.addObject("Part::Box", "Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         box.ViewObject.DiffuseColor = [
             (1.0, 0.0, 0.0, 1.0),
@@ -34,10 +35,10 @@ class ColorPerFaceTest(unittest.TestCase):
         ]
 
         box.Visibility = False
-        self.doc.recompute()
+        recompute_document(self.doc)
 
-        self.doc.saveAs(self.fileName)
-        App.closeDocument(self.doc.Name)
+        save_document_as(self.doc, self.fileName)
+        close_document(self.doc)
 
         self.doc = App.openDocument(self.fileName)
         box = self.doc.Box
@@ -56,7 +57,7 @@ class ColorPerFaceTest(unittest.TestCase):
 
     def testBoxAndLink(self):
         box = self.doc.addObject("Part::Box", "Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         box.ViewObject.DiffuseColor = [
             (1.0, 0.0, 0.0, 1.0),
@@ -70,10 +71,10 @@ class ColorPerFaceTest(unittest.TestCase):
         link = self.doc.addObject("App::Link", "Link")
         link.setLink(box)
         box.Visibility = False
-        self.doc.recompute()
+        recompute_document(self.doc)
 
-        self.doc.saveAs(self.fileName)
-        App.closeDocument(self.doc.Name)
+        save_document_as(self.doc, self.fileName)
+        close_document(self.doc)
 
         self.doc = App.openDocument(self.fileName)
         box = self.doc.Box
@@ -95,7 +96,7 @@ class ColorPerFaceTest(unittest.TestCase):
         If color per face is set then changing the transparency must not revert it
         """
         box = self.doc.addObject("Part::Box", "Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         box.ViewObject.DiffuseColor = [
             (1.0, 0.0, 0.0, 1.0),
@@ -137,13 +138,13 @@ class ColorPerFaceTest(unittest.TestCase):
         cyl = self.doc.addObject("Part::Cylinder", "Cylinder")
         box.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
         cyl.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         bp = BOPFeatures.BOPFeatures(self.doc)
         fuse = bp.make_multi_fuse([box.Name, cyl.Name])
         self.assertEqual(fuse.TypeId, "Part::MultiFuse")
         fuse.Refine = False
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         sa = coin.SoSearchAction()
         sa.setType(coin.SoMaterialBinding.getClassTypeId())
@@ -174,18 +175,18 @@ class ColorPerFaceTest(unittest.TestCase):
         cyl = self.doc.addObject("Part::Cylinder", "Cylinder")
         box.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
         cyl.ViewObject.ShapeColor = (1.0, 0.0, 0.0, 1.0)
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         bp = BOPFeatures.BOPFeatures(self.doc)
         fuse = bp.make_multi_fuse([box.Name, cyl.Name])
         self.assertEqual(fuse.TypeId, "Part::MultiFuse")
         fuse.Refine = False
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         fuse.ViewObject.DiffuseColor = [(1.0, 0.0, 0.0, 1.0)] * 11
 
-        self.doc.saveAs(self.fileName)
-        App.closeDocument(self.doc.Name)
+        save_document_as(self.doc, self.fileName)
+        close_document(self.doc)
 
         self.doc = App.openDocument(self.fileName)
 

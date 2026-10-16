@@ -257,6 +257,62 @@ class ReuseAndOwnershipTests(unittest.TestCase):
 
 
 class MainRefusalTests(unittest.TestCase):
+    def test_build_flag_is_available(self):
+        args = launcher._parse_args(["--build"])
+        self.assertTrue(args.build)
+
+    def test_build_flag_runs_the_repository_build_script(self):
+        calls = []
+        original_run = launcher.subprocess.run
+        try:
+            launcher.subprocess.run = lambda command: calls.append(command) or type(
+                "Result", (), {"returncode": 0}
+            )()
+            code = launcher._build_freecad()
+        finally:
+            launcher.subprocess.run = original_run
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            calls,
+            [[launcher.sys.executable, str(REPO / "build_freecad.py")]],
+        )
+
+    def test_build_failure_is_returned_before_launch(self):
+        calls = []
+        originals = {
+            name: getattr(launcher, name)
+            for name in ("_build_freecad", "_default_freecad", "_start_freecad")
+        }
+        try:
+            launcher._build_freecad = lambda: calls.append("build") or 7
+            launcher._default_freecad = lambda: calls.append("discover")
+            launcher._start_freecad = lambda *a, **k: calls.append("launch")
+
+            code = launcher.main(["--build"])
+        finally:
+            for name, value in originals.items():
+                setattr(launcher, name, value)
+
+        self.assertEqual(code, 7)
+        self.assertEqual(calls, ["build"])
+
+    def test_build_happens_before_default_executable_discovery(self):
+        calls = []
+        original_build = launcher._build_freecad
+        original_default = launcher._default_freecad
+        try:
+            launcher._build_freecad = lambda: calls.append("build") or 0
+            launcher._default_freecad = lambda: calls.append("discover")
+
+            code = launcher.main(["--build"])
+        finally:
+            launcher._build_freecad = original_build
+            launcher._default_freecad = original_default
+
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, ["build", "discover"])
+
     def test_authenticated_isolated_flag_is_available(self):
         args = launcher._parse_args(["--authenticated-isolated"])
         self.assertTrue(args.authenticated_isolated)

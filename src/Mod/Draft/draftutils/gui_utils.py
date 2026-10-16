@@ -42,6 +42,8 @@ of the objects or the 3D view.
 import importlib
 import math
 import os
+import threading
+from collections import deque
 
 import FreeCAD as App
 from draftutils import params
@@ -58,6 +60,155 @@ if App.GuiUp:
     # from PySide import QtSvg  # for load_texture
 
 
+def on_gui_thread():
+    """Return True when the caller is on the Qt GUI thread.
+
+    Document recompute runs on the owner thread. ``FreeCADGui.getMainWindow``
+    and other QWidget APIs are illegal there.
+    """
+    try:
+        from PySide import QtCore
+    except Exception:
+        return False
+    app = QtCore.QCoreApplication.instance()
+    if app is None:
+        return False
+    return QtCore.QThread.currentThread() == app.thread()
+
+
+def gui_available():
+    """Whether presentation is available to this caller.
+
+    A document owner creates model objects with their default view providers.
+    Draft customization, selection, active-view queries and timers belong to
+    the main thread, even when the application has a GUI.
+    """
+    return App.GuiUp and on_gui_thread()
+
+
+# Retain callbacks and their factory arguments until Qt can install presentation.
+# They are process-local intent, never serialized into a document or a model proxy.
+_pending_gui_setups = set()
+_gui_setup_queues = {}
+_gui_setup_lock = threading.RLock()
+
+
+if App.GuiUp:
+    class _GuiSetup(QtCore.QObject):
+        """One retained FIFO and one GUI timer for each document identity."""
+        wake = QtCore.Signal()
+
+        def __init__(self, document):
+            super().__init__()
+            self.document = document
+            self.key = id(document)
+            self.callbacks = deque()
+            self.running = False
+            self.applying = False
+            self.timer = QtCore.QTimer(self)
+            self.timer.setSingleShot(True)
+            self.timer.timeout.connect(self.run)
+            self.moveToThread(QtCore.QCoreApplication.instance().thread())
+            self.wake.connect(self.run, QtCore.Qt.QueuedConnection)
+
+        @QtCore.Slot()
+        def run(self):
+            if self.running or self.document is None:
+                return
+            self.running = True
+            try:
+                while self.callbacks:
+                    readiness = self.document.getMutationReadiness()
+                    if readiness.get("poisoned") or readiness.get("quarantined"):
+                        self.finish()
+                        return
+                    if not Gui.tryRunPresentationCallback(self.apply, self.document):
+                        self.timer.start(10)
+                        return
+                    if self.callbacks:
+                        # A provider may still be awaiting attachment.
+                        self.timer.start(10)
+                        return
+                self.finish()
+            except ReferenceError:
+                self.finish()
+            except Exception:
+                import traceback
+                _err(traceback.format_exc())
+                self.finish()  # failed owner/admission cannot retain closures forever
+            finally:
+                self.running = False
+
+        def apply(self):
+            self.applying = True
+            try:
+                self.apply_pending()
+            finally:
+                self.applying = False
+
+        def apply_pending(self):
+            while self.callbacks:
+                obj, name, callback = self.callbacks[0]
+                if self.document.getObject(name) is not obj:
+                    self.callbacks.popleft()
+                    continue
+                if not obj.ViewObject:
+                    return
+                # Remove before invocation: reentrancy and failures run at most once.
+                self.callbacks.popleft()
+                try:
+                    callback()
+                except ReferenceError:
+                    pass
+                except Exception:
+                    import traceback
+                    _err(traceback.format_exc())
+
+        def finish(self):
+            self.timer.stop()
+            with _gui_setup_lock:
+                self.callbacks.clear()
+                self.document = None
+                _gui_setup_queues.pop(self.key, None)
+                _pending_gui_setups.discard(self)
+            self.deleteLater()
+
+
+def run_gui_setup(obj, callback):
+    """Apply presentation through targeted admission, preserving document FIFO order.
+
+    GUI callers run synchronously when admitted. Owner callers only enqueue;
+    their callbacks run on Qt's main thread after the document lane is idle.
+    Closing or a failed document drops retained presentation intents.
+    """
+    if not App.GuiUp:
+        return
+    document = obj.Document
+    with _gui_setup_lock:
+        key = id(document)
+        setup = _gui_setup_queues.get(key)
+        if setup is None:
+            setup = _GuiSetup(document)
+            _gui_setup_queues[key] = setup
+            _pending_gui_setups.add(setup)
+        setup.callbacks.append((obj, obj.Name, callback))
+    if on_gui_thread():
+        setup.run()
+    else:
+        setup.wake.emit()
+
+
+def defer_gui_setup(obj, callback):
+    """Return True if a GUI-only restore callback cannot run in this caller."""
+    if gui_available():
+        with _gui_setup_lock:
+            setup = _gui_setup_queues.get(id(obj.Document))
+            if setup is not None and setup.applying:
+                return False  # already inside this document's targeted reservation
+    run_gui_setup(obj, callback)
+    return True
+
+
 def get_3d_view():
     """Return the current 3D view.
 
@@ -67,6 +218,10 @@ def get_3d_view():
         The Active 3D View or `None`.
     """
     if not App.GuiUp:
+        return None
+    # Owner-thread recompute (Arch wall rebase via get_normal) must not call
+    # getMainWindow. Callers treat None as "no view direction available".
+    if not on_gui_thread():
         return None
 
     # FIXME The following two imports were added as part of PR4926
@@ -105,6 +260,8 @@ def autogroup(obj):
     obj: App::DocumentObject
         Any type of object that will be stored in the group.
     """
+    if not gui_available():
+        return None
 
     # check for required conditions for autogroup to work
     if not App.GuiUp:
@@ -342,6 +499,8 @@ def remove_hidden(objectslist):
         If the graphical interface is not loaded
         the returned list is just a copy of the input list.
     """
+    if not gui_available():
+        return objectslist[:]
     newlist = objectslist[:]
     for obj in objectslist:
         if obj.ViewObject:
@@ -370,6 +529,8 @@ def get_diffuse_color(objs):
     list of tuples
         The list will be empty if no valid object is found.
     """
+    if not gui_available():
+        return []
 
     def _get_color(obj):
         if hasattr(obj, "ColoredElements"):
@@ -469,6 +630,8 @@ def apply_current_style(objs):
     ----------
     objs: a single object or an iterable with objects.
     """
+    if not gui_available():
+        return None
     if not isinstance(objs, list):
         objs = [objs]
     anno_style = utils.get_default_annotation_style()
@@ -511,6 +674,10 @@ def restore_view_object(obj, vp_module, vp_class, format=True, format_ref=None):
         Defaults to `None`.
         Reference object to copy ViewObject properties from.
     """
+    if defer_gui_setup(
+        obj, lambda: restore_view_object(obj, vp_module, vp_class, format, format_ref)
+    ):
+        return None
     if not getattr(obj, "ViewObject", None):
         return
     vobj = obj.ViewObject
@@ -548,6 +715,8 @@ def format_object(target, origin=None, ignore_construction=False):
         Defaults to `False`.
         Set to `True` to ignore construction mode.
     """
+    if not gui_available():
+        return None
     if not target:
         return
     if not App.GuiUp:
@@ -653,7 +822,7 @@ def get_selection(gui=App.GuiUp):
 
         If the interface is not available, it returns `None`.
     """
-    if gui:
+    if gui and gui_available():
         return Gui.Selection.getSelection()
     return None
 
@@ -701,7 +870,7 @@ def get_selection_ex(gui=App.GuiUp):
     `SubObjects` and `SubElementNames` should be empty tuples
     if `HasSubObjects` is `False`.
     """
-    if gui:
+    if gui and gui_available():
         return Gui.Selection.getSelectionEx()
     return None
 
@@ -731,7 +900,7 @@ def select(objs=None, gui=App.GuiUp):
         This value can be set to `False` to simulate
         when the interface is not available.
     """
-    if gui:
+    if gui and gui_available():
         Gui.Selection.clearSelection()
         if objs is not None:
             if not isinstance(objs, list):
@@ -796,7 +965,7 @@ def load_texture(filename, size=None, gui=App.GuiUp):
         It returns `None` if the interface is not available,
         or if there is a problem creating the image.
     """
-    if gui:
+    if gui and gui_available():
         # from pivy import coin
         # from PySide import QtGui, QtSvg
         try:

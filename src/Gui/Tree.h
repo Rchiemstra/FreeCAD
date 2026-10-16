@@ -200,6 +200,7 @@ protected:
 
 private:
     void _updateStatus(bool delay = true);
+    void applyCommittedPresentationTreeReading();
 
     // Helpers for the two-stage "Select All" feature
     void selectGroupItems(const QTreeWidgetItem* group, bool recursive);

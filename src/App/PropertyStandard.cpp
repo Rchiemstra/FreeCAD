@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
+#include <Base/Tools.h>
 #include <algorithm>
 #include <set>
 #include <limits>
@@ -50,6 +52,7 @@
 #include "Application.h"
 #include "Document.h"
 #include "DocumentObject.h"
+#include "private/PreparedLabelReferenceUpdates.h"
 #include "Expression.h"
 #include "MaterialPy.h"
 #include "ObjectIdentifier.h"
@@ -1626,6 +1629,13 @@ void PropertyString::setValue(const char* newValue)
     std::string newValueStr = newValue;
     auto obj = freecad_cast<DocumentObject*>(getContainer());
     bool commit = false;
+    const int exceptionDepth = std::uncaught_exceptions();
+    Base::ScopeGuard renameFailure([&] {
+        if (obj && obj->getDocument() && this == &obj->Label
+            && std::uncaught_exceptions() > exceptionDepth) {
+            Internal::PreparedLabelReferenceUpdates::failed(*obj->getDocument());
+        }
+    });
 
     if (obj && this == &obj->Label) {
         propChanges = obj->onProposedLabelChange(newValueStr);
@@ -1633,7 +1643,8 @@ void PropertyString::setValue(const char* newValue)
             // OnProposedLabelChange has changed the new value to what the current value is
             return;
         }
-        if (!propChanges.empty() && obj->getDocument()->getBookedTransactionID() == 0) {
+        if (!propChanges.empty() && !obj->getDocument()->hasPendingTransaction()
+            && obj->getDocument()->getBookedTransactionID() == 0) {
             commit = true;
             std::ostringstream str;
             str << "Change " << obj->getNameInDocument() << ".Label";
@@ -1641,12 +1652,21 @@ void PropertyString::setValue(const char* newValue)
         }
     }
 
+    if (obj && obj->getDocument() && this == &obj->Label) {
+        for (auto& change : propChanges) {
+            Internal::PreparedLabelReferenceUpdates::admit(*obj->getDocument(), *change.first);
+        }
+        Internal::PreparedLabelReferenceUpdates::activate(*obj->getDocument());
+    }
     aboutToSetValue();
     _cValue = newValueStr;
     hasSetValue();
 
     for (auto& change : propChanges) {
-        change.first->Paste(*change.second);
+        if (!obj || !Internal::PreparedLabelReferenceUpdates::apply(
+                        *obj->getDocument(), *change.first, *change.second)) {
+            change.first->Paste(*change.second);
+        }
     }
 
     if (commit) {

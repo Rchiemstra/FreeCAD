@@ -132,11 +132,29 @@ bool Transaction::isEmpty() const
     return _Objects.empty();
 }
 
+void Transaction::prepareMergeInto(Transaction& parent)
+{
+    parent._Objects.get<1>().reserve(parent._Objects.size() + _Objects.size());
+    for (const auto& entry : _Objects) {
+        auto found = parent._Objects.get<1>().find(entry.first);
+        if (found != parent._Objects.get<1>().end()) {
+            found->second->_PropChangeMap.reserve(found->second->_PropChangeMap.size()
+                                                  + entry.second->_PropChangeMap.size());
+        }
+    }
+}
+
 void Transaction::mergeInto(Transaction& parent)
+{
+    mergeInto(parent, false);
+}
+
+void Transaction::mergeInto(Transaction& parent, bool retainCancelledObjects)
 {
     if (&parent == this) {
         return;
     }
+    prepareMergeInto(parent);
     auto& index = _Objects.get<0>();
     auto& parentIndex = parent._Objects.get<1>();
     for (auto entry = index.begin(); entry != index.end();) {
@@ -161,13 +179,12 @@ void Transaction::mergeInto(Transaction& parent)
                     && data.property;
             };
             for (auto prop = nested->_PropChangeMap.begin(); prop != nested->_PropChangeMap.end();) {
-                auto inserted = target->_PropChangeMap.emplace(prop->first, prop->second);
-                if (inserted.second) {
-                    // The parent had no snapshot of this property yet; hand it
-                    // the nested one. Remove it here without destroying it, so
-                    // ~TransactionObject() below does not also delete the
-                    // Property that the parent's copy now owns.
-                    prop = nested->_PropChangeMap.erase(prop);
+                auto existing = target->_PropChangeMap.find(prop->first);
+                if (existing == target->_PropChangeMap.end()) {
+                    // Transfer the preallocated node; final commitment must
+                    // not allocate property records after another document commits.
+                    auto transfer = prop++;
+                    target->_PropChangeMap.insert(nested->_PropChangeMap.extract(transfer));
                 }
                 else {
                     // The parent already holds a record for this property
@@ -190,9 +207,12 @@ void Transaction::mergeInto(Transaction& parent)
                     // spreadsheet recompute that clears a cell range lands
                     // here through removeDynamicProperty().
                     if (isValueSnapshot(prop->second)
-                        != isValueSnapshot(inserted.first->second)) {
+                        != isValueSnapshot(existing->second)) {
                         FC_LOG("mergeInto: property record kind mismatch on "
                                << prop->first << ", keeping the parent's");
+                    }
+                    if (prop->second.restoreSerializedStatus) {
+                        existing->second.restoreSerializedStatus = true;
                     }
                     ++prop;
                 }
@@ -215,14 +235,18 @@ void Transaction::mergeInto(Transaction& parent)
                 // nested record here would orphan the detached object.
                 if (target->status == TransactionObject::Del) {
                     // The parent added it and the nested transaction removed
-                    // it again: the merged step does neither, and nothing is
-                    // left to own the detached object. Destroy it exactly as
-                    // Transaction::addObjectNew() does for this pair inside a
-                    // single transaction.
+                    // it again: remove the parent's undo action. During
+                    // deferred replay the nested removal record must keep
+                    // owning the detached object until GUI cleanup finishes.
+                    // Ordinary merges still destroy it here.
                     const auto* object = entry->first;
                     parentIndex.erase(parentPos);
                     delete target;
                     if (!object->isAttachedToDocument()) {
+                        if (retainCancelledObjects) {
+                            ++entry;
+                            continue;
+                        }
                         if (object->isDerivedFrom<DocumentObject>()) {
                             // #0003323: suppress backlink teardown through
                             // dangling peers.
@@ -257,10 +281,8 @@ void Transaction::mergeInto(Transaction& parent)
             entry = index.erase(entry);
             continue;
         }
-        parent._Objects.push_back(*entry);
-        // Ownership moved with the record; drop it here without destroying it
-        // so ~Transaction() cannot free what the parent now owns.
-        entry = index.erase(entry);
+        auto transfer = entry++;
+        parent._Objects.get<0>().insert(parent._Objects.get<0>().end(), index.extract(transfer));
     }
 }
 
@@ -271,6 +293,34 @@ bool Transaction::hasObject(const TransactionalObject* Obj) const
 #else
     return !!_Objects.get<1>().contains(Obj);
 #endif
+}
+
+bool Transaction::recordsProperty(const TransactionalObject* object,
+                                  const char* propertyName) const
+{
+    if (!object || !propertyName || propertyName[0] == '\0') {
+        return false;
+    }
+    const auto& index = _Objects.get<1>();
+    const auto pos = index.find(object);
+    if (pos == index.end() || !pos->second) {
+        return false;
+    }
+    const std::string wanted(propertyName);
+    for (const auto& entry : pos->second->_PropChangeMap) {
+        const auto& data = entry.second;
+        if (data.propertyOrig && data.propertyOrig->getName()
+            && wanted == data.propertyOrig->getName()) {
+            return true;
+        }
+        if (!data.name.empty() && data.name == wanted) {
+            return true;
+        }
+        if (data.pName && wanted == data.pName) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Transaction::isObjectNew(const TransactionalObject* Obj) const
@@ -427,6 +477,18 @@ void Transaction::addObjectDel(const TransactionalObject* Obj)
     }
 }
 
+void Transaction::noteSerializedStatus(const TransactionalObject* Obj, const Property* Prop)
+{
+    if (!Obj || !Prop) {
+        return;
+    }
+    auto& index = _Objects.get<1>();
+    auto pos = index.find(Obj);
+    if (pos != index.end()) {
+        pos->second->noteSerializedStatus(Prop);
+    }
+}
+
 void Transaction::addObjectChange(const TransactionalObject* Obj, const Property* Prop)
 {
     auto& index = _Objects.get<1>();
@@ -487,9 +549,56 @@ void TransactionObject::applyChnChecked(Document& /*Doc*/,
     applyChnImpl(pcObj, true);
 }
 
+namespace
+{
+
+constexpr unsigned long serializedPropertyStatusMask()
+{
+    return (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+}
+
+void restoreSerializedStaticPropertyStatus(Property& live, const Property& snapshot)
+{
+    if (live.testStatus(Property::PropDynamic)) {
+        return;
+    }
+    const unsigned long liveStatus = live.getStatus();
+    const unsigned long snapshotStatus = snapshot.getStatus();
+    const unsigned long mask = serializedPropertyStatusMask();
+    if (((liveStatus ^ snapshotStatus) & mask) == 0) {
+        return;
+    }
+    // Keep runtime bits from the live property. Restoring the whole word would
+    // clear Touched, which Paste has just set.
+    const unsigned long merged = (liveStatus & ~mask) | (snapshotStatus & mask);
+    live.setStatusValue(merged);
+}
+
+}  // namespace
+
 void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateErrors)
 {
     if (status == New || status == Chn) {
+        if (auto* object = freecad_cast<DocumentObject*>(pcObj)) {
+            if (Document* document = object->getDocument()) {
+                for (auto& entry : _PropChangeMap) {
+                    const Property* original = entry.second.propertyOrig;
+                    // Dynamic entries can refer to retired cell caches. Their
+                    // saved schema has a name; never inspect the retired original
+                    // just to classify the entry (Copy strips PropDynamic).
+                    if (!original || !entry.second.property
+                        || !entry.second.name.empty()) {
+                        continue;
+                    }
+                    document->captureInverseTransactionProperty(
+                        object, original, entry.second.restoreSerializedStatus);
+                }
+            }
+        }
         // Property change order is not preserved, as it is recursive in nature
         for (auto& v : _PropChangeMap) {
             auto& data = v.second;
@@ -601,7 +710,18 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                     // transaction state resolve it without retaining a raw
                     // pointer and prevents a same-name replacement from being
                     // mistaken for the original property.
+                    // addDynamicProperty captured the inverse addition using
+                    // the allocated ID. Rebook it under the restored ID before
+                    // Paste can capture a second value entry for this property.
+                    auto* object = freecad_cast<DocumentObject*>(pcObj);
+                    auto* document = object ? object->getDocument() : nullptr;
+                    if (document) {
+                        document->addOrRemovePropertyOfObject(pcObj, prop, false);
+                    }
                     prop->_id = v.first;
+                    if (document) {
+                        document->addOrRemovePropertyOfObject(pcObj, prop, true);
+                    }
                     prop->setStatusValue(data.property->getStatus());
                 }
             }
@@ -621,6 +741,9 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
             // }
             try {
                 prop->Paste(*data.property);
+                if (data.restoreSerializedStatus) {
+                    restoreSerializedStaticPropertyStatus(*prop, *data.property);
+                }
             }
             catch (Base::Exception& e) {
                 if (propagateErrors) {
@@ -641,6 +764,17 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                 }
             }
         }
+    }
+}
+
+void TransactionObject::noteSerializedStatus(const Property* prop)
+{
+    if (!prop) {
+        return;
+    }
+    auto it = _PropChangeMap.find(prop->getID());
+    if (it != _PropChangeMap.end()) {
+        it->second.restoreSerializedStatus = true;
     }
 }
 

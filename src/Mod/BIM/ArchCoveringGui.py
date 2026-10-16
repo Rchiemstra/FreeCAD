@@ -9,6 +9,7 @@ import os
 import FreeCAD
 import Arch
 import ArchCovering
+import ArchCommands
 import ArchTessellation  # resolve_stagger() is there to avoid a circular import with ArchCovering
 
 if FreeCAD.GuiUp:
@@ -1751,7 +1752,7 @@ if FreeCAD.GuiUp:
                     doc.removeObject(self.template.buffer.Name)
                     self.template.destroy()
 
-                    doc.recompute()
+                    ArchCommands.recompute_document_gui_safe(doc)
                     doc.commitTransaction()
 
                     if self.chk_continue.isChecked():
@@ -1771,7 +1772,7 @@ if FreeCAD.GuiUp:
                     self._save_user_preferences()
                     doc.removeObject(self.template.buffer.Name)
                     self.template.destroy()
-                    doc.recompute()
+                    ArchCommands.recompute_document_gui_safe(doc)
 
             except Exception as e:
                 FreeCAD.ActiveDocument.abortTransaction()

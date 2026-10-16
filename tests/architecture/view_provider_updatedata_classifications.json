@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "description": "Optional per-row overrides for ViewProvider updateData inventory classifications. When absent, view_provider_updatedata_classifications.classify_provider() supplies Wave 3 defaults.",
+  "overrides": []
+}

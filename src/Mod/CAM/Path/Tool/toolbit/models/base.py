@@ -81,6 +81,9 @@ class ToolBit(Asset, ABC):
     asset_type: str = "toolbit"
     SHAPE_CLASS: Type[ToolBitShape]  # Abstract class attribute
 
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def __init__(
         self,
         tool_bit_shape: ToolBitShape,

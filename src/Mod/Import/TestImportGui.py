@@ -27,6 +27,7 @@ import unittest
 import FreeCAD as App
 import ImportGui
 from pivy import coin
+from Test.GuiRecompute import close_document, recompute_document
 
 
 class ExportImportTest(unittest.TestCase):
@@ -36,7 +37,10 @@ class ExportImportTest(unittest.TestCase):
         self.doc = App.newDocument()
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        if getattr(App, "GuiUp", False):
+            close_document(self.doc)
+        else:
+            App.closeDocument(self.doc.Name)
 
     def testSaveLoadStepFile(self):
         """
@@ -44,7 +48,7 @@ class ExportImportTest(unittest.TestCase):
         """
         part = self.doc.addObject("App::Part", "Part")
         box = part.newObject("Part::Box", "Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         box.ViewObject.DiffuseColor = [
             (1.0, 0.0, 0.0, 1.0),
@@ -59,6 +63,16 @@ class ExportImportTest(unittest.TestCase):
 
         self.doc.clearDocument()
         ImportGui.insert(name=self.fileName, docName=self.doc.Name, merge=False, useLinkGroup=True)
+        recompute_document(self.doc)
+        if getattr(App, "GuiUp", False):
+            import FreeCADGui
+            from PySide import QtCore
+
+            FreeCADGui.updateGui()
+            deadline = QtCore.QDeadlineTimer(5000)
+            while deadline.remainingTime() > 0:
+                QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                FreeCADGui.updateGui()
 
         part_features = list(filter(lambda x: x.isDerivedFrom("Part::Feature"), self.doc.Objects))
         self.assertEqual(len(part_features), 1)

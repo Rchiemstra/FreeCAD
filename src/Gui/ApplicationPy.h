@@ -89,6 +89,7 @@ public:
     static PyObject* sActivateView             (PyObject *self,PyObject *args);
     static PyObject* sGetDocument              (PyObject *self,PyObject *args);
     static PyObject* sEditDocument             (PyObject *self,PyObject *args);
+    static PyObject* sTryRunPresentationCallback(PyObject *self,PyObject *args);
     static PyObject* sStorePersonalViewContext (PyObject *self,PyObject *args);
     static PyObject* sGetPersonalViewContext   (PyObject *self,PyObject *args);
     static PyObject* sRemovePersonalViewContext(PyObject *self,PyObject *args);

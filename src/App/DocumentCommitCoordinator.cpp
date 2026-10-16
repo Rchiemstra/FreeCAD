@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "DocumentCommitCoordinator.h"
+#include "private/PreparedLabelReferenceUpdates.h"
+#include "NativeRecomputeErrors.h"
 
 #include "CollaborativeOperation.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
+#include "DocumentWouldBlock.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 #include "PreparedEdit.h"
+#include "private/DocumentP.h"
 
 #include <Base/Exception.h>
 
@@ -23,8 +28,38 @@
 #include <string_view>
 #include <type_traits>
 #include <typeinfo>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+namespace App::Internal
+{
+namespace
+{
+thread_local NativeRecomputeRequestCapture* active = nullptr;
+}
+
+NativeRecomputeRequestCapture::NativeRecomputeRequestCapture(
+    Document& document, NativeRecomputeRequests& requests)
+    : previous(active), document(document), requests(requests)
+{
+    active = this;
+}
+
+NativeRecomputeRequestCapture::~NativeRecomputeRequestCapture()
+{
+    active = previous;
+}
+
+void NativeRecomputeRequestCapture::record(const DocumentObject& object)
+{
+    for (auto* capture = active; capture; capture = capture->previous) {
+        if (object.getDocument() == &capture->document) {
+            capture->requests.insert(&object);
+        }
+    }
+}
+}
 
 namespace
 {
@@ -117,15 +152,17 @@ std::string pendingRecomputeDetail(App::Document& document, std::string message)
     return message;
 }
 
-// The plan pendingTransactionRecomputeTargets() returns is force-executed over
-// its whole out-list closure, and settling a member enforces recompute on
-// *its* in-list (Document::settleRecomputedFeature). A dependent left outside
+// The plan pendingTransactionRecomputeTargets() returns includes the link
+// graph around dirty work. Its derived pass executes dirty members and their
+// downstream dependents; settling a member enforces recompute on its in-list
+// (Document::settleRecomputedFeature). A dependent left outside
 // the plan therefore stays touched once the authoritative recompute finishes,
 // and the postcondition guard in commitOnDocumentThreadWithOptions() rejects
 // the commit for a leftover the plan itself created. Closing the seed set
 // under both link directions to a fixed point guarantees no link crosses the
 // boundary of the selection, so settling any member can only enforce another
-// member already in the plan.
+// member already in the plan. Clean upstream inputs are admitted to the
+// selection without being forced to execute.
 void closeRecomputeSelectionUnderLinkGraph(App::Document& document,
                                            std::vector<App::DocumentObject*> pending,
                                            std::unordered_set<App::DocumentObject*>& selected)
@@ -165,7 +202,9 @@ bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
 }
 
 std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
-    App::Document& document)
+    App::Document& document,
+    const App::Internal::NativeRecomputeErrors* baseline = nullptr,
+    const App::Internal::NativeRecomputeRequests* fresh = nullptr)
 {
     const auto objects = document.getObjects();
     std::unordered_set<App::DocumentObject*> selected;
@@ -173,8 +212,16 @@ std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
     selected.reserve(objects.size());
     for (auto* object : objects) {
         if (object
-            && (object->isTouched()
+            && (object->isTouched() || object->mustExecute()
+                || (fresh && fresh->contains(object))
                 || document.collaborationTransactionOwnsNewObject(*object))) {
+            // Only unchanged terminal errors may sit out this plan. Repeated
+            // touches and dirty-cell cache updates are fresh requests even when
+            // neither the touch bit nor the undo transaction changes.
+            if (baseline && baseline->contains(object)
+                && (!fresh || !fresh->contains(object))) {
+                continue;
+            }
             pending.push_back(object);
         }
     }
@@ -326,12 +373,12 @@ void DocumentCommitCoordinator::abortCompatibilityTransaction()
 
 bool DocumentCommitCoordinator::undoCompatibilityTransaction(const int transactionId)
 {
-    return _document.undoCompatibilityTransactionImpl(transactionId);
+    return Internal::PreparedLabelReferenceUpdates::replay(_document, true, transactionId, transactionId == 0);
 }
 
 bool DocumentCommitCoordinator::redoCompatibilityTransaction(const int transactionId)
 {
-    return _document.redoCompatibilityTransactionImpl(transactionId);
+    return Internal::PreparedLabelReferenceUpdates::replay(_document, false, transactionId, transactionId == 0);
 }
 
 void DocumentCommitCoordinator::clearCompatibilityTransactionHistory()
@@ -368,6 +415,22 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
 {
     auto rollback = _document.rollbackCollaborationTransaction();
     if (!rollback.restored || preservePendingRecompute || !_document.mustExecute()) {
+        return rollback;
+    }
+    // A terminal native error is the restored boundary, not unfinished work.
+    // Stabilizing it would retry the same failed work unnecessarily. A new
+    // stabilization transaction captures its own rollback snapshot, but an
+    // already terminal boundary can retain its exact error/dependency state.
+    try {
+        const auto errors = Internal::captureNativeRecomputeErrors(_document);
+        if (!errors.empty()
+            && Internal::pendingRecomputeMatchesNativeErrors(_document, errors)) {
+            return rollback;
+        }
+    }
+    catch (...) {
+        // The initial checked rollback already restored the boundary. A failed
+        // optional classification must not start another recovery transaction.
         return rollback;
     }
     auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
@@ -531,26 +594,31 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool retainUndoHistory,
     const bool nestInCallerTransaction)
 {
-    if (!MainThreadSignalConfig::hasHooks()) {
-        if (!_document.isCollaborationOwnerThread()) {
-            return makeResult(DocumentCommitStatus::Unsupported,
-                              edit,
-                              "off-owner collaboration commit requires a document-thread dispatcher");
-        }
+    const auto commitOnOwner = [&]() {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
                                                  nestInCallerTransaction);
+    };
+
+    if (_document.isCollaborationOwnerThread()) {
+        return commitOnOwner();
+    }
+    if (DocumentExecutionLane* lane = _document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions()",
+            "Document.commitEditAsync() / DocumentHandle::trySubmit()");
+        return lane->dispatchToOwner(commitOnOwner);
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return makeResult(DocumentCommitStatus::Unsupported,
+                          edit,
+                          "off-owner collaboration commit requires a document-thread dispatcher");
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThreadWithOptions(edit,
-                                                 requireDetachedPreparationSupport,
-                                                 structuralCompatibility,
-                                                 recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+        return commitOnOwner();
     }
 
     std::optional<DocumentCommitResult> result;
@@ -894,6 +962,33 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                   "one or more semantic revisions changed before commit",
                                   std::move(conflicts));
     }
+    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
+    try {
+        mutationTarget.reset(new CollaborationPreparedMutationTargetScope(_document));
+    }
+    catch (const LivePresentationRefreshInProgress& exception) {
+        auto result = makeResult(DocumentCommitStatus::Busy,
+                                 edit,
+                                 stageFailure("binding commit mutation target failed",
+                                              exception.what()));
+        // No transaction, pending recompute settlement or payload apply has
+        // started. All other Busy results remain terminal.
+        result.presentationAdmissionDeferred = exception.deferrable();
+        return result;
+    }
+    catch (const Base::Exception& exception) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          stageFailure("binding commit mutation target failed",
+                                       exception.what()));
+    }
+    catch (const std::exception& exception) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          stageFailure("binding commit mutation target failed",
+                                       exception.what()));
+    }
+
     // The eager recompute below is scoped to transaction-owned new objects
     // and work made pending by operation.apply(), plus downstream dependents.
     // Start only from a clean boundary so that scoped capture is complete.
@@ -913,28 +1008,47 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && preexistingPendingRecompute) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          "document has pending recompute work outside the prepared operation");
+        // Prepared edit sessions (requireDetachedPreparationSupport) must observe
+        // leftover mustExecute and fail closed. Compatibility and typed native
+        // RPC paths settle on the owner thread here so a caller-side recompute
+        // hop from another thread cannot race the lane boundary.
+        if (!requireDetachedPreparationSupport
+            && !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, Internal::captureNativeRecomputeErrors(_document))) {
+            try {
+                bool recomputeError = false;
+                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                }
+            }
+            catch (const Base::Exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+            catch (const std::exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+        }
+        if (_document.mustExecute()
+            && (requireDetachedPreparationSupport
+                || !Internal::pendingRecomputeMatchesNativeErrors(
+                    _document, Internal::captureNativeRecomputeErrors(_document)))) {
+            return makeResult(DocumentCommitStatus::Busy,
+                              edit,
+                              "document has pending recompute work outside the prepared operation");
+        }
     }
 
-    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
-    try {
-        mutationTarget.reset(new CollaborationPreparedMutationTargetScope(_document));
-    }
-    catch (const Base::Exception& exception) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          stageFailure("binding commit mutation target failed",
-                                       exception.what()));
-    }
-    catch (const std::exception& exception) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          stageFailure("binding commit mutation target failed",
-                                       exception.what()));
-    }
-
+    Internal::PreparedLabelReferenceUpdates labelReferenceUpdates(_document, retainUndoHistory);
     try {
         _document.beginCollaborationCommitNotificationBarrier();
     }
@@ -956,8 +1070,15 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool preservePendingRecomputeOnRollback =
         recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred
         && preexistingPendingRecompute;
-    const auto rollbackTransaction = [this, preservePendingRecomputeOnRollback]() noexcept {
-        return rollbackNativeCommitTransaction(preservePendingRecomputeOnRollback);
+    const auto rollbackTransaction = [this, preservePendingRecomputeOnRollback,
+                                      &labelReferenceUpdates]() noexcept {
+        auto result = rollbackNativeCommitTransaction(preservePendingRecomputeOnRollback);
+        if (!labelReferenceUpdates.rollback()) {
+            result.restored = false;
+            std::snprintf(result.diagnostic.data(), result.diagnostic.size(),
+                          "dependent label reference rollback failed");
+        }
+        return result;
     };
 
     bool cleanupRequired = true;
@@ -965,6 +1086,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         [this,
          priorSuppression,
          &rollbackTransaction,
+         &labelReferenceUpdates,
          &mutationTarget](bool* required) noexcept {
         if (!*required) {
             return;
@@ -975,6 +1097,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
         _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
         mutationTarget.reset();
+        labelReferenceUpdates.finish(false);
         _document.finishCollaborationCommitNotificationBarrier(false);
     };
     std::unique_ptr<bool, decltype(emergencyCleanup)> cleanupGuard(&cleanupRequired,
@@ -987,6 +1110,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         // A stable observer can synchronously resume unrelated document work.
         // Release the thread-local target before finish emits that event.
         mutationTarget.reset();
+        labelReferenceUpdates.finish(false);
         _document.finishCollaborationCommitNotificationBarrier(false);
     };
     const auto abortAndRestore = [&](DocumentCommitResult result) {
@@ -1026,7 +1150,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     };
 
     try {
-        const std::string transactionName = "Collaborative operation " + edit.operationId();
+        const auto label = edit.operation().transactionLabel();
+        const std::string transactionName = label.empty()
+            ? "Collaborative operation " + edit.operationId()
+            : std::string(label);
         if (openNativeCommitTransaction(transactionName, retainUndoHistory) == 0) {
             restoreSuppression();
             discardNotifications();
@@ -1052,6 +1179,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         abortRestoreAndRethrow("unknown failure while opening native transaction");
     }
 
+    // Native expression failures (for example a closed external source) are
+    // part of the pre-commit boundary. An exact rollback to that same error
+    // is repairable, rather than evidence of escaped Python Proxy state.
+    const auto preexistingNativeErrors = Internal::captureNativeRecomputeErrors(_document);
     std::unordered_set<App::DocumentObject*> preexistingObjects;
     for (auto* object : _document.getObjects()) {
         preexistingObjects.insert(object);
@@ -1093,29 +1224,49 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
 
         bool persistent = false;
-        for (auto* object : liveFailureTargets) {
-            if (!object || object->getDocument() != &_document
-                || !object->isAttachedToDocument()) {
-                persistent = true;
-                break;
-            }
-            const bool restoredClean =
-                object->isValid() && !object->isTouched() && !object->mustRecompute();
-            // Restored C++ document state does not need a live re-execute.
-            // FeaturePython Proxy state is not in the undo stack, so a clean
-            // restore can still fail when the probe stays armed.
-            if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
-                continue;
-            }
-            try {
-                if (_document._recomputeFeature(object) != 0) {
+        {
+            // Sheets re-execute their transient cell schema; let them do so
+            // while proving the rolled-back state, outside the transaction.
+            bool& verification = _document.d->collaborationRollbackVerification;
+            verification = true;
+            const auto endVerification = [](bool* active) noexcept {
+                *active = false;
+            };
+            std::unique_ptr<bool, decltype(endVerification)> verificationGuard(
+                &verification,
+                endVerification);
+            for (auto* object : liveFailureTargets) {
+                if (!object || object->getDocument() != &_document
+                    || !object->isAttachedToDocument()) {
                     persistent = true;
                     break;
                 }
-            }
-            catch (...) {
-                persistent = true;
-                break;
+                if (object->isError() && object->getPropertyByName("Proxy") == nullptr) {
+                    const auto baseline = preexistingNativeErrors.find(object);
+                    const char* error = _document.getErrorDescription(object);
+                    if (baseline != preexistingNativeErrors.end() && error
+                        && baseline->second == error) {
+                        continue;
+                    }
+                }
+                const bool restoredClean =
+                    object->isValid() && !object->isTouched() && !object->mustRecompute();
+                // Restored C++ document state does not need a live re-execute.
+                // FeaturePython Proxy state is not in the undo stack, so a clean
+                // restore can still fail when the probe stays armed.
+                if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
+                    continue;
+                }
+                try {
+                    if (_document._recomputeFeature(object) != 0) {
+                        persistent = true;
+                        break;
+                    }
+                }
+                catch (...) {
+                    persistent = true;
+                    break;
+                }
             }
         }
 
@@ -1132,7 +1283,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         return result;
     };
 
+    Internal::NativeRecomputeRequests freshRecomputeRequests;
     try {
+        Internal::NativeRecomputeRequestCapture capture(_document, freshRecomputeRequests);
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
             if (structuralCompatibility) {
@@ -1164,6 +1317,11 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     catch (...) {
         abortRestoreAndRethrow("unknown operation apply failure");
     }
+    if (labelReferenceUpdates.failed()) {
+        return abortAndRestore(makeResult(DocumentCommitStatus::ApplyFailed,
+                                          edit, "Label reference update failed"));
+    }
+
     if (!_document.hasPendingTransaction()) {
         _document.poisonCollaborationCommit(
             "prepared operation escaped its native transaction; rollback cannot be proven");
@@ -1178,7 +1336,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool recomputeHasError = false;
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager) {
         try {
-            auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
+            auto recomputeTargets = pendingTransactionRecomputeTargets(
+                _document,
+                requireDetachedPreparationSupport ? nullptr : &preexistingNativeErrors,
+                &freshRecomputeRequests);
             if (recomputeTargets.empty()) {
                 _document.finalizeEmptyDetachedRecompute();
             }
@@ -1226,7 +1387,28 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                                 detail.str()));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
-        && _document.mustExecute()) {
+        && !requireDetachedPreparationSupport) {
+        // A failed native recompute retains Touch as a retry hint. Consume
+        // that old hint before postflight only for the exact terminal errors
+        // nobody requested again during apply. Fresh requests must execute and
+        // have already failed above if their inputs remain unresolved.
+        for (auto* object : _document.getObjects()) {
+            const auto error = preexistingNativeErrors.find(object);
+            if (error == preexistingNativeErrors.end() || !object->isError()
+                || freshRecomputeRequests.contains(object)) {
+                continue;
+            }
+            const char* diagnostic = _document.getErrorDescription(object);
+            if (diagnostic && error->second == diagnostic && object->isTouched()) {
+                object->purgeTouched();
+            }
+        }
+    }
+    if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
+        && _document.mustExecute()
+        && (requireDetachedPreparationSupport
+            || !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, preexistingNativeErrors, &freshRecomputeRequests))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::RecomputeFailed,
             edit,
@@ -1279,7 +1461,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "postcondition attempted to mutate document state"));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
-        && _document.mustExecute()) {
+        && _document.mustExecute()
+        && (requireDetachedPreparationSupport
+            || !Internal::pendingRecomputeMatchesNativeErrors(
+                _document, preexistingNativeErrors, &freshRecomputeRequests))) {
         return abortAndRestore(makeResult(
             DocumentCommitStatus::PostconditionFailed,
             edit,
@@ -1309,6 +1494,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         auto observedStructuralEffects =
             _document.takeCollaborationObservedStructuralEffects();
         effects = declaredEffects;
+        if (labelReferenceUpdates.hasLocalUpdates()) {
+            effects.push_back({DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+        }
         effects.insert(effects.end(),
                        observedStructuralEffects.begin(),
                        observedStructuralEffects.end());
@@ -1354,6 +1542,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
 
     try {
+        labelReferenceUpdates.prepare();
         _document.prepareCollaborationCommitFinalization();
     }
     catch (const Base::Exception& exception) {
@@ -1461,6 +1650,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                               edit,
                                               "native transaction commit was refused"));
         }
+        labelReferenceUpdates.commit();
     }
     catch (...) {
         reservation->cancel();
@@ -1495,6 +1685,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "native transaction committed but semantic revision publication was denied");
         mutationTarget.reset();
         restoreSuppression();
+        labelReferenceUpdates.finish(true);
         _document.finishCollaborationCommitNotificationBarrier(true);
         cleanupRequired = false;
         return makeResult(
@@ -1509,6 +1700,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     // revision admission can enter the native-commit/publication interval.
     mutationTarget.reset();
     restoreSuppression();
+    labelReferenceUpdates.finish(true);
     _document.finishCollaborationCommitNotificationBarrier(true);
     cleanupRequired = false;
     return result;

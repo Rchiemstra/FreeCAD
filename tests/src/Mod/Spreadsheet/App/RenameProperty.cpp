@@ -78,3 +78,21 @@ TEST_F(SpreadsheetRenameProperty, renameProperty)
     EXPECT_EQ(cellContent, "=VarSet.NewName");
     EXPECT_EQ(propSpreadsheet->getValue(), value);
 }
+
+// A failed sheet recompute names the failing cells; "One or more cells failed
+// contains errors." left an agent guessing which formula to fix.
+TEST_F(SpreadsheetRenameProperty, recomputeErrorNamesTheFailingCell)
+{
+    sheet->setCell("B2", "=2+2");
+    sheet->setCell("A6", "=1/0");
+    doc->recompute();
+
+    const std::string status = sheet->getStatusString();
+    EXPECT_TRUE(sheet->isError());
+    EXPECT_NE(status.find("A6"), std::string::npos) << status;
+    EXPECT_NE(status.find("zero"), std::string::npos) << status;
+    EXPECT_EQ(status.find("B2"), std::string::npos) << status;
+
+    sheet->setCell("A6", "=3");
+    doc->recompute();
+}

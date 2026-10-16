@@ -1449,6 +1449,125 @@ def getParentPlacementIfNeeded(part):
     return Base.Placement()
 
 
+def _joint_axis_alignment(joint):
+    """Absolute cosine of the angle between the two joint Z axes, or None."""
+    if not isRefValid(joint.Reference1, 1) or not isRefValid(joint.Reference2, 1):
+        return None
+
+    plc1 = getJcsGlobalPlc(joint.Placement1, joint.Reference1)
+    plc2 = getJcsGlobalPlc(joint.Placement2, joint.Reference2)
+    z1 = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+    z2 = plc2.Rotation.multVec(App.Vector(0, 0, 1))
+    if z1.Length < 1e-12 or z2.Length < 1e-12:
+        return None
+
+    z1.normalize()
+    z2.normalize()
+    return abs(z1.dot(z2))
+
+
+# Solved connector origins and distances are measured in millimetres.
+JOINT_LINEAR_TOLERANCE_MM = 1e-4
+# Angular deviations from parallel/perpendicular are measured in radians.
+JOINT_ANGULAR_TOLERANCE_RAD = 1e-4
+
+
+def _joint_direction_cosines(plc1, plc2):
+    """Native Fixed/Planar residuals: I-Y dot J-X, I-Z dot J-X/Y."""
+    y1 = plc1.Rotation.multVec(App.Vector(0, 1, 0))
+    z1 = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+    x2 = plc2.Rotation.multVec(App.Vector(1, 0, 0))
+    y2 = plc2.Rotation.multVec(App.Vector(0, 1, 0))
+    return (y1.dot(x2), z1.dot(x2), z1.dot(y2))
+
+
+def jointRelationError(
+    joint,
+    linear_tolerance_mm=JOINT_LINEAR_TOLERANCE_MM,
+    angular_tolerance_rad=JOINT_ANGULAR_TOLERANCE_RAD,
+):
+    """Reason a checked solved joint does not hold, or None.
+
+    Check Fixed, planar Distance, Parallel and Perpendicular relations, since
+    the solver can discard any of their conflicting constraints as redundant.
+    Other distance geometries continue to use the native solver status.
+    """
+    jtype = getattr(joint, "JointType", "")
+    if not isRefValid(joint.Reference1, 1) or not isRefValid(joint.Reference2, 1):
+        return None
+    plc1 = getJcsGlobalPlc(joint.Placement1, joint.Reference1)
+    plc2 = getJcsGlobalPlc(joint.Placement2, joint.Reference2)
+    # A direction cosine constrained to zero is sin(deviation from pi/2).
+    cosine_tolerance = math.sin(angular_tolerance_rad)
+    if jtype == "Fixed":
+        if (plc2.Base - plc1.Base).Length > linear_tolerance_mm:
+            return "fixed coordinate system origins differ"
+        # FixedJoint::initializeGlobally constrains these three cosines to
+        # zero, allowing 180-degree reversals of any pair of connector axes.
+        if any(abs(value) > cosine_tolerance for value in _joint_direction_cosines(plc1, plc2)):
+            return "fixed coordinate system axes differ"
+        return None
+    if jtype == "Distance":
+        # Use the same planar classification and signed JCS-Z separation as
+        # AssemblyObject::makeMbdJointDistance (ASMTPlanarJoint::offset).
+        for ref in (joint.Reference1, joint.Reference2):
+            obj = getObject(ref)
+            element = getElementName(ref[1][0])
+            if obj is None or not element.startswith("Face"):
+                return None
+            face = obj.Shape.getElement(element)
+            if not isinstance(face.Surface, Part.Plane):
+                return None
+        axis = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+        actual = (plc2.Base - plc1.Base).dot(axis)
+        expected = joint.Distance.Value
+        if abs(actual - expected) > linear_tolerance_mm:
+            return "distance {:.6f} mm differs from {:.6f} mm".format(actual, expected)
+        # PlanarJoint constrains I-Z dot J-X/Y to zero. Both parallel and
+        # antiparallel plane normals satisfy those native constraints.
+        if any(abs(value) > cosine_tolerance for value in _joint_direction_cosines(plc1, plc2)[1:]):
+            return "planar distance axes are not parallel"
+        return None
+    alignment = _joint_axis_alignment(joint)
+    if alignment is None:
+        return None
+    if jtype == "Parallel" and math.acos(min(1.0, alignment)) > angular_tolerance_rad:
+        return "not parallel (alignment {:.6f})".format(alignment)
+    if jtype == "Perpendicular" and alignment > cosine_tolerance:
+        return "not perpendicular (alignment {:.6f})".format(alignment)
+    return None
+
+
+def violatedJointLabels(assembly):
+    """Labels of joints whose relation does not hold after a solve.
+
+    MbD can drop a conflicting constraint as redundant and still
+    report success. solve() then returns the conflicting-constraints code and
+    names these joints.
+    """
+    labels = []
+    connected = {}
+    # Joints already uses native getJoints() to exclude suppressed/deactivated,
+    # invalid and self-referencing joints. Use the native connectivity traversal
+    # (including rigid clusters) to match removeUnconnectedJoints() as well.
+    for joint in assembly.Joints:
+        parts = (getMovingPart(joint.Reference1), getMovingPart(joint.Reference2))
+        for part in parts:
+            if part not in connected:
+                connected[part] = assembly.isPartConnected(part)
+        if not all(connected[part] for part in parts):
+            continue
+        reason = jointRelationError(joint)
+        if not reason:
+            continue
+        label = joint.Label or joint.Name
+        App.Console.PrintWarning(
+            "Assembly solve: joint '{}' does not hold ({})\n".format(label, reason)
+        )
+        labels.append(label)
+    return labels
+
+
 def generatePropertySettings(documentObject):
     commands = []
     if hasattr(documentObject, "Name"):

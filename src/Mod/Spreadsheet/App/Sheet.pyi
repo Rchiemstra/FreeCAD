@@ -174,6 +174,10 @@ class Sheet(DocumentObject):
         """
         ...
 
+    def getDirtyCells(self) -> list[str]:
+        """Get cells awaiting evaluation, excluding settled cell errors."""
+        ...
+
     def getUsedCells(self) -> list[str]:
         """
         Get a list of the names of all cells that are marked as used. These cells may

@@ -15,31 +15,32 @@ except (ImportError, AttributeError):
 
 from PySide import QtCore, QtGui
 
+from SketcherTests.GuiTestCase import SketcherGuiTestCase
+
 
 def _line(start, end):
     return Part.LineSegment(FreeCAD.Vector(*start, 0), FreeCAD.Vector(*end, 0))
 
 
-class TestSketcherOffsetGui(unittest.TestCase):
+class TestSketcherOffsetGui(SketcherGuiTestCase):
     def setUp(self):
         if not GUI_AVAILABLE:
             self.skipTest("GUI not available")
 
+        super().setUp()
         FreeCADGui.activateWorkbench("SketcherWorkbench")
         self.doc = FreeCAD.newDocument("TestSketcherOffsetGui")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
-        self.doc.recompute()
+        self.recompute_gui_document()
 
     def tearDown(self):
         if not GUI_AVAILABLE:
             return
 
-        gui_doc = FreeCADGui.ActiveDocument
-        if gui_doc is not None:
-            gui_doc.resetEdit()
-
-        if self.doc.Name in FreeCAD.listDocuments():
-            FreeCAD.closeDocument(self.doc.Name)
+        doc = self.doc
+        self.doc = None
+        self.cleanup_gui_document(doc)
+        super().tearDown()
 
     def pump(self, timeout_ms=50):
         loop = QtCore.QEventLoop()
@@ -195,11 +196,14 @@ class TestSketcherOffsetGui(unittest.TestCase):
 
     def start_editing(self):
         FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
-        self.pump(250)
+        self.recompute_gui_document()
+        self.flush_gui(250)
         view = FreeCADGui.ActiveDocument.ActiveView
+        view.setAnimationEnabled(False)
         view.viewTop()
         FreeCADGui.SendMsgToActiveView("ViewFit")
-        self.pump(150)
+        view.redraw()
+        self.flush_gui(200)
         return view
 
     def in_view_offset_screen_point(self, view, click_point):
@@ -275,7 +279,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
             self.wait_until(lambda: self.sketch.GeometryCount > before_geometry),
             "Expected Sketcher_Offset to add geometry",
         )
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         return before_geometry, before_constraints
 
@@ -289,7 +293,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_offset_single_line_adds_geometry(self):
         self.sketch.addGeometry(_line((-10, 0), (10, 0)))
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         before_geometry, _ = self.run_offset_from_selection(
             ["Edge1"],
@@ -302,7 +306,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_offset_closed_rectangle_arc_mode_adds_connected_profile(self):
         self.add_rectangle()
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         before_geometry, before_constraints = self.run_offset_from_selection(
             ["Edge1", "Edge2", "Edge3", "Edge4"],
@@ -316,7 +320,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_offset_closed_rectangle_intersection_mode_adds_profile(self):
         self.add_rectangle()
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         before_geometry, before_constraints = self.run_offset_from_selection(
             ["Edge1", "Edge2", "Edge3", "Edge4"],
@@ -331,7 +335,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_offset_circle_adds_geometry(self):
         self.add_circle()
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         before_geometry, _ = self.run_offset_from_selection(
             ["Edge1"],
@@ -344,7 +348,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_constrained_clearance_rectangle_adds_driving_clearance_constraints(self):
         self.add_rectangle()
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         _, before_constraints = self.run_offset_from_selection(
             ["Edge1", "Edge2", "Edge3", "Edge4"],
@@ -366,7 +370,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def test_chain_link_offsets_connected_open_edges_from_single_selected_edge(self):
         self.add_open_chain()
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         before_geometry, _ = self.run_offset_from_selection(
             ["Edge1"],

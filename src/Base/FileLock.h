@@ -46,7 +46,13 @@ namespace Base
 class BaseExport FileLock
 {
 public:
-    explicit FileLock(std::string path);
+    /**
+     * With \a removeOnUnlock the lock file is deleted on unlock, while still
+     * locked, so it does not linger next to the protected file. A process that
+     * then locks the unlinked file notices and retries on the file now at the
+     * path. Only honoured on POSIX; Windows keeps the file.
+     */
+    explicit FileLock(std::string path, bool removeOnUnlock = false);
     ~FileLock();
 
     FileLock(const FileLock&) = delete;
@@ -61,6 +67,7 @@ public:
 
 private:
     std::string _path;
+    bool _removeOnUnlock {false};
 
 #if defined(__EMSCRIPTEN__)
     bool _locked {false};

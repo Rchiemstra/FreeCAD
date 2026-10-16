@@ -46,6 +46,11 @@ namespace App
 {
 class Property;
 class PropertyContainer;
+class DocumentObject;
+namespace Internal
+{
+class SpreadsheetCellRemovalPhysical;
+}
 
 struct AppExport CStringHasher
 {
@@ -193,6 +198,12 @@ public:
     bool renameDynamicProperty(Property* prop, const char* newName);
 
 private:
+    friend class DocumentObject;
+    bool removeDynamicPropertyForCellClear(const char* name,
+                                          Internal::SpreadsheetCellRemovalPhysical& capability);
+    bool removeDynamicPropertyImpl(const char* name,
+                                   Internal::SpreadsheetCellRemovalPhysical* capability);
+
     std::string getUniquePropertyName(const PropertyContainer& pc, const char* Name) const;
 
 private:

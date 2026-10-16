@@ -47,6 +47,7 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/TaskView/TaskView.h>
 
 #include "TaskImage.h"
@@ -349,7 +350,7 @@ void TaskImage::accept()
     if (!feature.expired()) {
         App::Document* doc = feature->getDocument();
         doc->commitTransaction();
-        doc->recompute();
+        requestDocumentRecompute(*doc);
     }
 }
 

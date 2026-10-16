@@ -46,6 +46,7 @@
 
 #include "TaskPrimitiveParameters.h"
 #include "ui_TaskPrimitiveParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -503,7 +504,7 @@ void TaskBoxPrimitives::onBoxHeightChanged(double v)
 {
     if (auto box = getObject<PartDesign::Box>()) {
         box->Height.setValue(v);
-        box->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*box);
     }
 }
 
@@ -511,7 +512,7 @@ void TaskBoxPrimitives::onBoxWidthChanged(double v)
 {
     if (auto box = getObject<PartDesign::Box>()) {
         box->Width.setValue(v);
-        box->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*box);
     }
 }
 
@@ -519,7 +520,7 @@ void TaskBoxPrimitives::onBoxLengthChanged(double v)
 {
     if (auto box = getObject<PartDesign::Box>()) {
         box->Length.setValue(v);
-        box->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*box);
     }
 }
 
@@ -527,7 +528,7 @@ void TaskBoxPrimitives::onCylinderAngleChanged(double v)
 {
     if (auto cyl = getObject<PartDesign::Cylinder>()) {
         cyl->Angle.setValue(v);
-        cyl->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cyl);
     }
 }
 
@@ -535,7 +536,7 @@ void TaskBoxPrimitives::onCylinderHeightChanged(double v)
 {
     if (auto cyl = getObject<PartDesign::Cylinder>()) {
         cyl->Height.setValue(v);
-        cyl->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cyl);
     }
 }
 
@@ -543,7 +544,7 @@ void TaskBoxPrimitives::onCylinderRadiusChanged(double v)
 {
     if (auto cyl = getObject<PartDesign::Cylinder>()) {
         cyl->Radius.setValue(v);
-        cyl->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cyl);
     }
 }
 
@@ -564,7 +565,7 @@ void TaskBoxPrimitives::onCylinderXSkewChanged(double v)
             }
             ui->cylinderXSkew->setValue(cyl->FirstAngle.getQuantityValue());
         }
-        cyl->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cyl);
     }
 }
 
@@ -585,7 +586,7 @@ void TaskBoxPrimitives::onCylinderYSkewChanged(double v)
             }
             ui->cylinderYSkew->setValue(cyl->SecondAngle.getQuantityValue());
         }
-        cyl->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cyl);
     }
 }
 
@@ -594,7 +595,7 @@ void TaskBoxPrimitives::onSphereAngle1Changed(double v)
     if (auto sph = getObject<PartDesign::Sphere>()) {
         ui->sphereAngle2->setMinimum(v);  // Angle1 must geometrically be <= than Angle2
         sph->Angle1.setValue(v);
-        sph->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*sph);
     }
 }
 
@@ -603,7 +604,7 @@ void TaskBoxPrimitives::onSphereAngle2Changed(double v)
     if (auto sph = getObject<PartDesign::Sphere>()) {
         ui->sphereAngle1->setMaximum(v);  // Angle1 must geometrically be <= than Angle2
         sph->Angle2.setValue(v);
-        sph->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*sph);
     }
 }
 
@@ -611,7 +612,7 @@ void TaskBoxPrimitives::onSphereAngle3Changed(double v)
 {
     if (auto sph = getObject<PartDesign::Sphere>()) {
         sph->Angle3.setValue(v);
-        sph->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*sph);
     }
 }
 
@@ -619,7 +620,7 @@ void TaskBoxPrimitives::onSphereRadiusChanged(double v)
 {
     if (auto sph = getObject<PartDesign::Sphere>()) {
         sph->Radius.setValue(v);
-        sph->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*sph);
     }
 }
 
@@ -627,7 +628,7 @@ void TaskBoxPrimitives::onConeAngleChanged(double v)
 {
     if (auto cone = getObject<PartDesign::Cone>()) {
         cone->Angle.setValue(v);
-        cone->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cone);
     }
 }
 
@@ -635,7 +636,7 @@ void TaskBoxPrimitives::onConeHeightChanged(double v)
 {
     if (auto cone = getObject<PartDesign::Cone>()) {
         cone->Height.setValue(v);
-        cone->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cone);
     }
 }
 
@@ -643,7 +644,7 @@ void TaskBoxPrimitives::onConeRadius1Changed(double v)
 {
     if (auto cone = getObject<PartDesign::Cone>()) {
         cone->Radius1.setValue(v);
-        cone->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cone);
     }
 }
 
@@ -651,7 +652,7 @@ void TaskBoxPrimitives::onConeRadius2Changed(double v)
 {
     if (auto cone = getObject<PartDesign::Cone>()) {
         cone->Radius2.setValue(v);
-        cone->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*cone);
     }
 }
 
@@ -660,7 +661,7 @@ void TaskBoxPrimitives::onEllipsoidAngle1Changed(double v)
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ui->ellipsoidAngle2->setMinimum(v);  // Angle1 must geometrically be <= than Angle2
         ell->Angle1.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -669,7 +670,7 @@ void TaskBoxPrimitives::onEllipsoidAngle2Changed(double v)
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ui->ellipsoidAngle1->setMaximum(v);  // Angle1 must geometrically be <= than Angle22
         ell->Angle2.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -677,7 +678,7 @@ void TaskBoxPrimitives::onEllipsoidAngle3Changed(double v)
 {
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ell->Angle3.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -685,7 +686,7 @@ void TaskBoxPrimitives::onEllipsoidRadius1Changed(double v)
 {
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ell->Radius1.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -693,7 +694,7 @@ void TaskBoxPrimitives::onEllipsoidRadius2Changed(double v)
 {
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ell->Radius2.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -701,7 +702,7 @@ void TaskBoxPrimitives::onEllipsoidRadius3Changed(double v)
 {
     if (auto ell = getObject<PartDesign::Ellipsoid>()) {
         ell->Radius3.setValue(v);
-        ell->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*ell);
     }
 }
 
@@ -710,7 +711,7 @@ void TaskBoxPrimitives::onTorusAngle1Changed(double v)
     if (auto tor = getObject<PartDesign::Torus>()) {
         ui->torusAngle2->setMinimum(v);  // Angle1 must geometrically be <= than Angle2
         tor->Angle1.setValue(v);
-        tor->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*tor);
     }
 }
 
@@ -719,7 +720,7 @@ void TaskBoxPrimitives::onTorusAngle2Changed(double v)
     if (auto tor = getObject<PartDesign::Torus>()) {
         ui->torusAngle1->setMaximum(v);  // Angle1 must geometrically be <= than Angle2
         tor->Angle2.setValue(v);
-        tor->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*tor);
     }
 }
 
@@ -727,7 +728,7 @@ void TaskBoxPrimitives::onTorusAngle3Changed(double v)
 {
     if (auto tor = getObject<PartDesign::Torus>()) {
         tor->Angle3.setValue(v);
-        tor->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*tor);
     }
 }
 
@@ -739,7 +740,7 @@ void TaskBoxPrimitives::onTorusRadius1Changed(double v)
         // https://forum.freecad.org/viewtopic.php?f=3&t=44467
         ui->torusRadius2->setMaximum(v);
         tor->Radius1.setValue(v);
-        tor->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*tor);
     }
 }
 
@@ -748,7 +749,7 @@ void TaskBoxPrimitives::onTorusRadius2Changed(double v)
     if (auto tor = getObject<PartDesign::Torus>()) {
         ui->torusRadius1->setMinimum(v);
         tor->Radius2.setValue(v);
-        tor->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*tor);
     }
 }
 
@@ -756,7 +757,7 @@ void TaskBoxPrimitives::onPrismCircumradiusChanged(double v)
 {
     if (auto prim = getObject<PartDesign::Prism>()) {
         prim->Circumradius.setValue(v);
-        prim->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*prim);
     }
 }
 
@@ -764,7 +765,7 @@ void TaskBoxPrimitives::onPrismHeightChanged(double v)
 {
     if (auto prim = getObject<PartDesign::Prism>()) {
         prim->Height.setValue(v);
-        prim->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*prim);
     }
 }
 
@@ -785,7 +786,7 @@ void TaskBoxPrimitives::onPrismXSkewChanged(double v)
             }
             ui->prismXSkew->setValue(prim->FirstAngle.getQuantityValue());
         }
-        prim->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*prim);
     }
 }
 
@@ -806,7 +807,7 @@ void TaskBoxPrimitives::onPrismYSkewChanged(double v)
             }
             ui->prismYSkew->setValue(prim->SecondAngle.getQuantityValue());
         }
-        prim->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*prim);
     }
 }
 
@@ -814,7 +815,7 @@ void TaskBoxPrimitives::onPrismPolygonChanged(int v)
 {
     if (auto prim = getObject<PartDesign::Prism>()) {
         prim->Polygon.setValue(v);
-        prim->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*prim);
     }
 }
 
@@ -823,7 +824,7 @@ void TaskBoxPrimitives::onWedgeX2minChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeX2max->setMinimum(v);  // wedgeX2min must be <= than wedgeX2max
         wedge->X2min.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -832,7 +833,7 @@ void TaskBoxPrimitives::onWedgeX2maxChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeX2min->setMaximum(v);  // wedgeX2min must be <= than wedgeX2max
         wedge->X2max.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -841,7 +842,7 @@ void TaskBoxPrimitives::onWedgeXminChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeXmax->setMinimum(v);
         wedge->Xmin.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -850,7 +851,7 @@ void TaskBoxPrimitives::onWedgeXmaxChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeXmin->setMaximum(v);  // must be < than wedgeXmax
         wedge->Xmax.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -859,7 +860,7 @@ void TaskBoxPrimitives::onWedgeYminChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeYmax->setMinimum(v);  // must be > than wedgeYmin
         wedge->Ymin.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -868,7 +869,7 @@ void TaskBoxPrimitives::onWedgeYmaxChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeYmin->setMaximum(v);  // must be < than wedgeYmax
         wedge->Ymax.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -877,7 +878,7 @@ void TaskBoxPrimitives::onWedgeZ2minChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeZ2max->setMinimum(v);  // must be >= than wedgeZ2min
         wedge->Z2min.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -886,7 +887,7 @@ void TaskBoxPrimitives::onWedgeZ2maxChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeZ2min->setMaximum(v);  // must be <= than wedgeZ2max
         wedge->Z2max.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -895,7 +896,7 @@ void TaskBoxPrimitives::onWedgeZminChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeZmax->setMinimum(v);  // must be > than wedgeZmin
         wedge->Zmin.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -904,7 +905,7 @@ void TaskBoxPrimitives::onWedgeZmaxChanged(double v)
     if (auto wedge = getObject<PartDesign::Wedge>()) {
         ui->wedgeZmin->setMaximum(v);  // must be < than wedgeZmax
         wedge->Zmax.setValue(v);
-        wedge->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*wedge);
     }
 }
 
@@ -1097,7 +1098,7 @@ bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
         // class or when starting to edit a primitive.
         Gui::Command::runCommand(Gui::Command::Doc, cmd.c_str());
         TaskFeatureAddSubParameters::apply();
-        Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::submitActiveDocumentRecomputeOrReport(this);
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(
@@ -1219,7 +1220,7 @@ bool TaskDlgPrimitiveParameters::accept()
     if (!primitiveOK) {
         return primitiveOK;
     }
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    PartGui::submitActiveDocumentRecomputeOrReport(primitive);
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
 
     return true;
@@ -1239,6 +1240,4 @@ QDialogButtonBox::StandardButtons TaskDlgPrimitiveParameters::getStandardButtons
 {
     return Gui::TaskView::TaskDialog::getStandardButtons();
 }
-
-
 #include "moc_TaskPrimitiveParameters.cpp"

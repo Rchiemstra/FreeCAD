@@ -55,6 +55,11 @@ class Document;
 class DocumentObjectGroup;
 class DocumentObjectPy;
 class Expression;
+namespace Internal
+{
+class SpreadsheetCellClearOperation;
+class SpreadsheetCellRemovalPhysical;
+}
 
 // clang-format off
 /// Defines the position of the status bits for document objects.
@@ -1334,6 +1339,24 @@ public:
     }
 
     /**
+     * Python FeaturePythonT specializations must opt in before the document
+     * execution lane runs their execute() path. Native C++ objects return false.
+     */
+    virtual bool requiresDocumentThreadExecutionDeclaration() const
+    {
+        return false;
+    }
+
+    /**
+     * True when a Python feature has declared
+     * supportsDocumentThreadExecution(). Native objects always return true.
+     */
+    virtual bool declaresDocumentThreadExecution() const
+    {
+        return true;
+    }
+
+    /**
      * @brief Called when an element reference is updated.
      *
      * @param[in] prop The property that was updated.
@@ -1495,6 +1518,11 @@ protected:
     void onPropertyStatusChanged(const Property& prop, unsigned long oldStatus) override;
 
 private:
+    friend class Internal::SpreadsheetCellClearOperation;
+    bool removeDynamicPropertyForCellClear(Internal::SpreadsheetCellClearOperation& operation);
+    bool removeDynamicPropertyImpl(const char* name, Property& property,
+                                  Internal::SpreadsheetCellRemovalPhysical* capability);
+
     void moveExpressionTargetingProp(Property* prop, Property* newProp,
                                      DocumentObject* targetObj);
     void arrangeMoveProperty(Property* toBeMovedProp,

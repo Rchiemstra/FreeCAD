@@ -15,7 +15,7 @@ class TestDistanceLabelExtensionGui(SketcherGuiTestCase):
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
 
     def extension_points(self):
-        self.doc.recompute()
+        self.recompute_gui_document()
         FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
         self.flush_gui(100)
 

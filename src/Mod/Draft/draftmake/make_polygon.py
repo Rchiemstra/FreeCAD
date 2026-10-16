@@ -83,10 +83,13 @@ def make_polygon(nfaces, radius=1, inscribed=True, placement=None, face=None, su
     obj.AttachmentSupport = support
     if placement:
         obj.Placement = placement
-    if App.GuiUp:
+
+    def setup_view():
         ViewProviderDraft(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)
+
+    gui_utils.run_gui_setup(obj, setup_view)
 
     return obj
 

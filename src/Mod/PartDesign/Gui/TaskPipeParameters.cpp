@@ -50,6 +50,7 @@
 #include "TaskFeaturePick.h"
 #include "TaskSketchBasedParameters.h"
 #include "Utils.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 Q_DECLARE_METATYPE(App::PropertyLinkSubList::SubSet)
@@ -606,9 +607,8 @@ bool TaskPipeParameters::accept()
         App::PropertyLinkT propT(spine, subNames);
         Gui::cmdAppObjectArgs(pipe, "Spine = %s", propT.getPropertyPython());
 
-        Gui::cmdAppDocument(pipe, "recompute()");
-        if (!getObject()->isValid()) {
-            throw Base::RuntimeError(getObject()->getStatusString());
+        if (!PartGui::submitDocumentRecomputeOrReport(*pipe, this)) {
+            return false;
         }
         Gui::cmdGuiDocument(pipe, "resetEdit()");
         pipe->getDocument()->commitTransaction();
@@ -1283,6 +1283,4 @@ bool TaskDlgPipeParameters::accept()
 {
     return parameter->accept();
 }
-
-
 #include "moc_TaskPipeParameters.cpp"

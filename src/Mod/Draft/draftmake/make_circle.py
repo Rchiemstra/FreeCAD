@@ -150,10 +150,12 @@ def make_circle(radius, placement=None, face=None, startangle=None, endangle=Non
     if placement:
         obj.Placement = placement
 
-    if App.GuiUp:
+    def setup_view():
         ViewProviderDraft(obj.ViewObject)
         gui_utils.format_object(obj)
         gui_utils.select(obj)
+
+    gui_utils.run_gui_setup(obj, setup_view)
 
     return obj
 

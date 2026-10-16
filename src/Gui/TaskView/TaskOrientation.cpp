@@ -28,6 +28,7 @@
 #include <App/Document.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Camera.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/TaskView/TaskView.h>
 
 #include "TaskOrientation.h"
@@ -73,7 +74,7 @@ void TaskOrientation::accept()
     if (!feature.expired()) {
         App::Document* doc = feature->getDocument();
         doc->commitTransaction();
-        doc->recompute();
+        requestDocumentRecompute(*doc);
     }
 }
 

@@ -39,7 +39,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
         FreeCADGui.activateWorkbench("SketcherWorkbench")
         self.doc = FreeCAD.newDocument("TestOnViewParameterGui")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
-        self.doc.recompute()
+        self.recompute_gui_document()
         self._origin_trace_seq = 0
 
     def tearDown(self):

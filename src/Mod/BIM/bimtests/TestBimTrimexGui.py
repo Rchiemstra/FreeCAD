@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import Draft
 import FreeCAD as App
+from Test.GuiRecompute import recompute_document, close_document
 import FreeCADGui as Gui
 import Part
 from bimcommands.BimTrimex import BimTrimex
@@ -53,7 +54,7 @@ class TestBimTrimexGui(TestArchBaseGui.TestArchBaseGui):
         base.Placement = App.Placement(
             App.Vector(10, 20, 30), App.Rotation(App.Vector(0, 0, 1), 20)
         )
-        self.document.recompute()
+        recompute_document(self.document)
 
         host = SimpleNamespace(
             Base=base,
@@ -86,7 +87,7 @@ class TestBimTrimexGui(TestArchBaseGui.TestArchBaseGui):
 
     def test_offset_pipe_edits_along_terminal_segment(self):
         base = Draft.make_wire([App.Vector(), App.Vector(1000, 0, 0), App.Vector(1000, 1000, 0)])
-        self.document.recompute()
+        recompute_document(self.document)
         pipe = SimpleNamespace(
             Base=base,
             OffsetStart=SimpleNamespace(Value=0),

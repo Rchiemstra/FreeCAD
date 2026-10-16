@@ -71,6 +71,11 @@ public:
     void attach(App::DocumentObject* pcObject) override;
     void updateData(const App::Property*) override;
 
+    [[nodiscard]] ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const ViewProviderPresentationCaptureRequest& request,
+        PresentationRenderBuffer& buffer) const override;
+
     bool isSelectable() const override
     {
         return Selectable.getValue();

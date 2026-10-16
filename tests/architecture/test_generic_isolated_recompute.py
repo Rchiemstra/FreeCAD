@@ -251,12 +251,16 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     assert "_recomputeFeature(" not in full
     assert "_recomputeFeature(" not in facade
     assert "recomputeCoordinator()" in facade
-    # The facade asks for the owner thread unless this is the coordinator's own
-    # derived pass, which stays isolated so unserializable object code is
-    # refused rather than run live.
+    # Compatibility facades always ask for the owner-thread venue; structural
+    # isolation during the coordinator's derived pass is enforced in
+    # prepareGenericRecompute() via the derived_coordinator_recompute intent
+    # tag stamped by recomputeAsync(), not by refusing owner-thread execution
+    # for every worker-opted feature.
     assert "makeGenericIsolatedRecomputeRequest(" in facade
-    assert "*this,*feature,recursive" in facade
-    assert "!collaborationDerivedRecomputeGranted()" in facade
+    assert "makeGenericIsolatedRecomputeRequest(*this,*feature,recursive,true,true)" in facade
+    async_raw = _compact(_body(document, "Document::recomputeAsync", raw=True))
+    assert "derived_coordinator_recompute" in async_raw
+    assert 'derived_coordinator_recompute","1"' in async_raw
 
     temp_document = friend.find("document.testStatus(Document::TempDoc)")
     ownership = friend.find("feature.getDocument()!=&document", temp_document)
@@ -377,8 +381,11 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     eager_closing = _matching(coordinator, eager_opening, "{", "}")
     assert eager_closing is not None
     eager_stage = coordinator[eager_opening + 1:eager_closing]
+    # Native error baselines and fresh requests preserve scoped eager recompute.
     scoped_targets = eager_stage.find(
-        "autorecomputeTargets=pendingTransactionRecomputeTargets(_document);"
+        "autorecomputeTargets=pendingTransactionRecomputeTargets("
+        "_document,requireDetachedPreparationSupport?nullptr:&preexistingNativeErrors,"
+        "&freshRecomputeRequests);"
     )
     empty = eager_stage.find("if(recomputeTargets.empty()){", scoped_targets)
     empty_finalize = eager_stage.find(
@@ -479,7 +486,8 @@ def test_documentobject_python_and_gui_delegate_to_the_isolated_document_facade(
     assert "_recomputeFeature" not in python_body
 
     gui_body = _compact(_body(_read(GUI_SOURCE), "Document::slotSkipRecompute"))
-    assert "obj->recomputeFeature(true)" in gui_body
+    # slotSkipRecompute now uses the async ingress instead of the direct call.
+    assert "requestDocumentRecompute(" in gui_body
     assert "_recomputeFeature" not in gui_body
 
 
@@ -506,11 +514,13 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         in prepare
     )
     assert 'constautoforceMode=intent.arguments.find("force_execution")' in prepare
-    assert "intent.arguments.empty()||intent.arguments.size()>4" in prepare
+    assert "intent.arguments.empty()||intent.arguments.size()>5" in prepare
     assert '!intent.arguments.contains("feature")' in prepare
     assert "std::ranges::any_of(intent.arguments" in prepare
     assert 'argument.first!="legacy_revision_semantics"' in prepare
     assert 'argument.first!="force_execution"' in prepare
+    assert 'argument.first!="owner_thread_execution"' in prepare
+    assert 'argument.first!="derived_coordinator_recompute"' in prepare
     assert (
         "constboolpreserveLegacyRevisionSemantics="
         "legacyMode!=intent.arguments.end()" in prepare
@@ -874,7 +884,12 @@ def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
     """
     generic = _read(GENERIC_SOURCE)
     prepare = _compact(_body(generic, "prepareGenericRecompute"))
-    opt_out = "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract){"
+    # Derived-coordinator recomputes may keep a non-worker target on the
+    # owner-thread path without treating it as a hard worker opt-out failure.
+    opt_out = (
+        "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract"
+        "&&!derivedCoordinatorRecompute){"
+    )
     assert opt_out in prepare
     # The opt-out branch has to come before the general bookkeeping
     # short-circuit: a scripted feature's mustExecute() reports nothing about
@@ -932,8 +947,13 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         _read(SERVICE_SOURCE),
         "DocumentCollaborationService::commitRecomputeEditOnDocumentThread",
     ))
-    assert "return_coordinator.commitRecompute(edit);" in service
+    assert "returnpreserveSerializedCallbackAdmission(_coordinator.commitRecompute(edit));" in service
     assert service.count("_coordinator.commitRecompute(edit)") == 1
+    admission = _compact(_body(_read(SERVICE_SOURCE), "preserveSerializedCallbackAdmission"))
+    assert admission == (
+        "if(serializedCompatibilityCallbackActive){result.presentationAdmissionDeferred=false;}"
+        "returnresult;"
+    )
 
     routing = _compact(_body(
         _read(COMMIT_SOURCE),

@@ -113,6 +113,7 @@ public:
 // NOLINTBEGIN
     using Connection = fastsignals::scoped_connection;
     Connection connectGuiRepaint;
+    Connection connectBecameStable;
 // NOLINTEND
 
     void unsetEdit(int ModNum) override;
@@ -153,12 +154,17 @@ protected:
     void createMDIViewPage();
 
 private:
+    void scheduleDeferredGuiPaint();
+    void onDocumentBecameStable(const App::Document& document);
+    void runDeferredGuiPaint();
+
     QPointer<MDIViewPage> m_mdiView;
     std::string m_pageName;
     QPointer<QGVPage> m_graphicsView;
     QGSPage* m_graphicsScene;
 
     bool m_frameToggle{false};      // replacement for ShowFrame property to avoid marking document changed
+    bool m_guiPaintPending {false};
 };
 
 }// namespace TechDrawGui
