@@ -48,14 +48,14 @@ Clear.
 
 ## Interfaces and Detection
 
-- Add an exported Part App pair-classification service alongside, without changing, the existing `Part::checkIntersection()` in [PartFeature.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Part/App/PartFeature.cpp:2236>).
+- Add an exported Part App pair-classification service alongside, without changing, the existing `Part::checkIntersection()` in [PartFeature.cpp](<../src/Mod/Part/App/PartFeature.cpp>).
 
   - `InterferenceKind`: `Clear`, `ClearanceViolation`, `Contact`, `Penetration`, `InvalidInput`, `Inconclusive`, `Cancelled`.
   - `InterferenceOptions`: nonnegative clearance and an internal linear tolerance defaulting to `Precision::Confusion()`.
   - `InterferenceResult`: kind, minimum distance, closest-point pair, common/contact shape, total overlap volume, and diagnostic text.
   - Preserve the existing Boolean helper’s ABI and behavior for external consumers.
 
-- Use `BRepExtrema_DistShapeShape`, following the existing distance implementation in [TopoShapePyImp.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Part/App/TopoShapePyImp.cpp:2428>), followed by an exact Common operation when distance is within kernel tolerance:
+- Use `BRepExtrema_DistShapeShape`, following the existing distance implementation in [TopoShapePyImp.cpp](<../src/Mod/Part/App/TopoShapePyImp.cpp>), followed by an exact Common operation when distance is within kernel tolerance:
 
   - Distance greater than clearance plus tolerance is clear.
   - Positive distance within the threshold is a clearance violation.
@@ -63,7 +63,7 @@ Clear.
   - A common result containing any `TopAbs_SOLID` is penetration; collect those solids and sum their volumes without imposing a minimum-volume cutoff.
   - A successful zero-distance Common without solids is contact.
   - Invalid geometry or failed OCCT operations produce explicit invalid/inconclusive results, never “clear.”
-  - Use the non-destructive, internally parallel FreeCAD Boolean wrapper from [FCBRepAlgoAPI_BooleanOperation.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:41>), but do not add its size-scaled auto-fuzzy value for classification; rely on stored shape tolerances so a small gap is not turned into penetration.
+  - Use the non-destructive, internally parallel FreeCAD Boolean wrapper from [FCBRepAlgoAPI_BooleanOperation.cpp](<../src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp>), but do not add its size-scaled auto-fuzzy value for classification; rely on stored shape tolerances so a small gap is not turned into penetration.
 
 - Add an Assembly App scan service with snapshot types for physical instances, pair results, per-component problems, aggregate counts, cancellation, and progress.
 
@@ -73,7 +73,7 @@ Clear.
   - Preserve every full occurrence path so repeated links to the same source remain distinct.
   - Resolve world geometry through `Part::Feature` shape extraction with `ResolveLink | Transform`; do not combine raw child shapes and placements manually.
   - Evaluate visibility through the complete ancestor/element path. “Include hidden” bypasses this filter.
-  - Do not reuse `AssemblyUtils::getAssemblyComponents()` unchanged: its rigid/flexible solver semantics differ from the selected recursive-leaf inspection scope in [AssemblyUtils.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Assembly/App/AssemblyUtils.cpp:747>).
+  - Do not reuse `AssemblyUtils::getAssemblyComponents()` unchanged: its rigid/flexible solver semantics differ from the selected recursive-leaf inspection scope in [AssemblyUtils.cpp](<../src/Mod/Assembly/App/AssemblyUtils.cpp>).
 
 - Validate each leaf once with `BRepCheck_Analyzer`. Report invalid leaves once rather than generating an invalid row for every possible pair.
 
@@ -90,9 +90,9 @@ Clear.
 
 - Results remain transient. Exclusions and threshold changes use explicit document transactions, but running or browsing a scan must not dirty the document or trigger the assembly solver.
 
-- Register `Assembly_CheckInterference` through [Commands.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Assembly/Gui/Commands.cpp:370>) and add it to the Assembly menu and contextual Tools group, not the primary toolbar. Enable it only for a valid active assembly; detailed eligibility is checked when the task opens.
+- Register `Assembly_CheckInterference` through [Commands.cpp](<../src/Mod/Assembly/Gui/Commands.cpp>) and add it to the Assembly menu and contextual Tools group, not the primary toolbar. Enable it only for a valid active assembly; detailed eligibility is checked when the task opens.
 
-- Add an Assembly task panel modeled on the result-model/lifecycle patterns in [TaskCheckGeometry.cpp](</C:/Users/Rchie/Music/FreeCADModeling/FreeCAD/src/Mod/Part/Gui/TaskCheckGeometry.cpp:399>), with:
+- Add an Assembly task panel modeled on the result-model/lifecycle patterns in [TaskCheckGeometry.cpp](<../src/Mod/Part/Gui/TaskCheckGeometry.cpp>), with:
 
   - Clearance input, Include hidden, Show excluded, Run, Cancel scan, Select pair, Manage exclusions, and Close controls.
   - Columns for status, both occurrence paths, minimum clearance, and overlap volume.
@@ -229,7 +229,7 @@ One `InterferencePairResult` per component/leaf pair:
 validation are recorded above; this section is retained as an audit trail of
 the defects that drove the subsequent fixes.
 
-The implementation was reviewed read-only against this plan and `doc/PROGRESS.md`. No implementation file was changed, no commit was created, and no running MCP server, FreeCAD instance, or existing container was inspected, reused, stopped, restarted, or reconfigured. All executable validation ran only in new `--rm --network=none` Docker containers with no ports and a read-only host source mount.
+The implementation was reviewed read-only against this plan and [doc/PROGRESS.md](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md). No implementation file was changed, no commit was created, and no running MCP server, FreeCAD instance, or existing container was inspected, reused, stopped, restarted, or reconfigured. All executable validation ran only in new `--rm --network=none` Docker containers with no ports and a read-only host source mount.
 
 ### Confirmed fixes since the prior review
 
@@ -277,16 +277,16 @@ These fixes do not complete the plan. Core false-negative paths, a late-generati
 - The first full Part attempt produced 304/308 passes solely because `PartTestData` was not built. After adding that required target in a cloned disposable Docker volume, baseline full suites passed: **Part 308/308**, **Assembly 15/15**.
 - Audit harness volume `freecad-review-audit-harness-20260724T191855Z-aac617e5-data` was newly created and seeded from the clean volume through a separate no-network clone container with the seed read-only. It reverified the same source hash before Docker-only ephemeral test edits, then reproduced the negative-tolerance, invalid-bounds false-clear, and collapsed-link-array defects above.
 
-The implementation’s own validation remains insufficient and not fully reproducible. `scripts/ci/interference-validate.sh:117-153` runs only focused tests and omits `PartTestData`; its claimed relevant manifest covers only a subset of the dirty implementation (`:18-27`). The historical logs named by `PROGRESS.md` use a persistent incremental volume and contain no source/image/invocation metadata.
+The implementation’s own validation remains insufficient and not fully reproducible. `scripts/ci/interference-validate.sh:117-153` runs only focused tests and omits `PartTestData`; its claimed relevant manifest covers only a subset of the dirty implementation (`:18-27`). The historical logs named by [PROGRESS.md](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md) use a persistent incremental volume and contain no source/image/invocation metadata.
 
-### `PROGRESS.md` reconciliation
+### [PROGRESS.md](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md) reconciliation
 
 - Accurate: the prior shared-cancel-flag, main teardown dereference, blank-preview, missing Manage dialog, manual-transform fallback, repeated leaf validation, clearance-validation, null-placeholder, and clear-count defects were substantially addressed. The retained historical logs do show 22 focused Part passes, 15 Assembly passes, and an `AssemblyGui` link.
-- Inaccurate: `doc/PROGRESS.md:5,9-13` says P0 lifecycle/session ownership is fixed and Docker-validated, but the B-then-A completion order still destroys B and no task-panel lifecycle test exists.
-- Inaccurate: `PROGRESS.md:23-27` overstates P1 completion. Preview placement is wrong, input units are fixed to millimetres, diagnostics/action state remain incomplete, and exclusion/modal lifecycle is unsafe.
-- Incomplete: the changed-file list at `PROGRESS.md:32-44` omits `AssemblyObject.h`, Commands, InitGui, GUI/Part/test CMake files, qrc/icon, and the modified AssemblyObject test.
-- Inaccurate/incomplete: the validator description overstates provenance, `PROGRESS.md:48` documents a persistent incremental volume rather than the script’s current default, and `PROGRESS.md:61` claims `dd` plus non-zero verification that the script does not implement.
-- The admitted lack of GUI/Xvfb tests and most remaining matrix items (`PROGRESS.md:57-60`) is accurate, but the issue list omits the confirmed false negatives and GUI defects above.
+- Inaccurate: [doc/PROGRESS.md:5,9-13](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L5-L13) says P0 lifecycle/session ownership is fixed and Docker-validated, but the B-then-A completion order still destroys B and no task-panel lifecycle test exists.
+- Inaccurate: [PROGRESS.md:23-27](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L23-L27) overstates P1 completion. Preview placement is wrong, input units are fixed to millimetres, diagnostics/action state remain incomplete, and exclusion/modal lifecycle is unsafe.
+- Incomplete: the changed-file list at [PROGRESS.md:32-44](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L32-L44) omits `AssemblyObject.h`, Commands, InitGui, GUI/Part/test CMake files, qrc/icon, and the modified AssemblyObject test.
+- Inaccurate/incomplete: the validator description overstates provenance, [PROGRESS.md:48](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L48) documents a persistent incremental volume rather than the script’s current default, and [PROGRESS.md:61](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L61) claims `dd` plus non-zero verification that the script does not implement.
+- The admitted lack of GUI/Xvfb tests and most remaining matrix items ([PROGRESS.md:57-60](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md#L57-L60)) is accurate, but the issue list omits the confirmed false negatives and GUI defects above.
 
 ## Historical next steps from the 2026-07-24 audit
 
@@ -295,4 +295,4 @@ The implementation’s own validation remains insufficient and not fully reprodu
 3. Finish the task UI: quantity-aware clearance, eligibility details, status icons, and translations.
 4. Cover cycles and real mid-scan cancellation.
 5. Extend CI with `PartTestData`, full App/GUI Xvfb suites, disposable volumes, and exact provenance.
-6. Update `doc/PROGRESS.md` only after these tests pass. Do not claim P0 GUI complete before then.
+6. Update [doc/PROGRESS.md](https://github.com/Rchiemstra/FreeCAD/blob/c6af51507b82fdb8c2dcdaa5a544ea6e5776b1b1/doc/PROGRESS.md) only after these tests pass. Do not claim P0 GUI complete before then.
