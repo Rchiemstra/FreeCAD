@@ -9,9 +9,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
 #include <Gui/Application.h>
 #include <Gui/AutoSaver.h>
@@ -28,6 +30,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <limits>
 #include <optional>
 #include <string>
@@ -842,3 +845,70 @@ TEST(DocumentRecoveryValidation, CheckZipDataDoesNotGrowOpenFdCount)
         << " across repeated validation (likely ZipInputStream leak)";
 }
 #endif
+
+TEST_F(AutoSaverRecoveryTest, ForeignPostconditionDefersRecoveryWithoutPoisoningCommit)
+{
+    using namespace std::chrono_literals;
+    std::optional<App::DocumentSaveOutcome> recoveryOutcome;
+    auto connection = document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome& outcome) {
+            if (outcome.intent == App::DocumentSaveIntent::Recovery) {
+                recoveryOutcome = outcome;
+            }
+        });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    object->Label.setValue("pending recovery during another document's commit");
+    Gui::Test::recomputeWithoutBlockingGui(*document);
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    ASSERT_TRUE(document->canWriteRecoverySnapshot());
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto foreignName = App::GetApplication().getUniqueDocumentName("foreignPostcondition");
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str(), "foreign", flags);
+    ASSERT_NE(foreign, nullptr);
+    const auto closeForeign = qScopeGuard([&] {
+        App::GetApplication().closeDocument(foreignName.c_str());
+    });
+    std::promise<void> entered;
+    auto enteredFuture = entered.get_future();
+    std::promise<void> release;
+    auto released = release.get_future();
+    auto audit = foreign->executionLane()->postToOwner([&] {
+        foreign->beginCollaborationReadOnlyPostconditionAudit();
+        const auto endAudit = qScopeGuard([&] {
+            foreign->endCollaborationAtomicPresentationAudit();
+        });
+        entered.set_value();
+        released.wait();
+    });
+    bool didRelease = false;
+    auto releaseAudit = [&] {
+        if (!didRelease) {
+            release.set_value();
+            didRelease = true;
+        }
+        audit.wait();
+    };
+    const auto finishAudit = qScopeGuard(releaseAudit);
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+
+    // Exercise production's asynchronous scheduler, not the synchronous test
+    // flush helper. No recovery IO may poison an unrelated read-only audit.
+    Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!document->executionLane()->isIdle()
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(document->executionLane()->isIdle());
+    const bool violated = foreign->collaborationAtomicPresentationAuditViolated();
+    EXPECT_FALSE(QFileInfo::exists(archivePath()));
+    releaseAudit();
+    ASSERT_FALSE(violated) << "background recovery must not invalidate another document's commit";
+
+    ASSERT_TRUE(processEventsUntil([&] {
+        return QFileInfo::exists(archivePath()) && QFileInfo::exists(metadataPath())
+            && recoveryOutcome && recoveryOutcome->fileWritten;
+    })) << "deferred recovery must resume after native admission is released";
+}

@@ -15,6 +15,7 @@
 #include <App/DocumentWouldBlock.h>
 #include <App/Property.h>
 #include <App/RecoverySnapshot.h>
+#include <App/MutationClassification.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/PyObjectBase.h>
@@ -553,8 +554,16 @@ void scheduleRecoverySnapshotWrite(
                 // remains valid for the duration of the dispatch.
                 result = lane->dispatchToOwner(
                     [&lane, &optionsCopy]() -> bool {
-                        return App::writeRecoverySnapshotToTransientDir(
-                            lane->document(), optionsCopy);
+                        // A recovery write is not part of a foreign command's
+                        // read-only postcondition. Reserve before the save
+                        // boundary so rejection cannot poison that audit.
+                        App::LivePresentationRefreshScope reservation;
+                        auto& document = lane->document();
+                        if (!reservation.acquired() || !document.canWriteRecoverySnapshot()
+                            || !document.getMutationReadiness().ready) {
+                            return false;  // No IO was attempted; defer admission.
+                        }
+                        return App::writeRecoverySnapshotToTransientDir(document, optionsCopy);
                     },
                     /*releaseGilWhileWaiting=*/true,
                     /*allowWhileCommandActive=*/false);
@@ -562,7 +571,11 @@ void scheduleRecoverySnapshotWrite(
             else {
                 // No-lane legacy path: look up document by name (as before).
                 if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
-                    result = App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy);
+                    App::LivePresentationRefreshScope reservation;
+                    result = reservation.acquired() && doc->canWriteRecoverySnapshot()
+                            && doc->getMutationReadiness().ready
+                        ? App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy)
+                        : false;
                 }
                 else {
                     result = false;

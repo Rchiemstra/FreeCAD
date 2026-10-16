@@ -564,7 +564,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 145,
+      "line": 146,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -572,7 +572,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 146,
+      "line": 147,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -580,7 +580,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 154,
+      "line": 155,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -588,7 +588,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 188,
+      "line": 199,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -596,7 +596,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 262,
+      "line": 280,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -604,7 +604,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 319,
+      "line": 354,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1708,7 +1708,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 323,
+      "line": 324,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1716,7 +1716,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 564,
+      "line": 573,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1724,7 +1724,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 615,
+      "line": 628,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1732,7 +1732,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 652,
+      "line": 665,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",

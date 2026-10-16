@@ -27,6 +27,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/RecoverySnapshot.h>
+#include <App/MutationClassification.h>
 #include <Base/Console.h>
 #include <Base/TimeInfo.h>
 #include <Base/Tools.h>
@@ -181,6 +182,16 @@ void AutoSaver::slotDeleteDocumentByName(const std::string& name)
     }
 }
 
+void AutoSaver::queueRecoveryAdmissionRetry(const std::string& name,
+                                             const std::uint64_t documentInstanceId,
+                                             const std::uint64_t lifecycleEpoch)
+{
+    scheduleGuiSingleShot(10, [name, documentInstanceId, lifecycleEpoch] {
+        AutoSaver::instance()->flushPendingSaveForIdentity(
+            QString::fromStdString(name), documentInstanceId, lifecycleEpoch);
+    });
+}
+
 void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
 {
     Q_ASSERT(QThread::currentThread() == thread());
@@ -193,6 +204,13 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     // Start an attempt without consuming dirty work. A recovery point becomes
     // authoritative only after the complete stable write succeeds.
     if (!saver.beginSaveAttempt()) {
+        return;
+    }
+
+    if (App::atomicPresentationMutationAdmissionActive()) {
+        saver.deferSaveUntilStable();
+        const auto identity = doc->collaborationIdentity();
+        queueRecoveryAdmissionRetry(name, identity.instanceId, identity.lifecycleEpoch);
         return;
     }
 
@@ -272,6 +290,22 @@ void AutoSaver::completeRecoverySnapshotSave(
         return;
     }
 
+    // Reporting the result is a save intent too. Keep that GUI notification
+    // out of another command's audit and out of this document's busy lane.
+    App::LivePresentationRefreshScope reservation;
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(doc)
+        : nullptr;
+    if (!reservation.acquired()
+        || (guiDocument && guiDocument->deferLivePresentationUpdates())) {
+        scheduleGuiSingleShot(10, [this, name, documentInstanceId, lifecycleEpoch,
+                                  startTime, written, failure] {
+            completeRecoverySnapshotSave(
+                name, documentInstanceId, lifecycleEpoch, startTime, written, failure);
+        });
+        return;
+    }
+
     if (failure) {
         try {
             std::rethrow_exception(failure);
@@ -288,13 +322,14 @@ void AutoSaver::completeRecoverySnapshotSave(
     }
 
     if (!written) {
-        saver.restoreFailedSaveAttempt();
-        doc->reportRecoverySaveOutcome(
-            doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
-        Base::Console().warning(
-            "Auto-recovery write for document '{}' did not produce a stable snapshot\n",
-            name.c_str()
-        );
+        // The worker could not reserve native admission; serialization never
+        // started. Retain dirty work and resume only when it can be admitted.
+        // Actual IO errors use failure above and remain visible failures.
+        saver.deferSaveUntilStable();
+        if (doc->canWriteRecoverySnapshot() && doc->getMutationReadiness().ready
+            && isGuiDocumentStableForAutoSave(doc)) {
+            queueRecoveryAdmissionRetry(name, documentInstanceId, lifecycleEpoch);
+        }
         return;
     }
 

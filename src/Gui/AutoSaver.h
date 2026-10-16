@@ -147,6 +147,9 @@ private:
     void flushPendingSaveForIdentity(const QString& documentName,
                                      std::uint64_t documentInstanceId,
                                      std::uint64_t lifecycleEpoch);
+    void queueRecoveryAdmissionRetry(const std::string& documentName,
+                                     std::uint64_t documentInstanceId,
+                                     std::uint64_t lifecycleEpoch);
     void completeRecoverySnapshotSave(const std::string& documentName,
                                       std::uint64_t documentInstanceId,
                                       std::uint64_t lifecycleEpoch,
