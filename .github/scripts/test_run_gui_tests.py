@@ -1,22 +1,27 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Regression tests for the three GUI-runner false-green cases.
+"""Regression tests for GUI-runner false greens and hung modules.
 
 These tests do not start FreeCAD. They feed canned listing/run output into
 run_gui_tests.py the way pipelines 341-343, a missing-suite listing, and a
-zero-test class unit would.
+zero-test class unit would. Short fake commands verify live output and watchdog cleanup.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import os
+import subprocess
 import struct
+import sys
 import tempfile
+import time
 import unittest
 import zlib
 from pathlib import Path
 from unittest import mock
 
+import run_gui_tests as runner
 from run_gui_tests import (
     EXPECTED_GUI_SUITES,
     SKETCHER_GUI_CLASS_UNITS,
@@ -26,6 +31,7 @@ from run_gui_tests import (
     parse_final_outcome,
     parse_registered_tests,
     run_gui_modules,
+    run_and_capture,
     units_for_module,
 )
 
@@ -62,6 +68,119 @@ def _fake_freecad(per_unit: dict[str, tuple[int, str]], default=(0, _unittest_ou
 
 
 FULL_SUITES = EXPECTED_GUI_SUITES
+
+
+class ModuleWatchdogTests(unittest.TestCase):
+    def test_attach_denied_uses_bounded_parent_rerun_after_killing_original(self):
+        with subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        ) as original:
+            calls = []
+
+            def gdb_capture(args, timeout, *, interrupt=False):
+                calls.append(args)
+                if "-p" in args:
+                    self.assertIsNone(original.poll())
+                    return 1, "ptrace: Operation not permitted.\n"
+                self.assertIsNotNone(original.poll())
+                self.assertEqual(args[-3:], ["FreeCAD", "-t", "FakeGui"])
+                self.assertEqual(timeout, 0.2)
+                self.assertTrue(interrupt)
+                self.assertIn("thread apply all bt 30", args)
+                return 0, "#0 native_hang\n"
+
+            try:
+                with mock.patch(
+                    "run_gui_tests.shutil.which", return_value="/usr/bin/gdb"
+                ), mock.patch(
+                    "run_gui_tests._gdb_capture", side_effect=gdb_capture
+                ), contextlib.redirect_stdout(
+                    io.StringIO()
+                ):
+                    output = runner._timeout_backtrace(
+                        original, ["catchsegv", "stdbuf", "-oL", "FreeCAD", "-t", "FakeGui"], 0.2
+                    )
+                self.assertIn("#0 native_hang", output)
+                self.assertEqual(len(calls), 2)
+            finally:
+                runner._kill_process_group(original)
+
+    def test_output_is_streamed_before_exit_and_still_returned(self):
+        # The child cannot finish until the runner delivers its first line.
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            script = (
+                "import pathlib, time\n"
+                "print('first line', flush=True)\n"
+                f"release = pathlib.Path({str(release)!r})\n"
+                "deadline = time.monotonic() + 2\n"
+                "while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
+                "print('streamed' if release.exists() else 'buffered', flush=True)\n"
+            )
+
+            class LiveOutput(io.StringIO):
+                def write(self, value):
+                    if "first line" in value:
+                        release.touch()
+                    return super().write(value)
+
+            stdout = LiveOutput()
+            with contextlib.redirect_stdout(stdout):
+                rc, output = run_and_capture([sys.executable, "-c", script])
+            self.assertEqual(rc, 0)
+            self.assertEqual(output, "first line\nstreamed\n")
+            self.assertEqual(stdout.getvalue(), output)
+
+    def test_timeout_is_failure_even_after_ok_summary(self):
+        script = "import time; print('Ran 1 test\\nOK', flush=True); time.sleep(2)"
+        started = time.monotonic()
+        with mock.patch("run_gui_tests.shutil.which", return_value=None), mock.patch.dict(
+            os.environ, FREECAD_GUI_TEST_MODULE_TIMEOUT="0.2"
+        ):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                rc, output = run_and_capture([sys.executable, "-c", script, "FakeGui"])
+        self.assertEqual(rc, 124)
+        self.assertNotEqual(evaluate_unit_result(rc, output)[0], 0)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("TIMEOUT: FakeGui after 0.2 s", stdout.getvalue())
+
+    def test_timeout_without_summary_keeps_timeout_diagnosis(self):
+        rc, error = evaluate_unit_result(124, "TIMEOUT: FakeGui after 900 s\n")
+        self.assertEqual(rc, 124)
+        self.assertIn("timed out", error)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process groups and /proc")
+    def test_timeout_kills_children_including_when_leader_exits(self):
+        for new_group in (False, True):
+            with self.subTest(new_group=new_group):
+                with tempfile.TemporaryDirectory() as tmp:
+                    pidfile = Path(tmp) / "child.pid"
+                    script = (
+                        "import subprocess, sys, pathlib, time, os\n"
+                        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], preexec_fn=os.setpgrp if {new_group} else None)\n"
+                        f"pathlib.Path({str(pidfile)!r}).write_text(str(child.pid))\n"
+                        "print('child started', flush=True)\n"
+                        # Leader exits, but its child keeps stdout open.
+                    )
+                    with mock.patch(
+                        "run_gui_tests.shutil.which", return_value=None
+                    ), mock.patch.dict(os.environ, FREECAD_GUI_TEST_MODULE_TIMEOUT="0.2"):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            rc, _ = run_and_capture([sys.executable, "-c", script, "FakeGui"])
+                    pid = int(pidfile.read_text())
+                    status = Path(f"/proc/{pid}/stat")
+                    deadline = time.monotonic() + 1
+                    while True:
+                        try:
+                            if status.read_text().split()[2] == "Z":
+                                break
+                        except (FileNotFoundError, ProcessLookupError):
+                            break
+                        if time.monotonic() > deadline:
+                            os.kill(pid, 9)
+                            self.fail(f"child {pid} survived module timeout (rc={rc})")
+                        time.sleep(0.01)
+                    self.assertNotEqual(rc, 0)
 
 
 class ParseTests(unittest.TestCase):

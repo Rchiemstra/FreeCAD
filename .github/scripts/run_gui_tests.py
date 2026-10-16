@@ -15,21 +15,29 @@ If FREECAD_EXEC is an executable path, it is used directly.
 
 This script returns 0 if all GUI modules run successfully. Otherwise it returns the last non-zero
 exit code.
+
+Output is streamed live. FREECAD_GUI_TEST_MODULE_TIMEOUT sets the per-module wall-clock budget
+(default 900 seconds). A timeout collects bounded gdb diagnostics, kills the process group, and
+fails the module with exit code 124.
 """
 
 from __future__ import annotations
 import re
+import codecs
+import math
+import selectors
+import signal
 import struct
 import sys
 import subprocess
 import os
 import shutil
 import tempfile
+import time
 import zlib
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
-
 
 # Suites Woodpecker pipeline 336 actually completed. Extra registered Gui
 # names are allowed; missing any of these is a discovery miss, not a skip.
@@ -165,19 +173,190 @@ def _line_buffered(cmd: list[str]) -> list[str]:
     return cmd
 
 
-def run_and_capture(cmd: list[str]) -> tuple[int, str]:
-    """Run `cmd` and return (returncode, combined stdout+stderr string).
+# A separate launcher avoids preexec_fn (unsafe if the runner ever has threads).
+# Linux preserves PR_SET_PTRACER across exec, allowing sibling gdb to attach
+# under Yama without CAP_SYS_PTRACE. Seccomp can still deny it; see the fallback.
+_PTRACE_LAUNCHER = """
+import ctypes, os, sys
+if sys.platform == 'linux':
+    ctypes.CDLL(None).prctl(0x59616d61, ctypes.c_ulong(-1), 0, 0, 0)
+try:
+    os.execvp(sys.argv[1], sys.argv[1:])
+except OSError as exc:
+    print(str(exc), flush=True)
+    sys.exit(127)
+"""
 
-    If the executable is not found a return code of 127 is returned and a small error string is
-    provided as output to aid diagnosis.
+
+def _module_timeout() -> float:
+    value = float(os.environ.get("FREECAD_GUI_TEST_MODULE_TIMEOUT", "900"))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("FREECAD_GUI_TEST_MODULE_TIMEOUT must be finite and positive")
+    return value
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    # Do this even when the leader has exited: grandchildren may own the pipe.
+    # gdb puts its inferior in another group in the same session. Kill those
+    # groups too, before gdb, so even a stuck debugger cannot leave an orphan
+    # holding our output pipe open.
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            pid = int(entry.name)
+            if os.getsid(pid) == proc.pid:
+                group = os.getpgid(pid)
+                if group != proc.pid:
+                    os.killpg(group, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            continue
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+def _gdb_capture(args: list[str], timeout: float, *, interrupt: bool = False) -> tuple[int, str]:
+    """Bound gdb itself, including symbol loading and an optional inferior run."""
+    with subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+        env={**os.environ, "DEBUGINFOD_URLS": ""},
+    ) as debugger:
+        try:
+            try:
+                output, _ = debugger.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if not interrupt:
+                    raise
+                # Signal both gdb and its inferior, so `run` returns to the
+                # subsequent `thread apply all bt`, even inside Docker.
+                os.killpg(debugger.pid, signal.SIGINT)
+                output, _ = debugger.communicate(timeout=60)
+            return debugger.returncode, output
+        except subprocess.TimeoutExpired:
+            _kill_process_group(debugger)
+            output, _ = debugger.communicate()
+            return 124, output + "\ngdb diagnostic timed out.\n"
+        finally:
+            _kill_process_group(debugger)
+
+
+def _gdb_commands() -> list[str]:
+    return [
+        "-ex",
+        "set pagination off",
+        "-ex",
+        "set confirm off",
+    ]
+
+
+def _gdb_stacks() -> list[str]:
+    return [
+        "-ex",
+        "thread apply all bt 30",
+        "-ex",
+        "thread 1",
+        "-ex",
+        "py-bt",  # Best effort: depends on installed Python gdb helpers.
+    ]
+
+
+def _timeout_backtrace(proc: subprocess.Popen, cmd: list[str], timeout: float) -> str:
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return "Cannot collect native backtraces: gdb is not installed.\n"
+    # catchsegv can leave a shell as the group leader. Find the real FreeCAD
+    # in that group rather than attaching to its wrapper.
+    pid = proc.pid
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            if (
+                os.getpgid(int(entry.name)) == proc.pid
+                and entry.joinpath("exe").resolve().name == "FreeCAD"
+            ):
+                pid = int(entry.name)
+                break
+        except (OSError, ValueError):
+            continue
+    _log(f"Collecting all-thread native backtraces with gdb (pid {pid}).")
+    _, output = _gdb_capture(
+        [gdb, "-batch", *_gdb_commands(), "-p", str(pid), *_gdb_stacks(), "-ex", "detach"],
+        60,
+    )
+    if re.search(r"^#0\s", output, re.MULTILINE):
+        return output
+    _log(output)
+    _log("gdb attach failed; killing the hung group and re-running once under gdb as parent.")
+    _kill_process_group(proc)
+    # Skip stdbuf/catchsegv: gdb must parent the actual executable, not a
+    # shell wrapper that forks it (and may not be an ELF executable at all).
+    native_cmd = cmd[-3:] if len(cmd) >= 3 and cmd[-2] == "-t" else cmd
+    _, output = _gdb_capture(
+        [gdb, "-batch", *_gdb_commands(), "-ex", "run", *_gdb_stacks(), "--args", *native_cmd],
+        timeout,
+        interrupt=True,
+    )
+    return output
+
+
+def run_and_capture(cmd: list[str]) -> tuple[int, str]:
+    """Stream combined output live, retain it, and bound the entire process group.
+
+    A silent child, a partial line, and a pipe held open by an orphan are all
+    covered by the same wall-clock deadline. Timeout is always exit code 124.
     """
     try:
-        proc = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+        timeout = _module_timeout()
+    except ValueError as exc:
+        output = f"Invalid FREECAD_GUI_TEST_MODULE_TIMEOUT: {exc}\n"
+        _log(output.rstrip())
+        return 2, output
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _PTRACE_LAUNCHER, *cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-        return proc.returncode, proc.stdout
-    except FileNotFoundError:
-        return 127, f"Executable not found: {cmd[0]}\n"
+    except OSError as exc:
+        output = f"Could not launch {cmd[0]}: {exc}\n"
+        _log(output.rstrip())
+        return 127, output
+    chunks: list[str] = []
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            while selector.get_map() or proc.poll() is None:
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    message = f"TIMEOUT: {cmd[-1]} after {timeout:g} s\n"
+                    _log(message.rstrip())
+                    chunks.append(message)
+                    trace = _timeout_backtrace(proc, cmd, timeout)
+                    _log(trace.rstrip())
+                    chunks.append(trace)
+                    return 124, "".join(chunks)
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    data = os.read(key.fd, 65536)
+                    text = decoder.decode(data, final=not data)
+                    chunks.append(text)
+                    # Flush every read, including partial lines; readline()
+                    # would block the watchdog on a child without a newline.
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    if not data:
+                        selector.unregister(key.fileobj)
+            return proc.wait(), "".join(chunks)
+    finally:
+        _kill_process_group(proc)
+        proc.stdout.close()
 
 
 def parse_registered_tests(output: str) -> list[str]:
@@ -274,6 +453,8 @@ def evaluate_unit_result(rc: int, output: str, *, mandatory: bool = False) -> tu
 
     ``mandatory`` suites must also execute at least one test that is not skipped.
     """
+    if rc == 124:
+        return 124, "Module timed out; see watchdog backtraces above."
     if _died_from_signal(rc):
         return 1, f"GUI child segfaulted ({_format_rc(rc)})."
     completed = parse_completed_test_count(output)
@@ -639,6 +820,24 @@ def _rerun_under_gdb(freecad_exec: str, unit: str, run: RunCommand) -> str:
     if not gdb:
         return ""
     _log(f"Re-running {unit} under gdb for a backtrace.", error=True)
+    if run is run_and_capture:
+        _, output = _gdb_capture(
+            [
+                gdb,
+                "-batch",
+                *_gdb_commands(),
+                "-ex",
+                "run",
+                *_gdb_stacks(),
+                "--args",
+                freecad_exec,
+                "-t",
+                unit,
+            ],
+            _module_timeout(),
+            interrupt=True,
+        )
+        return output
     _, gdb_out = run(
         [
             gdb,
@@ -675,7 +874,8 @@ def run_gui_modules(
             f"Warning: listing tests returned exit code {_format_rc(listing_rc)}.",
             error=True,
         )
-        _log(listing_out, error=True)
+        if run is not run_and_capture:
+            _log(listing_out, error=True)
     disc_rc, gui_tests, disc_err = discover_gui_suites(
         listing_rc, listing_out, expected_suites
     )
@@ -702,7 +902,8 @@ def run_gui_modules(
             before_reports = _fcrash_files_under(report_roots)
             cmd = _line_buffered([freecad_exec, "-t", unit])
             rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
-            _log(out)
+            if run is not run_and_capture:
+                _log(out)
             eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in expected_suites)
             if eval_rc != 0:
                 _log(f"Module {unit}: {eval_err}", error=True)
