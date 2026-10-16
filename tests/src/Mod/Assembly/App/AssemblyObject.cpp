@@ -59,6 +59,56 @@ protected:
         return _document;
     }
 
+    void makeSolveFixture(bool conflicting = false)
+    {
+        Base::Interpreter().runStringArg(
+            "import FreeCAD as App, Assembly\n"
+            "from unittest.mock import patch\n"
+            "_c1_a = App.getDocument('%s').getObject('%s')\n"
+            "_c1_base = _c1_a.newObject('Part::Box', 'Base')\n"
+            "_c1_lid = _c1_a.newObject('Part::Box', 'Lid')\n"
+            "_c1_a.Document.recompute()\n"
+            "Assembly.createGroundedJoint(_c1_a, _c1_base, recompute=False)\n"
+            "_c1_refs = (Assembly.makeJointReference(_c1_base, 'Face1'), "
+            "Assembly.makeJointReference(_c1_lid, 'Face1'))\n"
+            "Assembly.createJoint(_c1_a, 'Fixed', *_c1_refs, solve=False, recompute=False)\n",
+            getDocument()->getName(),
+            getObject()->getNameInDocument()
+        );
+        if (conflicting) {
+            Base::Interpreter().runString(
+                "Assembly.createJoint(_c1_a, 'Distance', *_c1_refs, Distance=100, "
+                "solve=False, presolve=False, recompute=False)\n"
+            );
+        }
+    }
+
+    int pythonSolve(const char* patchExpression = nullptr)
+    {
+        Base::PyGILStateLocker lock;
+        if (patchExpression) {
+            Base::Interpreter().runStringArg(
+                "with %s:\n    _c1_status = _c1_a.solve(False)\n", patchExpression
+            );
+        }
+        else {
+            Base::Interpreter().runString("_c1_status = _c1_a.solve(False)");
+        }
+        return static_cast<int>(Py::Long(Base::Interpreter().runStringObject("_c1_status")));
+    }
+
+    void expectValidationFailure(const char* patchExpression)
+    {
+        makeSolveFixture();
+        EXPECT_EQ(pythonSolve(patchExpression), -7);
+        EXPECT_EQ(getObject()->getLastSolverStatus(), -7);
+        getObject()->updateSolveStatus();
+        EXPECT_EQ(getObject()->getLastSolverStatus(), -7);
+        // A subsequent successful validation must clear the failure.
+        EXPECT_EQ(pythonSolve(), 0);
+        EXPECT_EQ(getObject()->getLastSolverStatus(), 0);
+    }
+
 private:
     // TODO: use shared_ptr or something else here?
     Assembly::AssemblyObject* _assemblyObj;
@@ -74,6 +124,73 @@ TEST_F(AssemblyObjectTest, createAssemblyObject)  // NOLINT
     // Act
 
     // Assert
+}
+
+TEST_F(AssemblyObjectTest, conflictingSolveAgreesWithStoredStatus)  // NOLINT
+{
+    makeSolveFixture(true);
+    EXPECT_EQ(pythonSolve(), -3);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    getObject()->updateSolveStatus();
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    EXPECT_TRUE(getObject()->getLastHasConflicts());
+}
+
+TEST_F(AssemblyObjectTest, conflictingExecuteReportsFailure)  // NOLINT
+{
+    makeSolveFixture(true);
+    auto prefs = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Mod/Assembly"
+    );
+    const bool previous = prefs->GetBool("SolveOnRecompute", true);
+    prefs->SetBool("SolveOnRecompute", true);
+    auto* result = getObject()->execute();
+    EXPECT_NE(result, App::DocumentObject::StdReturn);
+    if (result != App::DocumentObject::StdReturn) {
+        EXPECT_FALSE(result->Why.empty());
+        delete result;
+    }
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    prefs->SetBool("SolveOnRecompute", false);
+    EXPECT_EQ(getObject()->execute(), App::DocumentObject::StdReturn);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    prefs->SetBool("SolveOnRecompute", previous);
+}
+
+TEST_F(AssemblyObjectTest, validatorImportFailureIsFailure)  // NOLINT
+{
+    expectValidationFailure("patch.dict('sys.modules', {'UtilsAssembly': None})");
+}
+
+TEST_F(AssemblyObjectTest, validatorCallFailureIsFailure)  // NOLINT
+{
+    expectValidationFailure(
+        "patch('UtilsAssembly.violatedJointLabels', "
+        "side_effect=RuntimeError('C1 validator error'))"
+    );
+}
+
+TEST_F(AssemblyObjectTest, validatorMissingFunctionIsFailure)  // NOLINT
+{
+    expectValidationFailure(
+        "patch.dict('sys.modules', "
+        "{'UtilsAssembly': __import__('types').ModuleType('UtilsAssembly')})"
+    );
+}
+
+TEST_F(AssemblyObjectTest, validatorNonCallableIsFailure)  // NOLINT
+{
+    expectValidationFailure("patch('UtilsAssembly.violatedJointLabels', new=None)");
+}
+
+TEST_F(AssemblyObjectTest, validatorNonListIsFailure)  // NOLINT
+{
+    for (const char* value : {"None", "()", "{}", "False", "'invalid'"}) {
+        SCOPED_TRACE(value);
+        const std::string patchExpression =
+            std::string("patch('UtilsAssembly.violatedJointLabels', return_value=") + value + ")";
+        expectValidationFailure(patchExpression.c_str());
+    }
 }
 
 TEST_F(AssemblyObjectTest, recomputeAppliesSolverWritesToMemberPlacements)  // NOLINT

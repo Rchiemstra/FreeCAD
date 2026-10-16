@@ -950,6 +950,35 @@ class TestCore(AssemblyTestBase):
         self.assertEqual(status, -3, (UtilsAssembly.__file__, details))
         self.assertTrue(UtilsAssembly.violatedJointLabels(self.assembly))
 
+    def test_recompute_conflicting_assembly_reports_error(self):
+        self._fixed_distance_fixture(100)
+        prefs = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Assembly")
+        previous = prefs.GetBool("SolveOnRecompute", True)
+        try:
+            prefs.SetBool("SolveOnRecompute", True)
+            self.assembly.touch()
+            self.doc.recompute()
+            self.assertIn("Invalid", self.assembly.State)
+            self.assertEqual(self.assembly.solve(False), -3)
+            prefs.SetBool("SolveOnRecompute", False)
+            self.assembly.touch()
+            self.doc.recompute()
+            self.assertNotIn("Invalid", self.assembly.State)
+        finally:
+            prefs.SetBool("SolveOnRecompute", previous)
+
+    def test_validator_failure_never_reports_success(self):
+        self._fixed_distance_fixture(0)
+        validators = (
+            patch.dict("sys.modules", {"UtilsAssembly": None}),
+            patch("UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")),
+            patch("UtilsAssembly.violatedJointLabels", return_value=None),
+        )
+        for validator in validators:
+            with self.subTest(validator=validator), validator:
+                self.assertEqual(self.assembly.solve(False), -7)
+        self.assertEqual(self.assembly.solve(False), 0)
+
     def test_api_flipped_fixed_joint_solves(self):
         """Native Fixed accepts coincident frames with any two axes reversed."""
         for axis in (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1)):
