@@ -697,7 +697,8 @@ PyObject* ApplicationPy::sTryRunPresentationCallback(PyObject* /*self*/, PyObjec
         return nullptr;
     }
     PyObject* callback = nullptr;
-    if (!PyArg_ParseTuple(args, "O", &callback)) {
+    PyObject* documentObject = Py_None;
+    if (!PyArg_ParseTuple(args, "O|O", &callback, &documentObject)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
@@ -710,6 +711,31 @@ PyObject* ApplicationPy::sTryRunPresentationCallback(PyObject* /*self*/, PyObjec
     App::LivePresentationRefreshScope refresh;
     if (!refresh.acquired()) {
         Py_RETURN_FALSE;
+    }
+    // Model mutation readiness can be true while the owner lane is still
+    // completing its request. Use the same guard as Python view-provider hooks
+    // so a factory cannot write presentation properties whose onChanged hooks
+    // would then be deferred and lost by model-only idle catch-up.
+    if (documentObject != Py_None) {
+        if (!PyObject_TypeCheck(documentObject, &App::DocumentPy::Type)) {
+            PyErr_SetString(PyExc_TypeError, "Expected an App.Document or None");
+            return nullptr;
+        }
+        auto* documentPy = static_cast<App::DocumentPy*>(documentObject);
+        if (!documentPy->isValid()) {
+            PyErr_SetString(PyExc_ReferenceError, "Document has been deleted");
+            return nullptr;
+        }
+        auto* guiDocument = Application::Instance
+            ? Application::Instance->getDocument(documentPy->getDocumentPtr())
+            : nullptr;
+        if (!guiDocument || guiDocument->isAboutToClose()) {
+            PyErr_SetString(PyExc_ReferenceError, "GUI document is unavailable");
+            return nullptr;
+        }
+        if (guiDocument->deferLivePresentationUpdates()) {
+            Py_RETURN_FALSE;
+        }
     }
     PyObject* result = PyObject_CallNoArgs(callback);
     if (!result) {

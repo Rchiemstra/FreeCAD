@@ -548,12 +548,16 @@ def getDocument(doc: str | App.Document, /) -> Document:
     """Return one GUI document by name or application document."""
     ...
 
-def tryRunPresentationCallback(callback: Callable[[], object], /) -> bool:
+def tryRunPresentationCallback(
+    callback: Callable[[], object], document: App.Document | None = None, /
+) -> bool:
     """Run a callback under an idle live-presentation reservation on Qt's main thread.
 
-    Return False without calling it while atomic mutation admission is active.
+    Return False without calling it while atomic mutation admission is active
+    or the optional target document cannot run live presentation hooks.
     The reservation keeps new admission out until the callback returns; it does
     not grant document mutation authority. Callback exceptions propagate.
+    A deleted or unavailable GUI document raises ReferenceError.
     """
     ...
 

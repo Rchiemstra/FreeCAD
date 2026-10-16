@@ -516,7 +516,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1158,
+      "line": 1184,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -524,7 +524,7 @@
     },
     {
       "path": "src/Gui/ApplicationPy.cpp",
-      "line": 1952,
+      "line": 1978,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -19372,7 +19372,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 234,
+      "line": 237,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19380,7 +19380,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 241,
+      "line": 244,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19388,7 +19388,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 734,
+      "line": 737,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19396,7 +19396,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 873,
+      "line": 876,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19404,7 +19404,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1011,
+      "line": 1014,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19412,7 +19412,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1047,
+      "line": 1050,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19420,7 +19420,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1132,
+      "line": 1135,
       "category": "process-events-polling",
       "subsystem": "Draft",
       "disposition": "investigate",

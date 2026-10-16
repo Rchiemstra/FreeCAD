@@ -106,8 +106,11 @@ if App.GuiUp:
         def run(self):
             # The native reservation closes the race between checking document
             # readiness and installing providers or writing their properties.
-            if not Gui.tryRunPresentationCallback(self.apply):
-                QtCore.QTimer.singleShot(10, self.run)
+            try:
+                if not Gui.tryRunPresentationCallback(self.apply, self.document):
+                    QtCore.QTimer.singleShot(10, self.run)
+            except ReferenceError:
+                self.finish()
 
         def apply(self):
             try:

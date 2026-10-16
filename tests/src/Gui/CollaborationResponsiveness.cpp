@@ -18,6 +18,8 @@
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
+#include <Gui/ApplicationPy.h>
+#include <Base/Interpreter.h>
 #include <Gui/Camera.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
@@ -738,4 +740,73 @@ TEST_F(CollaborationResponsivenessTest,
     EXPECT_EQ(refreshCalls, 1);
     EXPECT_EQ(provider->getObject()->Label.getStrValue(), "Refreshed after owner release");
     EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       presentationCallbackWaitsForIdleLaneEvenWhenModelIsReady)
+{
+    QApplication::processEvents();
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    PreparationGate gate;
+    auto work = lane->postToOwner([&] {
+        lane->beginRecoverySnapshotOwnerWork();
+        const auto endWork = qScopeGuard([&] { lane->endRecoverySnapshotOwnerWork(); });
+        return gate.enter({});
+    });
+    const auto release = qScopeGuard([&] {
+        gate.release();
+        work.wait();
+    });
+    ASSERT_TRUE(gate.waitUntilEntered());
+    ASSERT_TRUE(_document->getMutationReadiness().ready);
+    ASSERT_FALSE(lane->isIdle());
+    ASSERT_TRUE(_guiDocument->deferLivePresentationUpdates());
+
+    Base::PyGILStateLocker gil;
+    PyObject* globals = PyDict_New();
+    ASSERT_NE(globals, nullptr);
+    const auto releaseGlobals = qScopeGuard([&] { Py_DECREF(globals); });
+    ASSERT_EQ(PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins()), 0);
+    PyObject* calls = PyList_New(0);
+    ASSERT_NE(calls, nullptr);
+    const auto releaseCalls = qScopeGuard([&] { Py_DECREF(calls); });
+    ASSERT_EQ(PyDict_SetItemString(globals, "calls", calls), 0);
+    PyObject* callback = PyRun_String("lambda: calls.append(1)", Py_eval_input, globals, globals);
+    ASSERT_NE(callback, nullptr);
+    const auto releaseCallback = qScopeGuard([&] { Py_DECREF(callback); });
+    PyObject* document = _document->getPyObject();
+    const auto releaseDocument = qScopeGuard([&] { Py_DECREF(document); });
+
+    auto invoke = [&](bool targeted) {
+        PyObject* args = targeted ? PyTuple_Pack(2, callback, document)
+                                  : PyTuple_Pack(1, callback);
+        PyObject* result = Gui::ApplicationPy::sTryRunPresentationCallback(nullptr, args);
+        Py_DECREF(args);
+        if (!result) {
+            PyErr_Print();
+            return -1;
+        }
+        const int truth = PyObject_IsTrue(result);
+        Py_DECREF(result);
+        return truth;
+    };
+
+    // Snapshot owner work holds no mutation admission, so the old global-only
+    // reservation admits it. The target lane must still reject presentation.
+    EXPECT_EQ(invoke(false), 1);
+    EXPECT_EQ(PyList_Size(calls), 1);
+    EXPECT_EQ(invoke(true), 0);
+    EXPECT_EQ(PyList_Size(calls), 1);
+
+    gate.release();
+    ASSERT_EQ(work.wait_for(5s), std::future_status::ready);
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(lane->isIdle());
+    EXPECT_EQ(invoke(true), 1);
+    EXPECT_EQ(PyList_Size(calls), 2);
 }

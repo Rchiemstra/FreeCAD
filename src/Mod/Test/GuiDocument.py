@@ -192,6 +192,58 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
+    def testPresentationCallbackWaitsForDocumentLane(self):
+        """Factory presentation must not start while the target lane is busy."""
+        from Test.GuiRecompute import _pump_gui_until
+
+        entered = threading.Event()
+        release = threading.Event()
+        errors = []
+        callbacks = []
+        main_thread = threading.get_ident()
+
+        def hold_lane():
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("presentation regression did not release the owner")
+
+        def worker():
+            try:
+                result = self.doc.commitCompatibilityMutation(
+                    hold_lane, structural=False, recompute=False
+                )
+                self.assertTrue(result["committed"], result)
+            except BaseException as exc:
+                errors.append(exc)
+
+        def presented():
+            callbacks.append(threading.get_ident())
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            _pump_gui_until(entered.is_set, 5)
+            self.assertFalse(FreeCADGui.tryRunPresentationCallback(presented, self.doc))
+            self.assertFalse(callbacks)
+        finally:
+            release.set()
+            _pump_gui_until(lambda: not thread.is_alive(), 10)
+            thread.join()
+        if errors:
+            raise errors[0]
+        _pump_gui_until(
+            lambda: FreeCADGui.tryRunPresentationCallback(presented, self.doc), 5
+        )
+        self.assertEqual(callbacks, [main_thread])
+
+    def testPresentationCallbackRejectsDeletedDocument(self):
+        closed = FreeCAD.newDocument("ClosedPresentationTarget")
+        close_document(closed)
+        callbacks = []
+        with self.assertRaises(ReferenceError):
+            FreeCADGui.tryRunPresentationCallback(lambda: callbacks.append(True), closed)
+        self.assertFalse(callbacks)
+
     def testRefreshRunsUnoptedFeaturePythonOnTheOwnerThread(self):
         """An un-opted scripted feature recomputes, on the owner thread.
 
