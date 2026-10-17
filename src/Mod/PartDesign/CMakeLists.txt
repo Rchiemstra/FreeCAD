@@ -41,6 +41,7 @@ set(PartDesign_TestScripts
     PartDesignTests/TestDatum.py
     PartDesignTests/TestShapeBinder.py
     PartDesignTests/TestPad.py
+    PartDesignTests/TestAllowanceProfile.py
     PartDesignTests/TestPocket.py
     PartDesignTests/TestHelix.py
     PartDesignTests/TestHole.py
@@ -69,6 +70,7 @@ set(PartDesign_TestScripts
 if(BUILD_GUI)
     list(APPEND PartDesign_TestScripts
         PartDesignTests/TestMaterial.py
+        PartDesignTests/TestAllowanceProfileGui.py
         PartDesignTests/TestSuppressed.py
     )
 endif(BUILD_GUI)
