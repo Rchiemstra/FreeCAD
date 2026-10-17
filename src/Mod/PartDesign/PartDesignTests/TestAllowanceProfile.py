@@ -29,7 +29,9 @@ class TestAllowanceProfile(unittest.TestCase):
     def rectangle(self, sketch, x0, y0, x1, y1):
         points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         for a, b in zip(points, points[1:] + points[:1]):
-            sketch.addGeometry(Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False)
+            sketch.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
 
     def profile(self, sketch, allowance):
         from PartDesign.AllowanceProfile import makeAllowanceProfile
@@ -85,7 +87,9 @@ class TestAllowanceProfile(unittest.TestCase):
             with self.subTest(allowance=a):
                 p = self.profile(s, a)
                 self.assertEqual(len(p.Shape.Wires), 2)
-                self.assertAlmostEqual(self.area(p), (20 + 2*a)*(16 + 2*a) - math.pi*(3-a)**2)
+                self.assertAlmostEqual(
+                    self.area(p), (20 + 2 * a) * (16 + 2 * a) - math.pi * (3 - a) ** 2
+                )
 
     def testPadVolume(self):
         p = self.profile(self.circle(), -0.1)
@@ -113,7 +117,14 @@ class TestAllowanceProfile(unittest.TestCase):
     def testZeroAllowance(self):
         s = self.circle()
         p = self.profile(s, 0)
-        self.assertEqual(p.Shape.exportBrepToString(), s.Shape.exportBrepToString())
+        # Equivalent location chains can have different BRep serializations.
+        nominal = Part.makeFace(s.Shape.Wires, "Part::FaceMakerBullseye")
+        actual = Part.makeFace(p.Shape.Wires, "Part::FaceMakerBullseye")
+        self.assertAlmostEqual(nominal.Area + actual.Area - 2 * nominal.common(actual).Area, 0)
+        self.assertEqual(len(p.Shape.Wires), len(s.Shape.Wires))
+        self.assertEqual(len(p.Shape.Edges), len(s.Shape.Edges))
+        self.assertAlmostEqual(p.Shape.Length, s.Shape.Length)
+        self.assertTrue(p.Placement.isSame(s.Placement, 1e-7))
 
     def testRecomputeSketchAndExpression(self):
         s = self.circle()
@@ -197,10 +208,92 @@ class TestAllowanceProfile(unittest.TestCase):
         s = self.body.newObject("Sketcher::SketchObject", "Nominal")
         points = [(0, 0), (10, 10), (0, 10), (10, 0)]
         for a, b in zip(points, points[1:] + points[:1]):
-            s.addGeometry(Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False)
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
         self.assertInvalid(self.profile(s, 0.1))
 
     def testOpenSource(self):
         s = self.body.newObject("Sketcher::SketchObject", "Nominal")
         s.addGeometry(Part.LineSegment(App.Vector(), App.Vector(10, 0, 0)), False)
         self.assertInvalid(self.profile(s, 0.1))
+
+    def testNarrowBridgeCollapse(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        points = [
+            (0, 0),
+            (4, 0),
+            (4, 1.5),
+            (6, 1.5),
+            (6, 0),
+            (10, 0),
+            (10, 4),
+            (6, 4),
+            (6, 2.5),
+            (4, 2.5),
+            (4, 4),
+            (0, 4),
+        ]
+        for a, b in zip(points, points[1:] + points[:1]):
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
+        self.assertInvalid(self.profile(s, -0.6))
+
+    def testNarrowAppendageCollapse(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        points = [(0, 0), (4, 0), (4, 1.5), (8, 1.5), (8, 2.5), (4, 2.5), (4, 4), (0, 4)]
+        for a, b in zip(points, points[1:] + points[:1]):
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
+        self.assertInvalid(self.profile(s, -0.6))
+
+    def testNestedIslandAndReversedWinding(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        # Rectangle construction has identical winding for the first two loops.
+        self.rectangle(s, -10, -10, 10, 10)
+        self.rectangle(s, -6, -6, 6, 6)
+        self.rectangle(s, 2, -2, -2, 2)
+        p = self.profile(s, 0.2)
+        self.assertAlmostEqual(self.area(p), 20.4**2 - 11.6**2 + 4.4**2)
+
+    def testValidConcaveProfile(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        points = [(0, 0), (5, 0), (5, 2), (2, 2), (2, 5), (0, 5)]
+        for a, b in zip(points, points[1:] + points[:1]):
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
+        for allowance in (0.1, -0.1):
+            with self.subTest(allowance=allowance):
+                p = self.profile(s, allowance)
+                self.assertNotIn("Invalid", p.State)
+                self.assertAlmostEqual(self.area(p), 16 + 20 * allowance + 4 * allowance**2)
+
+    def testNarrowRecessCollapse(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        points = [(0, 0), (10, 0), (10, 10), (5.5, 10), (5.5, 5), (4.5, 5), (4.5, 10), (0, 10)]
+        for a, b in zip(points, points[1:] + points[:1]):
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
+        self.assertInvalid(self.profile(s, 0.6))
+
+    def testNarrowAppendageOnLargeProfile(self):
+        s = self.body.newObject("Sketcher::SketchObject", "Nominal")
+        points = [
+            (0, 0),
+            (1000, 0),
+            (1000, 499.95),
+            (1000.5, 499.95),
+            (1000.5, 500.05),
+            (1000, 500.05),
+            (1000, 1000),
+            (0, 1000),
+        ]
+        for a, b in zip(points, points[1:] + points[:1]):
+            s.addGeometry(
+                Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
+            )
+        self.assertInvalid(self.profile(s, -0.06))

@@ -6,7 +6,7 @@ import unittest
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
-from Test.GuiRecompute import close_document, recompute_document
+from Test.GuiRecompute import close_document, recompute_document, undo_document, redo_document
 
 
 class TestAllowanceProfileGui(unittest.TestCase):
@@ -45,13 +45,23 @@ class TestAllowanceProfileGui(unittest.TestCase):
         self.assertTrue(panel.accept())
         recompute_document(self.doc)
         self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.2)
-        self.doc.undo()
+        undo_document(self.doc)
         recompute_document(self.doc)
         self.assertIsNone(self.doc.getObject("AllowanceProfile"))
         self.assertTrue(self.sketch.Visibility)
-        self.doc.redo()
+        redo_document(self.doc)
         recompute_document(self.doc)
         self.assertAlmostEqual(self.doc.AllowanceProfile.Shape.Edges[0].Curve.Radius, 5.2)
+
+    def testWorkbenchMenuAndReactivation(self):
+        from PySide import QtGui
+
+        for workbench in ("PartDesignWorkbench", "PartWorkbench", "PartDesignWorkbench"):
+            Gui.activateWorkbench(workbench)
+        menu = Gui.getMainWindow().findChild(QtGui.QMenu, "&Part Design")
+        self.assertIsNotNone(menu)
+        actions = [a for a in menu.actions() if a.objectName() == "PartDesign_AllowanceProfile"]
+        self.assertEqual(len(actions), 1)
 
     def testCancelCreation(self):
         p, panel = self.create()
@@ -79,3 +89,26 @@ class TestAllowanceProfileGui(unittest.TestCase):
         self.assertFalse(command.IsActive())
         Gui.activeDocument().activeView().setActiveObject("pdbody", self.body)
         self.assertTrue(command.IsActive())
+
+    def testInvalidAllowanceKeepsTaskOpen(self):
+        p, panel = self.create()
+        panel.input.setText("-6 mm")
+        self.assertFalse(panel.accept())
+        self.assertIsNotNone(Gui.Control.activeDialog())
+        self.assertIn("allowance", panel.error.text().lower())
+        panel.input.setText("-0.1 mm")
+        self.assertTrue(panel.accept())
+        recompute_document(self.doc)
+        self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 4.9)
+
+    def testEditPreservesExpression(self):
+        p, panel = self.create()
+        self.assertTrue(panel.accept())
+        recompute_document(self.doc)
+        p.setExpression("Allowance", "0.2 mm")
+        recompute_document(self.doc)
+        Gui.activeDocument().setEdit(p.Name)
+        self.assertTrue(p.ViewObject.Proxy.panel.accept())
+        recompute_document(self.doc)
+        self.assertEqual(dict(p.ExpressionEngine)["Allowance"], "0.2 mm")
+        self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.2)

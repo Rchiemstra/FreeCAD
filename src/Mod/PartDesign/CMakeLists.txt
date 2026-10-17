@@ -10,12 +10,14 @@ endif(BUILD_GUI)
 set(PartDesign_Scripts
     __init__.py
     Init.py
+    AllowanceProfile.py
     TestPartDesignApp.py
 )
 
 if(BUILD_GUI)
     list (APPEND PartDesign_Scripts
           InitGui.py
+          AllowanceProfileGui.py
           TestPartDesignGui.py
           InvoluteGearFeature.py
           InvoluteGearFeature.ui
