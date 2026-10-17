@@ -271,6 +271,7 @@
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
+    "src/Mod/Sketcher/SketchReferenceRepairGui.py",
     "src/Mod/Start/StartMigrator.py",
     "src/Mod/AddonManager/AddonManager.py",
     "src/Mod/AddonManager/addonmanager_python_deps.py",

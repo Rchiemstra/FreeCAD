@@ -36,6 +36,7 @@
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Part/App/LinePy.h>
 #include <Mod/Part/App/OCCError.h>
+#include <Mod/Part/App/TopoShape.h>
 
 #include "PythonConverter.h"
 
@@ -47,6 +48,7 @@
 // other python types
 #include "ConstraintPy.h"
 #include "GeometryFacadePy.h"
+#include "ExternalGeometryFacade.h"
 #include "SketchAnalysis.h"
 
 
@@ -797,6 +799,70 @@ PyObject* SketchObjectPy::addExternal(PyObject* args)
     }
 
     return PyLong_FromLong(static_cast<long>(Sketcher::GeoEnum::RefExt) - extIndex);
+}
+
+PyObject* SketchObjectPy::getExternalReferenceType(PyObject* args) const
+{
+    int geoId;
+    if (!PyArg_ParseTuple(args, "i", &geoId)) {
+        return nullptr;
+    }
+    auto* sketch = getSketchObjectPtr();
+    if (geoId > GeoEnum::RefExt || geoId < -sketch->getExternalGeometryCount()) {
+        PyErr_SetString(PyExc_ValueError, "Invalid external geometry index");
+        return nullptr;
+    }
+    auto facade = ExternalGeometryFacade::getFacade(sketch->getGeometry(geoId));
+    if (!facade) {
+        return PyUnicode_FromString("");
+    }
+    const auto& ref = facade->getRef();
+    auto pos = ref.find('.');
+    if (pos == std::string::npos) {
+        return PyUnicode_FromString("");
+    }
+    // Parse the stored name against an empty map: a new source shape must not
+    // reinterpret the original reference type through a reused mapped name.
+    const Part::TopoShape referenceShape;
+    switch (referenceShape.elementType(ref.c_str() + pos + 1)) {
+    case 'E':
+        return PyUnicode_FromString("Edge");
+    case 'V':
+        return PyUnicode_FromString("Vertex");
+    case 'F':
+        return PyUnicode_FromString("Face");
+    default:
+        return PyUnicode_FromString("");
+    }
+}
+
+PyObject* SketchObjectPy::attachExternal(PyObject* args)
+{
+    int geoId;
+    const char* objectName;
+    const char* subName;
+    if (!PyArg_ParseTuple(args, "iss", &geoId, &objectName, &subName)) {
+        return nullptr;
+    }
+    auto* sketch = getSketchObjectPtr();
+    auto* object = sketch->getDocument()->getObject(objectName);
+    if (!object || geoId > GeoEnum::RefExt
+        || geoId < -sketch->getExternalGeometryCount()) {
+        PyErr_SetString(PyExc_ValueError, "Invalid external geometry or target object");
+        return nullptr;
+    }
+    try {
+        int index = sketch->attachExternal({geoId}, object, subName);
+        if (index < 0) {
+            PyErr_SetString(PyExc_ValueError, "Cannot reattach external geometry to this subelement");
+            return nullptr;
+        }
+        return PyLong_FromLong(index);
+    }
+    catch (const Base::Exception& e) {
+        e.setPyException();
+        return nullptr;
+    }
 }
 
 PyObject* SketchObjectPy::delExternal(PyObject* args)

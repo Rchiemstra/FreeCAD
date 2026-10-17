@@ -359,6 +359,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     # BasicShapes' view-provider helpers are loaded by its command module.
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
+    "src/Mod/Sketcher/SketchReferenceRepairGui.py",
     "src/Mod/Start/StartMigrator.py",
     # AddonManager has no Gui/ directory; InitGui loads these GUI controllers.
     "src/Mod/AddonManager/AddonManager.py",
@@ -395,6 +396,7 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
 # out of the presentation inventory. Each exclusion is individually reviewed
 # as a model/IO/solver helper; GUI-bearing modules are promoted into scope.
 REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
+    "src/Mod/Sketcher/SketchReferenceRepair.py": "Sketcher reference ranking and transactional model repair; no GUI handlers",
     "src/Mod/BIM/importers/exportIFCHelper.py": "BIM IFC helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Op/SurfaceSupport.py": "CAM geometry helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Tool/shape/models/base.py": "CAM shape model helper; GUI caller is inventoried",
