@@ -13,6 +13,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentCommandHandle.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
@@ -1343,6 +1344,54 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOwnerIngressCloseCancelsPendingWrite)
     ASSERT_TRUE(processEventsUntil([&] {
         return !App::GetApplication().getDocument(documentName.c_str());
     }));
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerAsyncCloseBeforeCompletionPoll)
+{
+    using namespace std::chrono_literals;
+    auto lane = document->executionLane()->shared_from_this();
+    auto& owner = Gui::AutoSaver::instance()->recoveryWrites();
+    const auto cancelOnFailure = qScopeGuard([&] {
+        if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
+            owner.cancelDocument(*doc);
+        }
+    });
+    bool called = false;
+    ASSERT_TRUE(Gui::scheduleRecoverySnapshotWrite(*document, {},
+        [&](bool, std::exception_ptr) { called = true; }));
+    auto barrier = lane->postToOwner([] {});
+    // Service serialization's marshalled GUI work, but never the executor's
+    // Qt completion timer. The write retires while its GUI pin remains held.
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (barrier.wait_for(0ms) != std::future_status::ready
+           && std::chrono::steady_clock::now() < deadline) {
+        App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
+    }
+    ASSERT_EQ(barrier.wait_for(0ms), std::future_status::ready);
+    ASSERT_TRUE(lane->isIdle());
+    ASSERT_TRUE(QFileInfo::exists(metadataPath()));
+    ASSERT_TRUE(document->collaborationService().closeAdmissionActive());
+    ASSERT_FALSE(called);
+    App::DocumentCommandHandle closeHandle;
+    {
+        Base::PyGILStateLocker gil;
+        Py::Object pythonDocument(document->getPyObject());
+        Py::Object handle = pythonDocument.callMemberFunction("closeAsync");
+        Py::Dict status(handle.callMemberFunction("status"));
+        closeHandle = App::DocumentCommandHandle(
+            Py::Long(status.getItem("id")).as_long(), document->executionHandle().identity());
+    }
+    const auto closeDeadline = std::chrono::steady_clock::now() + 5s;
+    while (!closeHandle.status().terminal()
+           && std::chrono::steady_clock::now() < closeDeadline) {
+        App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
+    }
+    EXPECT_EQ(closeHandle.status().state, App::DocumentCommandState::Completed)
+        << closeHandle.status().diagnostic;
+    ASSERT_EQ(App::GetApplication().getDocument(documentName.c_str()), nullptr);
     document = nullptr; guiDocument = nullptr; object = nullptr;
     QCoreApplication::processEvents();
     EXPECT_FALSE(called);
