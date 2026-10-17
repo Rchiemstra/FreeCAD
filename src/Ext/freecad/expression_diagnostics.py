@@ -18,6 +18,7 @@ transactions, status resets, dependency rebuilds or event pumping occur here.
 """
 
 from collections import defaultdict, deque
+import inspect
 import math
 import re
 
@@ -50,9 +51,17 @@ def _target_value(obj, path, current, evaluated):
     """Account for native scalar conversions without assigning a property."""
     name = path.split(".")[0].split("[")[0]
     type_id = obj.getTypeIdOfProperty(name)
+    native_type = App.Base.TypeId.fromName(type_id)
     quantity = isinstance(evaluated, App.Units.Quantity)
     value = evaluated.Value if quantity else evaluated
-    if type_id in ("App::PropertyInteger", "App::PropertyIntegerConstraint", "App::PropertyBool"):
+    if native_type.isDerivedFrom("App::PropertyPlacement"):
+        angle = path.removeprefix(name + ".Rotation.")
+        if angle in ("Yaw", "Pitch", "Roll"):
+            limit = 90 if angle == "Pitch" else 180
+            if not isinstance(value, (float, int)) or not -limit <= value <= limit:
+                raise ValueError(f"{angle} angle is out of range [-{limit}, +{limit}].")
+    if (native_type.isDerivedFrom("App::PropertyInteger")
+            or native_type.isDerivedFrom("App::PropertyBool")):
         if not isinstance(value, (float, int)):
             raise TypeError(f"Expression result cannot be assigned to {type_id}.")
         rounded = math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
@@ -80,6 +89,25 @@ def _target_value(obj, path, current, evaluated):
             evaluated, (float, int, App.Units.Quantity)):
         raise TypeError(f"Expression result cannot be assigned to {type_id}.")
     return evaluated
+
+
+def _python_path_reason(obj, path):
+    """Inspect metadata only: never fetch a Python property or descriptor."""
+    names = re.findall(r"[A-Za-z_][A-Za-z_0-9]*", path)
+    if "Proxy" in names:
+        return "Python Proxy attribute access may run document-modifying code."
+    if obj is None or not names:
+        return ""
+    name = names[0]
+    if name in obj.PropertiesList:
+        native_type = App.Base.TypeId.fromName(obj.getTypeIdOfProperty(name))
+        if native_type.isDerivedFrom("App::PropertyPythonObject"):
+            return f"Python property {name} may run document-modifying code."
+    attribute = inspect.getattr_static(obj, name, None)
+    if (isinstance(attribute, property) or inspect.isfunction(attribute)
+            or inspect.isfunction(inspect.getattr_static(type(attribute), "__get__", None))):
+        return f"Python attribute {name} may run document-modifying code."
+    return ""
 
 
 def _equal(current, evaluated):
@@ -186,6 +214,14 @@ def diagnose(document):
                 dependency = ref["object"]
                 if dependency is not None:
                     pending.append(dependency)
+            reason = _python_path_reason(obj, key[1])
+            for ref in refs:
+                reason = (reason or (ref["error"] if ref.get("unresolved_metadata") else "")
+                          or _python_path_reason(ref["object"],
+                                                 ref["property"] or ref["identifier"]))
+            if reason:
+                failures[key] = ("not_evaluated", reason)
+                continue
             # Unresolved identifiers in an inactive conditional branch do not
             # make a successfully evaluated expression fail.
             try:

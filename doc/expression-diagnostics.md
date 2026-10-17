@@ -11,7 +11,7 @@ Each finding is JSON-compatible plain data: `object` (internal `Document#Object`
 `property` (including subpath), `expression`, `kind`, `message`, `role` (`root` or
 `affected`) and `chain` (ordered `{object, property}` steps from cause to consequence).
 Kinds are `unresolved_reference`, `external_document`, `unit_error`,
-`evaluation_error`, `dependency_cycle`, `stale_value`, and `dependency`.
+`evaluation_error`, `dependency_cycle`, `stale_value`, `not_evaluated`, and `dependency`.
 Multiple roots may yield multiple findings for a downstream property. One shortest
 chain per root is retained; cycles have an actual closed witness chain.
 
@@ -37,6 +37,7 @@ of their owner; non-input and structural scheduling cycles are diagnosed in both
 recompute modes. Scheduler delays without a failing binding on the consumer are
 shown as object-only consequences. Invoke on a quiescent document, consistent with existing Python
 read APIs; no event loop is pumped during observation.
+Detectable Python attribute paths and subobject expressions are conservatively reported as `not_evaluated` with a reason (subobject references carry `unresolved_metadata`), but native getters, including uncached expression serialization, can still invoke callbacks that cannot be detected statically.
 
 `DocumentObject.getExpressionReferences(text)` is the only added C++ API. Python
 cannot otherwise access the expression parser's identifiers, resolved property

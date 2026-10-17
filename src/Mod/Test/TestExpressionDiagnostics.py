@@ -196,6 +196,119 @@ class ExpressionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(a.Count, 2)
         self.assertEqual(self.diagnose(), [])
 
+    def test_healthy_percent_conversion(self):
+        a = self.obj("A")
+        a.addProperty("App::PropertyPercent", "Percent")
+        a.setExpression("Percent", "1.6")
+        recompute_document(self.doc)
+        self.assertEqual(a.Percent, 2)
+        self.assertEqual(self.diagnose(), [])
+
+    def test_placement_rotation_range(self):
+        a = self.obj("A")
+        a.addProperty("App::PropertyPlacement", "Placement")
+        for angle, value in (("Yaw", 200), ("Pitch", 100), ("Roll", -200)):
+            with self.subTest(angle=angle):
+                path = "Placement.Rotation." + angle
+                a.setExpression(path, str(value))
+                recompute_document(self.doc)
+                self.assertFalse(a.isValid())
+                rows = self.diagnose()
+                self.assertEqual(rows[0]["kind"], "evaluation_error")
+                self.assertIn("out of range", rows[0]["message"])
+                a.setExpression(path, None)
+
+    def callback_state(self):
+        return (self.doc.UndoCount, self.doc.RedoCount, self.doc.isTouched(),
+                getattr(self.doc, "getFileChangeState", lambda: None)(),
+                [(o.Name, list(o.State), list(o.ExpressionEngine), o.Value, o.Other,
+                  [o.getPropertyStatus(p) for p in o.PropertiesList]) for o in self.doc.Objects])
+
+    def test_proxy_reference_is_not_evaluated(self):
+        source, driven = self.obj("Source"), self.obj("Driven")
+
+        class Proxy:
+            @property
+            def Value(proxy):
+                source.Other += 1
+                return 42
+
+        source.Proxy = Proxy()
+        driven.setExpression("Value", "Source.Proxy.Value")
+        self.doc.UndoMode = 1
+        self.doc.openTransaction("Observe proxy")
+        before = self.callback_state()
+        rows = self.diagnose()
+        self.assertEqual(self.callback_state(), before)
+        self.assertEqual(rows[0]["kind"], "not_evaluated")
+        self.assertIn("Python", rows[0]["message"])
+        self.doc.abortTransaction()
+
+    def test_python_destination_is_not_read(self):
+        a = self.obj("A")
+
+        class Proxy:
+            @property
+            def Value(proxy):
+                a.Other += 1
+                return 42
+
+        a.Proxy = Proxy()
+        a.setExpression("Proxy.Value", "42")
+        before = self.callback_state()
+        rows = self.diagnose()
+        self.assertEqual(self.callback_state(), before)
+        self.assertEqual(rows[0]["kind"], "not_evaluated")
+
+    def test_python_object_property_is_not_evaluated(self):
+        source, driven = self.obj("Source"), self.obj("Driven")
+
+        class Payload:
+            @property
+            def Value(payload):
+                source.Other += 1
+                return 42
+
+        source.addProperty("App::PropertyPythonObject", "Payload")
+        source.Payload = Payload()
+        driven.setExpression("Value", "Source.Payload.Value")
+        before = self.callback_state()
+        rows = self.diagnose()
+        self.assertEqual(self.callback_state(), before)
+        self.assertEqual(rows[0]["kind"], "not_evaluated")
+        self.assertIn("Python", rows[0]["message"])
+
+    def test_subobject_metadata_does_not_call_proxy(self):
+        source, driven = self.obj("Source"), self.obj("Driven")
+        calls = []
+
+        class Proxy:
+            def getSubObject(proxy, *args):
+                calls.append(args)
+                source.Other += 1
+                return source, App.Matrix(), None
+
+        source.Proxy = Proxy()
+        expression = "Source.<<Child.>>.Value"
+        driven.setExpression("Value", expression)
+        # Native engine serialization can itself resolve an uncached subobject
+        # path; prepare the snapshot before observing the parser binding.
+        list(driven.ExpressionEngine)
+        calls.clear()
+        self.doc.UndoMode = 1
+        self.doc.openTransaction("Observe subobject")
+        before = self.callback_state()
+        refs = driven.getExpressionReferences(expression)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.callback_state(), before)
+        self.assertTrue(refs[0]["unresolved_metadata"])
+        self.assertTrue(refs[0]["error"])
+        rows = self.diagnose()
+        self.assertEqual(calls, [])
+        self.assertEqual(self.callback_state(), before)
+        self.assertEqual(rows[0]["kind"], "not_evaluated")
+        self.doc.abortTransaction()
+
     def test_healthy_scalar_conversions(self):
         a = self.obj("A")
         a.addProperty("App::PropertyBool", "Enabled")
