@@ -4,7 +4,10 @@
 #include <Base/FileLock.h>
 #include <Base/Parameter.h>
 
+#include <atomic>
+#include <barrier>
 #include <filesystem>
+#include <thread>
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 # include <sys/wait.h>
@@ -95,6 +98,64 @@ private:
 };
 
 // NOLINTBEGIN(cppcoreguidelines-*,readability-*)
+TEST_F(ParameterTest, ConcurrentTreeAccess)
+{
+    auto cfg = getCreateConfig();
+    constexpr int threadCount = 6;
+    constexpr int iterations = 10000;
+    std::barrier start(threadCount);
+    std::atomic<int> failures {0};
+    std::vector<std::thread> workers;
+    for (int worker = 0; worker < threadCount; ++worker) {
+        workers.emplace_back([&, worker] {
+            const std::string own = "Worker" + std::to_string(worker);
+            start.arrive_and_wait();
+            try {
+                for (int i = 0; i < iterations; ++i) {
+                    auto shared = cfg->GetGroup("Concurrent/Shared");
+                    auto distinct = cfg->GetGroup(("Concurrent/" + own).c_str());
+                    shared->SetInt("SharedValue", i);
+                    const auto value = shared->GetInt("SharedValue", -1);
+                    if (value < -1 || value >= iterations) {
+                        ++failures;
+                    }
+                    shared->SetInt(own.c_str(), i);
+                    if (shared->GetInt(own.c_str(), -1) != i) {
+                        ++failures;
+                    }
+                    distinct->SetASCII("Text", own.c_str());
+                    distinct->SetBool("Flag", i % 2 == 0);
+                    if (distinct->GetASCII("Text") != own
+                        || distinct->GetBool("Flag") != (i % 2 == 0)) {
+                        ++failures;
+                    }
+                    distinct->GetGroup("Temporary")->SetFloat("Value", i);
+                    distinct->RemoveGrp("Temporary");
+                    shared->GetIntMap();
+                    cfg->GetGroups();
+                    shared->RemoveInt("SharedValue");
+                    shared->RemoveInt(own.c_str());
+                    distinct->RemoveASCII("Text");
+                    distinct->RemoveBool("Flag");
+                }
+                cfg->GetGroup(("Concurrent/" + own).c_str())->SetInt("Completed", iterations);
+            }
+            catch (...) {
+                ++failures;
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    EXPECT_EQ(failures.load(), 0);
+    for (int worker = 0; worker < threadCount; ++worker) {
+        auto group = cfg->GetGroup(("Concurrent/Worker" + std::to_string(worker)).c_str());
+        EXPECT_EQ(group->GetInt("Completed"), iterations);
+    }
+    EXPECT_TRUE(cfg->CheckDocument());
+}
+
 TEST_F(ParameterTest, TestValid)
 {
     auto cfg = getConfig();
