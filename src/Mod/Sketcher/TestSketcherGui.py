@@ -7,6 +7,7 @@ from SketcherTests.TestOnViewParameterGui import TestOnViewParameterGui
 from SketcherTests.TestPlacementUpdate import TestSketchPlacementUpdate
 from SketcherTests.TestExternalFacePreselection import TestExternalFacePreselection
 from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
+from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
 
 # Use the module so that code checkers don't complain (flake8)
 (
@@ -19,5 +20,6 @@ from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
     and TestOnViewParameterGui
     and TestExternalFacePreselection
     and TestSketcherOffsetGui
+    and TestVisualLayerListGui
     else False
 )

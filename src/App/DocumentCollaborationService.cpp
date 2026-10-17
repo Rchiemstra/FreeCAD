@@ -295,6 +295,10 @@ DocumentCollaborationService::LifecyclePin::~LifecyclePin()
     if (!_pinned) {
         return;
     }
+    // Retain the notification target before releasing the last access. A GUI
+    // close may destroy the document as soon as activeAccesses reaches zero.
+    const auto* laneRaw = _document ? _document->executionLane() : nullptr;
+    const auto lane = laneRaw ? laneRaw->shared_from_this() : nullptr;
     {
         std::lock_guard lock(_gate->mutex);
         const auto owner = _gate->accessOwners.find(std::this_thread::get_id());
@@ -307,8 +311,8 @@ DocumentCollaborationService::LifecyclePin::~LifecyclePin()
         --_gate->activeAccesses;
         _gate->changed.notify_all();
     }
-    if (_document) {
-        notifyDocumentExecutionLaneCloseAdmissionReleased(*_document);
+    if (lane) {
+        lane->notifyCloseAdmissionReleased();
     }
 }
 

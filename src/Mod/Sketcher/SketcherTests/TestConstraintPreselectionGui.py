@@ -727,7 +727,10 @@ class SketcherGuiTestCases(unittest.TestCase):
             )
         )
         self.sketch.setLabelDistance(constraint_id, 0.0)
-        self.sketch.setLabelPosition(constraint_id, 12.0)
+        # Keep the datum text clear of every curve probe, independent of the
+        # installed font and viewport size. Text has a deliberately higher pick
+        # priority; this case tests only the overlapping dimension line.
+        self.sketch.setLabelPosition(constraint_id, start_point.distanceToPoint(end_point))
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
         recompute_document(self.doc)
         self.pump_gui_events()

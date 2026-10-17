@@ -88,10 +88,9 @@ for `.FCStd` files, and an MCP server. Measured against `main`: **175 commits,
 
 | Addition | What it does | Source |
 | --- | --- | --- |
-| Woodpecker pipeline | Configure, build, lint, unit, integration, e2e and Linux release stages with persistent ccache | [.woodpecker/ci.yml](.woodpecker/ci.yml) |
+| Woodpecker pipeline | The only CI on this branch (no GitHub Actions): configure, build, lint, unit, integration, e2e and Linux release stages with persistent ccache | [.woodpecker/ci.yml](.woodpecker/ci.yml) |
 | CI image builds | Kaniko-built dependency and MCP images published to a dedicated registry | [ci/build-images.sh](ci/build-images.sh), [.woodpecker/build-images.yml](.woodpecker/build-images.yml) |
 | Bundled Coin3D and Pivy | `src/3rdParty/coin` and `src/3rdParty/pivy` submodules, so CI no longer depends on distro packages | [.gitmodules](.gitmodules) |
-| Sidecar and MCP workflows | GitHub Actions for the `freecad-git` and `freecad-mcp` suites | [freecad-sidecars.yml](.github/workflows/freecad-sidecars.yml), [mcp-tests.yml](.github/workflows/mcp-tests.yml) |
 | Ubuntu package image | Reproducible Ubuntu build image with the full dependency set | [package/ubuntu/Dockerfile](package/ubuntu/Dockerfile) |
 
 

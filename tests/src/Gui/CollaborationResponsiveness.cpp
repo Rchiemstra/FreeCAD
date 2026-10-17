@@ -12,6 +12,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/FeatureTest.h>
 #include <App/MainThreadSignal.h>
 #include <App/MutationClassification.h>
 #include <Gui/DocumentExecutionIngress.h>
@@ -461,6 +462,54 @@ protected:
 };
 
 }  // namespace
+
+TEST_F(CollaborationResponsivenessTest, recomputeCommandPreservesRequestForce)
+{
+    for (const bool force : {true, false}) {
+        SCOPED_TRACE(force);
+        Gui::DocumentRecomputeSubmitRequest request;
+        request.force = force;
+        const auto command = Gui::makeDocumentRecomputeCommand(*_document, request);
+        ASSERT_TRUE(command.recompute.has_value());
+        EXPECT_EQ(command.recompute->force, request.force);
+    }
+}
+
+TEST_F(CollaborationResponsivenessTest, guiIngressRecomputesUntouchedFeatureOnlyWhenForced)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(_source);
+    ASSERT_NE(feature, nullptr);
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+
+    // Check normal admission both before and after the forced execution.
+    for (const bool force : {false, true, false}) {
+        SCOPED_TRACE(force);
+        ASSERT_FALSE(feature->isTouched());
+        ASSERT_EQ(feature->mustRecompute(), 0);
+        const auto executionsBefore = feature->ExecCount.getValue();
+        Gui::DocumentRecomputeSubmitRequest request;
+        request.featureIds = {feature->getNameInDocument()};
+        request.force = force;
+        const auto outcome = Gui::submitDocumentRecompute(*_document, request);
+        ASSERT_TRUE(outcome.accepted()) << outcome.diagnostic;
+        App::DocumentCommandHandle handle(
+            outcome.commandId, _document->executionHandle().identity());
+        const auto deadline = std::chrono::steady_clock::now() + 30s;
+        auto snapshot = handle.status();
+        while ((!snapshot.terminal() || !lane->isIdle())
+               && std::chrono::steady_clock::now() < deadline) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(1ms);
+            snapshot = handle.status();
+        }
+        ASSERT_TRUE(snapshot.terminal()) << "GUI recompute did not finish before timeout";
+        ASSERT_TRUE(lane->isIdle());
+        ASSERT_EQ(snapshot.state, App::DocumentCommandState::Completed)
+            << snapshot.diagnostic;
+        EXPECT_EQ(feature->ExecCount.getValue(), executionsBefore + (force ? 1 : 0));
+    }
+}
 
 TEST_F(CollaborationResponsivenessTest,
        detachedPreparationKeepsEventLoopAndCameraResponsiveWithoutStalingCommit)

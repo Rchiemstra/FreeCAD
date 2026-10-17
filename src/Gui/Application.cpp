@@ -80,6 +80,7 @@
 #include <Quarter/Quarter.h>
 
 #include "Application.h"
+#include "AutoSaver.h"
 #include "DocumentPresentationCapture.h"
 #include "ApplicationPy.h"
 #include "AxisOriginPy.h"
@@ -877,6 +878,7 @@ Application::Application(bool GUIenabled)
 
 Application::~Application()
 {
+    AutoSaver::shutdownRecoveryWrites();
     Base::Console().log("Destruct Gui::Application\n");
 #ifdef USE_3DCONNEXION_NAVLIB
     if (pNavlibInterface) {
@@ -2826,6 +2828,7 @@ void setCategoryFilterRules()
     stream << "qt.qpa.mime.warning=false\n";
     stream << "qt.qpa.wayland.warning=false\n";
     stream << "qt.qpa.wayland.*.warning=false\n";
+    stream << "qt.accessibility.table.warning=false\n";
     stream << "qt.svg.warning=false\n";
     stream << "qt.xkb.compose.warning=false\n";
     stream << "kf.*.warning=false\n";
@@ -3282,6 +3285,7 @@ void Application::runApplication()
 
 void Application::shutdown()
 {
+    AutoSaver::shutdownRecoveryWrites();
     d->isClosing = true;
     App::GetApplication().closeAllDocuments();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

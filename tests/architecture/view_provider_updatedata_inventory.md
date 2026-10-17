@@ -28,10 +28,10 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | 566 | unsupported |
 | `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | 190 | unsupported |
 | `src/Mod/BIM/ArchBuildingPart.py` | `ViewProviderBuildingPart` | 995 | unsupported |
-| `src/Mod/BIM/ArchComponent.py` | `ViewProviderComponent` | 1636 | unsupported |
+| `src/Mod/BIM/ArchComponent.py` | `ViewProviderComponent` | 1640 | unsupported |
 | `src/Mod/BIM/ArchCoveringGui.py` | `_ViewProviderCovering` | 150 | unsupported |
 | `src/Mod/BIM/ArchCurtainWall.py` | `ViewProviderCurtainWall` | 759 | unsupported |
-| `src/Mod/BIM/ArchEquipment.py` | `_ViewProviderEquipment` | 226 | unsupported |
+| `src/Mod/BIM/ArchEquipment.py` | `_ViewProviderEquipment` | 247 | unsupported |
 | `src/Mod/BIM/ArchFence.py` | `_ViewProviderFence` | 330 | unsupported |
 | `src/Mod/BIM/ArchMaterial.py` | `_ViewProviderArchMaterial` | 412 | unsupported |
 | `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelCut` | 1003 | unsupported |
@@ -45,7 +45,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/BIM/ArchStairs.py` | `_ViewProviderStairs` | 2472 | unsupported |
 | `src/Mod/BIM/ArchStructure.py` | `_ViewProviderStructure` | 1491 | unsupported |
 | `src/Mod/BIM/ArchWall.py` | `_ViewProviderWall` | 1952 | unsupported |
-| `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | 901 | unsupported |
+| `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | 922 | unsupported |
 | `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_material` | 563 | unsupported |
 | `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_object` | 66 | unsupported |
 | `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderArea` | 90 | unsupported |
@@ -55,7 +55,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/CAM/Path/Dressup/Gui/Tags.py` | `PathDressupTagViewProvider` | 486 | unsupported |
 | `src/Mod/CAM/Path/Main/Gui/Fixture.py` | `_ViewProviderFixture` | 137 | unsupported |
 | `src/Mod/CAM/Path/Main/Gui/Job.py` | `ViewProvider` | 310 | unsupported |
-| `src/Mod/CAM/Path/Op/Gui/Base.py` | `ViewProvider` | 292 | unsupported |
+| `src/Mod/CAM/Path/Op/Gui/Base.py` | `ViewProvider` | 301 | unsupported |
 | `src/Mod/CAM/Path/Tool/Gui/Controller.py` | `ViewProvider` | 88 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraft` | 191 | unsupported |
 | `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraftAlt` | 592 | unsupported |
@@ -120,7 +120,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Part/Gui/ViewProviderReference.cpp` | `ViewProviderPartReference` | 228 | unsupported |
 | `src/Mod/Part/Gui/ViewProviderRuledSurface.cpp` | `ViewProviderRuledSurface` | 60 | adapted |
 | `src/Mod/PartDesign/Gui/ViewProvider.cpp` | `ViewProvider` | 108 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderBody.cpp` | `ViewProviderBody` | 342 | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderBody.cpp` | `ViewProviderBody` | 341 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | 428 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp` | `ViewProviderDatumCoordinateSystem` | 199 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderDatumLine.cpp` | `ViewProviderDatumLine` | 71 | unsupported |
@@ -132,7 +132,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Robot/Gui/ViewProviderRobotObject.cpp` | `ViewProviderRobotObject` | 170 | unsupported |
 | `src/Mod/Robot/Gui/ViewProviderTrajectory.cpp` | `ViewProviderTrajectory` | 126 | unsupported |
 | `src/Mod/Sketcher/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 59 | unsupported |
-| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3907 | unsupported |
+| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3914 | unsupported |
 | `src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp` | `ViewProviderSheet` | 189 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 52 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp` | `ViewProviderBalloon` | 114 | unsupported |

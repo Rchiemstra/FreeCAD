@@ -395,6 +395,8 @@ public:
 
     /// Signal on a newly created document.
     fastsignals::signal<void (const Document&, bool)> signalNewDocument;
+    /// GUI-thread notification before synchronous Python close waits for lane admission.
+    fastsignals::signal<void (Document&)> signalBeforeCloseDocumentAdmission;
     /// Signal on a document getting deleted.
     App::ResilientSignal<void (const Document&)> signalDeleteDocument;
     /// Signal that a document has been deleted.

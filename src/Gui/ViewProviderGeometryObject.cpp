@@ -195,7 +195,8 @@ void ViewProviderGeometryObject::updateData(const App::Property* prop)
             if ((ShapeAppearance.getSize() == 1)
                 && (sameVisualAppearance(ShapeAppearance[0], defaultMaterial)
                     || sameVisualAppearance(ShapeAppearance[0], materialAppearance))
-                && !sameVisualAppearance(material, defaultMaterial)) {
+                && !sameVisualAppearance(material, defaultMaterial)
+                && !sameVisualAppearance(ShapeAppearance[0], material)) {
                 ShapeAppearance.setValue(material);
                 materialAppearance = material;
             }
