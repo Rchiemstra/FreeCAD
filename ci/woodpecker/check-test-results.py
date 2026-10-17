@@ -3,9 +3,11 @@
 """Fail closed on incomplete CI test inventories and test results (stdlib only)."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -79,6 +81,41 @@ def xml_results(paths):
     print(f"RESULTS reports={len(paths)} executed={total}")
 
 
+def gtest_result(args):
+    if args.executable:
+        args.path.unlink(missing_ok=True)
+        with args.log.open("w") as output:
+            args.exit_code = subprocess.run(
+                [str(args.executable), f"--gtest_filter={args.filter}",
+                 f"--gtest_output=xml:{args.path}"],
+                stdout=output, stderr=subprocess.STDOUT, check=False,
+            ).returncode
+    # A complete green report is mandatory even for quarantined processes.
+    executed = xml_count(args.path)
+    if args.exit_code == 0:
+        print(f"{args.binary}: executed={executed} process exit 0")
+        return
+    entries = json.loads(args.quarantine.read_text())
+    if not isinstance(entries, list):
+        raise ValueError("invalid quarantine: expected a list")
+    log = args.log.read_text(errors="replace")
+    passed = re.findall(r"^\[  PASSED  \] ([0-9]+) tests?\.$", log, re.MULTILINE)
+    for entry in entries:
+        if (entry.get("binary") == args.binary
+                and entry.get("filter") == args.filter
+                and entry.get("failure_mode") == "signal:11-after-results"
+                and entry.get("reason") and entry.get("tracking")
+                # subprocess preserves signals as negative numbers. An explicit
+                # exit(139) must not impersonate a quarantined SIGSEGV.
+                and args.exit_code == -11
+                and passed == [str(executed)]
+                and "[  FAILED  ]" not in log):
+            print(f"QUARANTINE: {args.binary} filter={args.filter!r} "
+                  f"{entry['failure_mode']}: {entry['reason']} ({entry['tracking']})")
+            return
+    raise ValueError(f"{args.binary}: process exit {args.exit_code} (executed={executed})")
+
+
 def integration_result(path, exit_code):
     if exit_code != 0:
         raise ValueError(f"integration process exit {exit_code}")
@@ -112,12 +149,24 @@ def main():
     integration = commands.add_parser("integration")
     integration.add_argument("--exit-code", type=int, required=True)
     integration.add_argument("path", type=Path)
+    gtest = commands.add_parser("gtest")
+    gtest.add_argument("--binary", required=True)
+    gtest.add_argument("--filter", default="*")
+    process = gtest.add_mutually_exclusive_group(required=True)
+    process.add_argument("--exit-code", type=int)
+    process.add_argument("--executable", type=Path)
+    gtest.add_argument("--log", type=Path, required=True)
+    gtest.add_argument("--quarantine", type=Path,
+                       default=Path(__file__).with_name("test-process-quarantine.json"))
+    gtest.add_argument("path", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "inventory":
             inventory(args.directory)
         elif args.command == "xml":
             xml_results(args.paths)
+        elif args.command == "gtest":
+            gtest_result(args)
         else:
             integration_result(args.path, args.exit_code)
     except (OSError, ValueError) as error:

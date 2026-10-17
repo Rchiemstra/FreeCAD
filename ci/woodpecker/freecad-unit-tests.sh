@@ -13,99 +13,36 @@ rc=0
 failed=""
 all_reports=""
 
-# A2 boundary: preserve the existing PASSED/no-FAILED teardown crash waiver.
-# This changes only process status; structured result validation is mandatory
-# after this function returns and cannot be waived here.
-accept_teardown_exit() {
-  waiver_rc=$1
-  waiver_log=$2
-  waiver_description=$3
-  if [ "$waiver_rc" -ne 0 ] \
-    && grep -q '\[  PASSED  \]' "$waiver_log" \
-    && ! grep -q '\[  FAILED  \]' "$waiver_log"; then
-    echo "WARN: accepting $waiver_description exit $waiver_rc after all tests passed (teardown)" \
-      | tee -a "$main_log"
-    return 0
-  fi
-  return "$waiver_rc"
-}
-
+# Keep the GUI families isolated; validate each process and report separately.
 run_gtest() {
   t="$1"
   name=$(basename "$t")
   reports=""
-  echo "== C++ gtest: $name =="
-  case "$name" in
-    Gui_tests_run|GuiShutdown_tests_run|*Gui*_tests_run)
-      if [ ! -x /usr/bin/xvfb-run ]; then
-        echo "FATAL: mandatory /usr/bin/xvfb-run is missing or not executable (required for $name OpenGL tests)" >&2
-        exit 1
-      fi
-      # Heavy Collaboration* Gui suites leave Coin/MainWindow state that causes
-      # later in-process suites (ViewIsolation, Responsiveness) to SIGSEGV.
-      # Run the rest of Gui_tests_run first, then each Collaboration* family alone.
-      if [ "$name" = "Gui_tests_run" ]; then
-        main_log="$results/$name.log"
-        main_only_log="$results/$name-main-only.log"
-        main_xml="$results/$name-main.xml"
-        reports="$main_xml"
-        : >"$main_log"
-        env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-          "$t" \
-          --gtest_filter=-CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*:CollaborationViewIsolation*:CollaborationResponsiveness* \
-          --gtest_output=xml:"$main_xml" >>"$main_log" 2>&1
-        main_rc=$?
-        # Evaluate main-batch teardown tolerance against the main log only,
-        # before Collaboration filters append PASSED lines that could mask a
-        # crashed main batch (no [ FAILED ], no main [ PASSED ]).
-        cp "$main_log" "$main_only_log"
-        accept_teardown_exit "$main_rc" "$main_only_log" "$name main batch"
-        main_rc=$?
-        collab_rc=0
-        for part in \
-          'CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*' \
-          'CollaborationViewIsolation*' \
-          'CollaborationResponsiveness*'
-        do
-          safe=$(echo "$part" | tr -c 'A-Za-z0-9._-' '_')
-          part_log="$results/$name-$safe.log"
-          part_xml="$results/$name-$safe.xml"
-          reports="$reports $part_xml"
-          env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-            "$t" --gtest_filter="$part" \
-            --gtest_output=xml:"$part_xml" \
-            >"$part_log" 2>&1
-          part_rc=$?
-          cat "$part_log" >>"$main_log"
-          # Coin/Qt global teardown can SIGSEGV after all tests passed on this image.
-          accept_teardown_exit "$part_rc" "$part_log" "$name filter='$part'"
-          part_rc=$?
-          if [ "$part_rc" -ne 0 ]; then
-            collab_rc=$part_rc
-          fi
-        done
-        if [ "$main_rc" -ne 0 ]; then
-          return "$main_rc"
-        fi
-        return "$collab_rc"
-      fi
-      reports="$results/$name.xml"
-      env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-        "$t" --gtest_output=xml:"$reports" >"$results/$name.log" 2>&1
-      ;;
-    App_tests_run)
-      # Property rename/save tests write relative FCStd paths; on 9p bind mounts
-      # retained writer handles break post-rename verification (see doc handoff).
-      ws="${CI_WORKSPACE:-$(pwd)}"
-      reports="$results/$name.xml"
-      (cd /tmp && "$ws/$t" --gtest_output=xml:"$reports") \
-        >"$results/$name.log" 2>&1
-      ;;
-    *)
-      reports="$results/$name.xml"
-      "$t" --gtest_output=xml:"$reports" >"$results/$name.log" 2>&1
-      ;;
-  esac
+  main_log="$results/$name.log"
+  : >"$main_log"
+  binary_status=0
+  if [ "$name" = "Gui_tests_run" ]; then
+    filters='-CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*:CollaborationViewIsolation*:CollaborationResponsiveness*
+CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*
+CollaborationViewIsolation*
+CollaborationResponsiveness*'
+  else
+    filters='*'
+  fi
+  index=0
+  # Each filter is a line without whitespace; suppress pathname expansion.
+  set -f
+  for part in $filters; do
+    index=$((index + 1))
+    stem="$results/$name-$index"
+    reports="$reports $stem.xml"
+    if ! sh "$script_dir/run-gtest.sh" "$t" "$part" "$stem"; then
+      binary_status=1
+    fi
+    cat "$stem.log" >>"$main_log"
+  done
+  set +f
+  return "$binary_status"
 }
 
 dump_gtest_failure() {

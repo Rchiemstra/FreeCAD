@@ -6,6 +6,7 @@ These fixtures never launch FreeCAD.
 """
 
 from pathlib import Path
+import json
 import re
 import subprocess
 import sys
@@ -116,6 +117,80 @@ class ResultCheckerTests(unittest.TestCase):
     def test_each_xml_is_required(self):
         good = self.xml('<testsuite tests="1"><testcase/></testsuite>')
         self.check("xml", good, self.directory / "absent.xml", message="absent.xml")
+
+    def process(self, binary="Gui_tests_run", rc=-11, entries=(),
+                content='<testsuite tests="1"><testcase/></testsuite>',
+                log="[  PASSED  ] 1 test.\nSegmentation fault\n", **kwargs):
+        report = self.xml(content)
+        output = self.directory / "process.log"
+        output.write_text(log)
+        quarantine = self.directory / "quarantine.json"
+        quarantine.write_text(json.dumps(list(entries)))
+        return self.check("gtest", "--binary", binary, "--exit-code", rc,
+                          "--filter", "CollaborationResponsiveness*",
+                          "--log", output, "--quarantine", quarantine, report, **kwargs)
+
+    def quarantine_entry(self):
+        return {"binary": "Gui_tests_run", "filter": "CollaborationResponsiveness*",
+                "failure_mode": "signal:11-after-results", "reason": "fixture teardown bug",
+                "tracking": "doc/fixture.md"}
+
+    def test_passed_then_crash_fails(self):
+        self.process(message="process exit -11")
+
+    def test_quarantined_exact_case_passes(self):
+        self.process(entries=[self.quarantine_entry()], success=True, message="QUARANTINE")
+
+    def test_quarantined_binary_different_failure_fails(self):
+        for rc in (1, -6, -9, 139):
+            with self.subTest(rc=rc):
+                self.process(rc=rc, entries=[self.quarantine_entry()], message=f"process exit {rc}")
+
+    def test_unknown_binary_crash_fails(self):
+        self.process(binary="Unknown_tests_run", entries=[self.quarantine_entry()],
+                     message="process exit -11")
+
+    def test_quarantine_requires_complete_green_results_and_summary(self):
+        for content in ('<testsuite tests="1">', '<testsuite tests="0"/>',
+                        '<testsuite tests="1"><testcase><failure/></testcase></testsuite>'):
+            with self.subTest(content=content):
+                self.process(entries=[self.quarantine_entry()], content=content)
+        for log in ("", "[  PASSED  ] 2 tests.\n", "[  PASSED  ] 1 test.\n[  FAILED  ] late\n"):
+            with self.subTest(log=log):
+                self.process(entries=[self.quarantine_entry()], log=log)
+
+    def test_successful_process_still_requires_results(self):
+        self.process(rc=0, success=True)
+        self.process(rc=0, content='<testsuite tests="0"/>')
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux signal status contract")
+    def test_native_signal_cannot_be_impersonated_by_exit_code(self):
+        binary = self.directory / "Gui_tests_run"
+        quarantine = self.directory / "quarantine.json"
+        quarantine.write_text(json.dumps([self.quarantine_entry()]))
+        for ending, success in (("os.kill(os.getpid(), signal.SIGSEGV)", True),
+                                ("sys.exit(139)", False)):
+            with self.subTest(ending=ending):
+                binary.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, pathlib, resource, signal, sys\n"
+                    "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+                    "report = next(a.split('xml:', 1)[1] for a in sys.argv if 'xml:' in a)\n"
+                    "pathlib.Path(report).write_text('<testsuite tests=\"1\"><testcase/></testsuite>')\n"
+                    "print('[  PASSED  ] 1 test.', flush=True)\n" + ending + "\n")
+                binary.chmod(0o755)
+                self.check("gtest", "--binary", binary.name, "--executable", binary,
+                           "--filter", "CollaborationResponsiveness*",
+                           "--log", self.directory / "native.log", "--quarantine", quarantine,
+                           self.directory / "native.xml", success=success)
+
+    def test_executing_process_cannot_reuse_stale_xml(self):
+        report = self.xml('<testsuite tests="1"><testcase/></testsuite>')
+        binary = self.directory / "App_tests_run"
+        binary.write_text(f"#!{sys.executable}\nprint('[  PASSED  ] 1 test.')\n")
+        binary.chmod(0o755)
+        self.check("gtest", "--binary", binary.name, "--executable", binary,
+                   "--log", self.directory / "stale.log", report, message="result.xml")
 
     def summary(self, content, rc=0, success=False, message=None):
         log = self.directory / "integration.log"
