@@ -24,6 +24,7 @@ add_executable(Part_tests_run
         Geometry.cpp
         InterferenceDetection.cpp
         LinkArrayPolar.cpp
+        ModelRefine.cpp
         PartFeature.cpp
         PartFeatures.cpp
         PartTestHelpers.cpp
