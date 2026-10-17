@@ -441,3 +441,5 @@ class TestDatumPlane(unittest.TestCase):
         )
 
         self.assertEqual(packed_color, color)
+
+from PartDesignTests.TestAllowanceProfileGui import TestAllowanceProfileGui
