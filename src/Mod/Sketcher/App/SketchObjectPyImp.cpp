@@ -36,6 +36,7 @@
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Part/App/LinePy.h>
 #include <Mod/Part/App/OCCError.h>
+#include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/App/TopoShape.h>
 
 #include "PythonConverter.h"
@@ -845,19 +846,36 @@ PyObject* SketchObjectPy::attachExternal(PyObject* args)
         return nullptr;
     }
     auto* sketch = getSketchObjectPtr();
-    auto* object = sketch->getDocument()->getObject(objectName);
+    auto* document = sketch->getDocument();
+    if (!document) {
+        PyErr_SetString(PyExc_ValueError, "Cannot reattach external geometry without a document");
+        return nullptr;
+    }
+    auto* object = document->getObject(objectName);
     if (!object || geoId > GeoEnum::RefExt
         || geoId < -sketch->getExternalGeometryCount()) {
         PyErr_SetString(PyExc_ValueError, "Invalid external geometry or target object");
         return nullptr;
     }
     try {
+        // Native attachExternal updates the cached reference before rebuilding.
+        // Resolve the target first so invalid subelements cannot mutate it.
+        auto shape = Part::Feature::getTopoShape(
+            object, Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform);
+        if (!*subName || shape.getSubTopoShape(subName, /*silent*/ true).isNull()) {
+            PyErr_SetString(PyExc_ValueError, "Invalid external geometry subelement");
+            return nullptr;
+        }
         int index = sketch->attachExternal({geoId}, object, subName);
         if (index < 0) {
             PyErr_SetString(PyExc_ValueError, "Cannot reattach external geometry to this subelement");
             return nullptr;
         }
         return PyLong_FromLong(index);
+    }
+    catch (const Standard_Failure& e) {
+        PyErr_SetString(Part::PartExceptionOCCError, e.GetMessageString());
+        return nullptr;
     }
     catch (const Base::Exception& e) {
         e.setPyException();

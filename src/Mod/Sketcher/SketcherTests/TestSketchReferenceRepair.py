@@ -4,18 +4,18 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import FreeCAD as App
 import Part
 import Sketcher
-
 from SketchReferenceRepair import (
-    RepairError,
     Candidate,
+    RepairError,
     broken_references,
     candidates,
-    repair,
     external_geometry,
+    repair,
 )
 
 
@@ -64,6 +64,9 @@ def rejected_snapshot(sketch):
         tuple((g.reference, g.missing) for g in external_geometry(sketch)),
         tuple(sketch.State),
         sketch.Document.UndoCount,
+        sketch.Document.RedoCount,
+        sketch.Document.HasPendingTransaction,
+        tuple((obj.Name, tuple(obj.State)) for obj in sketch.Document.Objects),
     )
 
 
@@ -256,7 +259,7 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.assertFalse(broken_references(self.sketch))
         self.assertEqual(signature(self.sketch), before)
 
-    def test_attachment_frame_change_rolls_back(self):
+    def test_attachment_frame_change_refuses_before_transaction(self):
         self.source.Shape = Part.makeBox(10, 10, 10)
         self.sketch.AttachmentSupport = (self.source, ["Face6"])
         self.sketch.MapMode = "FlatFace"
@@ -270,10 +273,14 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.source.Placement = App.Placement(App.Vector(5, 0, 0), App.Rotation())
         self.doc.recompute()
         ref = broken_references(self.sketch)[0]
+        self.doc.openTransaction("Existing redo")
+        self.sketch.Label = "Renamed"
+        self.doc.commitTransaction()
+        self.doc.undo()
+        self.assertEqual(self.doc.RedoCount, 1)
         before = rejected_snapshot(self.sketch), self.sketch.AttachmentSupport
         with self.assertRaisesRegex(RepairError, "placement"):
             repair(self.sketch, [(ref, candidates(self.sketch, ref)[0])])
-        self.doc.recompute()
         self.assertEqual(
             (rejected_snapshot(self.sketch), self.sketch.AttachmentSupport), before
         )
@@ -316,3 +323,105 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.doc.recompute()
         self.assertFalse(broken_references(self.sketch))
         self.assertEqual(signature(self.sketch), before)
+
+    def test_native_invalid_subelement_is_read_only(self):
+        self.source.Shape = edge()
+        self.doc.recompute()
+        self.sketch.addExternal(self.source.Name, "Edge1")
+        self.doc.recompute()
+        before = rejected_snapshot(self.sketch)
+        for sub in ("Edge999", "Vertex999", "Face999", "Bogus", "Edge0"):
+            with self.subTest(sub=sub):
+                with self.assertRaises((ValueError, RuntimeError, Part.OCCError)):
+                    self.sketch.attachExternal(-3, self.source.Name, sub)
+                self.assertEqual(rejected_snapshot(self.sketch), before)
+
+    def test_stale_edge_same_projection_refused(self):
+        wanted = self.broken()
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        ref = broken_references(self.sketch)[0]
+        selected = candidates(self.sketch, ref)[0]
+        # Same name and XY projection, different edge in 3D after renumbering.
+        replacement = wanted.copy(noElementMap=True)
+        replacement.translate(App.Vector(0, 0, 2))
+        self.source.Shape = Part.makeCompound([replacement, edge(30)])
+        self.doc.recompute()
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaisesRegex(RepairError, "changed|stale|refresh"):
+            repair(self.sketch, [(ref, selected)])
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+
+    def test_recreated_source_identity_refused(self):
+        wanted = self.broken()
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        ref = broken_references(self.sketch)[0]
+        selected = candidates(self.sketch, ref)[0]
+        self.doc.removeObject(self.source.Name)
+        self.source = self.doc.addObject("PartDesign::Feature", "Source")
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaisesRegex(RepairError, "changed|stale|refresh"):
+            repair(self.sketch, [(ref, selected)])
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+
+    def test_base_exception_aborts_and_propagates(self):
+        wanted = self.broken()
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        ref = broken_references(self.sketch)[0]
+        selected = candidates(self.sketch, ref)[0]
+        import SketchReferenceRepair as module
+
+        original = module.broken_references
+        for exception in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exception=exception):
+
+                def interrupted(target, interruption=exception):
+                    if self.doc.HasPendingTransaction:
+                        raise interruption("interrupt repair")
+                    return original(target)
+
+                try:
+                    with (
+                        patch.object(module, "broken_references", interrupted),
+                        self.assertRaises(exception),
+                    ):
+                        repair(self.sketch, [(ref, selected)])
+                    self.assertFalse(self.doc.HasPendingTransaction)
+                finally:
+                    if self.doc.HasPendingTransaction:
+                        self.doc.abortTransaction()
+                self.doc.recompute()
+
+    def test_attachment_world_endpoints_refused(self):
+        self.source.Shape = Part.makeBox(10, 10, 10)
+        self.sketch.AttachmentSupport = (self.source, ["Face6"])
+        self.sketch.MapMode = "FlatFace"
+        self.sketch.addGeometry(
+            Part.LineSegment(App.Vector(1e6, 0, 0), App.Vector(1e6 + 10, 0, 0))
+        )
+        self.doc.recompute()
+        old_placement = self.sketch.Placement
+        old_point = old_placement.multVec(self.sketch.getPoint(0, 1))
+        face = self.source.Shape.Faces[5].copy(noElementMap=True)
+        self.source.Shape = Part.makeCompound([face])
+        self.source.Placement = App.Placement(
+            App.Vector(), App.Rotation(App.Vector(0, 0, 1), 1e-6)
+        )
+        self.doc.recompute()
+        ref = broken_references(self.sketch)[0]
+        before = rejected_snapshot(self.sketch), self.sketch.AttachmentSupport
+        with self.assertRaisesRegex(RepairError, "endpoint|placement"):
+            repair(self.sketch, [(ref, candidates(self.sketch, ref)[0])])
+        self.assertEqual(
+            (rejected_snapshot(self.sketch), self.sketch.AttachmentSupport), before
+        )
+        self.assertLess(
+            (
+                self.sketch.Placement.multVec(self.sketch.getPoint(0, 1)) - old_point
+            ).Length,
+            1e-7,
+        )

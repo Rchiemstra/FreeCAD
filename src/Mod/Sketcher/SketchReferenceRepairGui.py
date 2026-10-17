@@ -1,12 +1,21 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Sketcher reference repair command and transient scene-only preview."""
 
+import threading
+import time
+
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtCore, QtGui
 from pivy import coin
-
-from SketchReferenceRepair import RepairError, broken_references, candidates, repair
+from PySide import QtCore, QtGui
+from SketchReferenceRepair import (
+    RepairError,
+    apply_prepared,
+    broken_references,
+    check_repair,
+    iter_candidates,
+    prepare_repair,
+)
 
 
 def tr(text):
@@ -63,13 +72,110 @@ class Preview:
         self.node = node
 
 
+_operations = set()
+
+
+class RepairOperation(QtCore.QObject):
+    """Observe the document command off Qt, then admit its presentation callback."""
+
+    completed = QtCore.Signal(str)
+
+    def __init__(self, sketch, choices, callback):
+        super().__init__()
+        self.document = sketch.Document
+        self.document_identity = self.document.collaborationIdentity()
+        self.name, self.object_id = sketch.Name, sketch.ID
+        self.choices = choices
+        self.callback = callback
+        self.error = ""
+        self.timer = QtCore.QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.present)
+        self.completed.connect(self.finish, QtCore.Qt.QueuedConnection)
+        _operations.add(self)
+        threading.Thread(
+            target=self.run, name="sketch-reference-repair", daemon=True
+        ).start()
+
+    def run(self):
+        try:
+            doc = self.document
+            if doc.collaborationIdentity() != self.document_identity:
+                raise RepairError("Document changed; reopen the repair command")
+            sketch = doc.getObject(self.name)
+            if sketch is None or sketch.ID != self.object_id:
+                raise RepairError("Sketch changed; reopen the repair command")
+            prepared = prepare_repair(sketch, self.choices)
+            result = doc.commitCompatibilityMutationAsync(
+                lambda: apply_prepared(sketch, prepared),
+                object_name=self.name,
+                label="Repair sketch references",
+                postcondition=lambda: check_repair(sketch, prepared),
+            )
+            if callable(result.get("wait")):
+                result = result["wait"]()
+            if result.get("status") != "Committed":
+                raise RepairError(result.get("message", str(result)))
+            error = ""
+        except BaseException as exc:  # noqa: BLE001 - deliver interrupts to the GUI too
+            error = str(exc) or type(exc).__name__
+        self.completed.emit(error)
+
+    @QtCore.Slot(str)
+    def finish(self, error):
+        self.error = error
+        self.present()
+
+    def present(self):
+        try:
+            if not Gui.tryRunPresentationCallback(
+                lambda: self.callback(self.error), self.document
+            ):
+                self.timer.start(10)
+                return
+        except (ReferenceError, RuntimeError):
+            # Document close/deletion also dismisses the owning dialog.
+            pass
+        self.callback = None
+        self.document = None
+        _operations.discard(self)
+        self.deleteLater()
+
+
+class RepairObserver(QtCore.QObject):
+    removed = QtCore.Signal()
+
+    def __init__(self, sketch):
+        super().__init__()
+        self.sketch = sketch
+        self.document = sketch.Document
+
+    def slotDeletedObject(self, obj):
+        if obj is self.sketch:
+            self.removed.emit()
+
+    def slotDeletedDocument(self, doc):
+        if doc is self.document:
+            self.removed.emit()
+
+
 class RepairDialog(QtGui.QDialog):
     def __init__(self, sketch):
         super().__init__(Gui.getMainWindow())
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setWindowTitle(tr("Repair sketch references"))
         self.sketch = sketch
-        self.preview = Preview(Gui.activeDocument().activeView())
+        self.document = sketch.Document
+        self.closed = False
+        self.busy = False
+        self.preview = Preview(Gui.getDocument(self.document.Name).activeView())
+        self.observer = RepairObserver(sketch)
+        self.observer.removed.connect(self.close)
+        App.addDocumentObserver(self.observer)
+        self.rank_timer = QtCore.QTimer(self)
+        self.rank_timer.setSingleShot(True)
+        self.rank_timer.timeout.connect(self.rank_chunk)
+        self.rank_iterator = None
         layout = QtGui.QVBoxLayout(self)
         layout.addWidget(
             QtGui.QLabel(tr("Select a broken reference and inspect a replacement."))
@@ -91,7 +197,7 @@ class RepairDialog(QtGui.QDialog):
         layout.addWidget(buttons)
         self.references.currentRowChanged.connect(self.select_reference)
         self.options.currentRowChanged.connect(self.select_candidate)
-        self.finished.connect(lambda _: self.preview.close())
+        self.finished.connect(self.dispose)
         self.refresh()
         self.resize(620, 440)
 
@@ -109,14 +215,35 @@ class RepairDialog(QtGui.QDialog):
             self.references.setCurrentRow(0)
 
     def select_reference(self, row):
+        self.rank_timer.stop()
+        self.rank_iterator = None
         self.preview.clear()
         self.options.clear()
         self.ranked = []
         self.apply_button.setEnabled(False)
-        if row < 0 or row >= len(self.refs):
+        if self.busy or row < 0 or row >= len(self.refs):
+            return
+        self.rank_iterator = iter_candidates(self.sketch, self.refs[row])
+        self.rank_pending = []
+        self.rank_timer.start(0)
+
+    def rank_chunk(self):
+        if self.closed or self.busy or self.rank_iterator is None:
             return
         try:
-            self.ranked = candidates(self.sketch, self.refs[row])
+            deadline = time.monotonic() + 0.004
+            while time.monotonic() < deadline:
+                try:
+                    self.rank_pending.append(next(self.rank_iterator))
+                except StopIteration:
+                    self.rank_iterator = None
+                    break
+            if self.rank_iterator is not None:
+                self.rank_timer.start(0)
+                return
+            self.ranked = sorted(
+                self.rank_pending, key=lambda c: (c.score, c.subelement)
+            )
             for candidate in self.ranked:
                 status = tr("compatible") if candidate.compatible else candidate.reason
                 self.options.addItem(
@@ -155,18 +282,43 @@ class RepairDialog(QtGui.QDialog):
 
     def apply(self):
         ref_row, candidate_row = self.references.currentRow(), self.options.currentRow()
-        if ref_row < 0 or candidate_row < 0:
+        if self.busy or ref_row < 0 or candidate_row < 0:
             return
-        try:
-            repair(self.sketch, [(self.refs[ref_row], self.ranked[candidate_row])])
-        except (RepairError, RuntimeError, ReferenceError) as error:
-            self.preview.clear()
-            self.message.setText(str(error))
+        self.busy = True
+        self.rank_timer.stop()
+        self.preview.clear()
+        self.apply_button.setEnabled(False)
+        self.references.setEnabled(False)
+        self.options.setEnabled(False)
+        self.message.setText(tr("Repairing reference…"))
+        RepairOperation(
+            self.sketch,
+            [(self.refs[ref_row], self.ranked[candidate_row])],
+            self.applied,
+        )
+
+    def applied(self, error):
+        if self.closed:
             return
-        self.refresh()
+        self.busy = False
+        self.references.setEnabled(True)
+        self.options.setEnabled(True)
+        if error:
+            self.message.setText(error)
+        else:
+            self.refresh()
+
+    def dispose(self, *args):
+        if self.closed:
+            return
+        self.closed = True
+        self.rank_timer.stop()
+        self.rank_iterator = None
+        App.removeDocumentObserver(self.observer)
+        self.preview.close()
 
     def closeEvent(self, event):
-        self.preview.close()
+        self.dispose()
         super().closeEvent(event)
 
 
@@ -180,8 +332,12 @@ class RepairReferencesCommand:
 
     def IsActive(self):
         selected = Gui.Selection.getSelection()
-        return len(selected) == 1 and selected[0].isDerivedFrom(
-            "Sketcher::SketchObject"
+        active = Gui.activeDocument()
+        return (
+            len(selected) == 1
+            and active is not None
+            and selected[0].Document is active.Document
+            and selected[0].isDerivedFrom("Sketcher::SketchObject")
         )
 
     def Activated(self):

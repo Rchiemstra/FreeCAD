@@ -8,8 +8,9 @@ move a constrained endpoint. Faces are supported for single-face attachments.
 No persistent cache or document properties are added.
 """
 
-from dataclasses import dataclass
+import hashlib
 import math
+from dataclasses import dataclass
 
 import FreeCAD as App
 import Part
@@ -37,6 +38,8 @@ class Candidate:
     score: float
     compatible: bool
     reason: str = ""
+    source_identity: tuple = ()
+    shape_signature: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -172,7 +175,19 @@ def _face_score(sketch, face):
     )
 
 
-def candidates(sketch, reference):
+def _source_stamp(source):
+    identity = source.Document.collaborationIdentity()
+    shape = source.Shape
+    return (
+        (identity["instance_id"], identity["lifecycle_epoch"], source.ID),
+        (
+            hashlib.sha256(shape.exportBrepToString().encode()).hexdigest(),
+            tuple(source.getGlobalPlacement().toMatrix().A),
+        ),
+    )
+
+
+def iter_candidates(sketch, reference):
     """Rank same-type subelements; include refusal reasons for inspection."""
     if reference not in broken_references(sketch):
         raise RepairError("Reference is no longer broken; refresh the list")
@@ -199,7 +214,7 @@ def candidates(sketch, reference):
     else:
         kind = "Face"
         grouped = False
-    result = []
+    source_identity, shape_signature = _source_stamp(source)
     for index, shape in enumerate(
         getattr(
             source.Shape, {"Edge": "Edges", "Vertex": "Vertexes", "Face": "Faces"}[kind]
@@ -229,10 +244,22 @@ def candidates(sketch, reference):
                 False,
                 "Frozen projections must be synchronized separately",
             )
-        result.append(
-            Candidate(source.Name, f"{kind}{index + 1}", score, compatible, reason)
+        yield Candidate(
+            source.Name,
+            f"{kind}{index + 1}",
+            score,
+            compatible,
+            reason,
+            source_identity,
+            shape_signature,
         )
-    return sorted(result, key=lambda c: (c.score, c.subelement))
+
+
+def candidates(sketch, reference):
+    """Rank candidates for this reference, retaining the listed source revision."""
+    return sorted(
+        iter_candidates(sketch, reference), key=lambda c: (c.score, c.subelement)
+    )
 
 
 _CONSTRAINT_FIELDS = (
@@ -265,8 +292,8 @@ def _geometry(sketch):
     return list(sketch.Geometry) + [g.geometry for g in external_geometry(sketch)]
 
 
-def repair(sketch, choices):
-    """Validate all choices, then reattach in one transaction or roll back all.
+def prepare_repair(sketch, choices):
+    """Validate every choice without opening a transaction or touching the model.
 
     Choices are (Reference, Candidate) pairs from the read-only discovery API.
     Revalidate immediately before mutation, including ties and stale selections.
@@ -276,6 +303,8 @@ def repair(sketch, choices):
     if not choices:
         raise RepairError("Choose at least one broken reference")
     doc = sketch.Document
+    if doc is None:
+        raise RepairError("Cannot repair a sketch without a document")
     if doc.HasPendingTransaction:
         raise RepairError("Finish the current transaction before repairing references")
     keys, targets = set(), set()
@@ -293,6 +322,11 @@ def repair(sketch, choices):
             raise RepairError(
                 "Candidate is unavailable or has an incompatible subelement type; refresh the list"
             )
+        if (fresh.source_identity, fresh.shape_signature) != (
+            selected.source_identity,
+            selected.shape_signature,
+        ):
+            raise RepairError("Candidate source or shape changed; refresh the list")
         if not fresh.compatible:
             raise RepairError(fresh.reason)
         if (
@@ -315,43 +349,111 @@ def repair(sketch, choices):
             or len(sketch.AttachmentSupport[0][1]) != 1
         ):
             raise RepairError("Only single-face attachments can be repaired safely")
-    identity, geometry, placement = (
-        _identity(sketch),
-        _geometry(sketch),
-        sketch.Placement,
-    )
-    doc.openTransaction("Repair sketch references")
-    try:
-        for reference, selected in choices:
-            if reference.kind == "external":
-                sketch.attachExternal(
-                    reference.geo_id, selected.source, selected.subelement
-                )
-            else:
-                sketch.AttachmentSupport = (
-                    doc.getObject(selected.source),
-                    [selected.subelement],
-                )
-        if not sketch.recompute():
-            raise RepairError("Sketch failed to recompute after repair")
-        if any(ref in broken_references(sketch) for ref, _ in choices):
-            raise RepairError("Reference remains broken after recompute")
-        if "Invalid" in sketch.State:
-            raise RepairError("Sketch failed to recompute after repair")
-        if _identity(sketch) != identity or not sketch.Placement.isSame(
-            placement, TOLERANCE
+    # Ask a detached copy of the actual attachment engine. Plane/angle scores
+    # alone cannot prove that the attachment origin or distant endpoints stay put.
+    geometry = _geometry(sketch)
+    for reference, selected in choices:
+        if reference.kind == "attachment":
+            attacher = sketch.Attacher
+            attacher.References = [
+                (doc.getObject(selected.source), [selected.subelement])
+            ]
+            predicted = attacher.calculateAttachedPlacement(sketch.Placement)
+            _check_placement(sketch, geometry, sketch.Placement, predicted)
+    return choices, _identity(sketch), geometry, sketch.Placement
+
+
+def _check_placement(sketch, geometry, before, after):
+    if after is None or not after.isSame(before, TOLERANCE):
+        raise RepairError("Repair would change attachment placement")
+    parent = sketch.getGlobalPlacement().multiply(sketch.Placement.inverse())
+    old_world, new_world = parent.multiply(before), parent.multiply(after)
+    for geo in geometry:
+        points = (
+            [App.Vector(geo.X, geo.Y, geo.Z)]
+            if isinstance(geo, Part.Point)
+            else _samples(geo.toShape())
+        )
+        if any(
+            (old_world.multVec(p) - new_world.multVec(p)).Length > TOLERANCE
+            for p in points
         ):
-            raise RepairError(
-                "Repair would change constraints, expressions, geometry IDs or attachment placement"
+            raise RepairError("Repair would move world constraint endpoints")
+
+
+def apply_prepared(sketch, prepared):
+    """Mutate only a validated repair; the caller owns the transaction."""
+    choices = prepared[0]
+    doc = sketch.Document
+    for reference, selected in choices:
+        # Fence the source again at execution, including name reuse.
+        source = doc.getObject(selected.source)
+        if source is None or _source_stamp(source) != (
+            selected.source_identity,
+            selected.shape_signature,
+        ):
+            raise RepairError("Candidate source or shape changed; refresh the list")
+    for reference, selected in choices:
+        if reference.kind == "external":
+            sketch.attachExternal(
+                reference.geo_id, selected.source, selected.subelement
             )
-        current = _geometry(sketch)
-        if len(current) != len(geometry) or any(
-            not a.isSame(b, TOLERANCE, TOLERANCE) for a, b in zip(geometry, current)
-        ):
-            raise RepairError("Repair would change geometry or constraint endpoints")
-        doc.commitTransaction()
-    except Exception as error:
-        doc.abortTransaction()
-        if isinstance(error, RepairError):
+        else:
+            sketch.AttachmentSupport = (
+                doc.getObject(selected.source),
+                [selected.subelement],
+            )
+
+
+def check_repair(sketch, prepared):
+    choices, identity, geometry, placement = prepared
+    if any(ref in broken_references(sketch) for ref, _ in choices):
+        raise RepairError("Reference remains broken after recompute")
+    if "Invalid" in sketch.State:
+        raise RepairError("Sketch failed to recompute after repair")
+    if _identity(sketch) != identity:
+        raise RepairError(
+            "Repair would change constraints, expressions or geometry IDs"
+        )
+    _check_placement(sketch, geometry, placement, sketch.Placement)
+    current = _geometry(sketch)
+    if len(current) != len(geometry) or any(
+        not a.isSame(b, TOLERANCE, TOLERANCE) for a, b in zip(geometry, current)
+    ):
+        raise RepairError("Repair would change geometry or constraint endpoints")
+    return True
+
+
+def repair(sketch, choices):
+    """Headless repair. GUI commands submit the prepared edit asynchronously."""
+    if App.GuiUp:
+        from PySide import QtCore
+
+        app = QtCore.QCoreApplication.instance()
+        if app and QtCore.QThread.currentThread() == app.thread():
+            raise RepairError(
+                "Submit reference repair through the nonblocking GUI command"
+            )
+    prepared = prepare_repair(sketch, choices)
+    doc = sketch.Document
+    try:
+        result = doc.commitCompatibilityMutationAsync(
+            lambda: apply_prepared(sketch, prepared),
+            object_name=sketch.Name,
+            label="Repair sketch references",
+            postcondition=lambda: check_repair(sketch, prepared),
+        )
+        # The async compatibility facade returns a wait callable off-owner and
+        # a terminal dict on-owner. This API is headless; GUI waits live in the
+        # command's worker and deliver an admitted Qt completion callback.
+        if callable(result.get("wait")):
+            result = result["wait"]()
+        if result.get("status") != "Committed":
+            raise RepairError(result.get("message", str(result)))
+    except BaseException as error:
+        # The native command owns and aborts its transaction before propagating
+        # callback failures, including KeyboardInterrupt and SystemExit. Never
+        # abort an unrelated transaction if admission itself was refused.
+        if isinstance(error, RepairError) or not isinstance(error, Exception):
             raise
         raise RepairError(f"Cannot repair reference: {error}") from error
