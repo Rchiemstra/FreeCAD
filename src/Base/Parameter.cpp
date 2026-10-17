@@ -73,6 +73,9 @@ namespace
 {
 // Xerces DOM reads also update internal caches. Protect every tree and handle-map
 // access, including across managers (copy/import can visit two trees recursively).
+// GetGroupName() returns borrowed text and still requires external synchronization.
+// Parent() returns a raw pointer whose lifetime is not protected by this mutex.
+// Manager() returns a raw pointer whose lifetime is not protected by this mutex.
 std::recursive_mutex parameterMutex;
 thread_local std::vector<std::function<void()>>* parameterNotifications = nullptr;
 
@@ -82,7 +85,6 @@ public:
     ParameterLock()
         : lock(parameterMutex)
         , outermost(parameterNotifications == nullptr)
-        , exceptions(std::uncaught_exceptions())
     {
         if (outermost) {
             parameterNotifications = &notifications;
@@ -96,32 +98,84 @@ public:
         }
         parameterNotifications = nullptr;
         lock.unlock();
-        // Do not replace an exception from a failed tree operation with one from
-        // a callback. On success, preserve synchronous notification/exception behavior.
-        if (std::uncaught_exceptions() == exceptions) {
-            for (auto& notify : notifications) {
-                notify();
-            }
+        deliver();
+        // Finish the batch even when a callback throws, but never replace an
+        // exception already propagating from a tree operation or another callback.
+        if (firstException && std::uncaught_exceptions() == 0) {
+            std::rethrow_exception(firstException);
         }
+    }
+
+    void deliverBeforeRemoval()
+    {
+        if (!outermost || notifications.empty()) {
+            return;
+        }
+        parameterNotifications = nullptr;
+        lock.unlock();
+        deliver();
+        lock.lock();
+        parameterNotifications = &notifications;
     }
 
     ParameterLock(const ParameterLock&) = delete;
     ParameterLock& operator=(const ParameterLock&) = delete;
 
 private:
+    void deliver()
+    {
+        // Destroy retained subjects outside the tree lock as well. Reentrant
+        // parameter operations get their own batch while this one is in flight.
+        auto batch = std::move(notifications);
+        notifications.clear();
+        for (auto& notify : batch) {
+            try {
+                notify();
+            }
+            catch (...) {
+                if (!firstException) {
+                    firstException = std::current_exception();
+                }
+            }
+        }
+    }
+
+    std::exception_ptr firstException;
     std::unique_lock<std::recursive_mutex> lock;
     bool outermost;
-    int exceptions;
     std::vector<std::function<void()>> notifications;
 };
+
+// The tree mutex protects storage while a destructor waits for it, but cannot
+// prevent the last unref on another thread. Atomically retain only positive counts.
+template<class T>
+std::shared_ptr<T> retainParameter(T* object)
+{
+    if (!object || !object->tryRef()) {
+        return {};
+    }
+    return std::shared_ptr<T>(object, [](T* retained) { retained->unref(); });
+}
 
 // Copy payloads and retain their subjects until the outermost tree operation has
 // unlocked. A callback may synchronously wait for another thread to use parameters.
 void notifyParameter(ParameterGrp* group, const char* name)
 {
-    parameterNotifications->emplace_back([group = ParameterGrp::handle(group),
-                                          name = std::string(name)] {
-        group->Notify(name.c_str());
+    auto manager = retainParameter(group->Manager());
+    if (group->Manager() && !manager) {
+        return;
+    }
+    if (auto retained = retainParameter(group)) {
+        parameterNotifications->emplace_back([manager, group = retained, name = std::string(name)] {
+            group->Notify(name.c_str());
+        });
+    }
+}
+
+void warnParameter(std::string message)
+{
+    parameterNotifications->emplace_back([message = std::move(message)] {
+        FC_WARN(message);
     });
 }
 }  // namespace
@@ -417,12 +471,13 @@ DOMElement* ParameterGrp::CreateElement(DOMElement* Start, const char* Type, con
     if (XMLString::compareString(Start->getNodeName(), XStrLiteral("FCParamGroup").unicodeForm()) != 0
         && XMLString::compareString(Start->getNodeName(), XStrLiteral("FCParameters").unicodeForm())
             != 0) {
-        Base::Console().warning(
+        auto message = std::format(
             "CreateElement: {} cannot have the element {} of type {}\n",
-            StrX(Start->getNodeName()).c_str(),
-            Name,
-            Type
+            StrX(Start->getNodeName()).c_str(), Name ? Name : "", Type
         );
+        parameterNotifications->emplace_back([message = std::move(message)] {
+            Base::Console().warning("{}", message);
+        });
         return nullptr;
     }
 
@@ -476,13 +531,13 @@ Base::Reference<ParameterGrp> ParameterGrp::_GetGroup(const char* Name)
     Base::Reference<ParameterGrp> rParamGrp;
     if (!_pGroupNode) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Adding group " << Name << " in an orphan group " << _cName);
+            warnParameter(std::format("Adding group {} in an orphan group {}", Name, _cName));
         }
         return rParamGrp;
     }
     if (_Clearing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Adding group " << Name << " while clearing " << GetPath());
+            warnParameter(std::format("Adding group {} while clearing {}", Name, GetPath()));
         }
         return rParamGrp;
     }
@@ -752,16 +807,20 @@ std::vector<std::pair<std::string, std::string>> ParameterGrp::GetAttributeMap(
 void ParameterGrp::_Notify(ParamType Type, const char* Name, const char* Value)
 {
     // Callers hold a ParameterLock, including recursive creation and clearing.
-    if (_Manager) {
+    auto manager = retainParameter(_Manager);
+    if (!manager) {
+        return;
+    }
+    if (auto group = retainParameter(this)) {
         parameterNotifications->emplace_back([
-            manager = Base::Reference<ParameterManager>(_Manager),
-            group = handle(this),
+            manager,
+            group,
             Type,
             name = Name ? std::optional<std::string>(Name) : std::nullopt,
             value = Value ? std::optional<std::string>(Value) : std::nullopt
         ] {
             manager->signalParamChanged(
-                group, Type, name ? name->c_str() : nullptr, value ? value->c_str() : nullptr
+                group.get(), Type, name ? name->c_str() : nullptr, value ? value->c_str() : nullptr
             );
         });
     }
@@ -776,13 +835,17 @@ void ParameterGrp::_SetAttribute(ParamType T, const char* Name, const char* Valu
     }
     if (!_pGroupNode) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Setting attribute " << Type << ":" << Name << " in an orphan group " << _cName);
+            warnParameter(std::format(
+                "Setting attribute {}:{} in an orphan group {}", Type, Name, _cName
+            ));
         }
         return;
     }
     if (_Clearing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Adding attribute " << Type << ":" << Name << " while clearing " << GetPath());
+            warnParameter(std::format(
+                "Adding attribute {}:{} while clearing {}", Type, Name, GetPath()
+            ));
         }
         return;
     }
@@ -1124,13 +1187,13 @@ void ParameterGrp::SetASCII(const char* Name, const char* sValue)
     ParameterLock lock;
     if (!_pGroupNode) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Setting attribute " << "FCText:" << Name << " in an orphan group " << _cName);
+            warnParameter(std::format("Setting attribute FCText:{} in an orphan group {}", Name, _cName));
         }
         return;
     }
     if (_Clearing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Adding attribute " << "FCText:" << Name << " while clearing " << GetPath());
+            warnParameter(std::format("Adding attribute FCText:{} while clearing {}", Name, GetPath()));
         }
         return;
     }
@@ -1481,66 +1544,82 @@ void ParameterGrp::Clear(bool notify)
     if (!_pGroupNode) {
         return;
     }
-
-    Base::StateLocker guard(_Clearing);
-
-    // Snapshot removal decisions before queued notifications retain group handles.
-    std::map<ParameterGrp*, bool> remove;
-    for (const auto& entry : _GroupMap) {
-        remove.emplace(entry.second, entry.second->ShouldRemove());
-    }
-
-    // Notifications preserve their order, but run after the cleared tree is unlocked.
-    _Notify(ParamType::FCGroup, nullptr, nullptr);
-
-    // checking on references
-    for (auto it = _GroupMap.begin(); it != _GroupMap.end();) {
-        // If a group handle is referenced by some observer, then do not remove
-        // it but clear it, so that any existing observer can still get
-        // notification if the group is later on add back. We do remove the
-        // underlying xml element from its parent so that we won't save this
-        // empty group.
-        it->second->Clear(notify);
-        if (!it->second->_Detached) {
-            it->second->_Detached = true;
-            _pGroupNode->removeChild(it->second->_pGroupNode);
+    // Keep the DOM owner alive across the unlocked pre-removal callbacks.
+    auto manager = retainParameter(_Manager);
+    // Use one lock scope for recursion so an outermost Clear can deliver each
+    // group's pre-removal signal before cutting any of its parent links.
+    auto clear = [&](auto&& clear, ParameterGrp* group) -> void {
+        if (!group->_pGroupNode || group->_Clearing) {
+            return;
         }
-        if (!remove.at(it->second)) {
-            ++it;
-        }
-        else {
-            it->second->_Parent = nullptr;
-            it->second->_Manager = nullptr;
-            it = _GroupMap.erase(it);
-        }
-    }
+        Base::StateLocker guard(group->_Clearing);
 
-    // Remove the rest of non-group nodes;
-    std::vector<std::pair<ParamType, std::string>> params;
-    for (DOMNode *child = _pGroupNode->getFirstChild(), *next = child; child != nullptr;
-         child = next) {
-        next = next->getNextSibling();
-        ParamType type = TypeValue(StrX(child->getNodeName()).c_str());
-        if (type != ParamType::FCInvalid && type != ParamType::FCGroup) {
-            params.emplace_back(
-                type,
-                StrX(child->getAttributes()->getNamedItem(XStrLiteral("Name").unicodeForm())->getNodeValue())
-                    .c_str()
-            );
+        // Decide before retaining children for stable traversal across callbacks.
+        std::vector<std::pair<handle, bool>> children;
+        for (const auto& entry : group->_GroupMap) {
+            const bool remove = entry.second->ShouldRemove();
+            children.emplace_back(entry.second, remove);
         }
-        DOMNode* node = _pGroupNode->removeChild(child);
-        node->release();
-    }
 
-    for (auto& v : params) {
-        _Notify(v.first, v.second.c_str(), nullptr);
-        if (notify) {
-            notifyParameter(this, v.second.c_str());
+        auto groupNode = group->_pGroupNode;
+        group->_Notify(ParamType::FCGroup, nullptr, nullptr);
+        lock.deliverBeforeRemoval();
+        if (group->_pGroupNode != groupNode) {
+            return;
         }
-    }
 
-    // trigger observer
-    notifyParameter(this, "");
+        for (const auto& [child, remove] : children) {
+            clear(clear, child);
+            if (group->_pGroupNode != groupNode) {
+                return;
+            }
+            // A pre-removal callback may itself remove or rename a child.
+            auto it = group->_GroupMap.find(child->_cName);
+            if (it == group->_GroupMap.end() || it->second != child) {
+                continue;
+            }
+            if (child->_pGroupNode && !child->_Detached) {
+                child->_Detached = true;
+                group->_pGroupNode->removeChild(child->_pGroupNode);
+            }
+            if (remove) {
+                child->_Parent = nullptr;
+                child->_Manager = nullptr;
+                group->_GroupMap.erase(it);
+            }
+        }
+
+        // Remove the rest of non-group nodes;
+        std::vector<std::pair<ParamType, std::string>> params;
+        for (DOMNode *child = group->_pGroupNode->getFirstChild(), *next = child; child != nullptr;
+             child = next) {
+            next = next->getNextSibling();
+            ParamType type = TypeValue(StrX(child->getNodeName()).c_str());
+            if (type != ParamType::FCInvalid && type != ParamType::FCGroup) {
+                params.emplace_back(
+                    type,
+                    StrX(child->getAttributes()->getNamedItem(XStrLiteral("Name").unicodeForm())->getNodeValue())
+                        .c_str()
+                );
+            }
+            DOMNode* node = group->_pGroupNode->removeChild(child);
+            node->release();
+        }
+
+        for (auto& v : params) {
+            group->_Notify(v.first, v.second.c_str(), nullptr);
+            if (notify) {
+                notifyParameter(group, v.second.c_str());
+            }
+        }
+
+        // trigger observer
+        notifyParameter(group, "");
+        // Descendant value/legacy events also need their ancestor links until
+        // delivery completes; the caller detaches this group after we return.
+        lock.deliverBeforeRemoval();
+    };
+    clear(clear, this);
 }
 
 //**************************************************************************
@@ -1564,12 +1643,13 @@ DOMElement* ParameterGrp::FindElement(DOMElement* Start, const char* Type, const
     if (XMLString::compareString(Start->getNodeName(), XStrLiteral("FCParamGroup").unicodeForm()) != 0
         && XMLString::compareString(Start->getNodeName(), XStrLiteral("FCParameters").unicodeForm())
             != 0) {
-        Base::Console().warning(
+        auto message = std::format(
             "FindElement: {} cannot have the element {} of type {}\n",
-            StrX(Start->getNodeName()).c_str(),
-            Name,
-            Type
+            StrX(Start->getNodeName()).c_str(), Name ? Name : "", Type
         );
+        parameterNotifications->emplace_back([message = std::move(message)] {
+            Base::Console().warning("{}", message);
+        });
         return nullptr;
     }
     const XStr xType(Type);

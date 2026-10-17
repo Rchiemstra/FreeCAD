@@ -1,5 +1,6 @@
 #include "Base/Color.h"
 #include <gtest/gtest.h>
+#include <Base/Console.h>
 #include <Base/FileInfo.h>
 #include <Base/FileLock.h>
 #include <Base/Parameter.h>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
+#include <stdexcept>
 #include <thread>
 #include <xercesc/framework/MemBufFormatTarget.hpp>
 
@@ -164,7 +166,7 @@ TEST_F(ParameterTest, ConcurrentTreeAccess)
 class ParameterCallbackProbe: public ParameterGrp::ObserverType
 {
 public:
-    explicit ParameterCallbackProbe(ParameterGrp::handle group)
+    explicit ParameterCallbackProbe(ParameterGrp* group)
         : group(group)
     {}
 
@@ -231,6 +233,181 @@ TEST_F(ParameterTest, NotificationsReleaseTreeLock)
     EXPECT_GT(modern.calls, 0);
     group->Detach(&legacy);
     connection.disconnect();
+}
+
+// Model the interval after the last unref and before the destructor gets the
+// tree mutex, without actually deleting the manager underneath the test.
+TEST_F(ParameterTest, NotificationsSkipManagerTeardown)
+{
+    getCreateConfig();
+    auto manager = ParameterManager::Create();
+    manager->CreateDocument();
+    auto group = manager->GetGroup("Child");
+    int calls = 0;
+    auto connection = manager->signalParamChanged.connect(
+        [&](ParameterGrp*, ParameterGrp::ParamType, const char*, const char*) {
+            ++calls;
+            // Rescue the old implementation's resurrected manager so the
+            // regression reports a failure instead of deleting it twice.
+            manager->ref();
+        });
+    ASSERT_EQ(manager->getRefCount(), 1);
+    manager->unrefNoDelete();
+    group->SetInt("DuringTeardown", 42);
+    const int remaining = manager->getRefCount();
+    if (remaining == 0) {
+        manager->ref();
+    }
+    connection.disconnect();
+    EXPECT_EQ(calls, 0);
+    EXPECT_EQ(remaining, 0);
+}
+
+TEST_F(ParameterTest, ClearPreRemovalHierarchy)
+{
+    auto cfg = getCreateConfig();
+    auto group = cfg->GetGroup("Observed");
+    group->GetGroup("Child/Grandchild")->SetInt("Value", 42);
+    ParameterCallbackProbe probe(cfg);
+    std::vector<std::string> paths;
+    std::vector<std::string> valuePaths;
+    auto connection = cfg->signalParamChanged.connect(
+        [&](ParameterGrp* changed, ParameterGrp::ParamType type, const char* name, const char*) {
+            if (type != ParameterGrp::ParamType::FCGroup || name) {
+                if (name && std::string(name) == "Value") {
+                    valuePaths.push_back(changed->GetPath());
+                    ASSERT_NE(changed->Parent(), nullptr);
+                    EXPECT_EQ(changed->Parent()->Parent(), group);
+                }
+                return;
+            }
+            probe.checkUnlocked();
+            // Same ancestor filter as ParameterGrpPy::attach().
+            for (auto parent = changed; parent; parent = parent->Parent()) {
+                if (parent == group) {
+                    paths.push_back(changed->GetPath());
+                    break;
+                }
+            }
+            if (changed == group) {
+                EXPECT_TRUE(changed->HasGroup("Child"));
+            }
+            if (changed->GetPath() == "Observed/Child/Grandchild") {
+                EXPECT_EQ(changed->GetInt("Value"), 42);
+            }
+        });
+    group->Clear(true);
+    connection.disconnect();
+    EXPECT_EQ(paths, (std::vector<std::string> {
+        "Observed", "Observed/Child", "Observed/Child/Grandchild"}));
+    EXPECT_EQ(probe.calls, 3);
+    EXPECT_EQ(valuePaths, (std::vector<std::string> {"Observed/Child/Grandchild"}));
+    EXPECT_FALSE(group->HasGroup("Child"));
+}
+
+TEST_F(ParameterTest, NotificationBatchContinuesAfterException)
+{
+    auto cfg = getCreateConfig();
+    auto group = cfg->GetGroup("Observed");
+    class ThrowingObserver: public ParameterGrp::ObserverType
+    {
+    public:
+        void OnChange(ParameterGrp::SubjectType&, ParameterGrp::MessageType) override
+        {
+            ++calls;
+            throw std::logic_error("second callback");
+        }
+        int calls = 0;
+    } legacy;
+    group->Attach(&legacy);
+    auto connection = cfg->signalParamChanged.connect(
+        [](ParameterGrp*, ParameterGrp::ParamType, const char*, const char*) {
+            throw std::runtime_error("first callback");
+        });
+    try {
+        group->SetInt("Value", 42);
+        ADD_FAILURE() << "The first callback exception must propagate";
+    }
+    catch (const std::runtime_error& error) {
+        EXPECT_STREQ(error.what(), "first callback");
+    }
+    group->Detach(&legacy);
+    connection.disconnect();
+    EXPECT_EQ(legacy.calls, 1);
+    EXPECT_EQ(group->GetInt("Value"), 42);
+}
+
+TEST_F(ParameterTest, NotificationBatchDuringUnwind)
+{
+    auto cfg = getCreateConfig();
+    auto group = cfg->GetGroup("Observed");
+    FakeObserver legacy;
+    group->Attach(&legacy);
+    int modernCalls = 0;
+    auto connection = cfg->signalParamChanged.connect(
+        [&](ParameterGrp*, ParameterGrp::ParamType, const char*, const char*) {
+            ++modernCalls;
+            throw std::logic_error("callback failure");
+        });
+    struct SetOnExit
+    {
+        ParameterGrp::handle group;
+        ~SetOnExit()
+        {
+            group->SetInt("Value", 42);
+        }
+    };
+    try {
+        SetOnExit onExit {group};
+        throw std::runtime_error("operation failure");
+    }
+    catch (const std::runtime_error& error) {
+        EXPECT_STREQ(error.what(), "operation failure");
+    }
+    group->Detach(&legacy);
+    connection.disconnect();
+    EXPECT_EQ(modernCalls, 1);
+    EXPECT_EQ(legacy.getCountNotifications(), 1);
+    EXPECT_EQ(group->GetInt("Value"), 42);
+}
+
+TEST_F(ParameterTest, OrphanWarningsReleaseTreeLock)
+{
+    auto cfg = getCreateConfig();
+    auto manager = ParameterManager::Create();
+    manager->CreateDocument();
+    auto orphan = manager->GetGroup("Orphan");
+    manager = nullptr;
+    ParameterCallbackProbe probe(cfg);
+    class Logger: public Base::ILogger
+    {
+    public:
+        explicit Logger(ParameterCallbackProbe& probe)
+            : probe(probe)
+        {
+            Base::Console().attachObserver(this);
+        }
+        ~Logger() override
+        {
+            Base::Console().detachObserver(this);
+        }
+        void sendLog(const std::string&, const std::string& message, Base::LogStyle,
+                     Base::IntendedRecipient, Base::ContentType) override
+        {
+            if (message.find("orphan group") != std::string::npos) {
+                probe.checkUnlocked();
+            }
+        }
+        ParameterCallbackProbe& probe;
+    } logger(probe);
+    auto level = Base::Console().getLogLevel("Parameter");
+    const int previous = *level;
+    *level = FC_LOGLEVEL_LOG;
+    orphan->SetASCII("Text", "value");
+    orphan->SetInt("Value", 42);
+    orphan->GetGroup("Child");
+    *level = previous;
+    EXPECT_EQ(probe.calls, 3);
 }
 
 TEST_F(ParameterTest, SerializationCallbacksReleaseTreeLock)
