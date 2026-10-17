@@ -1901,11 +1901,19 @@ void ViewProviderAssembly::UpdateSolverInformation()
     int dofs = assembly->getLastDoF();
     bool hasRedundancies = assembly->getLastHasRedundancies();
     bool hasMalformed = assembly->getLastHasMalformedConstraints();
+    const auto solveResult = static_cast<SolveResult>(assembly->getLastSolverStatus());
 
     if (assembly->isEmpty()) {
         signalSetUp(QStringLiteral("empty"), tr("Empty Assembly"), QString(), QString());
     }
-    else if (dofs < 0 || /*hasConflicts*/ hasRedundancies) {  // over-constrained
+    else if (!assembly->hasSolveResult()) {
+        signalSetUp(QStringLiteral("empty"), tr("Not solved yet"), QString(), QString());
+    }
+    // Unknown DoF after a rejected solve must not hide its actual failure.
+    else if ((solveResult == SolveResult::Success && dofs < 0)
+             || solveResult == SolveResult::RelationsViolated
+             || solveResult == SolveResult::OverConstrained
+             || solveResult == SolveResult::RedundantConstraints || hasRedundancies) {
         // Currently the solver does not distinguish between conflicts and redundancies.
         /*signalSetUp(QStringLiteral("conflicting_constraints"),
                     tr("Over-constrained:") + QLatin1String(" "),
@@ -1944,7 +1952,7 @@ void ViewProviderAssembly::UpdateSolverInformation()
             QStringLiteral("(%1)").arg(objListHelper(assembly,
     assembly->getLastPartiallyRedundant())));
     }*/
-    else if (assembly->getLastSolverStatus() != 0) {
+    else if (solveResult != SolveResult::Success) {
         signalSetUp(
             QStringLiteral("solver_failed"),
             tr("Solver failed to converge"),

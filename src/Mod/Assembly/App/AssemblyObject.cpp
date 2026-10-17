@@ -347,7 +347,7 @@ PROPERTY_SOURCE(Assembly::AssemblyObject, App::Part)
 AssemblyObject::AssemblyObject()
     : mbdAssembly(std::make_shared<ASMTAssembly>())
     , bundleFixed(false)
-    , lastDoF(0)
+    , lastDoF(-1)
     , lastHasConflict(false)
     , lastHasRedundancies(false)
     , lastHasPartialRedundancies(false)
@@ -388,7 +388,6 @@ AssemblyObject::AssemblyObject()
     // displayed and explicitly removed without changing ordinary XLink behavior.
     InterferenceExcludedSources.setAllowPartial(true);
 
-    lastDoF = numberOfComponents() * 6;
     signalSolverUpdate();
 }
 
@@ -749,6 +748,8 @@ SolveResult AssemblyObject::solve(bool enableRedo)
             solveDiagnostic.clear();
         }
         lastSolveResult = result;
+        solveResultAvailable = true;
+        cacheSolveStatus();
         updateSolveStatus();
         if (solvePending) {
             touch();
@@ -800,10 +801,23 @@ SolveResult AssemblyObject::solve(bool enableRedo)
 
 void AssemblyObject::updateSolveStatus()
 {
+    signalSolverUpdate();
+}
+
+void AssemblyObject::cacheSolveStatus()
+{
     lastHasConflict = lastSolveResult == SolveResult::RelationsViolated;
     lastHasMalformedConstraints = lastSolveResult == SolveResult::MalformedConstraints;
     lastRedundantJoints.clear();
     lastHasRedundancies = false;
+
+    // A rejected attempt's solver still describes its tentative placements.
+    // Report the authoritative failure without publishing that candidate's DoF
+    // or redundant joints, including after a drag has restored its placements.
+    lastDoF = -1;
+    if (lastSolveResult != SolveResult::Success) {
+        return;
+    }
 
     int numberOfSolverBodies = numberOfComponents();
     if (!objectPartMap.empty()) {
@@ -821,14 +835,7 @@ void AssemblyObject::updateSolveStatus()
     // +1 because the assembly origin is also represented by a solver body.
     lastDoF = (1 + numberOfSolverBodies) * 6;
 
-    // Solve on demand when queried before the system is solved, but not from within
-    // a solve: solve() calls this, so a failed solve would recurse indefinitely.
-    if (!solveInProgress && !placementAttemptInProgress && (!mbdAssembly || !mbdAssembly->mbdSystem)) {
-        solve();
-    }
-
     if (!mbdAssembly || !mbdAssembly->mbdSystem) {
-        signalSolverUpdate();
         return;
     }
 
@@ -889,8 +896,6 @@ void AssemblyObject::updateSolveStatus()
     if (!lastRedundantJoints.empty()) {
         lastHasRedundancies = true;
     }
-
-    signalSolverUpdate();
 }
 
 int AssemblyObject::generateSimulation(App::DocumentObject* sim)
@@ -1021,6 +1026,8 @@ SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
         dragResult = solve();
     }
     lastSolveResult = dragResult;
+    solveResultAvailable = true;
+    cacheSolveStatus();
     if (dragResult != SolveResult::Success) {
         return dragResult;
     }
@@ -1279,6 +1286,9 @@ SolveResult AssemblyObject::postDrag()
     draggedParts.clear();
     dragPlacements.clear();
     lastSolveResult = dragResult;
+    solveResultAvailable = true;
+    cacheSolveStatus();
+    updateSolveStatus();
     return dragResult;
 }
 

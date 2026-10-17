@@ -13,8 +13,11 @@
 #include <Base/Interpreter.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/Groups.h>
+#include <OndselSolver/ASMTAssembly.h>
 #include <src/App/InitApplication.h>
 
+namespace Assembly
+{
 class AssemblyObjectTest: public ::testing::Test
 {
 protected:
@@ -57,6 +60,16 @@ protected:
     App::Document* getDocument() const
     {
         return _document;
+    }
+
+    bool hasSolverSystem() const
+    {
+        return _assemblyObj->mbdAssembly && _assemblyObj->mbdAssembly->mbdSystem;
+    }
+
+    void discardSolverSystem()
+    {
+        _assemblyObj->mbdAssembly->mbdSystem.reset();
     }
 
     void makeSolveFixture(bool conflicting = false)
@@ -133,6 +146,9 @@ private:
     App::Document* _document = nullptr;
     std::string _docName;
 };
+}  // namespace Assembly
+
+using Assembly::AssemblyObjectTest;
 
 TEST_F(AssemblyObjectTest, createAssemblyObject)  // NOLINT
 {
@@ -143,14 +159,128 @@ TEST_F(AssemblyObjectTest, createAssemblyObject)  // NOLINT
     // Assert
 }
 
+TEST_F(AssemblyObjectTest, unsolvedStatusRefreshIsObservational)  // NOLINT
+{
+    auto prefs = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Mod/Assembly"
+    );
+    const bool previous = prefs->GetBool("SolveOnRecompute", true);
+    prefs->SetBool("SolveOnRecompute", false);
+    makeSolveFixture();
+    prefs->SetBool("SolveOnRecompute", previous);
+    // Group changes used to solve implicitly during fixture creation. Start the
+    // refresh with no system even on that implementation.
+    discardSolverSystem();
+    Base::Interpreter().runString(
+        "import os, tempfile\n"
+        "_c1_lid.Placement.Base = App.Vector(30, 0, 0)\n"
+        "for _c3_obj in _c1_a.Document.Objects:\n"
+        "    _c3_obj.purgeTouched()\n"
+        "def _c3_snapshot():\n"
+        "    return [(o.Name, list(o.State), "
+        "{p: tuple(getattr(o, p).toMatrix().A) for p in o.PropertiesList "
+        "if o.getTypeIdOfProperty(p) == 'App::PropertyPlacement'}) "
+        "for o in _c1_a.Document.Objects]\n"
+        "_c3_path = os.path.join(tempfile.mkdtemp(), 'status.FCStd')\n"
+        "_c1_a.Document.saveAs(_c3_path)\n"
+    );
+    EXPECT_FALSE(hasSolverSystem());
+    EXPECT_FALSE(getObject()->hasSolveResult());
+    EXPECT_FALSE(getDocument()->hasPendingFileChanges());
+    EXPECT_FALSE(getDocument()->isTouched());
+    int updates = 0;
+    auto connection = getObject()->signalSolverUpdate.connect([&updates]() { ++updates; });
+    for (const bool touched : {false, true}) {
+        if (touched) {
+            getDocument()->getObject("Lid")->touch();
+        }
+        const auto fileState = getDocument()->getFileChangeState();
+        const auto fileChanges = getDocument()->getPendingFileChanges();
+        const bool documentTouched = getDocument()->isTouched();
+        std::vector<std::pair<App::Property*, unsigned long>> propertyStatuses;
+        for (auto* object : getDocument()->getObjects()) {
+            std::vector<App::Property*> properties;
+            object->getPropertyList(properties);
+            for (auto* property : properties) {
+                propertyStatuses.emplace_back(property, property->getStatus());
+            }
+        }
+        Base::Interpreter().runString("_c3_before = _c3_snapshot()");
+        // Exercise the public Python refresh entry point as well as its C++ signal.
+        Base::Interpreter().runString("_c1_a.updateSolveStatus()");
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Base::Interpreter().runStringObject("_c3_snapshot() == _c3_before").isTrue());
+        EXPECT_EQ(getDocument()->getFileChangeState(), fileState);
+        EXPECT_EQ(getDocument()->getPendingFileChanges().getFlags(), fileChanges.getFlags());
+        EXPECT_EQ(getDocument()->isTouched(), documentTouched);
+        for (const auto& [property, status] : propertyStatuses) {
+            EXPECT_EQ(property->getStatus(), status) << property->getName();
+        }
+        EXPECT_FALSE(hasSolverSystem());
+        EXPECT_EQ(getObject()->getLastDoF(), -1);  // Unknown until an explicit solve.
+    }
+    EXPECT_EQ(updates, 2);
+    connection.disconnect();
+    Base::Interpreter().runString("os.remove(_c3_path)\nos.rmdir(os.path.dirname(_c3_path))");
+}
+
+TEST_F(AssemblyObjectTest, statusRefreshPreservesLastExplicitSolve)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    EXPECT_EQ(getObject()->getLastDoF(), 0);
+    EXPECT_FALSE(getObject()->getLastHasConflicts());
+    const auto redundant = getObject()->getLastRedundant();
+    // Changing membership must not reinterpret the old solve using the new model.
+    Base::Interpreter().runString("_c1_a.newObject('Part::Box', 'UnsolvedPart')");
+    getObject()->updateSolveStatus();
+    EXPECT_EQ(getObject()->getLastDoF(), 0);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), 0);
+    EXPECT_FALSE(getObject()->getLastHasConflicts());
+    EXPECT_EQ(getObject()->getLastRedundant(), redundant);
+    ASSERT_EQ(pythonSolve(), 0);
+    EXPECT_EQ(getObject()->getLastDoF(), 6);
+}
+
 TEST_F(AssemblyObjectTest, conflictingSolveAgreesWithStoredStatus)  // NOLINT
 {
     makeSolveFixture(true);
     EXPECT_EQ(pythonSolve(), -3);
     EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    const int dof = getObject()->getLastDoF();
+    const auto redundant = getObject()->getLastRedundant();
+    Base::Interpreter().runString("_c1_a.newObject('Part::Box', 'UnsolvedPart')");
     getObject()->updateSolveStatus();
     EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
     EXPECT_TRUE(getObject()->getLastHasConflicts());
+    EXPECT_EQ(getObject()->getLastDoF(), dof);
+    EXPECT_EQ(getObject()->getLastRedundant(), redundant);
+}
+
+TEST_F(AssemblyObjectTest, rejectedSolveCachesFailureAfterRestoringPlacements)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    ASSERT_EQ(getObject()->getLastDoF(), 0);
+    Base::Interpreter().runString("_c1_lid.Placement.Base = App.Vector(30, 0, 0)");
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    int updates = 0;
+    auto connection = getObject()->signalSolverUpdate.connect([&]() {
+        ++updates;
+        EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+        EXPECT_TRUE(getObject()->hasSolveResult());
+        EXPECT_EQ(getObject()->getLastSolverStatus(), -7);
+        EXPECT_EQ(getObject()->getLastDoF(), -1);
+        EXPECT_TRUE(getObject()->getLastRedundant().empty());
+    });
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    EXPECT_TRUE(hasSolverSystem());  // The rejected candidate has a solved system.
+    getObject()->updateSolveStatus();
+    EXPECT_EQ(updates, 2);
+    connection.disconnect();
+    ASSERT_EQ(pythonSolve(), 0);
+    EXPECT_EQ(getObject()->getLastDoF(), 0);
 }
 
 TEST_F(AssemblyObjectTest, conflictingExecuteReportsFailure)  // NOLINT
@@ -358,6 +488,11 @@ TEST_F(AssemblyObjectTest, dragCompletionRejectsViolatedRelations)  // NOLINT
     getObject()->postDrag();
     Base::Interpreter().runString("_c2_bad.stop()");
     EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    EXPECT_TRUE(getObject()->hasSolveResult());
+    EXPECT_TRUE(getObject()->getLastHasConflicts());
+    EXPECT_EQ(getObject()->getLastDoF(), -1);
+    getObject()->updateSolveStatus();
+    EXPECT_TRUE(getObject()->getLastHasConflicts());
     EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original))
         << "position delta: "
         << (lid->getPlacementProperty()->getValue().getPosition() - original.getPosition()).Length()

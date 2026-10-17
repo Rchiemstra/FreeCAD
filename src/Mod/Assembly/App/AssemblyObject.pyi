@@ -83,6 +83,10 @@ class AssemblyObject(Part):
     def updateSolveStatus(self) -> Any:
         """updateSolveStatus()
 
+        Notify listeners using the cached result of the last explicit solve.
+        This does not solve or modify the document. Before the first solve,
+        status is unknown (DoF -1 in the C++ solver information).
+
         Args: None
 
         Returns: None"""
