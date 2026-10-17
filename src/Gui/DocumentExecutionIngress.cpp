@@ -153,6 +153,7 @@ App::DocumentCommand makeDocumentRecomputeCommand(
     command.document = document.executionHandle().identity();
     command.recompute = App::DocumentCommandRecomputePayload {};
     command.recompute->coalescingKey = buildRecomputeCoalescingKey(request);
+    command.recompute->force = request.force;
     command.recompute->options = request.options;
     command.recompute->featureIds = request.featureIds;
     // Public GUI/App facade recomputes declare snapshot-based foreign reads.
