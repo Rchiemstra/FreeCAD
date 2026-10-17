@@ -22,6 +22,8 @@
 #include <Gui/DocumentExecutionIngress.h>
 #include <Gui/Application.h>
 #include <Gui/AutoSaver.h>
+#include <Gui/RecoveryWriteExecutor.h>
+#include <QTimer>
 #include <Gui/Document.h>
 #include <Gui/DocumentRecovery.h>
 #include <Gui/DocumentRecoveryInternal.h>
@@ -568,6 +570,7 @@ TEST_F(AutoSaverRecoveryTest, PendingRecomputeDefersAndRetriesAfterRecompute)
 
 TEST_F(AutoSaverRecoveryTest, QueuedRetryCannotAutosaveReplacementWithReusedName)
 {
+    const auto oldIdentity = document->collaborationIdentity();
     document->openTransaction("queue identity-bound autosave retry");
     object->Label.setValue("old document pending retry");
     flush();
@@ -575,7 +578,13 @@ TEST_F(AutoSaverRecoveryTest, QueuedRetryCannotAutosaveReplacementWithReusedName
     document->commitTransaction();
     Gui::Test::recomputeWithoutBlockingGui(*document);
 
-    ASSERT_TRUE(App::GetApplication().closeDocument(documentName.c_str()));
+    // The stable-state retry may already have dispatched during recompute's
+    // test wait. Use the owner's close policy before replacing the identity;
+    // an executing serializer must retire before direct App close can succeed.
+    Gui::AutoSaver::instance()->recoveryWrites().cancelDocument(*document);
+    ASSERT_TRUE(processEventsUntil([&] {
+        return App::GetApplication().closeDocument(documentName.c_str());
+    }));
 
     App::DocumentInitFlags flags;
     flags.createView = false;
@@ -590,8 +599,17 @@ TEST_F(AutoSaverRecoveryTest, QueuedRetryCannotAutosaveReplacementWithReusedName
     removeRecoveryOutputs();
     object->Label.setValue("replacement ordinary dirty work");
 
-    QCoreApplication::sendPostedEvents(nullptr, 0);
-    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    // Deliver an old identity explicitly after replacement so the close wait
+    // cannot accidentally consume the only stale retry before this assertion.
+    bool retried = false;
+    QTimer::singleShot(0, QCoreApplication::instance(), [&] {
+        Gui::Test::deliverRecoveryRetry(
+            documentName, oldIdentity.instanceId, oldIdentity.lifecycleEpoch);
+        retried = true;
+    });
+    ASSERT_TRUE(processEventsUntil([&] {
+        return retried && document->executionLane()->isIdle();
+    }));
     EXPECT_FALSE(QFileInfo::exists(archivePath()));
     EXPECT_FALSE(QFileInfo::exists(metadataPath()));
 }
@@ -1120,4 +1138,237 @@ TEST_F(AutoSaverRecoveryTest, CompletionDoesNotBlockAlreadyActiveDocumentLane)
     catch (const App::LivePresentationRefreshInProgress&) {}
     EXPECT_TRUE(admitted);
     if (admitted) App::endCollaborationReadOnlyMutationTarget(*document);
+}
+
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerRejectsDuplicateDocumentWrite)
+{
+    using namespace std::chrono_literals;
+    Gui::RecoveryWriteExecutor owner;
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    bool completed = false;
+    const auto cleanup = qScopeGuard([&] {
+        release.set_value(); blocker.wait();
+        EXPECT_TRUE(processEventsUntil([&] { return completed; }));
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    EXPECT_TRUE(owner.schedule(*document, {}, [&](bool, std::exception_ptr) { completed = true; }));
+    EXPECT_FALSE(owner.schedule(*document, {}, [](bool, std::exception_ptr) {}));
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerClosePendingWriteDropsCompletion)
+{
+    using namespace std::chrono_literals;
+    Gui::RecoveryWriteExecutor owner;
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    bool called = false;
+    bool didRelease = false;
+    const auto cleanup = qScopeGuard([&] {
+        if (!didRelease) release.set_value();
+        blocker.wait();
+        EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+        owner.shutdown();
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(owner.schedule(*document, {}, [&](bool, std::exception_ptr) { called = true; }));
+    // Direct close must refuse while a queued write retains document access.
+    EXPECT_FALSE(App::GetApplication().closeDocument(documentName.c_str()));
+    owner.cancelDocument(*document);
+    release.set_value(); didRelease = true; blocker.wait();
+    ASSERT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+    ASSERT_TRUE(processEventsUntil([&] {
+        return App::GetApplication().closeDocument(documentName.c_str());
+    }));
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerShutdownIsBoundedAndDropsCallbacks)
+{
+    using namespace std::chrono_literals;
+    auto owner = std::make_unique<Gui::RecoveryWriteExecutor>();
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    bool called = false;
+    bool didRelease = false;
+    const auto cleanup = qScopeGuard([&] {
+        if (!didRelease) release.set_value();
+        blocker.wait();
+        EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(owner->schedule(*document, {}, [&](bool, std::exception_ptr) { called = true; }));
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(owner->shutdown(20ms));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
+    EXPECT_FALSE(owner->schedule(*document, {}, [](bool, std::exception_ptr) {}));
+    owner.reset();
+    // Unblock after destroying the owner, then close before servicing completion.
+    release.set_value(); didRelease = true; blocker.wait();
+    auto barrier = lane->postToOwner([] {});
+    ASSERT_EQ(barrier.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(processEventsUntil([&] {
+        return App::GetApplication().closeDocument(documentName.c_str());
+    }));
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerHonoursGlobalDispatchCap)
+{
+    using namespace std::chrono_literals;
+    Gui::RecoveryWriteExecutor owner(nullptr, 1);
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    bool releasedOnce = false;
+    App::DocumentInitFlags flags; flags.createView = false;
+    auto* second = App::GetApplication().newDocument("recoveryCapSecond", "second", flags);
+    second->addObject("App::FeatureTest", "Target");
+    Gui::Test::recomputeWithoutBlockingGui(*second);
+    const auto secondArchive = QDir(QString::fromUtf8(second->TransientDir.getValue()))
+        .filePath(QStringLiteral("fc_recovery_file.fcstd"));
+    bool firstDone = false, secondDone = false;
+    const auto cleanup = qScopeGuard([&] {
+        if (!releasedOnce) release.set_value();
+        blocker.wait();
+        EXPECT_TRUE(processEventsUntil([&] { return firstDone && secondDone; }));
+        App::GetApplication().closeDocument("recoveryCapSecond");
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(owner.schedule(*document, {}, [&](bool, std::exception_ptr) { firstDone = true; }));
+    ASSERT_TRUE(owner.schedule(*second, {}, [&](bool, std::exception_ptr) { secondDone = true; }));
+    // The cap bounds lane dispatches, including writers waiting for admission.
+    // With an unbounded worker per document this marker is stuck behind the
+    // second recovery's acquire(), even though global IO is already serialized.
+    const auto deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents(); std::this_thread::sleep_for(1ms);
+    }
+    auto marker = second->executionLane()->postToOwner([] {});
+    EXPECT_EQ(marker.wait_for(100ms), std::future_status::ready);
+    EXPECT_FALSE(QFileInfo::exists(secondArchive));
+    EXPECT_FALSE(secondDone);
+    release.set_value(); releasedOnce = true; blocker.wait();
+    ASSERT_TRUE(processEventsUntil([&] { return firstDone && secondDone; }));
+    EXPECT_TRUE(QFileInfo::exists(secondArchive));
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerPreservesArchiveAndMetadata)
+{
+    Gui::RecoveryWriteExecutor owner;
+    bool completed = false, written = false;
+    std::exception_ptr error;
+    ASSERT_TRUE(owner.schedule(*document, {}, [&](bool result, std::exception_ptr failure) {
+        written = result; error = failure; completed = true;
+    }));
+    ASSERT_TRUE(processEventsUntil([&] { return completed; }));
+    EXPECT_TRUE(written); EXPECT_EQ(error, nullptr);
+    EXPECT_EQ(validateProjectArchive(archivePath()), ProjectValidationResult::Ok);
+    QFile metadata(metadataPath()); ASSERT_TRUE(metadata.open(QIODevice::ReadOnly));
+    const auto xml = metadata.readAll();
+    EXPECT_TRUE(xml.contains("<AutoRecovery SchemaVersion=\"1\">"));
+    EXPECT_TRUE(xml.contains("<CollaborationProvenance SchemaVersion=\"1\">"));
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerShutdownWhileAdmissionBlockedRetainsDocument)
+{
+    using namespace std::chrono_literals;
+    Gui::RecoveryWriteExecutor owner;
+    auto lane = document->executionLane()->shared_from_this();
+    App::DocumentInitFlags flags; flags.createView = false;
+    auto* foreign = App::GetApplication().newDocument("recoveryShutdownForeign", "foreign", flags);
+    bool admitted = false, called = false;
+    const auto cleanup = qScopeGuard([&] {
+        if (admitted) App::endCollaborationReadOnlyMutationTarget(*foreign);
+        owner.shutdown();
+        EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+        App::GetApplication().closeDocument("recoveryShutdownForeign");
+    });
+    App::beginCollaborationReadOnlyMutationTarget(*foreign); admitted = true;
+    ASSERT_TRUE(owner.schedule(*document, {}, [&](bool, std::exception_ptr) { called = true; }));
+    // This marker is queued behind the writer, which cannot acquire admission.
+    auto barrier = lane->postToOwner([] {});
+    ASSERT_EQ(barrier.wait_for(100ms), std::future_status::timeout);
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(owner.shutdown(20ms));
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
+    EXPECT_FALSE(App::GetApplication().closeDocument(documentName.c_str()))
+        << "the executing task must retain its own lifecycle pin after owner shutdown";
+    App::endCollaborationReadOnlyMutationTarget(*foreign); admitted = false;
+    ASSERT_EQ(barrier.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(processEventsUntil([&] {
+        return App::GetApplication().closeDocument(documentName.c_str());
+    }));
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerIngressCloseCancelsPendingWrite)
+{
+    using namespace std::chrono_literals;
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] { entered.set_value(); released.wait(); });
+    bool called = false, didRelease = false;
+    const auto cleanup = qScopeGuard([&] {
+        if (!didRelease) release.set_value();
+        blocker.wait();
+        EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+    Gui::scheduleRecoverySnapshotWrite(*document, {}, [&](bool, std::exception_ptr) { called = true; });
+    ASSERT_TRUE(Gui::submitDocumentClose(*document, /*allowApplicationClose=*/false));
+    release.set_value(); didRelease = true; blocker.wait();
+    ASSERT_TRUE(processEventsUntil([&] {
+        return !App::GetApplication().getDocument(documentName.c_str());
+    }));
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerShutdownDuringSerializationDoesNotWaitForGuiCallback)
+{
+    using namespace std::chrono_literals;
+    auto owner = std::make_unique<Gui::RecoveryWriteExecutor>();
+    auto lane = document->executionLane()->shared_from_this();
+    bool serializing = false, called = false;
+    auto connection = document->signalSaveDocument.connect([&](Base::Writer&) {
+        // The writer is now inside IO, waiting for this marshalled GUI signal.
+        // Shutdown must return even though the writer cannot retire until this
+        // callback returns; its own pin must still refuse recursive close.
+        serializing = true;
+        const auto start = std::chrono::steady_clock::now();
+        EXPECT_FALSE(owner->shutdown(20ms));
+        EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
+        owner.reset();
+        EXPECT_FALSE(App::GetApplication().closeDocument(documentName.c_str()));
+    });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    ASSERT_TRUE(owner->schedule(*document, {}, [&](bool, std::exception_ptr) { called = true; }));
+    ASSERT_TRUE(processEventsUntil([&] {
+        return serializing && lane->isIdle() && QFileInfo::exists(metadataPath());
+    }));
+    EXPECT_TRUE(QFileInfo::exists(archivePath()));
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
 }

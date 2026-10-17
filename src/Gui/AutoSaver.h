@@ -44,6 +44,8 @@ class RecoveryAdmission;
 namespace Gui
 {
 
+class RecoveryWriteExecutor;
+
 namespace Test
 {
 class AutoSaverRecoveryTestAccess;
@@ -126,6 +128,8 @@ private:
 
 public:
     static AutoSaver* instance();
+    static void shutdownRecoveryWrites();
+    RecoveryWriteExecutor& recoveryWrites();
     /*!
      Sets the timeout in milliseconds. A value of 0 means that no timer is used.
      */
@@ -160,6 +164,10 @@ private:
                                       std::exception_ptr failure,
                                       std::shared_ptr<App::RecoveryAdmission> admission = {});
     void slotDeleteDocumentByName(const std::string& name);
+    fastsignals::connection newDocumentConnection;
+    fastsignals::connection deleteDocumentConnection;
+    std::unique_ptr<RecoveryWriteExecutor> recoveryWriteExecutor;
+    std::unique_ptr<QObject> recoveryCallbackContext;
     int timeout; /*!< Timeout in milliseconds */
     bool compressed;
     std::map<std::string, AutoSaveProperty*> saverMap;
