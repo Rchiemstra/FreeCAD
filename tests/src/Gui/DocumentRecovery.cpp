@@ -16,8 +16,10 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
+#include <App/MainThreadSignal.h>
 #include <App/RecoverySnapshot.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <App/MutationClassification.h>
 #include <Gui/DocumentExecutionIngress.h>
 #include <Gui/Application.h>
@@ -1344,6 +1346,122 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOwnerIngressCloseCancelsPendingWrite)
     document = nullptr; guiDocument = nullptr; object = nullptr;
     QCoreApplication::processEvents();
     EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerPythonCloseCancelsUndispatchedThirdWrite)
+{
+    using namespace std::chrono_literals;
+    auto& owner = Gui::AutoSaver::instance()->recoveryWrites();
+    App::DocumentInitFlags flags; flags.createView = false;
+    std::vector<App::Document*> blockers;
+    std::vector<std::future<void>> tasks;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    const auto cleanup = qScopeGuard([&] {
+        for (auto* doc : blockers) owner.cancelDocument(*doc);
+        release.set_value();
+        for (auto& task : tasks) task.wait();
+        for (auto* doc : blockers) {
+            auto lane = doc->executionLane()->shared_from_this();
+            EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+            App::GetApplication().closeDocument(doc->getName());
+        }
+    });
+    for (int i = 0; i < 2; ++i) {
+        const auto name = App::GetApplication().getUniqueDocumentName("recoveryCloseCap");
+        auto* doc = App::GetApplication().newDocument(name.c_str(), "cap blocker", flags);
+        blockers.push_back(doc);
+        doc->addObject("App::FeatureTest", "Target");
+        Gui::Test::recomputeWithoutBlockingGui(*doc);
+    }
+    for (auto* doc : blockers) {
+        std::promise<void> entered;
+        auto ready = entered.get_future();
+        tasks.push_back(doc->executionLane()->postToOwner([&entered, released] {
+            entered.set_value();
+            released.wait();
+        }));
+        ASSERT_EQ(ready.wait_for(5s), std::future_status::ready);
+        ASSERT_TRUE(owner.schedule(*doc, {}, [](bool, std::exception_ptr) {}));
+    }
+    bool called = false;
+    ASSERT_TRUE(owner.schedule(*document, {}, [&](bool, std::exception_ptr) { called = true; }));
+    // Both dispatch slots are occupied. The third job has no lane task yet.
+    auto marker = document->executionLane()->postToOwner([] {});
+    ASSERT_EQ(marker.wait_for(5s), std::future_status::ready);
+
+    bool rescued = false;
+    std::promise<void> closed;
+    auto closedFuture = closed.get_future();
+    std::thread rescue([&] {
+        if (closedFuture.wait_for(2s) == std::future_status::timeout) {
+            // Bound a broken close without pumping Qt: use precisely the
+            // marshalled work serviced by Python's synchronous admission loop.
+            App::MainThreadSignalConfig::invoke([&] {
+                if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
+                    rescued = true;
+                    owner.cancelDocument(*doc);
+                }
+            }, false);
+        }
+    });
+    {
+        Base::PyGILStateLocker gil;
+        Base::Interpreter().runString(
+            ("import FreeCAD\nFreeCAD.closeDocument('" + documentName + "')").c_str());
+    }
+    closed.set_value();
+    rescue.join();
+    App::MainThreadSignalConfig::serviceMarshalledTasks(0ms);
+    EXPECT_FALSE(rescued) << "Python close needed rescue: queued recovery never cancelled";
+    EXPECT_EQ(App::GetApplication().getDocument(documentName.c_str()), nullptr);
+    document = nullptr; guiDocument = nullptr; object = nullptr;
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RejectedCloseDuringRecoveryKeepsAutosaveSchedulable)
+{
+    int writes = 0;
+    bool completed = false;
+    auto outcomeConnection = document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome& outcome) {
+            if (outcome.intent == App::DocumentSaveIntent::Recovery && outcome.fileWritten) {
+                completed = true;
+            }
+        });
+    auto connection = document->signalSaveDocument.connect([&](Base::Writer&) {
+        if (++writes == 1) {
+            // Executing IO owns its lifecycle pin and recovery flag. Close
+            // must be refused, but dropping completion must not strand autosave.
+            EXPECT_FALSE(Gui::submitDocumentClose(*document, /*allowApplicationClose=*/false));
+        }
+    });
+    const auto disconnect = qScopeGuard([&] {
+        connection.disconnect();
+        outcomeConnection.disconnect();
+    });
+    Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+    ASSERT_TRUE(processEventsUntil([&] {
+        return writes == 1 && document->executionLane()->isIdle()
+            && QFileInfo::exists(metadataPath());
+    }));
+    ASSERT_EQ(App::GetApplication().getDocument(documentName.c_str()), document);
+    EXPECT_FALSE(completed);
+    // No new edit: the cancelled attempt's original dirty work must survive.
+    removeRecoveryOutputs();
+    EXPECT_TRUE(processEventsUntil([&] {
+        // A later timer pass may precede executor retirement; keep retrying
+        // as a real autosave timer would until the cancelled job is retired.
+        if (writes == 1 && document->executionLane()->isIdle()) {
+            Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+        }
+        return completed && writes == 2 && document->executionLane()->isIdle()
+            && QFileInfo::exists(metadataPath());
+    }));
+    EXPECT_EQ(writes, 2);
+    EXPECT_EQ(validateProjectArchive(archivePath()), ProjectValidationResult::Ok);
+    EXPECT_FALSE(Gui::Test::beginAutoSaveAttempt(*document));
 }
 
 TEST_F(AutoSaverRecoveryTest, RecoveryOwnerShutdownDuringSerializationDoesNotWaitForGuiCallback)

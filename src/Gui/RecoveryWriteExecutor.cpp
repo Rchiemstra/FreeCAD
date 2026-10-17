@@ -232,18 +232,21 @@ bool RecoveryWriteExecutor::schedule(App::Document& document,
     return true;
 }
 
-void RecoveryWriteExecutor::cancelDocument(App::Document& document)
+bool RecoveryWriteExecutor::cancelDocument(App::Document& document)
 {
     Q_ASSERT(QThread::currentThread() == thread());
     const auto gate = document.collaborationService().lifetimeGate();
+    bool cancelled = false;
     for (auto it = d->jobs.begin(); it != d->jobs.end();) {
         if (it->work->gate != gate) { ++it; continue; }
+        cancelled = true;
         it->work->cancel();
         it->completion = {};
         it->pin.reset();
         if (!it->future.valid()) it = d->jobs.erase(it);
         else ++it; // Any running task holds its own pin.
     }
+    return cancelled;
 }
 
 bool RecoveryWriteExecutor::isAccepting() const

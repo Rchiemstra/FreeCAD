@@ -130,6 +130,7 @@ public:
     static AutoSaver* instance();
     static void shutdownRecoveryWrites();
     RecoveryWriteExecutor& recoveryWrites();
+    void cancelRecoveryWrite(App::Document& document);
     /*!
      Sets the timeout in milliseconds. A value of 0 means that no timer is used.
      */
@@ -165,6 +166,7 @@ private:
                                       std::shared_ptr<App::RecoveryAdmission> admission = {});
     void slotDeleteDocumentByName(const std::string& name);
     fastsignals::connection newDocumentConnection;
+    fastsignals::connection closeDocumentConnection;
     fastsignals::connection deleteDocumentConnection;
     std::unique_ptr<RecoveryWriteExecutor> recoveryWriteExecutor;
     std::unique_ptr<QObject> recoveryCallbackContext;

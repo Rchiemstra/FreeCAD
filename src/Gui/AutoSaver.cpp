@@ -80,6 +80,8 @@ AutoSaver::AutoSaver(QObject* parent)
     connect(qApp, &QCoreApplication::aboutToQuit, this, &AutoSaver::shutdownRecoveryWrites);
     newDocumentConnection = App::GetApplication().signalNewDocument.connect(
         [this](const App::Document& doc, bool) { slotCreateDocument(doc); });
+    closeDocumentConnection = App::GetApplication().signalBeforeCloseDocumentAdmission.connect(
+        [this](App::Document& doc) { cancelRecoveryWrite(doc); });
     deleteDocumentConnection = App::GetApplication().signalDeleteDocument.connect(
         [this](const App::Document& doc) { slotDeleteDocument(doc); });
 }
@@ -89,6 +91,7 @@ AutoSaver::~AutoSaver()
     recoveryCallbackContext.reset();
     recoveryWriteExecutor->shutdown();
     newDocumentConnection.disconnect();
+    closeDocumentConnection.disconnect();
     deleteDocumentConnection.disconnect();
     for (auto& entry : saverMap) delete entry.second;
     self = nullptr;
@@ -107,6 +110,17 @@ void AutoSaver::shutdownRecoveryWrites()
 RecoveryWriteExecutor& AutoSaver::recoveryWrites()
 {
     return *recoveryWriteExecutor;
+}
+
+void AutoSaver::cancelRecoveryWrite(App::Document& document)
+{
+    if (!recoveryWriteExecutor->cancelDocument(document)) return;
+    const auto saver = saverMap.find(document.getName());
+    if (saver != saverMap.end() && saver->second->saveInProgress) {
+        // Cancellation drops completion even if executing IO makes Close Busy.
+        // Retain the attempt's dirty work for the surviving document's timer.
+        saver->second->restoreFailedSaveAttempt();
+    }
 }
 
 AutoSaver* AutoSaver::instance()

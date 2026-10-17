@@ -575,7 +575,7 @@ void reportDocumentSaveAdmitted(App::Document& document)
 bool submitDocumentClose(App::Document& document, const bool allowApplicationClose)
 {
     if (App::DocumentWouldBlock::isGuiThread()) {
-        AutoSaver::instance()->recoveryWrites().cancelDocument(document);
+        AutoSaver::instance()->cancelRecoveryWrite(document);
     }
     if (!App::DocumentWouldBlock::isGuiThread() || !document.executionLane()) {
         return App::GetApplication().closeDocument(&document);
