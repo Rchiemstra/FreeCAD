@@ -112,3 +112,38 @@ class TestAllowanceProfileGui(unittest.TestCase):
         recompute_document(self.doc)
         self.assertEqual(dict(p.ExpressionEngine)["Allowance"], "0.2 mm")
         self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.2)
+
+    def testIncompleteInputKeepsTaskOpen(self):
+        p, panel = self.create()
+        panel.input.setText("0.2 mm")
+        panel.input.setText("-")
+        self.assertFalse(panel.accept())
+        self.assertIsNotNone(Gui.Control.activeDialog())
+        self.assertTrue(self.doc.HasPendingTransaction)
+        self.assertTrue(panel.error.text())
+        panel.input.setText("-0.1 mm")
+        self.assertTrue(panel.accept())
+        recompute_document(self.doc)
+        self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 4.9)
+
+    def testIncompleteInputWithBoundExpression(self):
+        p, panel = self.create()
+        self.assertTrue(panel.accept())
+        recompute_document(self.doc)
+        p.setExpression("Allowance", "0.2 mm")
+        recompute_document(self.doc)
+        Gui.activeDocument().setEdit(p.Name)
+        panel = p.ViewObject.Proxy.panel
+        transaction_pending = self.doc.HasPendingTransaction
+        panel.input.setText("-")
+        self.assertFalse(panel.accept())
+        self.assertIsNotNone(Gui.Control.activeDialog())
+        self.assertEqual(self.doc.HasPendingTransaction, transaction_pending)
+        self.assertTrue(panel.error.text())
+        self.assertEqual(dict(p.ExpressionEngine)["Allowance"], "0.2 mm")
+        panel.input.setText("0.3 mm + 0.1 mm")
+        current_expression = dict(p.ExpressionEngine)["Allowance"]
+        self.assertTrue(panel.accept())
+        recompute_document(self.doc)
+        self.assertEqual(dict(p.ExpressionEngine)["Allowance"], current_expression)
+        self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.4)

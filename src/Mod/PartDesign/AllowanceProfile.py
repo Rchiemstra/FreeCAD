@@ -96,7 +96,14 @@ def _offset_face(face, distance):
         raise ValueError("offset collapses a narrow region")
     restored_face = Part.Face(restored.Wires[0])
     difference = face.Area + restored_face.Area - 2 * face.common(restored_face).Area
-    if abs(difference) > area_tolerance:
+    # A tiny lost detail can fit within the global area tolerance on a large
+    # loop. Check nominal edge endpoints and interior samples locally as well.
+    boundary_recovered = all(
+        Part.Vertex(point).distToShape(restored.Wires[0])[0] <= _TOLERANCE
+        for edge in face.Wires[0].Edges
+        for point in edge.discretize(Number=5)
+    )
+    if abs(difference) > area_tolerance or not boundary_recovered:
         raise ValueError("offset collapses a narrow region (boundary cannot be recovered)")
     return wire
 
@@ -128,7 +135,7 @@ class AllowanceProfile:
                 raise ValueError("source contains edges outside closed wires")
             faces, depths = _loop_faces(wires)
             allowance = obj.Allowance.Value
-            if allowance == 0:
+            if abs(allowance) <= _TOLERANCE:
                 obj.Shape = source.Shape
                 return
             result = [

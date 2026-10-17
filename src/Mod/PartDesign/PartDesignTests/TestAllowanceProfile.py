@@ -135,6 +135,18 @@ class TestAllowanceProfile(unittest.TestCase):
         self.assertAlmostEqual(p.Allowance.Value, 0.4)
         self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 10.4)
 
+    def testAllowanceWithinToleranceIsZero(self):
+        s = self.circle()
+        p = self.profile(s, 0)
+        for allowance in (1e-9, -1e-9, 1e-7, -1e-7):
+            with self.subTest(allowance=allowance):
+                p.Allowance = allowance
+                p.Proxy.execute(p)
+                self.assertEqual(p.Allowance.Value, allowance)
+                self.assertEqual(len(p.Shape.Edges), len(s.Shape.Edges))
+                self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5)
+                self.assertAlmostEqual(p.Shape.Length, s.Shape.Length)
+
     def testNominalConstraintsUntouched(self):
         s = self.circle()
         constraints = [str(c) for c in s.Constraints]
@@ -297,3 +309,21 @@ class TestAllowanceProfile(unittest.TestCase):
                 Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)), False
             )
         self.assertInvalid(self.profile(s, -0.06))
+
+    def testTinyDetailOnLargeProfileCollapses(self):
+        from PartDesign.AllowanceProfile import _offset_face
+
+        # Each lost detail has area 1e-4 mm2, below the perimeter-scaled
+        # area tolerance of a 1000 mm square (about 4e-4 mm2).
+        for depth, allowance in ((0.01, -0.006), (-0.01, 0.006)):
+            with self.subTest(depth=depth, allowance=allowance):
+                points = [
+                    (0, 0), (1000, 0), (1000, 499.995),
+                    (1000 + depth, 499.995), (1000 + depth, 500.005),
+                    (1000, 500.005), (1000, 1000), (0, 1000),
+                ]
+                vertices = [App.Vector(x, y, 0) for x, y in points]
+                face = Part.Face(Part.makePolygon(vertices + vertices[:1]))
+                self.assertTrue(face.isValid())
+                with self.assertRaisesRegex(ValueError, "collapses"):
+                    _offset_face(face, allowance)

@@ -119,6 +119,10 @@ class AllowanceTaskPanel:
 
     def accept(self):
         try:
+            # Incomplete input leaves the binding's last valid expression in
+            # place. Validate the current text before applying that expression.
+            if not self.input.hasAcceptableInput():
+                raise ValueError(_translate("Enter a valid allowance or expression"))
             if self.binding.hasExpression():
                 self.binding.apply("Allowance")
                 expression = dict(self.obj.ExpressionEngine)["Allowance"]
