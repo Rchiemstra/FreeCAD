@@ -107,27 +107,40 @@ SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
     // execute() and other native callers need not hold the Python GIL.
     // Keep it until every Python reference (including exceptions) is released.
     Base::PyGILStateLocker lock;
-    try {
-        Py::Module module(PyImport_ImportModule("UtilsAssembly"), true);
-        Py::Object function = module.getAttr("violatedJointLabels");
-        Py::Tuple args(1);
-        args.setItem(0, Py::asObject(assembly->getPyObject()));
-        Py::Object result = Py::Callable(function).apply(args);
-        if (!PyList_Check(result.ptr())) {
-            FC_ERR("Assembly relation validation failed: violatedJointLabels must return a list");
-            return SolveResult::ValidationFailed;
-        }
-        if (PyList_Size(result.ptr()) > 0) {
-            return SolveResult::RelationsViolated;
-        }
-        return SolveResult::Success;
-    }
-    catch (Py::Exception&) {
+    const auto validationError = [] {
         Base::PyException exception;
         FC_ERR("Assembly relation validation failed");
         exception.reportException();
         return SolveResult::ValidationFailed;
+    };
+
+    PyObject* imported = PyImport_ImportModule("UtilsAssembly");
+    if (!imported) {
+        return validationError();
     }
+    Py::Object module(imported, true);
+    PyObject* validator = PyObject_GetAttrString(module.ptr(), "violatedJointLabels");
+    if (!validator) {
+        return validationError();
+    }
+    Py::Object function(validator, true);
+    Py::Object assemblyPy(assembly->getPyObject(), true);
+    if (!assemblyPy.ptr()) {
+        return validationError();
+    }
+    PyObject* checked = PyObject_CallFunctionObjArgs(function.ptr(), assemblyPy.ptr(), nullptr);
+    if (!checked) {
+        return validationError();
+    }
+    Py::Object result(checked, true);
+    if (!PyList_Check(result.ptr())) {
+        FC_ERR("Assembly relation validation failed: violatedJointLabels must return a list");
+        return SolveResult::ValidationFailed;
+    }
+    if (PyList_Size(result.ptr()) > 0) {
+        return SolveResult::RelationsViolated;
+    }
+    return SolveResult::Success;
 }
 
 const char* solveFailureMessage(SolveResult result)
