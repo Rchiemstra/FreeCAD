@@ -105,6 +105,22 @@ namespace
 
 bool isFinitePlacement(const Base::Placement& plc);
 
+bool samePlacementValues(const Base::Placement& left, const Base::Placement& right)
+{
+    // Placement equality is tolerant. Rollback must retain every saved
+    // component, including tiny solver drift and quaternion sign/zero bits.
+    const auto sameDouble = [](const double& a, const double& b) {
+        return std::memcmp(&a, &b, sizeof(double)) == 0;
+    };
+    const auto& a = left.getPosition();
+    const auto& b = right.getPosition();
+    return sameDouble(a.x, b.x) && sameDouble(a.y, b.y) && sameDouble(a.z, b.z)
+        && std::memcmp(
+               left.getRotation().getValue(), right.getRotation().getValue(), 4 * sizeof(double)
+           ) == 0;
+}
+
+
 SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
 {
     // execute() and other native callers need not hold the Python GIL.
@@ -376,6 +392,7 @@ AssemblyObject::AssemblyObject()
     signalSolverUpdate();
 }
 
+
 AssemblyObject::~AssemblyObject() = default;
 
 void AssemblyObject::unsetupObject()
@@ -422,6 +439,16 @@ PyObject* AssemblyObject::getPyObject()
     return Py::new_reference_to(PythonObject);
 }
 
+short AssemblyObject::mustExecute() const
+{
+    // Document recompute may purge touched bits after execute() returns. Keep a
+    // request made by a placement observer eligible for the next recompute.
+    if (solvePending && !solveInProgress && !placementAttemptInProgress) {
+        return 1;
+    }
+    return App::Part::mustExecute();
+}
+
 App::DocumentObjectExecReturn* AssemblyObject::execute()
 {
     solveDiagnostic.clear();
@@ -433,7 +460,9 @@ App::DocumentObjectExecReturn* AssemblyObject::execute()
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Assembly"
     );
-    if (hGrp->GetBool("SolveOnRecompute", true)) {
+    // A deferred explicit request still needs servicing when automatic solving
+    // on ordinary recomputes is disabled.
+    if (solvePending || hGrp->GetBool("SolveOnRecompute", true)) {
         const SolveResult result = solve(false);
         if (result != SolveResult::Success) {
             solveDiagnostic = solveFailureMessage(result);
@@ -456,68 +485,54 @@ void AssemblyObject::onChanged(const App::Property* prop)
     App::Part::onChanged(prop);
 }
 
-// Python relation validation reads document placements. Keep its tentative writes,
-// including solve preparation, in one scope until validation accepts the candidate.
-// File tracking prevents a rejected preview from dirtying a saved file or its
-// GUI document; restoring touched bits also preserves pre-existing edits.
+// Relation validation reads tentative document placements. Structural normalization
+// happens before this scope; only solver parts, rigid members and joints are guarded.
 class AssemblyObject::PlacementAttempt
 {
 public:
-    explicit PlacementAttempt(AssemblyObject& assembly)
+    explicit PlacementAttempt(AssemblyObject& assembly, bool solverReady = false)
         : assembly(assembly)
-        , rigidCache(assembly.rigidPlacementCache)
-        , undoPlacements(assembly.previousPositions)
-        , previousAttempt(assembly.placementAttemptInProgress)
     {
-        std::unordered_set<App::Document*> documents;
-        if (assembly.getDocument()) {
-            documents.insert(assembly.getDocument());
-        }
-        for (auto* part : getAssemblyComponents(&assembly)) {
-            if (part && part->getDocument()) {
-                documents.insert(part->getDocument());
+        std::unordered_set<App::DocumentObject*> affected;
+        affected.insert(&assembly);
+        if (!solverReady) {
+            for (auto* part : assembly.getGroundedParts()) {
+                affected.insert(part);
+            }
+            for (const auto& [representative, members] : assembly.rigidMembersByRep) {
+                boost::ignore_unused(representative);
+                affected.insert(members.begin(), members.end());
             }
         }
-        for (auto* document : documents) {
-            documentObjectCounts.emplace(document, document->getObjects().size());
-            fileTracking.emplace_back(
-                std::make_unique<App::Document::FileChangeTrackingScope>(*document)
-            );
-            for (auto* object : document->getObjects()) {
-                ObjectState state {
-                    document,
-                    object->getNameInDocument(),
-                    object,
-                    object->getID(),
-                    object->getStatus(),
-                    {}
-                };
-                std::vector<App::Property*> properties;
-                object->getPropertyList(properties);
-                for (auto* property : properties) {
-                    auto* placement = dynamic_cast<App::PropertyPlacement*>(property);
-                    state.properties.push_back(
-                        {property,
-                         property->getStatus(),
-                         placement,
-                         placement ? placement->getValue() : Base::Placement()}
-                    );
-                }
-                objects.push_back(std::move(state));
+        for (auto* joint : assembly.getJoints()) {
+            affected.insert(joint);
+            if (!solverReady) {
+                affected.insert(getMovingPartFromRef(joint, "Reference1"));
+                affected.insert(getMovingPartFromRef(joint, "Reference2"));
             }
         }
-        // Keep fine-grained touched-property sets intact as well as status bits.
-        // Placement writers defer purgeTouched() until the attempt is accepted.
-        try {
-            for (const auto& object : objects) {
-                object.object->setStatus(App::ObjectStatus::NoTouch, true);
+        if (solverReady) {
+            for (const auto& [part, data] : assembly.objectPartMap) {
+                boost::ignore_unused(data);
+                affected.insert(part);
             }
-            assembly.placementAttemptInProgress = true;
         }
-        catch (...) {
-            restore();
-            throw;
+        for (auto* object : affected) {
+            if (!object) {
+                continue;
+            }
+            ObjectState state {object, 0, {}};
+            std::vector<App::Property*> properties;
+            object->getPropertyList(properties);
+            for (auto* property : properties) {
+                auto* placement = dynamic_cast<App::PropertyPlacement*>(property);
+                auto* reference = dynamic_cast<App::PropertyXLinkSub*>(property);
+                state.properties.push_back({property, 0, placement, {}, reference, nullptr, {}, {}});
+            }
+            objects.push_back(std::move(state));
+            documents.insert(object->getDocument());
         }
+        begin();
     }
 
     ~PlacementAttempt()
@@ -525,17 +540,63 @@ public:
         restore();
     }
 
+    // Reuse the object/property lists and their storage throughout a drag.
+    void begin()
+    {
+        rigidCache = assembly.rigidPlacementCache;
+        undoPlacements = assembly.previousPositions;
+        previousAttempt = assembly.placementAttemptInProgress;
+        for (auto& object : objects) {
+            object.status = object.object->getStatus();
+            for (auto& property : object.properties) {
+                property.status = property.property->getStatus();
+                if (property.placement) {
+                    property.value = property.placement->getValue();
+                }
+                if (property.reference) {
+                    property.referenceObject = property.reference->getValue();
+                    property.referenceSubs = property.reference->getSubValues();
+                    property.referenceShadows = property.reference->getShadowSubs();
+                }
+            }
+        }
+        committed = false;
+        try {
+            for (auto* document : documents) {
+                fileTracking.push_back(
+                    std::make_unique<App::Document::FileChangeTrackingScope>(*document)
+                );
+            }
+            assembly.placementAttemptInProgress = true;
+            for (auto& object : objects) {
+                object.object->setStatus(App::ObjectStatus::NoTouch, true);
+            }
+        }
+        catch (...) {
+            restore();
+            throw;
+        }
+    }
+
     void restore()
     {
         if (committed) {
             return;
         }
-        // Restore values before flags: setters and their dependent notifications
-        // may touch other properties/objects. Do not purge an existing edit.
+        // Restore values before flags: setters can notify other tracked objects.
         for (const auto& object : objects) {
-            if (!object.exists()) {
-                continue;
+            for (const auto& property : object.properties) {
+                if (property.referenceChanged()) {
+                    property.reference->setValue(
+                        property.referenceObject,
+                        property.referenceSubs,
+                        std::vector<App::PropertyLinkBase::ShadowSub>(property.referenceShadows)
+                    );
+                }
             }
+        }
+        // Restoring a reference can recompute its connector placements.
+        for (const auto& object : objects) {
             for (const auto& property : object.properties) {
                 if (property.placement
                     && !samePlacementValues(property.placement->getValue(), property.value)) {
@@ -544,9 +605,6 @@ public:
             }
         }
         for (const auto& object : objects) {
-            if (!object.exists()) {
-                continue;
-            }
             for (const auto& property : object.properties) {
                 property.property->setStatusValue(property.status);
             }
@@ -561,30 +619,19 @@ public:
         }
         assembly.rigidPlacementCache.swap(rigidCache);
         assembly.previousPositions.swap(undoPlacements);
-        assembly.placementAttemptInProgress = previousAttempt;
-        fileTracking.clear();
-        committed = true;
+        finish();
     }
 
     void commit()
     {
         std::unordered_set<App::Document*> changedDocuments;
-        for (const auto& [document, count] : documentObjectCounts) {
-            if (document->getObjects().size() != count) {
-                changedDocuments.insert(document);
-            }
-        }
         for (const auto& object : objects) {
-            if (!object.exists()) {
-                changedDocuments.insert(object.document);
-                continue;
-            }
             for (const auto& property : object.properties) {
-                if (!property.placement) {
-                    continue;
-                }
-                if (!samePlacementValues(property.placement->getValue(), property.value)) {
-                    changedDocuments.insert(object.document);
+                bool changed = property.placement
+                    && !samePlacementValues(property.placement->getValue(), property.value);
+                changed |= property.referenceChanged();
+                if (changed) {
+                    changedDocuments.insert(object.object->getDocument());
                     object.object->purgeTouched();
                     break;
                 }
@@ -594,28 +641,21 @@ public:
                 (object.status & (1UL << App::ObjectStatus::NoTouch)) != 0
             );
         }
-        fileTracking.clear();
+        finish();
         for (auto* document : changedDocuments) {
             document->markFileChange(App::DocumentFileChange::Model);
         }
-        committed = true;
-        assembly.placementAttemptInProgress = previousAttempt;
     }
 
 private:
-    static bool samePlacementValues(const Base::Placement& left, const Base::Placement& right)
+    void finish()
     {
-        // Placement equality is tolerant. Rollback must retain every saved
-        // component, including tiny solver drift and quaternion sign/zero bits.
-        const auto sameDouble = [](const double& a, const double& b) {
-            return std::memcmp(&a, &b, sizeof(double)) == 0;
-        };
-        const auto& a = left.getPosition();
-        const auto& b = right.getPosition();
-        return sameDouble(a.x, b.x) && sameDouble(a.y, b.y) && sameDouble(a.z, b.z)
-            && std::memcmp(
-                   left.getRotation().getValue(), right.getRotation().getValue(), 4 * sizeof(double)
-               ) == 0;
+        fileTracking.clear();
+        committed = true;
+        assembly.placementAttemptInProgress = previousAttempt;
+        if (assembly.solvePending) {
+            assembly.touch();
+        }
     }
 
     struct PropertyState
@@ -624,32 +664,34 @@ private:
         unsigned long status;
         App::PropertyPlacement* placement;
         Base::Placement value;
+        App::PropertyXLinkSub* reference;
+        App::DocumentObject* referenceObject;
+        std::vector<std::string> referenceSubs;
+        std::vector<App::PropertyLinkBase::ShadowSub> referenceShadows;
+
+        bool referenceChanged() const
+        {
+            return reference
+                && (reference->getValue() != referenceObject
+                    || reference->getSubValues() != referenceSubs
+                    || reference->getShadowSubs() != referenceShadows);
+        }
     };
     struct ObjectState
     {
-        App::Document* document;
-        std::string name;
         App::DocumentObject* object;
-        long id;
         unsigned long status;
         std::vector<PropertyState> properties;
-
-        bool exists() const
-        {
-            // syncGroundedJoints() can remove obsolete grounding objects.
-            auto* current = document->getObject(name.c_str());
-            return current == object && current->getID() == id;
-        }
     };
 
     AssemblyObject& assembly;
     decltype(AssemblyObject::rigidPlacementCache) rigidCache;
     decltype(AssemblyObject::previousPositions) undoPlacements;
-    bool previousAttempt;
+    bool previousAttempt = false;
+    std::unordered_set<App::Document*> documents;
     std::vector<std::unique_ptr<App::Document::FileChangeTrackingScope>> fileTracking;
-    std::unordered_map<App::Document*, size_t> documentObjectCounts;
     std::vector<ObjectState> objects;
-    bool committed = false;
+    bool committed = true;
 };
 
 SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations)
@@ -683,8 +725,15 @@ SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attemp
 
 SolveResult AssemblyObject::solve(bool enableRedo)
 {
-    // updateSolveStatus() solves on demand; suppress that while a solve is running.
+    if (solveInProgress || placementAttemptInProgress) {
+        solvePending = true;
+        return lastSolveResult;
+    }
+    solvePending = false;
     Base::StateLocker lock(solveInProgress);
+    ensureIdentityPlacements();
+    syncGroundedJoints();
+    rebuildRigidClusters();
     PlacementAttempt attempt(*this);
     const auto finish = [this, &attempt](SolveResult result) {
         if (result != SolveResult::Success) {
@@ -701,16 +750,14 @@ SolveResult AssemblyObject::solve(bool enableRedo)
         }
         lastSolveResult = result;
         updateSolveStatus();
+        if (solvePending) {
+            touch();
+        }
         return result;
     };
 
-    ensureIdentityPlacements();
-
-    syncGroundedJoints();
-
     mbdAssembly = makeMbdAssembly();
     objectPartMap.clear();
-    rebuildRigidClusters();
     syncActiveRigidGroupPlacements();
     motions.clear();
 
@@ -776,7 +823,7 @@ void AssemblyObject::updateSolveStatus()
 
     // Solve on demand when queried before the system is solved, but not from within
     // a solve: solve() calls this, so a failed solve would recurse indefinitely.
-    if (!solveInProgress && (!mbdAssembly || !mbdAssembly->mbdSystem)) {
+    if (!solveInProgress && !placementAttemptInProgress && (!mbdAssembly || !mbdAssembly->mbdSystem)) {
         solve();
     }
 
@@ -927,20 +974,56 @@ bool AssemblyObject::requiresRigidSolveForMove(const std::vector<App::DocumentOb
     });
 }
 
-void AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
+SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
 {
-    bundleFixed = true;
+    dragStepAttempt.reset();
+    draggedParts.clear();
+    dragPlacements.clear();
+    ensureIdentityPlacements();
+    syncGroundedJoints();
+    // Save before preparation too: a successful preparation can move parts.
+    auto objects = getAssemblyComponents(this);
+    auto joints = getJoints();
+    objects.insert(objects.end(), joints.begin(), joints.end());
+    for (auto* joint : joints) {
+        if (auto* part = getMovingPartFromRef(joint, "Reference1")) {
+            objects.push_back(part);
+        }
+        if (auto* part = getMovingPartFromRef(joint, "Reference2")) {
+            objects.push_back(part);
+        }
+    }
+    std::unordered_set<App::DocumentObject*> seen;
+    for (auto* object : objects) {
+        if (!object || !seen.insert(object).second) {
+            continue;
+        }
+        std::vector<App::Property*> properties;
+        object->getPropertyList(properties);
+        for (auto* property : properties) {
+            if (auto* placement = dynamic_cast<App::PropertyPlacement*>(property)) {
+                dragPlacements.emplace_back(placement, placement->getValue());
+            }
+        }
+    }
+    dragRigidCache = rigidPlacementCache;
+    dragResult = SolveResult::Success;
+    rebuildRigidClusters();
+    Base::StateLocker bundleLock(bundleFixed);
     bool hasUnconnectedDragPart = std::ranges::any_of(dragParts, [this](App::DocumentObject* part) {
         return part && !isPartConnected(part);
     });
 
     if (hasUnconnectedDragPart) {
-        prepareMbdForIslandDrag(dragParts);
+        dragResult = prepareMbdForIslandDrag(dragParts);
     }
     else {
-        solve();
+        dragResult = solve();
     }
-    bundleFixed = false;
+    lastSolveResult = dragResult;
+    if (dragResult != SolveResult::Success) {
+        return dragResult;
+    }
 
     draggedParts.clear();
 
@@ -982,12 +1065,12 @@ void AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
 
         draggedParts.push_back(part);
     }
+    return dragResult;
 }
 
-void AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts)
+SolveResult AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts)
 {
-    ensureIdentityPlacements();
-    syncGroundedJoints();
+    Base::StateLocker lock(solveInProgress);
 
     mbdAssembly = makeMbdAssembly();
     objectPartMap.clear();
@@ -1005,9 +1088,10 @@ void AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObject*> d
     if (joints.empty()) {
         objectPartMap.clear();
         mbdAssembly.reset();
-        return;
+        return SolveResult::Success;
     }
 
+    PlacementAttempt attempt(*this);
     jointParts(joints);
 
     try {
@@ -1017,24 +1101,32 @@ void AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObject*> d
         FC_ERR("Drag setup failed: " << e.what());
         objectPartMap.clear();
         mbdAssembly.reset();
-        return;
+        return SolveResult::SolverFailure;
     }
     catch (...) {
         FC_ERR("Drag setup failed: unhandled exception");
         objectPartMap.clear();
         mbdAssembly.reset();
-        return;
+        return SolveResult::SolverFailure;
     }
+    return validateAndCommitPlacements(attempt, true);
 }
 
 void AssemblyObject::doDragStep()
 {
-    if (!mbdAssembly || draggedParts.empty()) {
+    if (dragResult != SolveResult::Success || !mbdAssembly || draggedParts.empty()) {
         return;
     }
 
+    Base::StateLocker lock(solveInProgress);
     try {
-        PlacementAttempt attempt(*this);
+        if (dragStepAttempt) {
+            dragStepAttempt->begin();
+        }
+        else {
+            dragStepAttempt = std::make_shared<PlacementAttempt>(*this, true);
+        }
+        auto& attempt = *dragStepAttempt;
         std::vector<std::shared_ptr<MbD::ASMTPart>> dragMbdParts;
         std::unordered_set<ASMTPart*> seenMbdParts;
 
@@ -1081,7 +1173,7 @@ void AssemblyObject::doDragStep()
         // Keep the Python relation traversal out of the interactive hot path:
         // it visits all joints and repeatedly traverses connectivity/geometry.
         // Native finite/grounded checks are shared with solve(); the full relation
-        // check runs on solve(), including the solve that prepares a drag.
+        // check runs on solve() and once more at drag completion.
         if (validateAndCommitPlacements(attempt, false) == SolveResult::Success) {
             auto joints = getJoints();
             for (auto* joint : joints) {
@@ -1091,9 +1183,17 @@ void AssemblyObject::doDragStep()
                 }
             }
         }
+        else {
+            attempt.restore();
+        }
     }
     catch (...) {
-        // We do nothing if a solve step fails.
+        if (dragStepAttempt) {
+            dragStepAttempt->restore();
+        }
+    }
+    if (solvePending) {
+        touch();
     }
 }
 
@@ -1143,14 +1243,43 @@ bool AssemblyObject::validateNewPlacements(const PlacementCandidates& candidates
     return true;
 }
 
-void AssemblyObject::postDrag()
+SolveResult AssemblyObject::postDrag()
 {
-    if (!mbdAssembly) {
-        return;
+    if (dragPlacements.empty()) {
+        return SolveResult::Success;
     }
-
-    mbdAssembly->runPostDrag();  // Do this after last drag
-    purgeTouched();
+    Base::StateLocker lock(solveInProgress);
+    dragStepAttempt.reset();
+    if (dragResult == SolveResult::Success && mbdAssembly) {
+        try {
+            mbdAssembly->runPostDrag();
+            dragResult = validateSolvedJointRelations(this);
+        }
+        catch (...) {
+            dragResult = SolveResult::SolverFailure;
+        }
+    }
+    if (dragResult != SolveResult::Success) {
+        for (const auto& [property, placement] : dragPlacements) {
+            // In particular, setting an unchanged joint Offset runs preSolve()
+            // and can move parts again after their saved placements are restored.
+            if (!samePlacementValues(property->getValue(), placement)) {
+                property->setValue(placement);
+            }
+        }
+        rigidPlacementCache = dragRigidCache;
+        redrawJointPlacements(getJoints());
+    }
+    else if (!solvePending) {
+        purgeTouched();
+    }
+    if (solvePending) {
+        touch();
+    }
+    draggedParts.clear();
+    dragPlacements.clear();
+    lastSolveResult = dragResult;
+    return dragResult;
 }
 
 void AssemblyObject::savePlacementsForUndo()

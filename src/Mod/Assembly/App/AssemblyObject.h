@@ -135,6 +135,7 @@ public:
         const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
     );
 
+    short mustExecute() const override;
     App::DocumentObjectExecReturn* execute() override;
 
     /** Assembly solving cannot be reproduced in the isolated worker.
@@ -160,9 +161,9 @@ public:
     int generateSimulation(App::DocumentObject* sim);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
-    void preDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult preDrag(std::vector<App::DocumentObject*> dragParts);
     void doDragStep();
-    void postDrag();
+    SolveResult postDrag();
     void savePlacementsForUndo();
     void undoSolve();
     void clearUndo();
@@ -336,7 +337,7 @@ private:
     const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
     void syncActiveRigidGroupPlacements();
     void updateRigidPlacementCache();
-    void prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
 
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
@@ -352,9 +353,15 @@ private:
 
     bool bundleFixed;
 
-    // True while solve() is running; breaks the solve()/updateSolveStatus() cycle.
+    // Block reentrant solves while preparing or applying solve/drag placements.
     bool solveInProgress {false};
     bool placementAttemptInProgress {false};
+    // Requests from placement observers are left for a later recompute.
+    bool solvePending {false};
+    std::shared_ptr<PlacementAttempt> dragStepAttempt;
+    std::vector<std::pair<App::PropertyPlacement*, Base::Placement>> dragPlacements;
+    decltype(rigidPlacementCache) dragRigidCache;
+    SolveResult dragResult {SolveResult::Success};
 
     int lastDoF;
     bool lastHasConflict;

@@ -1049,7 +1049,7 @@ class TestCore(AssemblyTestBase):
         self.assertFalse(lid.Placement.isSame(before))
         self.assertEqual(UtilsAssembly.violatedJointLabels(self.assembly), [])
 
-    def test_validator_failure_preserves_link_group_placements(self):
+    def test_rejected_solve_tracks_link_group_normalization(self):
         source = self.doc.addObject("Part::Box", "LinkSource")
         base = self.assembly.newObject("Part::Box", "LinkGround")
         group = self.assembly.newObject("App::Link", "LinkGroup")
@@ -1058,10 +1058,106 @@ class TestCore(AssemblyTestBase):
         self.doc.recompute()
         Assembly.createGroundedJoint(self.assembly, base, recompute=False)
         group.Placement = App.Placement(App.Vector(43, 17, 9), App.Rotation())
+        positions = [group.Placement * e.Placement for e in group.ElementList]
+        with tempfile.TemporaryDirectory() as directory:
+            self.doc.saveAs(os.path.join(directory, "normalization.FCStd"))
+            with patch("UtilsAssembly.violatedJointLabels", return_value=None):
+                self.assertEqual(self.assembly.solve(False), -7)
+            self.assertTrue(group.Placement.isIdentity())
+            for element, position in zip(group.ElementList, positions):
+                self.assertTrue(element.Placement.isSame(position))
+            self.assertTrue(self.doc.hasPendingFileChanges())
+
+    def test_rejected_solve_tracks_grounding_creation(self):
+        part = self.assembly.newObject("Part::Box", "LockedPart")
+        self.doc.recompute()
+        part.setEditorMode("Placement", 1)
+        self.assertEqual([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")], [])
+        with tempfile.TemporaryDirectory() as directory:
+            self.doc.saveAs(os.path.join(directory, "grounding.FCStd"))
+            with patch("UtilsAssembly.violatedJointLabels", return_value=None):
+                self.assertEqual(self.assembly.solve(False), -7)
+            self.assertEqual(len([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")]), 1)
+            self.assertTrue(self.doc.hasPendingFileChanges())
+
+    def test_rejected_solve_tracks_grounding_deletion(self):
+        self._placement_solve_fixture()
+        part = self.doc.getObject("DistanceBase")
+        part.setEditorMode("Placement", 0)
+        self.assertEqual(len([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")]), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            self.doc.saveAs(os.path.join(directory, "ungrounding.FCStd"))
+            with patch("UtilsAssembly.violatedJointLabels", return_value=None):
+                self.assertNotEqual(self.assembly.solve(False), 0)
+            self.assertEqual([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")], [])
+            self.assertTrue(self.doc.hasPendingFileChanges())
+
+    def _rejected_swapped_joint(self, kind):
+        ground = self.assembly.newObject("Part::Box", "Ground")
+        rack = self.assembly.newObject("Part::Box", "Rack")
+        pinion = self.assembly.newObject("Part::Cylinder", "Pinion")
+        self.doc.recompute()
+        Assembly.createGroundedJoint(self.assembly, ground, recompute=False)
+
+        def joint(kind, first, second, rotation):
+            obj = self.jointgroup.newObject("App::FeaturePython", kind)
+            JointObject.Joint(obj, JointObject.JointTypes.index(kind))
+            obj.Detach1 = obj.Detach2 = True
+            obj.Reference1 = (first, ["Face1"])
+            obj.Reference2 = (second, ["Face1"])
+            obj.Placement1 = obj.Placement2 = App.Placement(App.Vector(), rotation)
+            return obj
+
+        # Reverse the rack/screw endpoints so solver preparation must swap them.
+        with patch("JointObject.solveIfAllowed"):
+            axis = App.Rotation(App.Vector(0, 0, 1), App.Vector(1, 0, 0))
+            joint("Slider", ground, rack, axis if kind == "RackPinion" else App.Rotation())
+            joint("Revolute", ground, pinion, App.Rotation())
+            coupling = joint(kind, pinion, rack, App.Rotation())
+            coupling.Placement2 = App.Placement(App.Vector(), axis) if kind == "RackPinion" else App.Placement()
+            coupling.Distance = 10
+        references = (coupling.Reference1, coupling.Reference2)
         before = self._solve_placement_snapshot()
         with patch("UtilsAssembly.violatedJointLabels", return_value=None):
-            self.assertEqual(self.assembly.solve(False), -7)
+            self.assertNotEqual(self.assembly.solve(False), 0)
+        self.assertEqual((coupling.Reference1, coupling.Reference2), references)
         self.assertEqual(self._solve_placement_snapshot(), before)
+
+    def test_rejected_rack_pinion_restores_references(self):
+        self._rejected_swapped_joint("RackPinion")
+
+    def test_rejected_screw_restores_references(self):
+        self._rejected_swapped_joint("Screw")
+
+    def test_placement_callback_defers_nested_solve(self):
+        # Production assemblies carry this discriminator; the bare C++ fixture
+        # otherwise makes solveIfAllowed() return without requesting a solve.
+        self.assembly.Type = "Assembly"
+        self._placement_solve_fixture()
+        lid = self._displace_solve_lid()
+        assembly = self.assembly
+        requests = []
+
+        class Observer:
+            def slotChangedObject(self, obj, prop):
+                if obj == lid and prop == "Placement" and not requests:
+                    requests.append(True)
+                    JointObject.solveIfAllowed(assembly)
+
+        observer = Observer()
+        preferences = JointObject.Preferences.preferences()
+        previous = preferences.GetBool("SolveInJointCreation", True)
+        preferences.SetBool("SolveInJointCreation", True)
+        App.addDocumentObserver(observer)
+        try:
+            with patch("UtilsAssembly.violatedJointLabels", return_value=[]) as validator:
+                self.assertEqual(assembly.solve(False), 0)
+                self.assertEqual(requests, [True])
+                validator.assert_called_once()
+            self.assertIn("Touched", assembly.State)
+        finally:
+            App.removeDocumentObserver(observer)
+            preferences.SetBool("SolveInJointCreation", previous)
 
     def test_rejected_solve_preserves_rigid_group_preparation(self):
         self._placement_solve_fixture()

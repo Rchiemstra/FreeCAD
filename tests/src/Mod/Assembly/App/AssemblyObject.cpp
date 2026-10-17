@@ -71,7 +71,7 @@ protected:
             "Assembly.createGroundedJoint(_c1_a, _c1_base, recompute=False)\n"
             "_c1_refs = (Assembly.makeJointReference(_c1_base, 'Face1'), "
             "Assembly.makeJointReference(_c1_lid, 'Face1'))\n"
-            "Assembly.createJoint(_c1_a, 'Fixed', *_c1_refs, solve=False, recompute=False)\n",
+            "_c1_joint = Assembly.createJoint(_c1_a, 'Fixed', *_c1_refs, solve=False, recompute=False)\n",
             getDocument()->getName(),
             getObject()->getNameInDocument()
         );
@@ -81,6 +81,23 @@ protected:
                 "solve=False, presolve=False, recompute=False)\n"
             );
         }
+    }
+
+    void makeDragFixture()
+    {
+        makeSolveFixture();
+        Base::Interpreter().runString(
+            "with patch('JointObject.solveIfAllowed'):\n"
+            "    _c1_joint.JointType = 'Slider'\n"
+            "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+            "    _c1_joint.Placement1 = _c1_joint.Placement2 = App.Placement()\n"
+            "_c2_follower = _c1_a.newObject('Part::Box', 'Follower')\n"
+            "_c2_follower.recompute()\n"
+            "Assembly.createJoint(_c1_a, 'Fixed', "
+            "Assembly.makeJointReference(_c1_lid, 'Face1'), "
+            "Assembly.makeJointReference(_c2_follower, 'Face1'), "
+            "solve=False, presolve=False, recompute=False)\n"
+        );
     }
 
     int pythonSolve(const char* patchExpression = nullptr)
@@ -244,8 +261,8 @@ TEST_F(AssemblyObjectTest, recomputeAppliesSolverWritesToMemberPlacements)  // N
     // where its writes could be kept.
 
     // Arrange
-    // Normalisation is committed only by an accepted solve. Supply a grounded,
-    // satisfiable assembly rather than relying on a failed solve's side effects.
+    // Supply a grounded, satisfiable assembly so the regression also exercises
+    // successful solver writes alongside the tracked group normalisation.
     makeSolveFixture();
     ASSERT_EQ(pythonSolve(), 0);
     auto* assembly = getObject();
@@ -291,4 +308,182 @@ TEST_F(AssemblyObjectTest, recomputeAppliesSolverWritesToMemberPlacements)  // N
         << "the assembly settled without its solve reaching the caller: the solve ran "
            "in the worker and its writes to member placements were discarded";
     EXPECT_FALSE(assembly->isTouched());
+}
+
+TEST_F(AssemblyObjectTest, failedDragPreparationDoesNotRunStep)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    Base::Interpreter().runString(
+        "_c2_bad = patch('UtilsAssembly.violatedJointLabels', return_value=None)\n"
+        "_c2_bad.start()\n"
+    );
+    getObject()->preDrag({lid});
+    Base::Interpreter().runString("_c2_bad.stop()");
+    ASSERT_EQ(getObject()->getLastSolverStatus(), -7);
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    Base::Interpreter().runString(
+        "_c2_redraw_patch = patch('JointObject.Joint.redrawJointPlacements')\n"
+        "_c2_redraw = _c2_redraw_patch.start()\n"
+    );
+    getObject()->doDragStep();
+    Base::Interpreter().runString("_c2_redraw_patch.stop()");
+    Base::PyGILStateLocker lock;
+    EXPECT_EQ(static_cast<int>(Py::Long(
+        Base::Interpreter().runStringObject("_c2_redraw.call_count")
+    )), 0);
+    getObject()->postDrag();
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+}
+
+TEST_F(AssemblyObjectTest, dragCompletionRejectsViolatedRelations)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    getObject()->preDrag({lid});
+    ASSERT_EQ(getObject()->getLastSolverStatus(), 0);
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    getObject()->doDragStep();
+    ASSERT_FALSE(lid->getPlacementProperty()->getValue().isSame(original));
+    Base::Interpreter().runString(
+        "_c2_bad = patch('UtilsAssembly.violatedJointLabels', return_value=['joint'])\n"
+        "_c2_validator = _c2_bad.start()\n"
+    );
+    getObject()->postDrag();
+    Base::Interpreter().runString("_c2_bad.stop()");
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original))
+        << "position delta: "
+        << (lid->getPlacementProperty()->getValue().getPosition() - original.getPosition()).Length()
+        << "; rotation restored: "
+        << lid->getPlacementProperty()->getValue().getRotation().isSame(original.getRotation());
+    Base::PyGILStateLocker lock;
+    EXPECT_EQ(static_cast<int>(Py::Long(
+        Base::Interpreter().runStringObject("_c2_validator.call_count")
+    )), 1);
+}
+
+TEST_F(AssemblyObjectTest, dragStepsOnlyGuardSolverObjects)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    auto* follower = getDocument()->getObject("Follower");
+    auto* unrelated = getDocument()->addObject<App::FeatureTest>("Unrelated");
+    getObject()->preDrag({lid});
+    int inspected = 0;
+    auto connection = getDocument()->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == follower && &property == follower->getPlacementProperty()) {
+                ++inspected;
+                EXPECT_FALSE(unrelated->testStatus(App::ObjectStatus::NoTouch));
+            }
+        }
+    );
+    // Moving the driver writes the bundled follower. Inspect both the first
+    // snapshot and its reuse on the next step.
+    for (int step = 1; step <= 2; ++step) {
+        lid->getPlacementProperty()->setValue(
+            Base::Placement(Base::Vector3d(0, 0, step), Base::Rotation())
+        );
+        inspected = 0;
+        getObject()->doDragStep();
+        EXPECT_GT(inspected, 0);
+    }
+    connection.disconnect();
+    getObject()->postDrag();
+}
+
+TEST_F(AssemblyObjectTest, dragPlacementCallbackDefersNestedSolve)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    auto* follower = getDocument()->getObject("Follower");
+    getObject()->preDrag({lid});
+    const auto solverPart = getObject()->getMbDPart(lid);
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    bool requested = false;
+    auto connection = getDocument()->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == follower && &property == follower->getPlacementProperty() && !requested) {
+                requested = true;
+                getObject()->solve();
+            }
+        }
+    );
+    getObject()->doDragStep();
+    connection.disconnect();
+    EXPECT_TRUE(requested);
+    EXPECT_EQ(getObject()->getMbDPart(lid), solverPart);
+    EXPECT_TRUE(getObject()->isTouched());
+    getObject()->postDrag();
+    EXPECT_TRUE(getObject()->isTouched());
+    getObject()->purgeTouched();
+    EXPECT_EQ(getObject()->mustExecute(), 1);
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
+    getObject()->purgeTouched();
+    EXPECT_EQ(getObject()->mustExecute(), 0);
+}
+
+TEST_F(AssemblyObjectTest, dragCompletionRejectsValidatorFailure)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    getObject()->preDrag({lid});
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    getObject()->doDragStep();
+    Base::Interpreter().runString(
+        "_c2_bad = patch('UtilsAssembly.violatedJointLabels', "
+        "side_effect=RuntimeError('drag validation'))\n"
+        "_c2_bad.start()\n"
+    );
+    getObject()->postDrag();
+    Base::Interpreter().runString("_c2_bad.stop()");
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -7);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original))
+        << "position delta: "
+        << (lid->getPlacementProperty()->getValue().getPosition() - original.getPosition()).Length()
+        << "; rotation restored: "
+        << lid->getPlacementProperty()->getValue().getRotation().isSame(original.getRotation());
+}
+
+TEST_F(AssemblyObjectTest, dragCompletionValidatesOnce)  // NOLINT
+{
+    makeDragFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    getObject()->preDrag({lid});
+    Base::Interpreter().runString(
+        "_c2_check_patch = patch('UtilsAssembly.violatedJointLabels', return_value=[])\n"
+        "_c2_check = _c2_check_patch.start()\n"
+    );
+    for (int step = 1; step <= 2; ++step) {
+        lid->getPlacementProperty()->setValue(
+            Base::Placement(Base::Vector3d(0, 0, step), Base::Rotation())
+        );
+        getObject()->doDragStep();
+    }
+    {
+        Base::PyGILStateLocker lock;
+        EXPECT_EQ(static_cast<int>(Py::Long(
+            Base::Interpreter().runStringObject("_c2_check.call_count")
+        )), 0);
+    }
+    getObject()->postDrag();
+    Base::Interpreter().runString("_c2_check_patch.stop()");
+    Base::PyGILStateLocker lock;
+    EXPECT_EQ(static_cast<int>(Py::Long(
+        Base::Interpreter().runStringObject("_c2_check.call_count")
+    )), 1);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), 0);
+    EXPECT_NEAR(lid->getPlacementProperty()->getValue().getPosition().z, 2, 1e-6);
 }

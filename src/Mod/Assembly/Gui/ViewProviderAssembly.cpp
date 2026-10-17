@@ -1164,7 +1164,9 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
         }
 
         assemblyPart->setObjMasses(objectMasses);
-        assemblyPart->preDrag(dragParts);
+        if (assemblyPart->preDrag(dragParts) != SolveResult::Success) {
+            endMove();
+        }
     }
     else {
         assemblyPart->redrawJointPlacements(assemblyPart->getJoints());
@@ -1200,13 +1202,19 @@ void ViewProviderAssembly::endMove()
         "User parameter:BaseApp/Preferences/Mod/Assembly"
     );
     bool solveOnMove = hGrp->GetBool("SolveOnMove", true);
+    SolveResult dragResult = SolveResult::Success;
     if (solveOnMove) {
-        assemblyPart->postDrag();
+        dragResult = assemblyPart->postDrag();
         assemblyPart->setObjMasses({});
     }
 
     if (moveInCommand) {
-        getDocument()->commitCommand();
+        if (dragResult == SolveResult::Success) {
+            getDocument()->commitCommand();
+        }
+        else {
+            getDocument()->abortCommand();
+        }
     }
 }
 
