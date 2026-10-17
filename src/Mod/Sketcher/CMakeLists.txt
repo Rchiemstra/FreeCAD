@@ -44,6 +44,7 @@ if(BUILD_GUI)
           SketcherTests/TestOnViewParameterGui.py
           SketcherTests/TestSketcherOffsetGui.py
           SketcherTests/TestExternalFacePreselection.py
+          SketcherTests/TestVisualLayerListGui.py
     )
 endif(BUILD_GUI)
 
