@@ -26,6 +26,12 @@ using namespace std::chrono_literals;
 namespace Gui::Test
 {
 
+class RecoveryWaitTestAccess
+{
+public:
+    using LifecyclePin = App::DocumentCollaborationService::LifecyclePin;
+};
+
 bool writeRecoverySnapshotAwaitingOwnerThread(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options,
@@ -43,7 +49,7 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
             : lifecycle(service)
         {}
 
-        App::DocumentCollaborationService::LifecyclePin lifecycle;
+        RecoveryWaitTestAccess::LifecyclePin lifecycle;
         std::optional<bool> result;
         std::exception_ptr failure;
         std::atomic<bool> finished {false};
