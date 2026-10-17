@@ -38,6 +38,7 @@ class AssemblyObject(Part):
         -5 if malformed constraints
         -1 if solver error,
         -2 if redundant constraints.
+        -7 if joint relation validation could not run or returned an invalid result.
         """
         ...
 

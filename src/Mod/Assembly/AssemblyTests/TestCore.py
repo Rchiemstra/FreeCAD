@@ -950,6 +950,106 @@ class TestCore(AssemblyTestBase):
         self.assertEqual(status, -3, (UtilsAssembly.__file__, details))
         self.assertTrue(UtilsAssembly.violatedJointLabels(self.assembly))
 
+    def test_recompute_conflicting_assembly_reports_error(self):
+        self._fixed_distance_fixture(100)
+        prefs = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Assembly")
+        previous = prefs.GetBool("SolveOnRecompute", True)
+        try:
+            prefs.SetBool("SolveOnRecompute", True)
+            self.assembly.touch()
+            self.doc.recompute()
+            self.assertIn("Invalid", self.assembly.State)
+            self.assertEqual(self.assembly.solve(False), -3)
+            prefs.SetBool("SolveOnRecompute", False)
+            self.assembly.touch()
+            self.doc.recompute()
+            self.assertNotIn("Invalid", self.assembly.State)
+        finally:
+            prefs.SetBool("SolveOnRecompute", previous)
+
+    def test_validator_failure_never_reports_success(self):
+        self._fixed_distance_fixture(0)
+        validators = (
+            patch.dict("sys.modules", {"UtilsAssembly": None}),
+            patch("UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")),
+            patch("UtilsAssembly.violatedJointLabels", return_value=None),
+        )
+        for validator in validators:
+            with self.subTest(validator=validator), validator:
+                self.assertEqual(self.assembly.solve(False), -7)
+        self.assertEqual(self.assembly.solve(False), 0)
+
+    def _recompute_solve_failure(self, message):
+        prefs = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Assembly")
+        previous = prefs.GetBool("SolveOnRecompute", True)
+        try:
+            prefs.SetBool("SolveOnRecompute", True)
+            self.assembly.touch()
+            self.doc.recompute()
+        finally:
+            prefs.SetBool("SolveOnRecompute", previous)
+        self.assertIn("Invalid", self.assembly.State)
+        self.assertIn(message, self.assembly.getStatusString())
+
+    def _assert_explicit_solve_recovers(self):
+        self.assertIn("Invalid", self.assembly.State)
+        old_error = self.assembly.getStatusString()
+        self.assertEqual(self.assembly.solve(False), 0)
+        self.assertNotIn("Invalid", self.assembly.State)
+        self.assertNotEqual(self.assembly.getStatusString(), old_error)
+
+    def test_explicit_solve_clears_recompute_validation_error(self):
+        self._fixed_distance_fixture(0)
+        with patch("UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")):
+            self._recompute_solve_failure("validation could not run")
+            self.assertEqual(self.assembly.solve(False), -7)
+            self.assertIn("Invalid", self.assembly.State)
+        # The validator is restored, with no intervening recompute.
+        self._assert_explicit_solve_recovers()
+
+    def test_explicit_solve_clears_recompute_conflict_error(self):
+        joint = self._fixed_distance_fixture(100)
+        self._recompute_solve_failure("conflicting constraints")
+        with patch("JointObject.solveIfAllowed"):
+            joint.Distance = 0
+        # Repair the constraints, with no intervening recompute.
+        self._assert_explicit_solve_recovers()
+
+    def test_explicit_solve_clears_recompute_solver_error(self):
+        carrier = self.assembly.newObject("Part::Box", "Carrier")
+        gears = [self.assembly.newObject("Part::Box", name) for name in ("Gear1", "Gear2")]
+        self.doc.recompute()
+        Assembly.createGroundedJoint(self.assembly, carrier, recompute=False)
+        carrier_ref = Assembly.makeJointReference(carrier, "Face1")
+        refs = [Assembly.makeJointReference(gear, "Face1") for gear in gears]
+        for ref in refs:
+            Assembly.createJoint(self.assembly, "Revolute", carrier_ref, ref,
+                                 solve=False, recompute=False)
+        joint = Assembly.createJoint(self.assembly, "Gears", *refs, Distance=10, Distance2=0,
+                                     solve=False, presolve=False, recompute=False)
+        # A zero gear radius makes MbD throw, exercising SolverFailure (-1).
+        self.assertEqual(self.assembly.solve(False), -1)
+        self._recompute_solve_failure("Assembly solver failed")
+        joint.Distance2 = 10
+        self._assert_explicit_solve_recovers()
+
+    def test_explicit_solve_preserves_unrelated_recompute_error(self):
+        self._fixed_distance_fixture(0)
+        with patch("UtilsAssembly.violatedJointLabels", return_value=None):
+            self._recompute_solve_failure("validation could not run")
+        self.assembly.addProperty("App::PropertyFloat", "Unrelated")
+        self.assembly.addProperty("App::PropertyFloat", "Divisor")
+        self.assembly.Divisor = 1
+        self.assembly.setExpression("Unrelated", "1 / Divisor")
+        self.assembly.Divisor = 0
+        self.doc.recompute()
+        self.assertIn("Invalid", self.assembly.State)
+        error = self.assembly.getStatusString()
+        self.assertNotIn("validation could not run", error)
+        self.assertEqual(self.assembly.solve(False), 0)
+        self.assertIn("Invalid", self.assembly.State)
+        self.assertEqual(self.assembly.getStatusString(), error)
+
     def test_api_flipped_fixed_joint_solves(self):
         """Native Fixed accepts coincident frames with any two axes reversed."""
         for axis in (App.Vector(1, 0, 0), App.Vector(0, 1, 0), App.Vector(0, 0, 1)):

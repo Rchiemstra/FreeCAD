@@ -78,6 +78,20 @@ struct ObjRef
     App::PropertyXLinkSub* ref;
 };
 
+// Public solve return codes. RelationsViolated also covers constraints that
+// MbD silently drops as redundant. A solve is successful only after validation.
+enum class SolveResult: int
+{
+    Success = 0,
+    SolverFailure = -1,
+    RedundantConstraints = -2,
+    RelationsViolated = -3,
+    OverConstrained = -4,
+    MalformedConstraints = -5,
+    NoGroundedParts = -6,
+    ValidationFailed = -7,
+};
+
 class AssemblyExport AssemblyObject: public App::Part
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Assembly::AssemblyObject);
@@ -142,7 +156,7 @@ public:
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
     being in an active transaction (joint creation).*/
-    int solve(bool enableRedo = false);
+    SolveResult solve(bool enableRedo = false);
     int generateSimulation(App::DocumentObject* sim);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
@@ -290,7 +304,7 @@ public:
     }
     inline int getLastSolverStatus() const
     {
-        return lastSolverStatus;
+        return static_cast<int>(lastSolveResult);
     }
     inline const std::vector<std::string>& getLastConflicting() const
     {
@@ -340,7 +354,9 @@ private:
     bool lastHasRedundancies;
     bool lastHasPartialRedundancies;
     bool lastHasMalformedConstraints;
-    int lastSolverStatus;
+    SolveResult lastSolveResult {SolveResult::Success};
+    // Diagnostic returned by execute(), rather than an unrelated document error.
+    std::string solveDiagnostic;
 
     std::vector<std::string> lastRedundantJoints;
     std::vector<std::string> lastConflictingJoints;
