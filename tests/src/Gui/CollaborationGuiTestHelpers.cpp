@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "CollaborationGuiTestHelpers.h"
+#include "DocumentExecutionWaitTestHelpers.h"
 
 #include <gtest/gtest.h>
 

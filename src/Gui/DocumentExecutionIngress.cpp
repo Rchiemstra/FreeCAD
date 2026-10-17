@@ -153,6 +153,7 @@ App::DocumentCommand makeDocumentRecomputeCommand(
     command.document = document.executionHandle().identity();
     command.recompute = App::DocumentCommandRecomputePayload {};
     command.recompute->coalescingKey = buildRecomputeCoalescingKey(request);
+    command.recompute->force = request.force;
     command.recompute->options = request.options;
     command.recompute->featureIds = request.featureIds;
     // Public GUI/App facade recomputes declare snapshot-based foreign reads.
@@ -501,23 +502,6 @@ void scheduleSaveCommandCompletion(
         });
 }
 
-namespace
-{
-
-bool writeRecoverySnapshotOnLaneOwnerThread(
-    App::Document& document,
-    const App::RecoverySnapshotSaveOptions& options)
-{
-    if (auto* lane = document.executionLane()) {
-        return lane->dispatchToOwner([&] {
-            return App::writeRecoverySnapshotToTransientDir(document, options);
-        });
-    }
-    return App::writeRecoverySnapshotToTransientDir(document, options);
-}
-
-}  // namespace
-
 void scheduleRecoverySnapshotWrite(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options,
@@ -599,105 +583,6 @@ void scheduleRecoverySnapshotWrite(
             onFinished(written, failure);
         });
     }).detach();
-}
-
-bool writeRecoverySnapshotAwaitingOwnerThread(
-    App::Document& document,
-    const App::RecoverySnapshotSaveOptions& options)
-{
-    App::DocumentExecutionLane* lane = document.executionLane();
-    if (lane) {
-        lane->beginRecoverySnapshotOwnerWork();
-    }
-    const auto endRecoveryOwnerWork = [&] {
-        if (lane) {
-            lane->endRecoverySnapshotOwnerWork();
-        }
-    };
-    std::exception_ptr failure;
-    std::atomic<bool> finished {false};
-    std::optional<bool> result;
-    std::thread worker([&] {
-        try {
-            result = writeRecoverySnapshotOnLaneOwnerThread(document, options);
-        }
-        catch (...) {
-            failure = std::current_exception();
-        }
-        endRecoveryOwnerWork();
-        finished.store(true, std::memory_order_release);
-    });
-
-    const auto deadline = std::chrono::steady_clock::now() + 120s;
-    while (!finished.load(std::memory_order_acquire)
-           && std::chrono::steady_clock::now() < deadline) {
-        QApplication::processEvents();
-        std::this_thread::sleep_for(1ms);
-    }
-    if (!finished.load(std::memory_order_acquire)) {
-        // L8: deadline exceeded — detach rather than block forever on join().
-        // The worker will still call endRecoveryOwnerWork() when it eventually
-        // exits (via dispatchToOwner timeout or lane shutdown), so the lane
-        // recovery-work counter stays consistent.
-        worker.detach();
-        throw Base::RuntimeError(
-            "recovery snapshot write did not finish before timeout");
-    }
-    worker.join();
-    if (failure) {
-        std::rethrow_exception(failure);
-    }
-    return result.value_or(false);
-}
-
-bool submitDocumentSaveAwaitingCompletion(
-    App::Document& document,
-    std::string* failureDiagnostic)
-{
-    const auto outcome = submitDocumentKindCommand(document, App::DocumentCommandKind::Save);
-    if (!outcome.accepted()) {
-        reportDocumentCommandSubmitBlocked(document, outcome);
-        if (failureDiagnostic) {
-            failureDiagnostic->clear();
-        }
-        return false;
-    }
-
-    App::DocumentCommandHandle commandHandle(
-        outcome.commandId,
-        document.executionHandle().identity());
-    const auto deadline = std::chrono::steady_clock::now() + 120s;
-    while (std::chrono::steady_clock::now() < deadline) {
-        QApplication::processEvents();
-        const auto snapshot = commandHandle.status();
-        if (!snapshot.terminal()) {
-            std::this_thread::sleep_for(1ms);
-            continue;
-        }
-        if (snapshot.state == App::DocumentCommandState::Completed) {
-            if (auto* guiDocument = findGuiDocumentByName(document.getName())) {
-                guiDocument->finishExecutionLaneSave(snapshot.state);
-            }
-            if (failureDiagnostic) {
-                failureDiagnostic->clear();
-            }
-            return true;
-        }
-        if (failureDiagnostic) {
-            *failureDiagnostic = snapshot.diagnostic;
-        }
-        FC_ERR("Document Save "
-               << App::documentCommandStateName(snapshot.state) << ": "
-               << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
-                                               : snapshot.diagnostic));
-        return false;
-    }
-
-    if (failureDiagnostic) {
-        *failureDiagnostic = "document save did not finish before timeout";
-    }
-    FC_ERR("Document Save timed out waiting for completion");
-    return false;
 }
 
 bool submitDocumentSave(App::Document& document)
