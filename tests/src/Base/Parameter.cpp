@@ -6,8 +6,11 @@
 
 #include <atomic>
 #include <barrier>
+#include <chrono>
 #include <filesystem>
+#include <future>
 #include <thread>
+#include <xercesc/framework/MemBufFormatTarget.hpp>
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 # include <sys/wait.h>
@@ -154,6 +157,110 @@ TEST_F(ParameterTest, ConcurrentTreeAccess)
         EXPECT_EQ(group->GetInt("Completed"), iterations);
     }
     EXPECT_TRUE(cfg->CheckDocument());
+}
+
+// A GUI observer can wait synchronously for work on a different thread. Keep
+// blocked probes alive until the mutator returns so a regression fails, not hangs.
+class ParameterCallbackProbe: public ParameterGrp::ObserverType
+{
+public:
+    explicit ParameterCallbackProbe(ParameterGrp::handle group)
+        : group(group)
+    {}
+
+    ~ParameterCallbackProbe() override
+    {
+        for (auto& worker : workers) {
+            worker.join();
+        }
+    }
+
+    void checkUnlocked()
+    {
+        auto completed = std::make_shared<std::promise<void>>();
+        auto ready = completed->get_future();
+        workers.emplace_back([this, completed] {
+            group->GetInt("Probe");
+            completed->set_value();
+        });
+        EXPECT_EQ(ready.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+        ++calls;
+    }
+
+    void OnChange(ParameterGrp::SubjectType&, ParameterGrp::MessageType) override
+    {
+        checkUnlocked();
+    }
+
+    int calls {0};
+
+private:
+    ParameterGrp::handle group;
+    std::vector<std::thread> workers;
+};
+
+TEST_F(ParameterTest, NotificationsReleaseTreeLock)
+{
+    auto cfg = getCreateConfig();
+    auto group = cfg->GetGroup("Observed");
+    ParameterCallbackProbe legacy(cfg);
+    ParameterCallbackProbe modern(cfg);
+    group->Attach(&legacy);
+    auto connection = cfg->signalParamChanged.connect(
+        [&](ParameterGrp*, ParameterGrp::ParamType, const char*, const char*) {
+            modern.checkUnlocked();
+        });
+
+    auto child = group->GetGroup("Child/Nested");
+    group->SetBool("Bool", true);
+    const int modernCalls = modern.calls;
+    const int legacyCalls = legacy.calls;
+    group->SetBool("Bool", true);  // The legacy observer still sees unchanged values.
+    EXPECT_EQ(modern.calls, modernCalls);
+    EXPECT_EQ(legacy.calls, legacyCalls + 1);
+    group->SetASCII("Text", "value");
+    group->NotifyAll();
+    group->RenameGrp("Child", "Renamed");
+    group->RemoveBool("Bool");
+    group->RemoveASCII("Text");
+    child->SetInt("Int", 42);
+    group->RemoveGrp("Renamed");  // Recursive Clear must also unlock before notifying.
+    group->Clear(true);
+
+    EXPECT_GT(legacy.calls, 0);
+    EXPECT_GT(modern.calls, 0);
+    group->Detach(&legacy);
+    connection.disconnect();
+}
+
+TEST_F(ParameterTest, SerializationCallbacksReleaseTreeLock)
+{
+    auto cfg = getCreateConfig();
+    cfg->SetInt("Probe", 42);
+    ParameterCallbackProbe probe(cfg);
+    class Target: public XERCES_CPP_NAMESPACE::MemBufFormatTarget
+    {
+    public:
+        explicit Target(ParameterCallbackProbe& probe)
+            : probe(probe)
+        {}
+
+        void writeChars(
+            const XMLByte* const bytes,
+            const XMLSize_t count,
+            XERCES_CPP_NAMESPACE::XMLFormatter* const formatter
+        ) override
+        {
+            probe.checkUnlocked();
+            MemBufFormatTarget::writeChars(bytes, count, formatter);
+        }
+
+    private:
+        ParameterCallbackProbe& probe;
+    } target(probe);
+    cfg->SaveDocument(&target);
+    EXPECT_GT(probe.calls, 0);
+    EXPECT_GT(target.getLen(), 0);
 }
 
 TEST_F(ParameterTest, TestValid)
