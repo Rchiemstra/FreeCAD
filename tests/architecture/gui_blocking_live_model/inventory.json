@@ -1716,27 +1716,11 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 580,
+      "line": 563,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {"
-    },
-    {
-      "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 635,
-      "category": "process-events-polling",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "QApplication::processEvents();"
-    },
-    {
-      "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 672,
-      "category": "process-events-polling",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "QApplication::processEvents();"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",
