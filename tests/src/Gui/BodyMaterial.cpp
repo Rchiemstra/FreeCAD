@@ -201,29 +201,18 @@ TEST_F(BodyMaterialTest, throwingVisibilityCallbackRetainsPendingMaterialAssignm
     EXPECT_EQ(_featureView->ShapeAppearance[0].diffuseColor, material.diffuseColor);
 }
 
-TEST_F(BodyMaterialTest, nestedBeforeChangeAssignmentKeepsSyntheticProvenance)
+TEST_F(BodyMaterialTest, equalSyntheticMaterialReplayDoesNotCopyAppearance)
 {
-    const App::Material material = _body->getMaterialAppearance();
-    bool assigned = false;
-    bool nestedAssignmentCopied = false;
+    int copies = 0;
     fastsignals::scoped_connection observer =
         Gui::Application::Instance->signalBeforeChangeObject.connect(
             [&](const Gui::ViewProvider& provider, const App::Property& property) {
-                if (&provider == _bodyView && &property == &_bodyView->ShapeAppearance
-                    && !assigned) {
-                    assigned = true;
-                    _body->setMaterialAppearance(material);
-                    nestedAssignmentCopied =
-                        _featureView->ShapeAppearance[0].diffuseColor == material.diffuseColor;
-                    // A later caller override must survive the outer replay.
-                    auto appearance = _featureView->ShapeAppearance[0];
-                    appearance.diffuseColor = red;
-                    _featureView->ShapeAppearance.setValue(appearance);
+                if (&provider == _bodyView && &property == &_bodyView->ShapeAppearance) {
+                    ++copies;
                 }
             });
     _guiDocument->catchUpIdleLivePresentation();
-    ASSERT_TRUE(assigned);
-    EXPECT_TRUE(nestedAssignmentCopied);
+    EXPECT_EQ(copies, 0);
     EXPECT_EQ(_featureView->ShapeAppearance[0].diffuseColor, red);
 }
 

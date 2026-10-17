@@ -3527,7 +3527,7 @@ void Document::Save(Base::Writer& writer) const
             qAppInstance && QThread::currentThread() == qAppInstance->thread();
         if (saveThumbnail && onGuiThread) {
             int size = hGrp->GetInt("ThumbnailSize", 256);
-            size = Base::clamp<int>(size, 64, 512);
+            size = std::clamp<int>(size, 64, 512);
             View3DInventorViewer* view = nullptr;
             if (auto* active = freecad_cast<View3DInventor*>(getActiveView())) {
                 view = active->getViewer();

@@ -129,6 +129,17 @@ void SelectionView::leaveEvent(QEvent*)
     Selection().rmvPreselect();
 }
 
+static QStringList makeSelectionData(const char* docName, const char* objName, const char* subName)
+{
+    QStringList list;
+    list << QString::fromUtf8(docName);
+    list << QString::fromUtf8(objName);
+    if (QString sub = QString::fromUtf8(subName); !sub.isEmpty()) {
+        list << sub;
+    }
+    return list;
+}
+
 /// @cond DOXERR
 void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
 {
@@ -165,7 +176,7 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
         str << QString::fromUtf8(docName);
         str << "#";
         str << QString::fromUtf8(objName);
-        if (subName != 0 && subName[0] != 0) {
+        if (!QString::fromUtf8(subName).isEmpty()) {
             str << ".";
             /* Original code doesn't take account of histories in subelement names and displays
              * them inadvertently.  Let's not do that.
@@ -192,18 +203,13 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
 
     if (Reason.Type == SelectionChanges::AddSelection) {
         // save as user data
-        QStringList list;
-        list << QString::fromUtf8(Reason.pDocName);
-        list << QString::fromUtf8(Reason.pObjectName);
-        if (Reason.pSubName && Reason.pSubName[0]) {
-            list << QString::fromUtf8(Reason.pSubName);
-        }
+        QStringList list = makeSelectionData(Reason.pDocName, Reason.pObjectName, Reason.pSubName);
         App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);
         App::DocumentObject* obj = doc->getObject(Reason.pObjectName);
         getSelectionName(str, Reason.pDocName, Reason.pObjectName, Reason.pSubName, obj);
 
         // insert the selection as item
-        QListWidgetItem* item = new QListWidgetItem(selObject, selectionView);
+        auto* item = new QListWidgetItem(selObject, selectionView);
         item->setData(Qt::UserRole, list);
     }
     else if (Reason.Type == SelectionChanges::ClrSelection) {
@@ -247,17 +253,12 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
             = Gui::Selection().getSelection(Reason.pDocName, ResolveMode::NoResolve);
         for (const auto& it : objs) {
             // save as user data
-            QStringList list;
-            list << QString::fromUtf8(it.DocName);
-            list << QString::fromUtf8(it.FeatName);
-            if (it.SubName && it.SubName[0]) {
-                list << QString::fromUtf8(it.SubName);
-            }
+            QStringList list = makeSelectionData(it.DocName, it.FeatName, it.SubName);
 
             App::Document* doc = App::GetApplication().getDocument(it.DocName);
             App::DocumentObject* obj = doc->getObject(it.FeatName);
             getSelectionName(str, it.DocName, it.FeatName, it.SubName, obj);
-            QListWidgetItem* item = new QListWidgetItem(selObject, selectionView);
+            auto* item = new QListWidgetItem(selObject, selectionView);
             item->setData(Qt::UserRole, list);
             selObject.clear();
         }
@@ -287,7 +288,9 @@ void SelectionView::onSelectionChanged(const SelectionChanges& Reason)
                 this->y = sel.y;
                 this->z = sel.z;
 
-                new QListWidgetItem(selObject, pickList);
+                QStringList list = makeSelectionData(sel.DocName, sel.FeatName, sel.SubName);
+                auto* item = new QListWidgetItem(selObject, pickList);
+                item->setData(Qt::UserRole, list);
             }
         }
     }
@@ -307,13 +310,12 @@ void SelectionView::search(const QString& text)
             for (auto it : objects) {
                 QString label = QString::fromUtf8(it->Label.getValue());
                 if (label.contains(text, Qt::CaseInsensitive)) {
-                    searchList.push_back(it);
+                    searchList.emplace_back(it);
                     // save as user data
                     QString selObject;
                     QTextStream str(&selObject);
-                    QStringList list;
-                    list << QString::fromUtf8(doc->getName());
-                    list << QString::fromUtf8(it->getNameInDocument());
+                    QStringList list
+                        = makeSelectionData(doc->getName(), it->getNameInDocument(), nullptr);
                     // build name
                     str << QString::fromUtf8(doc->Label.getValue());
                     str << "#";
@@ -321,7 +323,7 @@ void SelectionView::search(const QString& text)
                     str << " (";
                     str << label;
                     str << ")";
-                    QListWidgetItem* item = new QListWidgetItem(selObject, selectionView);
+                    auto* item = new QListWidgetItem(selObject, selectionView);
                     item->setData(Qt::UserRole, list);
                 }
             }
@@ -333,11 +335,11 @@ void SelectionView::search(const QString& text)
 void SelectionView::validateSearch()
 {
     if (!searchList.empty()) {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (doc) {
-            Gui::Selection().clearSelection();
-            for (auto it : searchList) {
-                Gui::Selection().addSelection(doc->getName(), it->getNameInDocument(), nullptr);
+        Gui::Selection().clearSelection();
+        for (const auto& it : searchList) {
+            if (it.getObject()) {  // skip objects deleted since the search
+                Gui::Selection()
+                    .addSelection(it.getDocumentName().c_str(), it.getObjectName().c_str(), nullptr);
             }
         }
     }
@@ -400,27 +402,13 @@ void SelectionView::toggleSelect(QListWidgetItem* item)
     if (!item) {
         return;
     }
-    std::string name = item->text().toUtf8().constData();
-    char* docname = &name.at(0);
-    char* objname = std::strchr(docname, '#');
-    if (!objname) {
+    QStringList elements = item->data(Qt::UserRole).toStringList();
+    if (elements.size() < 2) {
         return;
     }
-    *objname++ = 0;
-    char* subname = std::strchr(objname, '.');
-    if (subname) {
-        *subname++ = 0;
-        char* end = std::strchr(subname, ' ');
-        if (end) {
-            *end = 0;
-        }
-    }
-    else {
-        char* end = std::strchr(objname, ' ');
-        if (end) {
-            *end = 0;
-        }
-    }
+    QByteArray docname = elements[0].toUtf8();
+    QByteArray objname = elements[1].toUtf8();
+    QByteArray subname = elements.size() > 2 ? elements[2].toUtf8() : QByteArray();
     QString cmd;
     if (Gui::Selection().isSelected(docname, objname, subname)) {
         cmd = QString::fromUtf8(
@@ -456,27 +444,13 @@ void SelectionView::preselect(QListWidgetItem* item)
     if (!item) {
         return;
     }
-    std::string name = item->text().toUtf8().constData();
-    char* docname = &name.at(0);
-    char* objname = std::strchr(docname, '#');
-    if (!objname) {
+    QStringList elements = item->data(Qt::UserRole).toStringList();
+    if (elements.size() < 2) {
         return;
     }
-    *objname++ = 0;
-    char* subname = std::strchr(objname, '.');
-    if (subname) {
-        *subname++ = 0;
-        char* end = std::strchr(subname, ' ');
-        if (end) {
-            *end = 0;
-        }
-    }
-    else {
-        char* end = std::strchr(objname, ' ');
-        if (end) {
-            *end = 0;
-        }
-    }
+    QByteArray docname = elements[0].toUtf8();
+    QByteArray objname = elements[1].toUtf8();
+    QByteArray subname = elements.size() > 2 ? elements[2].toUtf8() : QByteArray();
     QString cmd
         = QString::fromUtf8(
               "Gui.Selection.setPreselection("
