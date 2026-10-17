@@ -325,6 +325,12 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    class PlacementAttempt;
+    using PlacementCandidates = std::vector<std::pair<App::DocumentObject*, Base::Placement>>;
+    PlacementCandidates computePlacementCandidates();
+    bool validateNewPlacements(const PlacementCandidates& candidates);
+    void setNewPlacements(const PlacementCandidates& candidates);
+    SolveResult validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations);
     void rebuildRigidClusters();
     App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
     const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
@@ -348,6 +354,7 @@ private:
 
     // True while solve() is running; breaks the solve()/updateSolveStatus() cycle.
     bool solveInProgress {false};
+    bool placementAttemptInProgress {false};
 
     int lastDoF;
     bool lastHasConflict;

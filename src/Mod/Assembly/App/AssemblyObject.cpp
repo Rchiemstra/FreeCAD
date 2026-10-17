@@ -24,6 +24,7 @@
 #include <boost/core/ignore_unused.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <set>
 #include <vector>
@@ -101,6 +102,8 @@ namespace PartApp = Part;
 
 namespace
 {
+
+bool isFinitePlacement(const Base::Placement& plc);
 
 SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
 {
@@ -453,11 +456,240 @@ void AssemblyObject::onChanged(const App::Property* prop)
     App::Part::onChanged(prop);
 }
 
+// Python relation validation reads document placements. Keep its tentative writes,
+// including solve preparation, in one scope until validation accepts the candidate.
+// File tracking prevents a rejected preview from dirtying a saved file or its
+// GUI document; restoring touched bits also preserves pre-existing edits.
+class AssemblyObject::PlacementAttempt
+{
+public:
+    explicit PlacementAttempt(AssemblyObject& assembly)
+        : assembly(assembly)
+        , rigidCache(assembly.rigidPlacementCache)
+        , undoPlacements(assembly.previousPositions)
+        , previousAttempt(assembly.placementAttemptInProgress)
+    {
+        std::unordered_set<App::Document*> documents;
+        if (assembly.getDocument()) {
+            documents.insert(assembly.getDocument());
+        }
+        for (auto* part : getAssemblyComponents(&assembly)) {
+            if (part && part->getDocument()) {
+                documents.insert(part->getDocument());
+            }
+        }
+        for (auto* document : documents) {
+            documentObjectCounts.emplace(document, document->getObjects().size());
+            fileTracking.emplace_back(
+                std::make_unique<App::Document::FileChangeTrackingScope>(*document)
+            );
+            for (auto* object : document->getObjects()) {
+                ObjectState state {
+                    document,
+                    object->getNameInDocument(),
+                    object,
+                    object->getID(),
+                    object->getStatus(),
+                    {}
+                };
+                std::vector<App::Property*> properties;
+                object->getPropertyList(properties);
+                for (auto* property : properties) {
+                    auto* placement = dynamic_cast<App::PropertyPlacement*>(property);
+                    state.properties.push_back(
+                        {property,
+                         property->getStatus(),
+                         placement,
+                         placement ? placement->getValue() : Base::Placement()}
+                    );
+                }
+                objects.push_back(std::move(state));
+            }
+        }
+        // Keep fine-grained touched-property sets intact as well as status bits.
+        // Placement writers defer purgeTouched() until the attempt is accepted.
+        try {
+            for (const auto& object : objects) {
+                object.object->setStatus(App::ObjectStatus::NoTouch, true);
+            }
+            assembly.placementAttemptInProgress = true;
+        }
+        catch (...) {
+            restore();
+            throw;
+        }
+    }
+
+    ~PlacementAttempt()
+    {
+        restore();
+    }
+
+    void restore()
+    {
+        if (committed) {
+            return;
+        }
+        // Restore values before flags: setters and their dependent notifications
+        // may touch other properties/objects. Do not purge an existing edit.
+        for (const auto& object : objects) {
+            if (!object.exists()) {
+                continue;
+            }
+            for (const auto& property : object.properties) {
+                if (property.placement
+                    && !samePlacementValues(property.placement->getValue(), property.value)) {
+                    property.placement->setValue(property.value);
+                }
+            }
+        }
+        for (const auto& object : objects) {
+            if (!object.exists()) {
+                continue;
+            }
+            for (const auto& property : object.properties) {
+                property.property->setStatusValue(property.status);
+            }
+            const auto changed = object.object->getStatus() ^ object.status;
+            for (unsigned int bit = 0; bit < 32; ++bit) {
+                if (changed & (1UL << bit)) {
+                    object.object->setStatus(
+                        static_cast<App::ObjectStatus>(bit), (object.status & (1UL << bit)) != 0
+                    );
+                }
+            }
+        }
+        assembly.rigidPlacementCache.swap(rigidCache);
+        assembly.previousPositions.swap(undoPlacements);
+        assembly.placementAttemptInProgress = previousAttempt;
+        fileTracking.clear();
+        committed = true;
+    }
+
+    void commit()
+    {
+        std::unordered_set<App::Document*> changedDocuments;
+        for (const auto& [document, count] : documentObjectCounts) {
+            if (document->getObjects().size() != count) {
+                changedDocuments.insert(document);
+            }
+        }
+        for (const auto& object : objects) {
+            if (!object.exists()) {
+                changedDocuments.insert(object.document);
+                continue;
+            }
+            for (const auto& property : object.properties) {
+                if (!property.placement) {
+                    continue;
+                }
+                if (!samePlacementValues(property.placement->getValue(), property.value)) {
+                    changedDocuments.insert(object.document);
+                    object.object->purgeTouched();
+                    break;
+                }
+            }
+            object.object->setStatus(
+                App::ObjectStatus::NoTouch,
+                (object.status & (1UL << App::ObjectStatus::NoTouch)) != 0
+            );
+        }
+        fileTracking.clear();
+        for (auto* document : changedDocuments) {
+            document->markFileChange(App::DocumentFileChange::Model);
+        }
+        committed = true;
+        assembly.placementAttemptInProgress = previousAttempt;
+    }
+
+private:
+    static bool samePlacementValues(const Base::Placement& left, const Base::Placement& right)
+    {
+        // Placement equality is tolerant. Rollback must retain every saved
+        // component, including tiny solver drift and quaternion sign/zero bits.
+        const auto sameDouble = [](const double& a, const double& b) {
+            return std::memcmp(&a, &b, sizeof(double)) == 0;
+        };
+        const auto& a = left.getPosition();
+        const auto& b = right.getPosition();
+        return sameDouble(a.x, b.x) && sameDouble(a.y, b.y) && sameDouble(a.z, b.z)
+            && std::memcmp(
+                   left.getRotation().getValue(), right.getRotation().getValue(), 4 * sizeof(double)
+               ) == 0;
+    }
+
+    struct PropertyState
+    {
+        App::Property* property;
+        unsigned long status;
+        App::PropertyPlacement* placement;
+        Base::Placement value;
+    };
+    struct ObjectState
+    {
+        App::Document* document;
+        std::string name;
+        App::DocumentObject* object;
+        long id;
+        unsigned long status;
+        std::vector<PropertyState> properties;
+
+        bool exists() const
+        {
+            // syncGroundedJoints() can remove obsolete grounding objects.
+            auto* current = document->getObject(name.c_str());
+            return current == object && current->getID() == id;
+        }
+    };
+
+    AssemblyObject& assembly;
+    decltype(AssemblyObject::rigidPlacementCache) rigidCache;
+    decltype(AssemblyObject::previousPositions) undoPlacements;
+    bool previousAttempt;
+    std::vector<std::unique_ptr<App::Document::FileChangeTrackingScope>> fileTracking;
+    std::unordered_map<App::Document*, size_t> documentObjectCounts;
+    std::vector<ObjectState> objects;
+    bool committed = false;
+};
+
+SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations)
+{
+    const auto candidates = computePlacementCandidates();
+    if (!std::ranges::all_of(candidates, [](const auto& candidate) {
+            return isFinitePlacement(candidate.second);
+        })) {
+        return SolveResult::ValidationFailed;
+    }
+    const bool placementsValid = validateNewPlacements(candidates);
+    if (!placementsValid && !checkRelations) {
+        return SolveResult::ValidationFailed;
+    }
+    // The caller's PlacementAttempt restores these tentative placements on any
+    // rejection or exception. Cache updates and joint redraws follow acceptance.
+    // Preserve C1's relation diagnostic even if the finite candidate also moves
+    // a grounded body. Native rejection still prevents committing that candidate.
+    setNewPlacements(candidates);
+    const auto result = checkRelations ? validateSolvedJointRelations(this) : SolveResult::Success;
+    if (result != SolveResult::Success) {
+        return result;
+    }
+    if (!placementsValid) {
+        return SolveResult::ValidationFailed;
+    }
+    updateRigidPlacementCache();
+    attempt.commit();
+    return SolveResult::Success;
+}
+
 SolveResult AssemblyObject::solve(bool enableRedo)
 {
     // updateSolveStatus() solves on demand; suppress that while a solve is running.
     Base::StateLocker lock(solveInProgress);
-    const auto finish = [this](SolveResult result) {
+    PlacementAttempt attempt(*this);
+    const auto finish = [this, &attempt](SolveResult result) {
+        if (result != SolveResult::Success) {
+            attempt.restore();
+        }
         if (result == SolveResult::Success && !solveDiagnostic.empty()) {
             // An explicit solve bypasses Document's recompute error reset. Only
             // retire our own diagnostic: expression/extension errors must survive.
@@ -510,12 +742,13 @@ SolveResult AssemblyObject::solve(bool enableRedo)
         return finish(SolveResult::SolverFailure);
     }
 
-    setNewPlacements();
-    updateRigidPlacementCache();
-
+    const SolveResult result = validateAndCommitPlacements(attempt, true);
+    if (result != SolveResult::Success) {
+        return finish(result);
+    }
     redrawJointPlacements(joints);
 
-    return finish(validateSolvedJointRelations(this));
+    return finish(result);
 }
 
 void AssemblyObject::updateSolveStatus()
@@ -801,6 +1034,7 @@ void AssemblyObject::doDragStep()
     }
 
     try {
+        PlacementAttempt attempt(*this);
         std::vector<std::shared_ptr<MbD::ASMTPart>> dragMbdParts;
         std::unordered_set<ASMTPart*> seenMbdParts;
 
@@ -844,10 +1078,11 @@ void AssemblyObject::doDragStep()
         mbdAssembly->runDragStep(dragPartsVec);
 
         // Timing the validation and placement setting
-        if (validateNewPlacements()) {
-            setNewPlacements();
-            updateRigidPlacementCache();
-
+        // Keep the Python relation traversal out of the interactive hot path:
+        // it visits all joints and repeatedly traverses connectivity/geometry.
+        // Native finite/grounded checks are shared with solve(); the full relation
+        // check runs on solve(), including the solve that prepares a drag.
+        if (validateAndCommitPlacements(attempt, false) == SolveResult::Success) {
             auto joints = getJoints();
             for (auto* joint : joints) {
                 if (joint->Visibility.getValue()) {
@@ -881,34 +1116,30 @@ Base::Placement AssemblyObject::getMbdPlacement(std::shared_ptr<ASMTPart> mbdPar
 
 bool AssemblyObject::validateNewPlacements()
 {
-    // First we check if a grounded object has moved. It can happen that they flip.
-    auto groundedParts = getGroundedParts();
-    for (auto* obj : groundedParts) {
-        auto* propPlacement = obj->getPlacementProperty();
-        if (propPlacement) {
-            Base::Placement oldPlc = propPlacement->getValue();
+    return validateNewPlacements(computePlacementCandidates());
+}
 
-            auto it = objectPartMap.find(obj);
-            if (it != objectPartMap.end()) {
-                std::shared_ptr<MbD::ASMTPart> mbdPart = it->second.part;
-                Base::Placement newPlacement = getMbdPlacement(mbdPart);
-                if (!it->second.offsetPlc.isIdentity()) {
-                    newPlacement = newPlacement * it->second.offsetPlc;
-                }
-
-                if (!oldPlc.isSame(newPlacement, Precision::Confusion())) {
-                    Base::Console().warning(
-                        "Assembly : Ignoring bad solve, a grounded object ({}) moved.\n",
-                        obj->getFullLabel()
-                    );
-                    return false;
-                }
-            }
+bool AssemblyObject::validateNewPlacements(const PlacementCandidates& candidates)
+{
+    // Reject the entire candidate rather than partially accepting a solve whose
+    // non-finite placements setNewPlacements() would otherwise skip.
+    const auto groundedParts = getGroundedParts();
+    for (const auto& [object, placement] : candidates) {
+        if (!isFinitePlacement(placement)) {
+            return false;
+        }
+        // Grounded bodies can occasionally flip in the solver.
+        if (groundedParts.contains(object)
+            && !object->getPlacementProperty()->getValue().isSame(
+                placement, Precision::Confusion()
+            )) {
+            Base::Console().warning(
+                "Assembly : Ignoring bad solve, a grounded object ({}) moved.\n",
+                object->getFullLabel()
+            );
+            return false;
         }
     }
-
-    // TODO: We could do further tests
-    // For example check if the joints connectors are correctly aligned.
     return true;
 }
 
@@ -1159,7 +1390,9 @@ void AssemblyObject::syncActiveRigidGroupPlacements()
                 auto* propPlacement = member->getPlacementProperty();
                 if (propPlacement && !propPlacement->getValue().isSame(targetPlc)) {
                     propPlacement->setValue(targetPlc);
-                    member->purgeTouched();
+                    if (!placementAttemptInProgress) {
+                        member->purgeTouched();
+                    }
                 }
             }
         }
@@ -1211,8 +1444,10 @@ bool isFinitePlacement(const Base::Placement& plc)
 }
 }  // namespace
 
-void AssemblyObject::setNewPlacements()
+AssemblyObject::PlacementCandidates AssemblyObject::computePlacementCandidates()
 {
+    PlacementCandidates candidates;
+    candidates.reserve(objectPartMap.size());
     for (auto& pair : objectPartMap) {
         App::DocumentObject* obj = pair.first;
         std::shared_ptr<ASMTPart> mbdPart = pair.second.part;
@@ -1232,6 +1467,19 @@ void AssemblyObject::setNewPlacements()
         if (!pair.second.offsetPlc.isIdentity()) {
             newPlacement = newPlacement * pair.second.offsetPlc;
         }
+        candidates.emplace_back(obj, newPlacement);
+    }
+    return candidates;
+}
+
+void AssemblyObject::setNewPlacements()
+{
+    setNewPlacements(computePlacementCandidates());
+}
+
+void AssemblyObject::setNewPlacements(const PlacementCandidates& candidates)
+{
+    for (const auto& [obj, newPlacement] : candidates) {
         if (!isFinitePlacement(newPlacement)) {
             Base::Console().warning(
                 "Assembly: solver returned a non-finite placement for '{}'; keeping its "
@@ -1240,9 +1488,12 @@ void AssemblyObject::setNewPlacements()
             );
             continue;
         }
+        auto* propPlacement = obj->getPlacementProperty();
         if (!propPlacement->getValue().isSame(newPlacement)) {
             propPlacement->setValue(newPlacement);
-            obj->purgeTouched();
+            if (!placementAttemptInProgress) {
+                obj->purgeTouched();
+            }
         }
     }
 }
@@ -2906,14 +3157,18 @@ void AssemblyObject::ensureIdentityPlacements()
             }
 
             pPlc->setValue(Base::Placement());
-            obj->purgeTouched();
+            if (!placementAttemptInProgress) {
+                obj->purgeTouched();
+            }
 
             // To keep the LinkElement positions, we apply plc to their placements
             std::vector<App::DocumentObject*> elts = link->ElementList.getValues();
             for (auto* elt : elts) {
                 pPlc = elt->getPlacementProperty();
                 pPlc->setValue(plc * pPlc->getValue());
-                elt->purgeTouched();
+                if (!placementAttemptInProgress) {
+                    elt->purgeTouched();
+                }
             }
         }
     }

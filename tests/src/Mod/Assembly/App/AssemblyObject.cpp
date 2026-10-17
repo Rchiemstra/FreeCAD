@@ -193,6 +193,42 @@ TEST_F(AssemblyObjectTest, validatorNonListIsFailure)  // NOLINT
     }
 }
 
+TEST_F(AssemblyObjectTest, rejectedDragPreservesPlacementsAndTouchedState)  // NOLINT
+{
+    makeSolveFixture();
+    auto* base = getDocument()->getObject("Base");
+    ASSERT_NE(base, nullptr);
+    getObject()->preDrag({base});
+    // The drag input is already applied by the caller. The grounded solver body
+    // still holds its original position, so this step must be rejected.
+    base->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(43, 17, 9), Base::Rotation())
+    );
+    ASSERT_FALSE(getObject()->validateNewPlacements());
+    std::vector<std::pair<App::Property*, unsigned long>> propertyStatuses;
+    for (auto* object : getDocument()->getObjects()) {
+        std::vector<App::Property*> properties;
+        object->getPropertyList(properties);
+        for (auto* property : properties) {
+            propertyStatuses.emplace_back(property, property->getStatus());
+        }
+    }
+    Base::Interpreter().runString(
+        "def _c2_snapshot():\n"
+        "    return [(o.Name, list(o.State), "
+        "{p: tuple(getattr(o, p).toMatrix().A) for p in o.PropertiesList "
+        "if o.getTypeIdOfProperty(p) == 'App::PropertyPlacement'}) "
+        "for o in _c1_a.Document.Objects]\n"
+        "_c2_before = _c2_snapshot()\n"
+    );
+    getObject()->doDragStep();
+    for (const auto& [property, status] : propertyStatuses) {
+        EXPECT_EQ(property->getStatus(), status) << property->getName();
+    }
+    Base::PyGILStateLocker lock;
+    EXPECT_TRUE(Base::Interpreter().runStringObject("_c2_snapshot() == _c2_before").isTrue());
+}
+
 TEST_F(AssemblyObjectTest, recomputeAppliesSolverWritesToMemberPlacements)  // NOLINT
 {
     // AssemblyObject::execute() runs solve(), and the whole product of a solve
@@ -208,6 +244,10 @@ TEST_F(AssemblyObjectTest, recomputeAppliesSolverWritesToMemberPlacements)  // N
     // where its writes could be kept.
 
     // Arrange
+    // Normalisation is committed only by an accepted solve. Supply a grounded,
+    // satisfiable assembly rather than relying on a failed solve's side effects.
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
     auto* assembly = getObject();
     ASSERT_NE(assembly, nullptr);
     auto* document = getDocument();

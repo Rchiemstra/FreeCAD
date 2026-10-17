@@ -863,7 +863,9 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
     assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
     solve = _compact(_body(assembly, "AssemblyObject::solve"))
     assert "ensureIdentityPlacements();" in solve
-    assert "setNewPlacements();" in solve
+    assert "validateAndCommitPlacements(attempt,true)" in solve
+    commit = _compact(_body(assembly, "AssemblyObject::validateAndCommitPlacements"))
+    assert "setNewPlacements(candidates);" in commit
     identity = _compact(_body(assembly, "AssemblyObject::ensureIdentityPlacements"))
     assert "pPlc->setValue(Base::Placement());" in identity
 
