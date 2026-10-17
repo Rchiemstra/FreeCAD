@@ -421,6 +421,7 @@ PyObject* AssemblyObject::getPyObject()
 
 App::DocumentObjectExecReturn* AssemblyObject::execute()
 {
+    solveDiagnostic.clear();
     App::DocumentObjectExecReturn* ret = App::Part::execute();
     if (ret != App::DocumentObject::StdReturn) {
         return ret;
@@ -432,7 +433,8 @@ App::DocumentObjectExecReturn* AssemblyObject::execute()
     if (hGrp->GetBool("SolveOnRecompute", true)) {
         const SolveResult result = solve(false);
         if (result != SolveResult::Success) {
-            return new App::DocumentObjectExecReturn(solveFailureMessage(result), this);
+            solveDiagnostic = solveFailureMessage(result);
+            return new App::DocumentObjectExecReturn(solveDiagnostic, this);
         }
     }
     return ret;
@@ -456,6 +458,15 @@ SolveResult AssemblyObject::solve(bool enableRedo)
     // updateSolveStatus() solves on demand; suppress that while a solve is running.
     Base::StateLocker lock(solveInProgress);
     const auto finish = [this](SolveResult result) {
+        if (result == SolveResult::Success && !solveDiagnostic.empty()) {
+            // An explicit solve bypasses Document's recompute error reset. Only
+            // retire our own diagnostic: expression/extension errors must survive.
+            const char* diagnostic = getDocument() ? getDocument()->getErrorDescription(this) : nullptr;
+            if (diagnostic && solveDiagnostic == diagnostic) {
+                purgeError();
+            }
+            solveDiagnostic.clear();
+        }
         lastSolveResult = result;
         updateSolveStatus();
         return result;

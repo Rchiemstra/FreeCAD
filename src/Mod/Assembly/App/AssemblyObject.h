@@ -355,6 +355,8 @@ private:
     bool lastHasPartialRedundancies;
     bool lastHasMalformedConstraints;
     SolveResult lastSolveResult {SolveResult::Success};
+    // Diagnostic returned by execute(), rather than an unrelated document error.
+    std::string solveDiagnostic;
 
     std::vector<std::string> lastRedundantJoints;
     std::vector<std::string> lastConflictingJoints;
