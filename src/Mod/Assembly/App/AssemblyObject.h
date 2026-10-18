@@ -163,7 +163,11 @@ public:
     size_t numberOfFrames();
     SolveResult preDrag(std::vector<App::DocumentObject*> dragParts);
     void doDragStep();
-    SolveResult postDrag();
+    SolveResult postDrag(bool abort = false);
+    /// Capture drag state before the GUI changes joint visibility.
+    void saveDragState();
+    /// Restore rejected drag flags after the GUI has aborted its transaction.
+    void finishDrag();
     void savePlacementsForUndo();
     void undoSolve();
     void clearUndo();
@@ -368,8 +372,9 @@ private:
     // Requests from placement observers are left for a later recompute.
     bool solvePending {false};
     std::shared_ptr<PlacementAttempt> dragStepAttempt;
-    std::vector<std::pair<App::PropertyPlacement*, Base::Placement>> dragPlacements;
-    decltype(rigidPlacementCache) dragRigidCache;
+    std::shared_ptr<PlacementAttempt> dragStartAttempt;
+    bool dragActive {false};
+    bool dragPrepared {false};
     SolveResult dragResult {SolveResult::Success};
 
     int lastDoF;

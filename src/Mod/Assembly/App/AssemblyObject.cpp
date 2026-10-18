@@ -489,11 +489,18 @@ void AssemblyObject::onChanged(const App::Property* prop)
 class AssemblyObject::PlacementAttempt
 {
 public:
-    explicit PlacementAttempt(AssemblyObject& assembly, bool solverReady = false)
-        : assembly(assembly)
+    explicit PlacementAttempt(
+        AssemblyObject& assembly, bool solverReady = false, bool guardWrites = true
+    )
+        : assembly(assembly), observational(!guardWrites)
     {
         std::unordered_set<App::DocumentObject*> affected;
         affected.insert(&assembly);
+        if (observational) {
+            affected.insert(assembly.getJointGroup());
+            auto components = getAssemblyComponents(&assembly);
+            affected.insert(components.begin(), components.end());
+        }
         if (!solverReady) {
             for (auto* part : assembly.getGroundedParts()) {
                 affected.insert(part);
@@ -531,16 +538,18 @@ public:
             objects.push_back(std::move(state));
             documents.insert(object->getDocument());
         }
-        begin();
+        begin(guardWrites);
     }
 
     ~PlacementAttempt()
     {
-        restore();
+        if (!observational) {
+            restore();
+        }
     }
 
     // Reuse the object/property lists and their storage throughout a drag.
-    void begin()
+    void begin(bool guardWrites = true)
     {
         rigidCache = assembly.rigidPlacementCache;
         undoPlacements = assembly.previousPositions;
@@ -560,6 +569,9 @@ public:
             }
         }
         committed = false;
+        if (!guardWrites) {
+            return;
+        }
         try {
             for (auto* document : documents) {
                 fileTracking.push_back(
@@ -603,6 +615,15 @@ public:
                 }
             }
         }
+        restoreFlags();
+        assembly.rigidPlacementCache.swap(rigidCache);
+        assembly.previousPositions.swap(undoPlacements);
+        finish();
+    }
+
+    // GUI transaction abort invokes setters again after the native rollback.
+    void restoreFlags() const
+    {
         for (const auto& object : objects) {
             for (const auto& property : object.properties) {
                 property.property->setStatusValue(property.status);
@@ -616,9 +637,12 @@ public:
                 }
             }
         }
-        assembly.rigidPlacementCache.swap(rigidCache);
-        assembly.previousPositions.swap(undoPlacements);
-        finish();
+    }
+
+    // An observational drag-start journal holds no write guards to release.
+    void discard()
+    {
+        committed = true;
     }
 
     void commit()
@@ -691,6 +715,7 @@ private:
     std::vector<std::unique_ptr<App::Document::FileChangeTrackingScope>> fileTracking;
     std::vector<ObjectState> objects;
     bool committed = true;
+    bool observational;
 };
 
 SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations)
@@ -980,40 +1005,30 @@ bool AssemblyObject::requiresRigidSolveForMove(const std::vector<App::DocumentOb
     });
 }
 
+void AssemblyObject::saveDragState()
+{
+    ensureIdentityPlacements();
+    syncGroundedJoints();
+    dragStartAttempt = std::make_shared<PlacementAttempt>(*this, false, false);
+    dragActive = true;
+    dragPrepared = false;
+    dragResult = SolveResult::Success;
+}
+
 SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
 try
 {
     dragStepAttempt.reset();
     draggedParts.clear();
-    dragPlacements.clear();
     ensureIdentityPlacements();
     syncGroundedJoints();
-    // Save before preparation too: a successful preparation can move parts.
-    auto objects = getAssemblyComponents(this);
-    auto joints = getJoints();
-    objects.insert(objects.end(), joints.begin(), joints.end());
-    for (auto* joint : joints) {
-        if (auto* part = getMovingPartFromRef(joint, "Reference1")) {
-            objects.push_back(part);
-        }
-        if (auto* part = getMovingPartFromRef(joint, "Reference2")) {
-            objects.push_back(part);
-        }
+    // Save references, placements and flags before successful preparation
+    // can normalize joint endpoints or move parts. Do not hold NoTouch or
+    // file-change suppression throughout the interactive drag.
+    if (!dragActive) {
+        saveDragState();
     }
-    std::unordered_set<App::DocumentObject*> seen;
-    for (auto* object : objects) {
-        if (!object || !seen.insert(object).second) {
-            continue;
-        }
-        std::vector<App::Property*> properties;
-        object->getPropertyList(properties);
-        for (auto* property : properties) {
-            if (auto* placement = dynamic_cast<App::PropertyPlacement*>(property)) {
-                dragPlacements.emplace_back(placement, placement->getValue());
-            }
-        }
-    }
-    dragRigidCache = rigidPlacementCache;
+    dragPrepared = true;
     dragResult = SolveResult::Success;
     rebuildRigidClusters();
     Base::StateLocker bundleLock(bundleFixed);
@@ -1265,14 +1280,23 @@ bool AssemblyObject::validateNewPlacements(const PlacementCandidates& candidates
     return true;
 }
 
-SolveResult AssemblyObject::postDrag()
+SolveResult AssemblyObject::postDrag(bool abort)
 {
-    if (dragPlacements.empty()) {
+    if (!dragActive) {
+        return SolveResult::Success;
+    }
+    if (!dragPrepared && !abort) {
+        dragStartAttempt->discard();
+        dragStartAttempt.reset();
+        dragActive = false;
         return SolveResult::Success;
     }
     Base::StateLocker lock(solveInProgress);
     dragStepAttempt.reset();
-    if (dragResult == SolveResult::Success && mbdAssembly) {
+    if (abort && dragResult == SolveResult::Success) {
+        dragResult = SolveResult::SolverFailure;
+    }
+    if (dragPrepared && dragResult == SolveResult::Success && mbdAssembly) {
         try {
             mbdAssembly->runPostDrag();
             dragResult = validateSolvedJointRelations(this);
@@ -1282,29 +1306,37 @@ SolveResult AssemblyObject::postDrag()
         }
     }
     if (dragResult != SolveResult::Success) {
-        for (const auto& [property, placement] : dragPlacements) {
-            // In particular, setting an unchanged joint Offset runs preSolve()
-            // and can move parts again after their saved placements are restored.
-            if (!samePlacementValues(property->getValue(), placement)) {
-                property->setValue(placement);
-            }
-        }
-        rigidPlacementCache = dragRigidCache;
+        dragStartAttempt->restore();
         redrawJointPlacements(getJoints());
     }
-    else if (!solvePending) {
+    else if (dragPrepared && !solvePending) {
         purgeTouched();
     }
     if (solvePending) {
         touch();
     }
     draggedParts.clear();
-    dragPlacements.clear();
+    dragActive = false;
+    if (dragResult == SolveResult::Success) {
+        dragStartAttempt->discard();
+        dragStartAttempt.reset();
+    }
     lastSolveResult = dragResult;
     solveResultAvailable = true;
     cacheSolveStatus();
     updateSolveStatus();
     return dragResult;
+}
+
+void AssemblyObject::finishDrag()
+{
+    if (dragStartAttempt && !dragActive) {
+        dragStartAttempt->restoreFlags();
+        dragStartAttempt.reset();
+        if (solvePending) {
+            touch();
+        }
+    }
 }
 
 void AssemblyObject::savePlacementsForUndo()

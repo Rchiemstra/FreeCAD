@@ -656,3 +656,79 @@ TEST_F(AssemblyObjectTest, geometryExceptionRejectsIslandDragPreparation)  // NO
     getObject()->doDragStep();
     EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::SolverFailure);
 }
+
+TEST_F(AssemblyObjectTest, rejectedDragRestoresPreparationReferencesAndFlags)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import JointObject\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_joint.JointType = 'Slider'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_joint.Placement1 = _c1_joint.Placement2 = App.Placement()\n"
+        "    _j117_screw = _c1_a.Document.getObject('jointGroupTest').newObject('App::FeaturePython', 'Screw')\n"
+        "    JointObject.Joint(_j117_screw, JointObject.JointTypes.index('Screw'))\n"
+        "    _j117_screw.Detach1 = _j117_screw.Detach2 = True\n"
+        "    _j117_screw.Reference1 = (_c1_lid, ['Face1'])\n"
+        "    _j117_screw.Reference2 = (_c1_base, ['Face1'])\n"
+        "    _j117_screw.Distance = 10\n"
+        "_j117_refs = (_j117_screw.Reference1, _j117_screw.Reference2)\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    std::vector<std::pair<App::Property*, unsigned long>> flags;
+    std::vector<std::pair<App::DocumentObject*, unsigned long>> objectFlags;
+    for (auto* object : getDocument()->getObjects()) {
+        objectFlags.emplace_back(object, object->getStatus());
+        std::vector<App::Property*> properties;
+        object->getPropertyList(properties);
+        for (auto* property : properties) {
+            flags.emplace_back(property, property->getStatus());
+        }
+    }
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    getDocument()->openTransaction("Move part");
+    Base::Interpreter().runString(
+        "_j117_validator = patch('UtilsAssembly.violatedJointLabels', return_value=[])\n"
+        "_j117_validator.start()\n"
+    );
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    EXPECT_TRUE(getDocument()->hasPendingTransaction());
+    Base::Interpreter().runString("_j117_validator.stop()");
+    {
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Base::Interpreter().runStringObject(
+            "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs[::-1]"
+        ).isTrue()) << "preparation must actually swap the references";
+    }
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    Base::Interpreter().runString(
+        "_j117_validator = patch('UtilsAssembly.violatedJointLabels', return_value=None)\n"
+        "_j117_validator.start()\n"
+    );
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::ValidationFailed);
+    Base::Interpreter().runString("_j117_validator.stop()");
+    {
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Base::Interpreter().runStringObject(
+            "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs"
+        ).isTrue()) << "native rejection must restore references before transaction abort";
+    }
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    getDocument()->abortTransaction();
+    EXPECT_FALSE(getDocument()->hasPendingTransaction());
+    getObject()->finishDrag();
+    Base::PyGILStateLocker lock;
+    EXPECT_TRUE(Base::Interpreter().runStringObject(
+        "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs"
+    ).isTrue());
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    for (const auto& [property, status] : flags) {
+        EXPECT_EQ(property->getStatus(), status) << property->getFullName();
+    }
+    for (const auto& [object, status] : objectFlags) {
+        EXPECT_EQ(object->getStatus(), status) << object->getNameInDocument();
+    }
+}

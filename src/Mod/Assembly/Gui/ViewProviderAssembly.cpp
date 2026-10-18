@@ -1089,6 +1089,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
     }
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    assemblyPart->saveDragState();
     // When the user drag parts, we switch off all joints visibility and only show the movingjoint
     jointVisibilitiesBackup.clear();
     auto joints = assemblyPart->getJoints();
@@ -1208,15 +1209,8 @@ void ViewProviderAssembly::endMove(bool abort)
         view->getViewer()->setSelectionEnabled(true);
     }
 
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Mod/Assembly"
-    );
-    bool solveOnMove = hGrp->GetBool("SolveOnMove", true);
-    SolveResult dragResult = SolveResult::Success;
-    if (solveOnMove) {
-        dragResult = assemblyPart->postDrag();
-        assemblyPart->setObjMasses({});
-    }
+    const auto dragResult = assemblyPart->postDrag(abort);
+    assemblyPart->setObjMasses({});
 
     if (moveInCommand && wasMoving) {
         if (!abort && dragResult == SolveResult::Success) {
@@ -1226,6 +1220,7 @@ void ViewProviderAssembly::endMove(bool abort)
             getDocument()->abortCommand();
         }
     }
+    assemblyPart->finishDrag();
 }
 
 void ViewProviderAssembly::initMoveDragger()
