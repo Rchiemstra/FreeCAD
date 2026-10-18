@@ -343,7 +343,10 @@ private:
     PlacementCandidates computePlacementCandidates();
     bool validateNewPlacements(const PlacementCandidates& candidates);
     void setNewPlacements(const PlacementCandidates& candidates);
-    SolveResult validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations);
+    SolveResult validateAndCommitPlacements(
+        PlacementAttempt& attempt, bool checkRelations,
+        const std::vector<App::DocumentObject*>* joints = nullptr
+    );
     void cacheSolveStatus();
     void rebuildRigidClusters();
     App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
@@ -360,6 +363,7 @@ private:
     std::unordered_map<App::DocumentObject*, Base::Placement> rigidPlacementCache;
     std::vector<std::pair<App::DocumentObject*, double>> objMasses;
     std::vector<App::DocumentObject*> draggedParts;
+    std::vector<App::DocumentObject*> dragJoints;
     std::vector<App::DocumentObject*> motions;
 
     std::vector<std::pair<App::DocumentObject*, Base::Placement>> previousPositions;

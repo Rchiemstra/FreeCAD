@@ -732,3 +732,30 @@ TEST_F(AssemblyObjectTest, rejectedDragRestoresPreparationReferencesAndFlags)  /
         EXPECT_EQ(object->getStatus(), status) << object->getNameInDocument();
     }
 }
+
+TEST_F(AssemblyObjectTest, contradictoryUngroundedDragIslandIsRejected)  // NOLINT
+{
+    makeSolveFixture(true);
+    Base::Interpreter().runString("_c1_base.setEditorMode('Placement', 0)");
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::RelationsViolated);
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::RelationsViolated);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+}
+
+TEST_F(AssemblyObjectTest, ungroundedDragCompletionValidatesSeededIsland)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString("_c1_base.setEditorMode('Placement', 0)");
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    // Leave a violated real relation at release without calling the solver step.
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(43, 17, 9), Base::Rotation())
+    );
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::RelationsViolated);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+}

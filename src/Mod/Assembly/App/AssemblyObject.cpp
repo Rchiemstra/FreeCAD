@@ -121,7 +121,9 @@ bool samePlacementValues(const Base::Placement& left, const Base::Placement& rig
 }
 
 
-SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
+SolveResult validateSolvedJointRelations(
+    AssemblyObject* assembly, const std::vector<App::DocumentObject*>* joints = nullptr
+)
 {
     // execute() and other native callers need not hold the Python GIL.
     // Keep it until every Python reference (including exceptions) is released.
@@ -147,7 +149,15 @@ SolveResult validateSolvedJointRelations(AssemblyObject* assembly)
     if (!assemblyPy.ptr()) {
         return validationError();
     }
-    PyObject* checked = PyObject_CallFunctionObjArgs(function.ptr(), assemblyPy.ptr(), nullptr);
+    Py::List jointList;
+    if (joints) {
+        for (auto* joint : *joints) {
+            jointList.append(Py::Object(joint->getPyObject(), true));
+        }
+    }
+    PyObject* checked = joints
+        ? PyObject_CallFunctionObjArgs(function.ptr(), assemblyPy.ptr(), jointList.ptr(), nullptr)
+        : PyObject_CallFunctionObjArgs(function.ptr(), assemblyPy.ptr(), nullptr);
     if (!checked) {
         return validationError();
     }
@@ -718,7 +728,10 @@ private:
     bool observational;
 };
 
-SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations)
+SolveResult AssemblyObject::validateAndCommitPlacements(
+    PlacementAttempt& attempt, bool checkRelations,
+    const std::vector<App::DocumentObject*>* joints
+)
 {
     const auto candidates = computePlacementCandidates();
     if (!std::ranges::all_of(candidates, [](const auto& candidate) {
@@ -735,7 +748,7 @@ SolveResult AssemblyObject::validateAndCommitPlacements(PlacementAttempt& attemp
     // Preserve C1's relation diagnostic even if the finite candidate also moves
     // a grounded body. Native rejection still prevents committing that candidate.
     setNewPlacements(candidates);
-    const auto result = checkRelations ? validateSolvedJointRelations(this) : SolveResult::Success;
+    const auto result = checkRelations ? validateSolvedJointRelations(this, joints) : SolveResult::Success;
     if (result != SolveResult::Success) {
         return result;
     }
@@ -1013,6 +1026,7 @@ void AssemblyObject::saveDragState()
     dragActive = true;
     dragPrepared = false;
     dragResult = SolveResult::Success;
+    dragJoints.clear();
 }
 
 SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
@@ -1040,6 +1054,9 @@ try
         dragResult = prepareMbdForIslandDrag(dragParts);
     }
     else {
+        auto grounded = getGroundedParts();
+        dragJoints = getJoints();
+        removeUnconnectedJoints(dragJoints, grounded);
         dragResult = solve();
     }
     lastSolveResult = dragResult;
@@ -1123,6 +1140,7 @@ SolveResult AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObj
 
     std::vector<App::DocumentObject*> joints = getJoints();
     removeUnconnectedJoints(joints, seededParts);
+    dragJoints = joints;
     if (joints.empty()) {
         objectPartMap.clear();
         mbdAssembly.reset();
@@ -1146,7 +1164,7 @@ SolveResult AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObj
         mbdAssembly.reset();
         return SolveResult::SolverFailure;
     }
-    return validateAndCommitPlacements(attempt, true);
+    return validateAndCommitPlacements(attempt, true, &dragJoints);
 }
 
 void AssemblyObject::doDragStep()
@@ -1299,7 +1317,7 @@ SolveResult AssemblyObject::postDrag(bool abort)
     if (dragPrepared && dragResult == SolveResult::Success && mbdAssembly) {
         try {
             mbdAssembly->runPostDrag();
-            dragResult = validateSolvedJointRelations(this);
+            dragResult = validateSolvedJointRelations(this, &dragJoints);
         }
         catch (...) {
             dragResult = SolveResult::SolverFailure;
@@ -1316,6 +1334,7 @@ SolveResult AssemblyObject::postDrag(bool abort)
         touch();
     }
     draggedParts.clear();
+    dragJoints.clear();
     dragActive = false;
     if (dragResult == SolveResult::Success) {
         dragStartAttempt->discard();
