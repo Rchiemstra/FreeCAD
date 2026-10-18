@@ -28,6 +28,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 
 #include <QFuture>
 #include <QFutureWatcher>
@@ -256,7 +257,7 @@ public Q_SLOTS:
 protected:
     // Publish model state on the owner before arming a GUI-affine watcher. Its
     // completion is posted back to that owner; queued work resolves the object
-    // by ID so removal before delivery is harmless.
+    // by lifetime and ID so destruction and undo-retained removal are safe.
     QMetaObject::Connection watchGeometryFuture(QFutureWatcher<void>& watcher,
                                                 const QFuture<void>& future,
                                                 std::atomic_bool& busy,
@@ -296,6 +297,7 @@ protected:
     std::vector<TechDraw::VertexPtr> m_referenceVerts;
 
 private:
+    std::shared_ptr<int> m_geometryLifetime = std::make_shared<int>(0);
     bool nowUnsetting;
     std::atomic_bool m_waitingForFaces;
     std::atomic_bool m_waitingForHlr;

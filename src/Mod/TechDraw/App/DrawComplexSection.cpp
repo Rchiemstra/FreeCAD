@@ -160,6 +160,17 @@ DrawComplexSection::DrawComplexSection() :
 //NOLINTEND
 }
 
+DrawComplexSection::~DrawComplexSection()
+{
+    // Both workers use derived members: join before those members are destroyed.
+    if (m_cutFuture.isRunning()) {
+        m_cutFuture.waitForFinished();
+    }
+    if (m_alignFuture.isRunning()) {
+        m_alignFuture.waitForFinished();
+    }
+}
+
 TopoDS_Shape DrawComplexSection::makeCuttingTool(double dMax)
 {
     TopoDS_Wire profileWire = makeProfileWire();
@@ -260,14 +271,21 @@ TopoDS_Shape DrawComplexSection::prepareShape(const TopoDS_Shape& cutShape, doub
 }
 
 
-void DrawComplexSection::makeSectionCut(const TopoDS_Shape& baseShape)
+void DrawComplexSection::startSectionCut(const TopoDS_Shape& baseShape)
 {
     if (ProjectionStrategy.getValue() == 0) {
         //Offset. Use regular section behaviour
-        return DrawViewSection::makeSectionCut(baseShape);
+        return DrawViewSection::startSectionCut(baseShape);
+    }
+
+    if (!DU::isGuiUp()) {
+        makeAlignedPieces(baseShape);
+        return DrawViewSection::startSectionCut(baseShape);
     }
 
     try {
+        // Launch and arm on the owner, never from the cut worker: GUI deletion
+        // may wait for that worker and must not be needed to let it finish.
         // We create a lambda closure to hold a copy of baseShape.
         // This is important because this variable might be local to the calling
         // function and might get destructed before the parallel processing finishes.
@@ -281,19 +299,19 @@ void DrawComplexSection::makeSectionCut(const TopoDS_Shape& baseShape)
         return;
     }
 
-    return DrawViewSection::makeSectionCut(baseShape);
+    return DrawViewSection::startSectionCut(baseShape);
 }
 
 
 void DrawComplexSection::onSectionCutFinished()
 {
-    if (m_cutFuture.isRunning() ||  //waitingForCut()
-        m_alignFuture.isRunning()) {//waitingForAlign()
+    if (waitingForCut() || waitingForAlign()) {
         //can not continue yet.  return until the other thread ends
         return;
     }
 
-    waitingForAlign(false);
+    // Each watcher clears its own flag before calling us on the owner. Only
+    // the second delivered completion can consume this cycle.
     DrawViewSection::onSectionCutFinished();
 
     QObject::disconnect(connectAlignWatcher);

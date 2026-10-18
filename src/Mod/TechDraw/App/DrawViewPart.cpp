@@ -67,6 +67,9 @@
 #include <sstream>
 
 
+#include <QCoreApplication>
+#include <QThread>
+
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/MainThreadSignal.h>
@@ -161,6 +164,7 @@ DrawViewPart::DrawViewPart()
 
 DrawViewPart::~DrawViewPart()
 {
+    m_geometryLifetime.reset();
     //don't delete this object while it still has dependent threads running
     if (m_hlrFuture.isRunning()) {
         Base::Console().message("{} is waiting for HLR to finish\n", Label.getValue());
@@ -326,10 +330,18 @@ QMetaObject::Connection DrawViewPart::watchGeometryFuture(QFutureWatcher<void>& 
     auto* doc = getDocument();
     auto* lane = doc ? doc->executionLane() : nullptr;
     const auto id = getID();
-    auto complete = [this, doc, id, future = QFuture<void>(future),
+    const std::weak_ptr<int> lifetime = m_geometryLifetime;
+    auto complete = [this, doc, id, lifetime, future = QFuture<void>(future),
                      &busy, &watcher, finished = std::move(finished)]() mutable {
-        // A view may have been removed while this completion waited for the owner.
+        if (lifetime.expired()) {
+            return;
+        }
+        // Undo can retain a removed view. The worker has finished; discard its
+        // pending geometry and let restoration recompute, even if the job failed.
         if (doc && doc->getObjectByID(id) != this) {
+            busy = false;
+            m_tempGeometryObject.reset();
+            touch();
             return;
         }
         try {
@@ -343,15 +355,27 @@ QMetaObject::Connection DrawViewPart::watchGeometryFuture(QFutureWatcher<void>& 
         }
         // Completion may follow the recompute's stable notification. Give the
         // GUI its own paint request then; the watcher context guards removal.
-        QMetaObject::invokeMethod(&watcher, [this] { requestPaint(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(&watcher, [this, lifetime] {
+            if (!lifetime.expired()) {
+                requestPaint();
+            }
+        }, Qt::QueuedConnection);
     };
     auto connection = std::make_shared<QMetaObject::Connection>();
     busy = true;
     try {
+        // QObject affinity must be changed from its current thread, before the
+        // GUI arms it. Views may themselves be constructed on the owner lane.
+        if (auto* app = QCoreApplication::instance(); app && watcher.thread() != app->thread()) {
+            watcher.moveToThread(app->thread());
+        }
         App::MainThreadSignalConfig::invoke([&] {
             *connection = QObject::connect(&watcher, &QFutureWatcherBase::finished, &watcher,
-                [lane, complete, &busy, connection]() mutable {
+                [lane, complete, lifetime, &busy, connection]() mutable {
                     QObject::disconnect(*connection);
+                    if (lifetime.expired()) {
+                        return;
+                    }
                     try {
                         if (lane) {
                             // Do not block Qt waiting for an owner which may be waiting for Qt.

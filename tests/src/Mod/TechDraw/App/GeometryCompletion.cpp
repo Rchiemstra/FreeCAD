@@ -7,12 +7,15 @@
 #include <App/DocumentExecutionLane.h>
 #include <Base/Interpreter.h>
 #include <Mod/TechDraw/App/DrawViewPart.h>
+#include <Mod/TechDraw/App/DrawComplexSection.h>
+#include <Mod/TechDraw/App/GeometryObject.h>
 #include <Mod/TechDraw/App/Preferences.h>
 #include <src/App/InitApplication.h>
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <QCoreApplication>
 #include <QFutureInterface>
+#include <QThread>
 
 #include <chrono>
 
@@ -28,6 +31,8 @@ public:
     using DrawViewPart::watchGeometryFuture;
     bool completedBeforeReturn = false;
     bool installed() const { return geometryObject && !m_tempGeometryObject; }
+    void pending() { m_tempGeometryObject = std::make_shared<TechDraw::GeometryObject>("View", this); }
+    bool hasPending() const { return bool(m_tempGeometryObject); }
 
 protected:
     TechDraw::GeometryObjectPtr makeGeometryForShape(const TopoDS_Shape& shape) override
@@ -42,6 +47,35 @@ protected:
     void postHlrTasks() override {}
 };
 
+class JoinedSection: public TechDraw::DrawComplexSection
+{
+public:
+    int joins = 0;
+    QFutureWatcher<void> alignWatcher;
+    std::atomic_bool alignBusy {false};
+    void arm(const QFuture<void>& ready)
+    {
+        watchGeometryFuture(m_cutWatcher, ready, m_waitingForCut,
+                            [this] { onSectionCutFinished(); });
+        waitingForAlign(true);
+        watchGeometryFuture(alignWatcher, ready, alignBusy, [this] {
+            waitingForAlign(false);
+            onSectionCutFinished();
+        });
+    }
+    TopoDS_Shape prepareShape(const TopoDS_Shape&, double) override
+    {
+        ++joins;
+        return {};
+    }
+    void postSectionCutTasks() override {}
+protected:
+    TechDraw::GeometryObjectPtr buildGeometryObject(const TopoDS_Shape&, const gp_Ax2&) override
+    {
+        return {};
+    }
+};
+
 class GeometryCompletion: public ::testing::Test
 {
 protected:
@@ -52,6 +86,9 @@ protected:
     }
     void SetUp() override
     {
+        if (!QCoreApplication::instance()) {
+            application = std::make_unique<QCoreApplication>(argc, argv);
+        }
         doc = App::GetApplication().newDocument("GeometryCompletion");
         preferences = TechDraw::Preferences::getPreferenceGroup("General");
         handleFaces = preferences->GetBool("HandleFaces", true);
@@ -62,6 +99,10 @@ protected:
         App::GetApplication().closeDocument(doc->getName());
         preferences->SetBool("HandleFaces", handleFaces);
     }
+    int argc = 1;
+    char name[28] = "TechDrawGeometryCompletion";
+    char* argv[2] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> application;
     App::Document* doc = nullptr;
     ParameterGrp::handle preferences;
     bool handleFaces = true;
@@ -124,6 +165,87 @@ TEST_F(GeometryCompletion, MissingGeometryClearsBusyWithoutThrowing)
         EXPECT_NO_THROW(view->onHlrFinished());
         EXPECT_FALSE(view->waitingForResult());
     });
+}
+
+// Both futures are already finished and both GUI notifications are delivered
+// while the owner is held. Future::isRunning() cannot distinguish the callbacks.
+TEST_F(GeometryCompletion, QueuedSectionCompletionsJoinOncePerCycle)
+{
+    auto* view = new JoinedSection;
+    doc->addObject(view, "Section");
+    view->CoarseView.setValue(true);
+    for (int cycle = 1; cycle <= 2; ++cycle) {
+        QFutureInterface<void> ready;
+        ready.reportStarted();
+        ready.reportFinished();
+        std::promise<void> release;
+        auto gate = release.get_future();
+        auto held = doc->executionLane()->postToOwner([&] { gate.wait(); });
+        view->arm(ready.future());
+        QCoreApplication::processEvents();
+        release.set_value();
+        held.get();
+        doc->executionLane()->dispatchToOwner([&] { EXPECT_EQ(view->joins, cycle); });
+    }
+}
+
+TEST_F(GeometryCompletion, RemovedViewDrainsCompletionAndCanBeRestored)
+{
+    auto* view = new EarlyCompletionView;
+    doc->addObject(view, "View");
+    doc->setTransactionMode(1);
+    QFutureWatcher<void> watcher;
+    QFutureInterface<void> ready;
+    ready.reportStarted();
+    ready.reportFinished();
+    std::atomic_bool busy {false};
+    bool installed = false;
+    view->pending();
+    view->watchGeometryFuture(watcher, ready.future(), busy, [&] { installed = true; });
+    doc->openTransaction("Remove view");
+    doc->removeObject("View");
+    doc->commitTransaction();
+    ASSERT_FALSE(doc->containsObject(view));
+    view->purgeTouched();
+    ASSERT_FALSE(view->isTouched());
+    QCoreApplication::processEvents();
+    doc->executionLane()->dispatchToOwner([&] {
+        EXPECT_FALSE(busy);
+        EXPECT_FALSE(view->hasPending());
+        EXPECT_FALSE(installed);
+        EXPECT_TRUE(view->isTouched());
+    });
+    ASSERT_TRUE(doc->undo());
+    EXPECT_EQ(doc->getObject("View"), view);
+    EXPECT_FALSE(busy);
+    EXPECT_TRUE(view->isTouched());
+}
+
+TEST_F(GeometryCompletion, OwnerConstructedWatcherDeliversOnGuiThread)
+{
+    EarlyCompletionView* view = nullptr;
+    std::unique_ptr<QFutureWatcher<void>> watcher;
+    QFutureInterface<void> ready;
+    ready.reportStarted();
+    ready.reportFinished();
+    std::atomic_bool busy {false};
+    std::promise<bool> completed;
+    auto result = completed.get_future();
+    doc->executionLane()->dispatchToOwner([&] {
+        view = new EarlyCompletionView;
+        doc->addObject(view, "View");
+        watcher = std::make_unique<QFutureWatcher<void>>();
+        EXPECT_NE(watcher->thread(), QCoreApplication::instance()->thread());
+        view->watchGeometryFuture(*watcher, ready.future(), busy, [&] {
+            completed.set_value(doc->executionLane()->isOwnerThread());
+        });
+    });
+    EXPECT_EQ(watcher->thread(), QCoreApplication::instance()->thread());
+    QCoreApplication::processEvents();
+    ASSERT_EQ(result.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_TRUE(result.get());
+    doc->executionLane()->dispatchToOwner([] {});
+    EXPECT_FALSE(busy);
 }
 
 }

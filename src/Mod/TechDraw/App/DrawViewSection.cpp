@@ -468,7 +468,11 @@ void DrawViewSection::sectionExec(TopoDS_Shape& baseShape)
     }
 
     m_cuttingTool = makeCuttingTool(m_shapeSize);
+    startSectionCut(baseShape);
+}
 
+void DrawViewSection::startSectionCut(const TopoDS_Shape& baseShape)
+{
     if (!DU::isGuiUp()) {
         // without the gui we will never be informed of completion of the separate thread
         makeSectionCut(baseShape);

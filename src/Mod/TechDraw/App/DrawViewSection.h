@@ -126,6 +126,7 @@ public:
         Base::XMLReader &reader, const char * TypeName, App::Property * prop) override;
 
     void sectionExec(TopoDS_Shape& s);
+    virtual void startSectionCut(const TopoDS_Shape& baseShape);
     virtual void makeSectionCut(const TopoDS_Shape& baseShape);
     void postHlrTasks() override;
     virtual void postSectionCutTasks();
