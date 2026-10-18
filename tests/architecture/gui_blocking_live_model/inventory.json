@@ -13910,7 +13910,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 497,
+      "line": 502,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13918,7 +13918,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 500,
+      "line": 505,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13926,7 +13926,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13934,7 +13934,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13942,7 +13942,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13950,7 +13950,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 506,
+      "line": 511,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13958,7 +13958,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13966,7 +13966,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13974,7 +13974,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13982,7 +13982,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13990,7 +13990,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13998,7 +13998,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -14006,7 +14006,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 611,
+      "line": 616,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14014,7 +14014,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 615,
+      "line": 620,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14022,7 +14022,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 618,
+      "line": 623,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14030,7 +14030,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -14038,7 +14038,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14046,7 +14046,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -17606,7 +17606,15 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 248,
+      "line": 122,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "self.document = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Draft/DraftGui.py",
+      "line": 260,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17614,7 +17622,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 1871,
+      "line": 1908,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17622,7 +17630,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2077,
+      "line": 2114,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17630,7 +17638,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2096,
+      "line": 2133,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17638,7 +17646,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17646,7 +17654,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17654,7 +17662,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17662,7 +17670,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2230,
+      "line": 2271,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17670,7 +17678,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17678,7 +17686,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17686,7 +17694,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17694,7 +17702,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17702,7 +17710,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17710,7 +17718,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -18038,7 +18046,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 501,
+      "line": 505,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18046,7 +18054,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 733,
+      "line": 737,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18054,7 +18062,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 794,
+      "line": 798,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18062,7 +18070,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 796,
+      "line": 800,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18070,7 +18078,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 811,
+      "line": 815,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -19318,7 +19326,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 278,
+      "line": 298,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19326,7 +19334,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 285,
+      "line": 305,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19334,7 +19342,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 778,
+      "line": 798,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19342,7 +19350,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 917,
+      "line": 937,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19350,7 +19358,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1055,
+      "line": 1075,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19358,7 +19366,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1091,
+      "line": 1111,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19366,7 +19374,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1176,
+      "line": 1196,
       "category": "process-events-polling",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -31238,7 +31246,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5047,
+      "line": 5045,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31246,7 +31254,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5075,
+      "line": 5073,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31254,7 +31262,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5099,
+      "line": 5097,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31262,7 +31270,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5117,
+      "line": 5115,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
