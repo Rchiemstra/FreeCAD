@@ -28,6 +28,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/Link.h>
+#include <App/MutationClassification.h>
 #include <Base/Exception.h>
 #include <Base/Tools.h>
 
@@ -746,8 +747,12 @@ StdCmdLinkImportAll::StdCmdLinkImportAll()
 
 bool StdCmdLinkImportAll::isActive()
 {
-    auto doc = App::GetApplication().getActiveDocument();
-    return doc && !doc->testStatus(App::Document::PartialDoc) && App::PropertyXLink::hasXLink(doc);
+    // Action timers cannot inspect the global XLink registry while other
+    // document owners may unlink. Importing an empty set of links is harmless.
+    App::LivePresentationRefreshScope refresh;
+    auto* guiDocument = getActiveGuiDocument();
+    return refresh.acquired() && guiDocument && !guiDocument->deferLivePresentationUpdates()
+        && !guiDocument->getDocument()->testStatus(App::Document::PartialDoc);
 }
 
 void StdCmdLinkImportAll::activated(int)

@@ -710,7 +710,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 213,
+      "line": 214,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -718,7 +718,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 252,
+      "line": 253,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -726,7 +726,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 420,
+      "line": 421,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -734,7 +734,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 425,
+      "line": 426,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -742,7 +742,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 681,
+      "line": 682,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -750,7 +750,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 731,
+      "line": 732,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -758,7 +758,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 763,
+      "line": 764,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -766,7 +766,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 844,
+      "line": 845,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -774,7 +774,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1021,
+      "line": 1022,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -782,7 +782,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1483,
+      "line": 1484,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -790,7 +790,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1561,
+      "line": 1562,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -798,7 +798,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1572,
+      "line": 1573,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -806,7 +806,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2189,
+      "line": 2194,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -814,7 +814,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2190,
+      "line": 2195,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -822,7 +822,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2197,
+      "line": 2202,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -830,7 +830,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2292,
+      "line": 2297,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -838,7 +838,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2380,
+      "line": 2385,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -846,7 +846,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 58,
+      "line": 59,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -854,7 +854,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 97,
+      "line": 98,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -862,7 +862,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 138,
+      "line": 139,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -870,7 +870,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 158,
+      "line": 159,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -878,7 +878,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 174,
+      "line": 175,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -886,7 +886,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 175,
+      "line": 176,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -894,7 +894,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 185,
+      "line": 186,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -902,7 +902,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 193,
+      "line": 194,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -910,7 +910,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 194,
+      "line": 195,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -918,7 +918,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 207,
+      "line": 208,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -926,7 +926,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 213,
+      "line": 214,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -934,7 +934,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 220,
+      "line": 221,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -942,7 +942,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 235,
+      "line": 236,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -950,7 +950,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 275,
+      "line": 276,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -958,7 +958,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 280,
+      "line": 281,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -966,7 +966,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 293,
+      "line": 294,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -974,7 +974,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 304,
+      "line": 305,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -982,7 +982,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 371,
+      "line": 372,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -990,7 +990,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 416,
+      "line": 417,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -998,15 +998,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 749,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
-    },
-    {
-      "path": "src/Gui/CommandLink.cpp",
-      "line": 759,
+      "line": 764,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1566,7 +1558,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1573,
+      "line": 1563,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1574,7 +1566,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1585,
+      "line": 1575,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1582,7 +1574,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1609,
+      "line": 1599,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1590,7 +1582,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1798,
+      "line": 1788,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1598,7 +1590,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2951,
+      "line": 2941,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1606,7 +1598,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3359,
+      "line": 3349,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1614,7 +1606,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3373,
+      "line": 3363,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1622,7 +1614,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3487,
+      "line": 3477,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1630,7 +1622,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4677,
+      "line": 4667,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1638,7 +1630,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4909,
+      "line": 4899,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",

@@ -22,6 +22,7 @@
 #include <Gui/ApplicationPy.h>
 #include <Base/Interpreter.h>
 #include <Gui/Camera.h>
+#include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Tree.h>
@@ -159,6 +160,18 @@ protected:
             callback();
         }
         Gui::ViewProviderDocumentObject::updateData(property);
+    }
+};
+
+class PendingRecomputeProbe final: public App::DocumentObject
+{
+public:
+    mutable unsigned int probes {0};
+
+    short mustExecute() const override
+    {
+        ++probes;
+        return 1;
     }
 };
 
@@ -596,6 +609,84 @@ TEST_F(CollaborationResponsivenessTest, admissionDefersLivePresentationUpdates)
     EXPECT_TRUE(_guiDocument->deferLivePresentationUpdates());
     App::endAtomicPresentationMutationTarget(*_document);
     EXPECT_FALSE(_guiDocument->deferLivePresentationUpdates());
+}
+
+TEST_F(CollaborationResponsivenessTest, idleLiveCatchUpDoesNotProbePendingRecompute)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    auto* pending = new PendingRecomputeProbe;
+    _document->addObject(pending, "PendingRecomputeProbe");
+    pending->purgeTouched();
+    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*_document));
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    int refreshCalls = 0;
+    provider->refresh = [&] { ++refreshCalls; };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+    pending->probes = 0;
+
+    // Document::mustExecute() visits the process-wide XLink registry before
+    // reaching this virtual probe, even though this document has no XLinks.
+    // An idle GUI refresh must neither inspect pending recompute nor wait for
+    // dirty features: the lane, replay and presentation admission guard work
+    // that is actually executing. Foreign close/unlink need not use that guard.
+    EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
+    EXPECT_EQ(pending->probes, 0u);
+    EXPECT_EQ(refreshCalls, 1);
+}
+
+TEST_F(CollaborationResponsivenessTest, idleRefreshActionDoesNotProbePendingRecompute)
+{
+    Gui::Application::Instance->setActiveDocument(_guiDocument);
+    ASSERT_EQ(Gui::Application::Instance->activeDocument(), _guiDocument);
+    auto* pending = new PendingRecomputeProbe;
+    _document->addObject(pending, "PendingRecomputeProbe");
+    pending->purgeTouched();
+    auto* command = Gui::Application::Instance->commandManager().getCommandByName("Std_Refresh");
+    ASSERT_NE(command, nullptr);
+    auto* importCommand =
+        Gui::Application::Instance->commandManager().getCommandByName("Std_LinkImportAll");
+    ASSERT_NE(importCommand, nullptr);
+    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*_document));
+    pending->probes = 0;
+
+    // MainWindow's action timer also used Document::mustExecute(), reaching
+    // foreign XLinks even when the active document has none.
+    EXPECT_TRUE(command->isActive());
+    EXPECT_TRUE(importCommand->isActive());  // No global probe for XLink presence either.
+    EXPECT_EQ(pending->probes, 0u);
+
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    PreparationGate gate;
+    auto work = lane->postToOwner([&] {
+        lane->beginRecoverySnapshotOwnerWork();
+        const auto endWork = qScopeGuard([&] { lane->endRecoverySnapshotOwnerWork(); });
+        return gate.enter({});
+    });
+    const auto release = qScopeGuard([&] {
+        gate.release();
+        work.wait();
+    });
+    ASSERT_TRUE(gate.waitUntilEntered());
+    EXPECT_FALSE(command->isActive());
+    EXPECT_FALSE(importCommand->isActive());
+    EXPECT_EQ(pending->probes, 0u);
+
+    gate.release();
+    work.wait();
+    {
+        App::beginAtomicPresentationMutationTarget(*_document);
+        const auto endAdmission = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_document);
+        });
+        EXPECT_FALSE(command->isActive());
+        EXPECT_FALSE(importCommand->isActive());
+        EXPECT_EQ(pending->probes, 0u);
+    }
+    EXPECT_TRUE(command->isActive());
+    EXPECT_TRUE(importCommand->isActive());
 }
 
 TEST_F(CollaborationResponsivenessTest,

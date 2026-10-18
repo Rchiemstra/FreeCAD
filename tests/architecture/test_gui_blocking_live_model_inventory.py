@@ -3234,11 +3234,11 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Mod/PartDesign/Gui/TaskFeaturePick.cpp", 298, "live-app-dereference")
 
     def test_getDocuments_live_dereference_found(self) -> None:
-        self._assert_site("src/Gui/CommandDoc.cpp", 2197, "live-app-dereference")
+        self._assert_site("src/Gui/CommandDoc.cpp", 2202, "live-app-dereference")
 
     def test_decoded_cpp_command_payload_sites_found(self) -> None:
         for path, line, category in (
-            ("src/Gui/CommandDoc.cpp", 1021, "live-app-dereference"),
+            ("src/Gui/CommandDoc.cpp", 1022, "live-app-dereference"),
             ("src/Mod/CAM/Gui/Command.cpp", 123, "live-app-dereference"),
             # Alias edit. The recompute on the next line is requestDocumentRecompute.
             ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 441, "live-app-dereference"),
