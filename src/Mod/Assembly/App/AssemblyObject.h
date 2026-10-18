@@ -135,6 +135,7 @@ public:
         const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
     );
 
+    short mustExecute() const override;
     App::DocumentObjectExecReturn* execute() override;
 
     /** Assembly solving cannot be reproduced in the isolated worker.
@@ -160,9 +161,9 @@ public:
     int generateSimulation(App::DocumentObject* sim);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
-    void preDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult preDrag(std::vector<App::DocumentObject*> dragParts);
     void doDragStep();
-    void postDrag();
+    SolveResult postDrag();
     void savePlacementsForUndo();
     void undoSolve();
     void clearUndo();
@@ -281,7 +282,14 @@ public:
     bool isEmpty() const;
     int numberOfComponents() const;
 
+    /// Whether an explicit solve has produced a status in this session.
+    inline bool hasSolveResult() const
+    {
+        return solveResultAvailable;
+    }
+    /// Notify listeners using the last explicit solve's cache; never solve or modify the document.
     void updateSolveStatus();
+    /// DoF from the last accepted solve; -1 (unknown) before solving or after rejection.
     inline int getLastDoF() const
     {
         return lastDoF;
@@ -325,12 +333,20 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    friend class AssemblyObjectTest;
+    class PlacementAttempt;
+    using PlacementCandidates = std::vector<std::pair<App::DocumentObject*, Base::Placement>>;
+    PlacementCandidates computePlacementCandidates();
+    bool validateNewPlacements(const PlacementCandidates& candidates);
+    void setNewPlacements(const PlacementCandidates& candidates);
+    SolveResult validateAndCommitPlacements(PlacementAttempt& attempt, bool checkRelations);
+    void cacheSolveStatus();
     void rebuildRigidClusters();
     App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
     const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
     void syncActiveRigidGroupPlacements();
     void updateRigidPlacementCache();
-    void prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
 
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
@@ -346,8 +362,15 @@ private:
 
     bool bundleFixed;
 
-    // True while solve() is running; breaks the solve()/updateSolveStatus() cycle.
+    // Block reentrant solves while preparing or applying solve/drag placements.
     bool solveInProgress {false};
+    bool placementAttemptInProgress {false};
+    // Requests from placement observers are left for a later recompute.
+    bool solvePending {false};
+    std::shared_ptr<PlacementAttempt> dragStepAttempt;
+    std::vector<std::pair<App::PropertyPlacement*, Base::Placement>> dragPlacements;
+    decltype(rigidPlacementCache) dragRigidCache;
+    SolveResult dragResult {SolveResult::Success};
 
     int lastDoF;
     bool lastHasConflict;
@@ -355,6 +378,7 @@ private:
     bool lastHasPartialRedundancies;
     bool lastHasMalformedConstraints;
     SolveResult lastSolveResult {SolveResult::Success};
+    bool solveResultAvailable {false};
     // Diagnostic returned by execute(), rather than an unrelated document error.
     std::string solveDiagnostic;
 
