@@ -42,7 +42,6 @@
 #include <App/GeoFeature.h>
 #include <App/GroupExtension.h>
 #include <App/Link.h>
-#include <App/MutationClassification.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
@@ -1847,11 +1846,7 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
 
 bool StdCmdRefresh::isActive()
 {
-    // Action timers must not walk foreign XLinks through mustExecute().
-    // An idle document can accept a recompute request even when it is clean.
-    App::LivePresentationRefreshScope refresh;
-    auto* guiDocument = getActiveGuiDocument();
-    return refresh.acquired() && guiDocument && !guiDocument->deferLivePresentationUpdates();
+    return this->getDocument() && this->getDocument()->mustExecute();
 }
 
 //===========================================================================

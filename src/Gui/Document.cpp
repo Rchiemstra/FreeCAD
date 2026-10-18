@@ -1474,11 +1474,8 @@ void Document::catchUpIdleLivePresentation()
         return;
     }
 
-    // Reserve before consulting live App state, as tryRunPresentationCallback
-    // does. The lane/replay checks guard work that is actually executing.
-    // mustExecute() is not an idle check: it walks the process-wide XLink
-    // registry, including links being torn down by other document threads.
-    // Dirty features can be presented while their document owner is idle.
+    // Reserve before consulting live App state. The lane/replay checks guard
+    // executing work; pending recompute need not delay idle presentation.
     App::LivePresentationRefreshScope refresh;
     if (!refresh.acquired() || deferLivePresentationUpdates()) {
         scheduleLivePresentationCatchUp();
