@@ -195,7 +195,7 @@ private:
     QMetaObject::Connection connectAlignWatcher;
     QFutureWatcher<void> m_alignWatcher;
     QFuture<void> m_alignFuture;
-    bool m_waitingForAlign;
+    std::atomic_bool m_waitingForAlign;
 
     static const char* ProjectionStrategyEnums[];       //NOLINT
 };

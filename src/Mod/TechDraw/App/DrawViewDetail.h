@@ -114,7 +114,7 @@ protected:
     QMetaObject::Connection connectDetailWatcher;
     QFutureWatcher<void> m_detailWatcher;
     QFuture<void> m_detailFuture;
-    bool m_waitingForDetail;
+    std::atomic_bool m_waitingForDetail;
     bool m_scaleAdded = false;
     bool m_refAdded = false;
 

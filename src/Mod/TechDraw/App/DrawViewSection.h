@@ -216,7 +216,7 @@ protected:
     QMetaObject::Connection connectCutWatcher;
     QFutureWatcher<void> m_cutWatcher;
     QFuture<void> m_cutFuture;
-    bool m_waitingForCut;
+    std::atomic_bool m_waitingForCut;
     TopoDS_Shape m_cuttingTool;
     double m_shapeSize;
 

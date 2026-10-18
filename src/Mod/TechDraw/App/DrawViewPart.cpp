@@ -68,6 +68,8 @@
 
 
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
+#include <App/MainThreadSignal.h>
 #include <Base/BoundBox.h>
 #include <Base/Console.h>
 #include <Base/Converter.h>
@@ -295,6 +297,86 @@ void DrawViewPart::onChanged(const App::Property* prop)
     DrawView::onChanged(prop);
 }
 
+namespace {
+void reportGeometryFailure()
+{
+    try {
+        throw;
+    }
+    catch (const Base::Exception& e) {
+        e.reportException();
+    }
+    catch (const Standard_Failure& e) {
+        Base::Console().error("TechDraw geometry task failed: {}\n", e.GetMessageString());
+    }
+    catch (const std::exception& e) {
+        Base::Console().error("TechDraw geometry task failed: {}\n", e.what());
+    }
+    catch (...) {
+        Base::Console().error("TechDraw geometry task failed\n");
+    }
+}
+}
+
+QMetaObject::Connection DrawViewPart::watchGeometryFuture(QFutureWatcher<void>& watcher,
+                                                          const QFuture<void>& future,
+                                                          std::atomic_bool& busy,
+                                                          std::function<void()> finished)
+{
+    auto* doc = getDocument();
+    auto* lane = doc ? doc->executionLane() : nullptr;
+    const auto id = getID();
+    auto complete = [this, doc, id, future = QFuture<void>(future),
+                     &busy, &watcher, finished = std::move(finished)]() mutable {
+        // A view may have been removed while this completion waited for the owner.
+        if (doc && doc->getObjectByID(id) != this) {
+            return;
+        }
+        try {
+            future.waitForFinished(); // Also propagate exceptions from the worker.
+            busy = false;
+            finished();
+        }
+        catch (...) {
+            busy = false;
+            reportGeometryFailure();
+        }
+        // Completion may follow the recompute's stable notification. Give the
+        // GUI its own paint request then; the watcher context guards removal.
+        QMetaObject::invokeMethod(&watcher, [this] { requestPaint(); }, Qt::QueuedConnection);
+    };
+    auto connection = std::make_shared<QMetaObject::Connection>();
+    busy = true;
+    try {
+        App::MainThreadSignalConfig::invoke([&] {
+            *connection = QObject::connect(&watcher, &QFutureWatcherBase::finished, &watcher,
+                [lane, complete, &busy, connection]() mutable {
+                    QObject::disconnect(*connection);
+                    try {
+                        if (lane) {
+                            // Do not block Qt waiting for an owner which may be waiting for Qt.
+                            (void)lane->postToOwner(complete);
+                        }
+                        else {
+                            complete();
+                        }
+                    }
+                    catch (...) {
+                        busy = false;
+                        reportGeometryFailure();
+                    }
+                });
+            watcher.setFuture(future);
+        }, true);
+    }
+    catch (...) {
+        busy = false;
+        QObject::disconnect(*connection);
+        throw;
+    }
+    return *connection;
+}
+
 void DrawViewPart::partExec(TopoDS_Shape& shape)
 {
     if (waitingForHlr()) {
@@ -303,7 +385,7 @@ void DrawViewPart::partExec(TopoDS_Shape& shape)
     }
 
     //we need to keep using the old geometryObject until the new one is fully populated
-    m_tempGeometryObject = makeGeometryForShape(shape);
+    makeGeometryForShape(shape);
     if (CoarseView.getValue() ||
         !DU::isGuiUp()) {
         onHlrFinished();//poly algo and console mode do not run in separate thread, so we need to invoke
@@ -358,6 +440,8 @@ TechDraw::GeometryObjectPtr DrawViewPart::buildGeometryObject(const TopoDS_Shape
     go->usePolygonHLR(CoarseView.getValue());
     go->setScrubCount(ScrubCount.getValue());
 
+    m_tempGeometryObject = go; // Owner-thread publication, before any completion can run.
+
     if (CoarseView.getValue()) {
         //the polygon approximation HLR process runs quickly, so doesn't need to be in a
         //separate thread
@@ -372,27 +456,20 @@ TechDraw::GeometryObjectPtr DrawViewPart::buildGeometryObject(const TopoDS_Shape
         return go;
     }
 
-    //projectShape (the HLR process) runs in a separate thread since it can take a long time
-    //note that &m_hlrWatcher in the third parameter is not strictly required, but using the
-    //4 parameter signature instead of the 3 parameter signature prevents clazy warning:
-    //https://github.com/KDE/clazy/blob/1.11/docs/checks/README-connect-3arg-lambda.md
-    connectHlrWatcher = QObject::connect(&m_hlrWatcher, &QFutureWatcherBase::finished,
-                                         &m_hlrWatcher, [this] { this->onHlrFinished(); });
-
     // We create a lambda closure to hold a copy of go, shape and viewAxis.
     // This is important because those variables might be local to the calling
     // function and might get destructed before the parallel processing finishes.
     auto lambda = [go, shape, viewAxis]{go->projectShape(shape, viewAxis);};
     m_hlrFuture = QtConcurrent::run(std::move(lambda));
-    m_hlrWatcher.setFuture(m_hlrFuture);
-    waitingForHlr(true);
+    connectHlrWatcher = watchGeometryFuture(m_hlrWatcher, m_hlrFuture, m_waitingForHlr,
+                                             [this] { onHlrFinished(); });
 
     return go;
 }
 
 //! continue processing after hlr thread completes
-void DrawViewPart::onHlrFinished()
-{
+void DrawViewPart::onHlrFinished() noexcept
+try {
     //now that the new GeometryObject is fully populated, we can replace the old one
     if (m_tempGeometryObject) {
         geometryObject = m_tempGeometryObject;//replace with new
@@ -427,17 +504,10 @@ void DrawViewPart::onHlrFinished()
 
     if (handleFaces() && !CoarseView.getValue()) {
         try {
-            //note that &m_faceWatcher in the third parameter is not strictly required, but using the
-            //4 parameter signature instead of the 3 parameter signature prevents clazy warning:
-            //https://github.com/KDE/clazy/blob/1.11/docs/checks/README-connect-3arg-lambda.md
-            connectFaceWatcher =
-                QObject::connect(&m_faceWatcher, &QFutureWatcherBase::finished, &m_faceWatcher,
-                                 [this] { this->onFacesFinished(); });
-
             auto lambda = [this]{this->extractFaces();};
             m_faceFuture = QtConcurrent::run(std::move(lambda));
-            m_faceWatcher.setFuture(m_faceFuture);
-            waitingForFaces(true);
+            connectFaceWatcher = watchGeometryFuture(m_faceWatcher, m_faceFuture, m_waitingForFaces,
+                                                      [this] { onFacesFinished(); });
         }
         catch (Standard_Failure& e) {
             waitingForFaces(false);
@@ -446,6 +516,15 @@ void DrawViewPart::onHlrFinished()
             throw Base::RuntimeError("DVP::onHlrFinished - error extracting faces");
         }
     }
+}
+
+catch (...) {
+    waitingForHlr(false);
+    waitingForFaces(false);
+    m_tempGeometryObject.reset();
+    QObject::disconnect(connectHlrWatcher);
+    QObject::disconnect(connectFaceWatcher);
+    reportGeometryFailure();
 }
 
 //! run any tasks that need to been done after geometry is available
