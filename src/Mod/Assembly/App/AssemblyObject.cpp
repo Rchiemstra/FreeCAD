@@ -640,7 +640,7 @@ public:
         }
     }
 
-    void restore()
+    void restore() noexcept
     {
         if (committed) {
             return;
@@ -648,22 +648,27 @@ public:
         // Restore values before flags: setters can notify other tracked objects.
         for (const auto& object : objects) {
             for (const auto& property : object.properties) {
-                if (property.referenceChanged()) {
+                containRollback("reference", [&] {
+                    if (!property.referenceChanged()) {
+                        return;
+                    }
                     property.reference->setValue(
                         property.referenceObject,
                         property.referenceSubs,
                         std::vector<App::PropertyLinkBase::ShadowSub>(property.referenceShadows)
                     );
-                }
+                });
             }
         }
         // Restoring a reference can recompute its connector placements.
         for (const auto& object : objects) {
             for (const auto& property : object.properties) {
-                if (property.placement
-                    && !samePlacementValues(property.placement->getValue(), property.value)) {
-                    property.placement->setValue(property.value);
-                }
+                containRollback("placement", [&] {
+                    if (property.placement
+                        && !samePlacementValues(property.placement->getValue(), property.value)) {
+                        property.placement->setValue(property.value);
+                    }
+                });
             }
         }
         restoreFlags();
@@ -673,18 +678,22 @@ public:
     }
 
     // GUI transaction abort invokes setters again after the native rollback.
-    void restoreFlags() const
+    void restoreFlags() const noexcept
     {
         for (const auto& object : objects) {
             for (const auto& property : object.properties) {
-                property.property->setStatusValue(property.status);
+                containRollback("property status", [&] {
+                    property.property->setStatusValue(property.status);
+                });
             }
             const auto changed = object.object->getStatus() ^ object.status;
             for (unsigned int bit = 0; bit < 32; ++bit) {
                 if (changed & (1UL << bit)) {
-                    object.object->setStatus(
-                        static_cast<App::ObjectStatus>(bit), (object.status & (1UL << bit)) != 0
-                    );
+                    containRollback("object status", [&] {
+                        object.object->setStatus(
+                            static_cast<App::ObjectStatus>(bit), (object.status & (1UL << bit)) != 0
+                        );
+                    });
                 }
             }
         }
@@ -722,13 +731,32 @@ public:
     }
 
 private:
-    void finish()
+    template<typename F>
+    static void containRollback(const char* item, F&& restore) noexcept
+    {
+        try {
+            try {
+                restore();
+            }
+            catch (const std::exception& e) {
+                Base::Console().error("Assembly rollback {} failed: {}\n", item, e.what());
+            }
+            catch (...) {
+                Base::Console().error("Assembly rollback {} failed\n", item);
+            }
+        }
+        catch (...) {
+            // A console observer must not interrupt rollback either.
+        }
+    }
+
+    void finish() noexcept
     {
         fileTracking.clear();
         committed = true;
         assembly.placementAttemptInProgress = previousAttempt;
         if (assembly.solvePending) {
-            assembly.touch();
+            containRollback("pending solve", [&] { assembly.touch(); });
         }
     }
 

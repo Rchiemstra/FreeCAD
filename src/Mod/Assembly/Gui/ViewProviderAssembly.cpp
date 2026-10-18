@@ -1195,6 +1195,36 @@ void ViewProviderAssembly::endMove(bool abort)
     forceSolveOnMoveForRigid = false;
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    bool accept = false;
+    const auto reportCleanupFailure = [](const char* message) noexcept {
+        try {
+            Base::Console().error("{}\n", message);
+        }
+        catch (...) {
+        }
+    };
+    Base::ScopeGuard cleanup([&] {
+        // Transaction notifications must not prevent the journal's final cleanup.
+        try {
+            if (moveInCommand && wasMoving) {
+                if (accept) {
+                    getDocument()->commitCommand();
+                }
+                else {
+                    getDocument()->abortCommand();
+                }
+            }
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag transaction cleanup failed");
+        }
+        try {
+            assemblyPart->finishDrag();
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag journal cleanup failed");
+        }
+    });
     auto joints = assemblyPart->getJoints();
     for (auto pair : jointVisibilitiesBackup) {
         bool visible = pair.first->Visibility.getValue();
@@ -1215,15 +1245,7 @@ void ViewProviderAssembly::endMove(bool abort)
     const auto dragResult = assemblyPart->postDrag(abort);
     assemblyPart->setObjMasses({});
 
-    if (moveInCommand && wasMoving) {
-        if (!abort && dragResult == SolveResult::Success) {
-            getDocument()->commitCommand();
-        }
-        else {
-            getDocument()->abortCommand();
-        }
-    }
-    assemblyPart->finishDrag();
+    accept = !abort && dragResult == SolveResult::Success;
 }
 
 void ViewProviderAssembly::initMoveDragger()

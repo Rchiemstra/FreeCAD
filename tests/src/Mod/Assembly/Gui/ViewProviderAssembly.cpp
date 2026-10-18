@@ -100,6 +100,26 @@ TEST_F(AssemblyDragGuiTest, leavingEditRejectsActiveDrag)
     finishMove();
 }
 
+TEST_F(AssemblyDragGuiTest, dragNotificationFailureStillAbortsCommand)
+{
+    const auto original = part->Placement.getValue();
+    DragViewProvider provider(guiDocument);
+    startMove(provider);
+    auto connection = assembly->signalSolverUpdate.connect([] {
+        throw std::runtime_error("drag completion observer failure");
+    });
+
+    EXPECT_THROW(provider.endMove(true), std::runtime_error);
+
+    connection.disconnect();
+    provider.unsetDragger();
+    EXPECT_TRUE(part->Placement.getValue().isSame(original));
+    EXPECT_FALSE(document->hasPendingTransaction());
+    EXPECT_FALSE(provider.partMoving);
+    EXPECT_FALSE(provider.canStartDragging);
+    finishMove();
+}
+
 int main(int argc, char** argv)
 {
     if (qgetenv("QT_QPA_PLATFORM").isEmpty()) {

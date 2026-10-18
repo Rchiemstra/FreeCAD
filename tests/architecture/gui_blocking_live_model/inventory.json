@@ -4092,7 +4092,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1353,
+      "line": 1375,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4100,7 +4100,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1435,
+      "line": 1457,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4108,7 +4108,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1736,
+      "line": 1758,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",

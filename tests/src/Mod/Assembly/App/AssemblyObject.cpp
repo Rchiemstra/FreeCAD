@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
+
 #include <FCConfig.h>
 
 #include <App/Application.h>
@@ -800,4 +802,62 @@ TEST_F(AssemblyObjectTest, rejectedSolveRestoresHiddenDependentFlags)  // NOLINT
     for (const auto& [property, status] : flags) {
         EXPECT_EQ(property->getStatus(), status) << property->getName();
     }
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragContainsRollbackObserverExceptions)  // NOLINT
+{
+    makeSolveFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    auto* base = getDocument()->getObject("Base");
+    const auto lidPlacement = lid->getPlacementProperty()->getValue();
+    const auto basePlacement = base->getPlacementProperty()->getValue();
+    getObject()->saveDragState();
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(12, 3, 4), Base::Rotation())
+    );
+    base->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(7, 8, 9), Base::Rotation())
+    );
+    int notifications = 0;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if ((&object == lid || &object == base)
+                && &property == object.getPlacementProperty()) {
+                ++notifications;
+                throw std::runtime_error("rollback observer failure");
+            }
+        }
+    );
+    EXPECT_NO_THROW(getObject()->postDrag(true));
+    connection.disconnect();
+    EXPECT_EQ(notifications, 2) << "rollback must continue after each observer throws";
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(lidPlacement));
+    EXPECT_TRUE(base->getPlacementProperty()->getValue().isSame(basePlacement));
+    EXPECT_NO_THROW(getObject()->finishDrag());
+    // A fresh solve must remain possible after the attempt's guards are released.
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
+}
+
+TEST_F(AssemblyObjectTest, rejectedSolveContainsDestructorRollbackExceptions)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    auto* lid = getDocument()->getObject("Lid");
+    const Base::Placement original(Base::Vector3d(30, 0, 0), Base::Rotation());
+    lid->getPlacementProperty()->setValue(original);
+    bool notified = false;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == lid && &property == lid->getPlacementProperty()
+                && lid->getPlacementProperty()->getValue().isSame(original)) {
+                notified = true;
+                throw std::runtime_error("destructor rollback observer failure");
+            }
+        }
+    );
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    connection.disconnect();
+    EXPECT_TRUE(notified);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
 }
