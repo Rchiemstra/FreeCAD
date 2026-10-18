@@ -1066,10 +1066,19 @@ void ViewProviderAssembly::initMove(const SbVec2s& cursorPos, Gui::View3DInvento
 {
     try {
         tryInitMove(cursorPos, viewer);
+        return;
     }
     catch (const Base::Exception& e) {
         Base::Console().warning("{}\n", e.what());
     }
+    catch (const std::exception& e) {
+        Base::Console().warning("{}\n", e.what());
+    }
+    catch (...) {
+        Base::Console().warning("Assembly drag preparation failed\n");
+    }
+    // Preparation may throw after opening Move part and disabling selection.
+    endMove(true);
 }
 
 void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer)
@@ -1165,7 +1174,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
 
         assemblyPart->setObjMasses(objectMasses);
         if (assemblyPart->preDrag(dragParts) != SolveResult::Success) {
-            endMove();
+            endMove(true);
         }
     }
     else {
@@ -1173,8 +1182,9 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
     }
 }
 
-void ViewProviderAssembly::endMove()
+void ViewProviderAssembly::endMove(bool abort)
 {
+    const bool wasMoving = partMoving;
     docsToMove.clear();
     partMoving = false;
     canStartDragging = false;
@@ -1208,8 +1218,8 @@ void ViewProviderAssembly::endMove()
         assemblyPart->setObjMasses({});
     }
 
-    if (moveInCommand) {
-        if (dragResult == SolveResult::Success) {
+    if (moveInCommand && wasMoving) {
+        if (!abort && dragResult == SolveResult::Success) {
             getDocument()->commitCommand();
         }
         else {

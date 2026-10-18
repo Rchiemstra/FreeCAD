@@ -157,7 +157,7 @@ public:
     /// Finds what drag mode should be used based on the user selection.
     DragMode findDragMode();
     void initMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer);
-    void endMove();
+    void endMove(bool abort = false);
     virtual void setEnableMovement(bool enable = true)
     {
         enableMovement = enable;

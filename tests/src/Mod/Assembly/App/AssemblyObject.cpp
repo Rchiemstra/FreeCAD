@@ -622,3 +622,37 @@ TEST_F(AssemblyObjectTest, dragCompletionValidatesOnce)  // NOLINT
     EXPECT_EQ(getObject()->getLastSolverStatus(), 0);
     EXPECT_NEAR(lid->getPlacementProperty()->getValue().getPosition().z, 2, 1e-6);
 }
+
+TEST_F(AssemblyObjectTest, geometryExceptionRejectsSolvePreparation)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import Part\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_joint.JointType = 'Distance'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_lid.Shape = Part.Shape()\n"
+    );
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::SolverFailure);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -1);
+    EXPECT_EQ(getObject()->getLastDoF(), -1);
+}
+
+TEST_F(AssemblyObjectTest, geometryExceptionRejectsIslandDragPreparation)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import Part\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_base.setEditorMode('Placement', 0)\n"
+        "    _c1_joint.JointType = 'Distance'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_lid.Shape = Part.Shape()\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::SolverFailure);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -1);
+    EXPECT_FALSE(hasSolverSystem());
+    getObject()->doDragStep();
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::SolverFailure);
+}

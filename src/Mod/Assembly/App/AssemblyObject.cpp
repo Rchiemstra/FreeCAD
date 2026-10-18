@@ -757,28 +757,29 @@ SolveResult AssemblyObject::solve(bool enableRedo)
         return result;
     };
 
-    mbdAssembly = makeMbdAssembly();
-    objectPartMap.clear();
-    syncActiveRigidGroupPlacements();
-    motions.clear();
-
-    auto groundedObjs = fixGroundedParts();
-    if (groundedObjs.empty()) {
-        // If no part fixed we can't solve.
-        return finish(SolveResult::NoGroundedParts);
-    }
-
-    std::vector<App::DocumentObject*> joints = getJoints();
-
-    removeUnconnectedJoints(joints, groundedObjs);
-
-    jointParts(joints);
-
-    if (enableRedo) {
-        savePlacementsForUndo();
-    }
-
+    std::vector<App::DocumentObject*> joints;
     try {
+        mbdAssembly = makeMbdAssembly();
+        objectPartMap.clear();
+        syncActiveRigidGroupPlacements();
+        motions.clear();
+
+        auto groundedObjs = fixGroundedParts();
+        if (groundedObjs.empty()) {
+            // If no part fixed we can't solve.
+            return finish(SolveResult::NoGroundedParts);
+        }
+
+        joints = getJoints();
+
+        removeUnconnectedJoints(joints, groundedObjs);
+
+        jointParts(joints);
+
+        if (enableRedo) {
+            savePlacementsForUndo();
+        }
+
         mbdAssembly->runPreDrag();
     }
     catch (const std::exception& e) {
@@ -980,6 +981,7 @@ bool AssemblyObject::requiresRigidSolveForMove(const std::vector<App::DocumentOb
 }
 
 SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
+try
 {
     dragStepAttempt.reset();
     draggedParts.clear();
@@ -1029,6 +1031,8 @@ SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
     solveResultAvailable = true;
     cacheSolveStatus();
     if (dragResult != SolveResult::Success) {
+        objectPartMap.clear();
+        mbdAssembly.reset();
         return dragResult;
     }
 
@@ -1074,6 +1078,18 @@ SolveResult AssemblyObject::preDrag(std::vector<App::DocumentObject*> dragParts)
     }
     return dragResult;
 }
+catch (...)
+{
+    FC_ERR("Drag preparation failed: unhandled exception");
+    draggedParts.clear();
+    objectPartMap.clear();
+    mbdAssembly.reset();
+    dragResult = lastSolveResult = SolveResult::SolverFailure;
+    solveResultAvailable = true;
+    cacheSolveStatus();
+    updateSolveStatus();
+    return dragResult;
+}
 
 SolveResult AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts)
 {
@@ -1099,9 +1115,8 @@ SolveResult AssemblyObject::prepareMbdForIslandDrag(std::vector<App::DocumentObj
     }
 
     PlacementAttempt attempt(*this);
-    jointParts(joints);
-
     try {
+        jointParts(joints);
         mbdAssembly->runPreDrag();
     }
     catch (const std::exception& e) {
