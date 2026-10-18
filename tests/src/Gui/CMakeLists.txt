@@ -20,6 +20,7 @@ add_executable(Gui_tests_run
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
         DocumentRecovery.cpp
+        DocumentExecutionWaitTestHelpers.cpp
         GuiPythonGate.cpp
         UpdateGuiThread.cpp
         ColorScaleOverlayTest.cpp

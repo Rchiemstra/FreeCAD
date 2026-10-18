@@ -13,8 +13,11 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
+#include <App/RecoverySnapshot.h>
+#include <Base/Exception.h>
 #include <App/MutationClassification.h>
 #include <Gui/DocumentExecutionIngress.h>
 #include <Gui/Application.h>
@@ -24,6 +27,7 @@
 #include <Gui/DocumentRecoveryInternal.h>
 #include <Gui/MainWindow.h>
 #include "CollaborationGuiTestHelpers.h"
+#include "DocumentExecutionWaitTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 #include <zipios++/zipoutputstream.h>
@@ -941,6 +945,56 @@ TEST_F(AutoSaverRecoveryTest, ClosedDocumentCompletionCannotResetReplacementAtte
         documentName, oldIdentity.instanceId, oldIdentity.lifecycleEpoch);
     EXPECT_FALSE(Gui::Test::beginAutoSaveAttempt(*document))
         << "late completion must leave the replacement's in-flight attempt alone";
+}
+
+TEST_F(AutoSaverRecoveryTest, TimedOutRecoveryWaitCanFinishAfterCallerReturns)
+{
+    using namespace std::chrono_literals;
+    auto lane = document->executionLane()->shared_from_this();
+    std::promise<void> entered, release;
+    auto enteredFuture = entered.get_future();
+    auto released = release.get_future();
+    auto blocker = lane->postToOwner([&] {
+        entered.set_value();
+        released.wait();
+    });
+    bool didRelease = false;
+    const auto releaseWorker = [&] {
+        if (!didRelease) {
+            release.set_value();
+            didRelease = true;
+        }
+    };
+    // Even an assertion failure must unblock the owner before fixture teardown.
+    const auto cleanup = qScopeGuard([&] {
+        releaseWorker();
+        if (blocker.valid()) {
+            blocker.wait();
+        }
+        EXPECT_TRUE(processEventsUntil([&] {
+            return lane->isIdle() && !document->collaborationService().closeAdmissionActive();
+        }));
+    });
+    ASSERT_EQ(enteredFuture.wait_for(5s), std::future_status::ready);
+
+    // The owner cannot start the write until after this call has thrown. Both
+    // the helper's stack and these temporary options are gone when it resumes.
+    EXPECT_THROW(
+        Gui::Test::writeRecoverySnapshotAwaitingOwnerThread(*document, {}, 10ms),
+        Base::RuntimeError);
+    EXPECT_FALSE(lane->isIdle());
+    EXPECT_FALSE(QFileInfo(archivePath()).isFile());
+    EXPECT_FALSE(App::GetApplication().closeDocument(documentName.c_str()))
+        << "the timed-out write must retain document lifetime until completion";
+    EXPECT_EQ(App::GetApplication().getDocument(documentName.c_str()), document);
+
+    releaseWorker();
+    blocker.get();
+    ASSERT_TRUE(processEventsUntil([&] {
+        return lane->isIdle() && !document->collaborationService().closeAdmissionActive();
+    }));
+    EXPECT_TRUE(QFileInfo(archivePath()).isFile());
+    EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
 }
 
 TEST_F(AutoSaverRecoveryTest, WorkerAdmissionRaceWaitsWithoutReportingFailedWrite)

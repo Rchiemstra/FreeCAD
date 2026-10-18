@@ -1708,7 +1708,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 326,
+      "line": 327,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1716,27 +1716,11 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 579,
+      "line": 563,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {"
-    },
-    {
-      "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 634,
-      "category": "process-events-polling",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "QApplication::processEvents();"
-    },
-    {
-      "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 671,
-      "category": "process-events-polling",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "QApplication::processEvents();"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",
@@ -4108,7 +4092,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1337,
+      "line": 1345,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4116,7 +4100,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1419,
+      "line": 1427,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4124,7 +4108,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1720,
+      "line": 1728,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
