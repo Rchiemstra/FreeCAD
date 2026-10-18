@@ -861,3 +861,44 @@ TEST_F(AssemblyObjectTest, rejectedSolveContainsDestructorRollbackExceptions)  /
     EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
     EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
 }
+
+TEST_F(AssemblyObjectTest, rejectedDragSkipsDeletedJournalObject)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "_j119_dependent = _c1_a.Document.addObject('App::FeaturePython', 'DeletedDependent')\n"
+        "_j119_dependent.addProperty('App::PropertyFloat', 'X')\n"
+        "_j119_dependent.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    getDocument()->removeObject("DeletedDependent");
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(12, 3, 4), Base::Rotation())
+    );
+    EXPECT_EQ(getObject()->postDrag(true), Assembly::SolveResult::SolverFailure);
+    getObject()->finishDrag();
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getDocument()->getObject("DeletedDependent"), nullptr);
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragDoesNotRestoreDeletedReferenceTarget)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "_j119_target = _c1_a.Document.addObject('App::FeaturePython', 'DeletedTarget')\n"
+        "_c1_a.addProperty('App::PropertyXLinkSub', 'RollbackTarget')\n"
+        "_c1_a.RollbackTarget = (_j119_target, ['Face1'])\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    getDocument()->removeObject("DeletedTarget");
+    auto* reference = getObject()->getPropertyByName<App::PropertyXLinkSub>("RollbackTarget");
+    ASSERT_NE(reference, nullptr);
+    reference->setValue(lid, {"Face1"});
+    EXPECT_EQ(getObject()->postDrag(true), Assembly::SolveResult::SolverFailure);
+    getObject()->finishDrag();
+    EXPECT_EQ(reference->getValue(), nullptr);
+    EXPECT_EQ(getDocument()->getObject("DeletedTarget"), nullptr);
+}

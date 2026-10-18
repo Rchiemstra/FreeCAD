@@ -587,6 +587,26 @@ public:
             objects.push_back(std::move(state));
             documents.insert(object->getDocument());
         }
+        deletedObjectConnection = App::GetApplication().signalDeletedObject.connect(
+            [this](const App::DocumentObject& deleted) {
+                for (auto& object : objects) {
+                    if (object.object == &deleted) {
+                        object.object = nullptr;
+                    }
+                    for (auto& property : object.properties) {
+                        if (property.referenceObject == &deleted) {
+                            property.referenceObject = nullptr;
+                            property.referenceSubs.clear();
+                            property.referenceShadows.clear();
+                        }
+                    }
+                }
+                rigidCache.erase(const_cast<App::DocumentObject*>(&deleted));
+                std::erase_if(undoPlacements, [&](const auto& saved) {
+                    return saved.first == &deleted;
+                });
+            }
+        );
         begin(guardWrites);
     }
 
@@ -604,6 +624,9 @@ public:
         undoPlacements = assembly.previousPositions;
         previousAttempt = assembly.placementAttemptInProgress;
         for (auto& object : objects) {
+            if (!object.object) {
+                continue;
+            }
             object.status = object.object->getStatus();
             for (auto& property : object.properties) {
                 property.status = property.property->getStatus();
@@ -629,7 +652,7 @@ public:
             }
             assembly.placementAttemptInProgress = true;
             for (auto& object : objects) {
-                if (object.guarded) {
+                if (object.object && object.guarded) {
                     object.object->setStatus(App::ObjectStatus::NoTouch, true);
                 }
             }
@@ -647,7 +670,13 @@ public:
         }
         // Restore values before flags: setters can notify other tracked objects.
         for (const auto& object : objects) {
+            if (!object.object) {
+                continue;
+            }
             for (const auto& property : object.properties) {
+                if (!object.object) {
+                    break;
+                }
                 containRollback("reference", [&] {
                     if (!property.referenceChanged()) {
                         return;
@@ -662,7 +691,13 @@ public:
         }
         // Restoring a reference can recompute its connector placements.
         for (const auto& object : objects) {
+            if (!object.object) {
+                continue;
+            }
             for (const auto& property : object.properties) {
+                if (!object.object) {
+                    break;
+                }
                 containRollback("placement", [&] {
                     if (property.placement
                         && !samePlacementValues(property.placement->getValue(), property.value)) {
@@ -681,10 +716,19 @@ public:
     void restoreFlags() const noexcept
     {
         for (const auto& object : objects) {
+            if (!object.object) {
+                continue;
+            }
             for (const auto& property : object.properties) {
+                if (!object.object) {
+                    break;
+                }
                 containRollback("property status", [&] {
                     property.property->setStatusValue(property.status);
                 });
+            }
+            if (!object.object) {
+                continue;
             }
             const auto changed = object.object->getStatus() ^ object.status;
             for (unsigned int bit = 0; bit < 32; ++bit) {
@@ -709,7 +753,13 @@ public:
     {
         std::unordered_set<App::Document*> changedDocuments;
         for (const auto& object : objects) {
+            if (!object.object) {
+                continue;
+            }
             for (const auto& property : object.properties) {
+                if (!object.object) {
+                    break;
+                }
                 bool changed = property.placement
                     && !samePlacementValues(property.placement->getValue(), property.value);
                 changed |= property.referenceChanged();
@@ -718,6 +768,9 @@ public:
                     object.object->purgeTouched();
                     break;
                 }
+            }
+            if (!object.object) {
+                continue;
             }
             object.object->setStatus(
                 App::ObjectStatus::NoTouch,
@@ -794,6 +847,7 @@ private:
     std::unordered_set<App::Document*> documents;
     std::vector<std::unique_ptr<App::Document::FileChangeTrackingScope>> fileTracking;
     std::vector<ObjectState> objects;
+    fastsignals::scoped_connection deletedObjectConnection;
     bool committed = true;
     bool observational;
 };
