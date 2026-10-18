@@ -3,11 +3,38 @@
 #include <gtest/gtest.h>
 
 #include <Inventor/SoDB.h>
+#include <Inventor/SoPath.h>
+#include <Inventor/actions/SoGetPrimitiveCountAction.h>
+#include <Inventor/actions/SoSearchAction.h>
+#include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoSeparator.h>
+
+#include <QApplication>
+#include <QEvent>
+#include <QTemporaryDir>
+
+#include <App/Application.h>
+#include <App/Document.h>
+#include <App/DocumentObject.h>
+#include <App/DocumentPresentationBoundary.h>
+#include <App/PropertyStandard.h>
+#include <Base/Interpreter.h>
+#include <Gui/Application.h>
+#include <Gui/Document.h>
+#include <Gui/DocumentPresentationCapture.h>
 
 #include <Gui/DocumentPresentationCache.h>
 #include <Gui/PresentationApplyScheduler.h>
+#include <Gui/PresentationCaptureRegistry.h>
+#include <Gui/ViewProviderDocumentObject.h>
+#include <Gui/ViewProviderGeometryObject.h>
+#include <Gui/ViewProviderPresentationCapability.h>
+#include <src/App/InitApplication.h>
+
+#include "CollaborationGuiTestHelpers.h"
 
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -51,11 +78,32 @@ Gui::PresentationDelta makeDeltaWithRenderBuffers(Gui::PresentationSequence sequ
     for (std::size_t index = 0; index < bufferCount; ++index) {
         auto& buffer = delta.renderBuffers[index];
         buffer.stableObjectIdentity = "buffer-" + std::to_string(index);
-        buffer.vertices.assign(4096, static_cast<float>(index) + 0.25F);
-        buffer.normals.assign(4096, 1.0F);
-        buffer.indices.assign(2048, static_cast<std::uint32_t>(index));
+        buffer.vertices.assign(12288, static_cast<float>(index) + 0.25F);
+        buffer.normals.assign(12288, 1.0F);
+        buffer.indices.assign(6144, static_cast<std::uint32_t>(index));
     }
     return delta;
+}
+
+Gui::PresentationDelta makeTriangleDelta()
+{
+    auto delta = makeDelta(1, 1, "triangles");
+    Gui::PresentationRenderBuffer buffer;
+    buffer.stableObjectIdentity = "triangles";
+    buffer.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0,
+                       2, 0, 0, 3, 0, 0, 2, 1, 0,
+                       4, 0, 0, 5, 0, 0, 4, 1, 0};
+    buffer.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+    buffer.topology = {1, 2};
+    delta.renderBuffers.push_back(std::move(buffer));
+    return delta;
+}
+
+int triangleCount(SoSeparator* root)
+{
+    SoGetPrimitiveCountAction count;
+    count.apply(root);
+    return count.getTriangleCount();
 }
 
 }  // namespace
@@ -168,3 +216,219 @@ TEST(PresentationApplySchedulerTest, RecordsSliceBudgetAcrossPumpTurns)
     EXPECT_GT(pumpTurns, 1U);
     EXPECT_EQ(cache.committedSequence(), 1U);
 }
+
+TEST(PresentationApplySchedulerTest, PackedTriplesRenderThreeFacesWithCopiedAppearance)
+{
+    ensureCoinInitialized();
+    Gui::DocumentPresentationCache cache;
+    cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
+    Gui::PresentationApplyScheduler scheduler(cache);
+    auto delta = makeTriangleDelta();
+    delta.renderBuffers.front().material.diffuseColor = {0.2F, 0.4F, 0.6F};
+    delta.renderBuffers.front().material.transparency = {0.35F};
+    scheduler.enqueue(std::move(delta));
+    ASSERT_TRUE(scheduler.pump(0).committedRevision);
+    EXPECT_EQ(triangleCount(cache.committedCoinRoot()), 3);
+
+    SoSearchAction search;
+    search.setType(SoMaterial::getClassTypeId());
+    search.apply(cache.committedCoinRoot());
+    ASSERT_NE(search.getPath(), nullptr);
+    auto* material = static_cast<SoMaterial*>(search.getPath()->getTail());
+    EXPECT_EQ(material->diffuseColor[0], SbColor(0.2F, 0.4F, 0.6F));
+    EXPECT_FLOAT_EQ(material->transparency[0], 0.35F);
+}
+
+TEST(PresentationApplySchedulerTest, SkipsMalformedGeometry)
+{
+    ensureCoinInitialized();
+    for (int malformed = 0; malformed < 6; ++malformed) {
+        SCOPED_TRACE(malformed);
+        Gui::DocumentPresentationCache cache;
+        cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
+        Gui::PresentationApplyScheduler scheduler(cache);
+        auto delta = makeTriangleDelta();
+        auto& buffer = delta.renderBuffers.front();
+        switch (malformed) {
+            case 0: buffer.indices.pop_back(); break;
+            case 1: buffer.vertices.pop_back(); break;
+            case 2: buffer.normals.push_back(1.0F); break;
+            case 3: buffer.indices[0] = static_cast<std::uint32_t>(-1); break;
+            case 4: buffer.indices[0] = 9; break;
+            case 5: buffer.topology = {1, 3}; break;
+        }
+        scheduler.enqueue(std::move(delta));
+        ASSERT_TRUE(scheduler.pump(0).committedRevision);
+        EXPECT_EQ(cache.committedCoinRoot()->getNumChildren(), 0);
+    }
+}
+
+TEST(PresentationApplySchedulerTest, SkipsHiddenObjectBuffer)
+{
+    ensureCoinInitialized();
+    Gui::DocumentPresentationCache cache;
+    cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
+    Gui::PresentationApplyScheduler scheduler(cache);
+    auto delta = makeTriangleDelta();
+    delta.tree.front().visible = false;
+    scheduler.enqueue(std::move(delta));
+    ASSERT_TRUE(scheduler.pump(0).committedRevision);
+    EXPECT_EQ(cache.committedCoinRoot()->getNumChildren(), 0);
+}
+
+namespace
+{
+
+class PartPresentationCaptureTest: public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        if (qgetenv("QT_QPA_PLATFORM").isEmpty()) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+        }
+        static int argc = 1;
+        static char executable[] = "Gui_tests_run";
+        static char* argv[] = {executable, nullptr};
+        if (!QApplication::instance()) {
+            new QApplication(argc, argv);
+        }
+        tests::initApplication();
+        if (!Gui::Application::Instance) {
+            Gui::Application::initApplication();
+            Gui::Application::initOpenInventor();
+            new Gui::Application(true);
+        }
+        Base::Interpreter().runString("import Part; import PartGui");
+    }
+
+    void SetUp() override
+    {
+        App::DocumentInitFlags flags;
+        flags.createView = false;
+        documentName = App::GetApplication().getUniqueDocumentName("presentationCapture");
+        document = App::GetApplication().newDocument(documentName.c_str(), "Presentation", flags);
+        ASSERT_NE(document, nullptr);
+        Base::Interpreter().runString(
+            "doc = App.ActiveDocument\n"
+            "feature = doc.addObject('Part::Part2DObject', 'Plane')\n"
+            "feature.Shape = Part.makeCompound([Part.Face(Part.makePolygon([\n"
+            "    App.Vector(x, 0, 0), App.Vector(x+1, 0, 0),\n"
+            "    App.Vector(x, 1, 0), App.Vector(x, 0, 0)])) for x in (0, 2, 4)])\n");
+        Gui::Test::recomputeWithoutBlockingGui(*document);
+        guiDocument = Gui::Application::Instance->getDocument(document);
+        ASSERT_NE(guiDocument, nullptr);
+        guiDocument->catchUpIdleLivePresentation();
+        QApplication::processEvents();
+        (void)guiDocument->pumpPresentationApply(0);
+        object = document->getObject("Plane");
+        ASSERT_NE(object, nullptr);
+        provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(guiDocument->getViewProvider(object));
+        ASSERT_NE(provider, nullptr);
+    }
+
+    void TearDown() override
+    {
+        App::GetApplication().closeDocument(documentName.c_str());
+        QApplication::processEvents();
+    }
+
+    std::string documentName;
+    App::Document* document {};
+    App::DocumentObject* object {};
+    Gui::Document* guiDocument {};
+    Gui::ViewProviderDocumentObject* provider {};
+};
+
+TEST_F(PartPresentationCaptureTest, BothCoinProducersRoundTripThreeTriangles)
+{
+    const std::string identity = document->collaborationObjectIdentity(*object);
+    for (bool fromProvider : {false, true}) {
+        SCOPED_TRACE(fromProvider);
+        Gui::PresentationRenderBuffer buffer;
+        bool captured = false;
+        // Provider capture deliberately refuses the GUI thread.
+        std::thread owner([&] {
+            if (fromProvider) {
+                Gui::ViewProviderPresentationCaptureRequest request;
+                request.stableObjectIdentity = identity;
+                captured = provider->capturePresentationRenderBuffer(request, buffer);
+            }
+            else {
+                captured = Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer);
+            }
+        });
+        owner.join();
+        ASSERT_TRUE(captured);
+        ASSERT_EQ(buffer.indices.size(), 9U);
+        EXPECT_EQ(buffer.topology, (std::vector<std::uint32_t> {1, 1, 1}));
+        auto delta = makeDelta(1, 1, "captured");
+        delta.renderBuffers.push_back(std::move(buffer));
+        Gui::DocumentPresentationCache cache;
+        cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
+        Gui::PresentationApplyScheduler scheduler(cache);
+        scheduler.enqueue(std::move(delta));
+        ASSERT_TRUE(scheduler.pump(0).committedRevision);
+        EXPECT_EQ(triangleCount(cache.committedCoinRoot()), 3);
+    }
+}
+
+TEST_F(PartPresentationCaptureTest, PlaneRefreshDoesNotMarkFileChanged)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const auto path = directory.filePath("plane.FCStd").toStdString();
+    Gui::Test::saveAsWithoutBlockingGui(*document, path.c_str());
+    ASSERT_FALSE(document->hasPendingFileChanges());
+    int notifications = 0;
+    auto connection = document->signalFileChangeStateChanged().connect(
+        [&](const App::Document&) { ++notifications; });
+    for (int i = 0; i < 3; ++i) {
+        provider->updateData(object->getPropertyByName("Shape"));
+    }
+    EXPECT_EQ(notifications, 0);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+    auto* showPlane = dynamic_cast<App::PropertyBool*>(provider->getPropertyByName("ShowPlane"));
+    ASSERT_NE(showPlane, nullptr);
+    showPlane->setValue(!showPlane->getValue());
+    EXPECT_GT(notifications, 0);
+    EXPECT_TRUE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    connection.disconnect();
+}
+
+TEST_F(PartPresentationCaptureTest, DocumentBoundarySkipsHiddenGeometry)
+{
+    object->Visibility.setValue(false);
+    const auto delta = Gui::buildPresentationDeltaOnDocumentThread(*document);
+    ASSERT_EQ(delta.tree.size(), 1U);
+    EXPECT_FALSE(delta.tree.front().visible);
+    EXPECT_TRUE(delta.renderBuffers.empty());
+}
+
+TEST_F(PartPresentationCaptureTest, DocumentBoundaryCopiesAppearanceOnGuiThread)
+{
+    auto* geometry = dynamic_cast<Gui::ViewProviderGeometryObject*>(provider);
+    ASSERT_NE(geometry, nullptr);
+    auto material = geometry->ShapeAppearance[0];
+    material.uuid.clear();
+    material.diffuseColor = Base::Color(0.2F, 0.4F, 0.6F);
+    material.transparency = 0.35F;
+    geometry->ShapeAppearance.setValue(material);
+    ASSERT_EQ(geometry->ShapeAppearance[0].diffuseColor, material.diffuseColor);
+    ASSERT_FLOAT_EQ(geometry->ShapeAppearance[0].transparency, material.transparency);
+    Gui::installDocumentPresentationBoundaryHook();
+    std::thread owner([&] { App::invokeDocumentPresentationBoundary(*document); });
+    owner.join();
+    QApplication::sendPostedEvents(QCoreApplication::instance(), QEvent::MetaCall);
+    ASSERT_TRUE(guiDocument->presentationApplyScheduler().hasStagingWork());
+    ASSERT_TRUE(guiDocument->pumpPresentationApply(0).committedRevision);
+    const auto packet = guiDocument->presentationCache().current();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_EQ(packet->renderBuffers.size(), 1U);
+    const auto& appearance = packet->renderBuffers.front().material;
+    EXPECT_EQ(appearance.diffuseColor, (std::vector<float> {0.2F, 0.4F, 0.6F}));
+    EXPECT_EQ(appearance.transparency, (std::vector<float> {0.35F}));
+    EXPECT_EQ(triangleCount(guiDocument->presentationCache().committedCoinRoot()), 3);
+}
+
+}  // namespace

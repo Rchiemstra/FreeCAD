@@ -1727,7 +1727,10 @@ void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& ta
     const int count = field.getNum();
     target.reserve(target.size() + static_cast<std::size_t>(count));
     for (int index = 0; index < count; ++index) {
-        target.push_back(static_cast<std::uint32_t>(field[index]));
+        // coordIndex contains Coin face delimiters; the packet uses packed triples.
+        if (field[index] >= 0) {
+            target.push_back(static_cast<std::uint32_t>(field[index]));
+        }
     }
 }
 
@@ -1777,6 +1780,18 @@ bool ViewProviderPartExt::capturePresentationRenderBuffer(
     appendCoinVec3Field(tempNorm->vector, buffer.normals);
     appendCoinInt32Field(tempFaces->coordIndex, buffer.indices);
     appendCoinInt32Field(tempFaces->partIndex, buffer.topology);
+    const auto& materials = ShapeAppearance.getValues();
+    const bool perFace = materials.size() > 1 && materials.size() == buffer.topology.size();
+    buffer.material.binding = perFace ? Gui::PresentationMaterialBinding::PerFace
+                                      : Gui::PresentationMaterialBinding::Overall;
+    for (std::size_t face = 0; face < (perFace ? materials.size() : !materials.empty()); ++face) {
+        for (std::uint32_t i = 0; i < (perFace ? buffer.topology[face] : 1); ++i) {
+            const auto& material = materials[face];
+            buffer.material.diffuseColor.insert(buffer.material.diffuseColor.end(),
+                {material.diffuseColor.r, material.diffuseColor.g, material.diffuseColor.b});
+            buffer.material.transparency.push_back(material.transparency);
+        }
+    }
     tempNodes->unref();
     tempLines->unref();
     tempNorm->unref();

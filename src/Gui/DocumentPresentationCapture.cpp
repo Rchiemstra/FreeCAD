@@ -9,6 +9,7 @@
 #include "PresentationCaptureRegistry.h"
 #include "Tree.h"
 #include "ViewProviderPresentationCapability.h"
+#include "ViewProviderGeometryObject.h"
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
@@ -18,6 +19,7 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 
+#include <unordered_map>
 #include <utility>
 
 using namespace Gui;
@@ -84,7 +86,7 @@ PresentationDelta Gui::buildPresentationDeltaOnDocumentThread(const App::Documen
             "Visibility",
             object->Visibility.getValue() ? std::string("true") : std::string("false"));
 
-        if (!PresentationCaptureRegistry::hasCapture(*object)) {
+        if (!object->Visibility.getValue() || !PresentationCaptureRegistry::hasCapture(*object)) {
             continue;
         }
 
@@ -116,12 +118,17 @@ void Gui::installDocumentPresentationBoundaryHook()
     App::setDocumentPresentationBoundaryCallback([](App::Document& appDocument) {
         PresentationDelta delta = buildPresentationDeltaOnDocumentThread(appDocument);
         const std::string documentName = appDocument.getName();
+        std::unordered_map<std::string, std::string> objectNames;
+        for (const auto* object : appDocument.getObjects()) {
+            objectNames.emplace(appDocument.collaborationObjectIdentity(*object),
+                                object->getNameInDocument());
+        }
         if (!QCoreApplication::instance()) {
             return;
         }
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
-            [documentName, delta = std::move(delta)]() mutable {
+            [documentName, objectNames = std::move(objectNames), delta = std::move(delta)]() mutable {
                 auto* applicationDocument = App::GetApplication().getDocument(documentName.c_str());
                 if (!applicationDocument || !Application::Instance) {
                     return;
@@ -130,6 +137,30 @@ void Gui::installDocumentPresentationBoundaryHook()
                     Application::Instance->getDocument(applicationDocument);
                 if (!guiDocument || guiDocument->isAboutToClose()) {
                     return;
+                }
+                // Copy appearance on its owning GUI thread; never read a live
+                // ViewProvider from the document-thread geometry capture.
+                for (auto& buffer : delta.renderBuffers) {
+                    const auto name = objectNames.find(buffer.stableObjectIdentity);
+                    auto* provider = name == objectNames.end() ? nullptr
+                        : dynamic_cast<ViewProviderGeometryObject*>(
+                            guiDocument->getViewProviderByName(name->second.c_str()));
+                    if (!provider || provider->ShapeAppearance.getSize() == 0) {
+                        continue;
+                    }
+                    auto& material = buffer.material;
+                    const auto& values = provider->ShapeAppearance.getValues();
+                    const bool perFace = values.size() > 1 && values.size() == buffer.topology.size();
+                    material.binding = perFace ? PresentationMaterialBinding::PerFace
+                                               : PresentationMaterialBinding::Overall;
+                    for (std::size_t face = 0; face < (perFace ? values.size() : 1); ++face) {
+                        for (std::uint32_t i = 0; i < (perFace ? buffer.topology[face] : 1); ++i) {
+                            const auto& value = values[face];
+                            material.diffuseColor.insert(material.diffuseColor.end(),
+                                {value.diffuseColor.r, value.diffuseColor.g, value.diffuseColor.b});
+                            material.transparency.push_back(value.transparency);
+                        }
+                    }
                 }
                 auto& cache = guiDocument->presentationCache();
                 delta.revision.sequence = cache.committedSequence() + 1;

@@ -41,7 +41,10 @@ void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& ta
     const int count = field.getNum();
     target.reserve(target.size() + static_cast<std::size_t>(count));
     for (int index = 0; index < count; ++index) {
-        target.push_back(static_cast<std::uint32_t>(field[index]));
+        // coordIndex contains Coin face delimiters; the packet uses packed triples.
+        if (field[index] >= 0) {
+            target.push_back(static_cast<std::uint32_t>(field[index]));
+        }
     }
 }
 
