@@ -574,7 +574,7 @@ public:
             if (!object) {
                 continue;
             }
-            ObjectState state {object, 0, {}, guarded.contains(object)};
+            ObjectState state {object, 0, {}, guarded.contains(object), {}};
             std::vector<App::Property*> properties;
             object->getPropertyList(properties);
             for (auto* property : properties) {
@@ -628,6 +628,7 @@ public:
                 continue;
             }
             object.status = object.object->getStatus();
+            object.touchedProperties = object.object->getTouchedProperties();
             for (auto& property : object.properties) {
                 property.status = property.property->getStatus();
                 if (property.placement) {
@@ -730,6 +731,9 @@ public:
             if (!object.object) {
                 continue;
             }
+            containRollback("touched properties", [&] {
+                object.object->restoreTouchedProperties(object.touchedProperties);
+            });
             const auto changed = object.object->getStatus() ^ object.status;
             for (unsigned int bit = 0; bit < 32; ++bit) {
                 if (changed & (1UL << bit)) {
@@ -838,6 +842,7 @@ private:
         unsigned long status;
         std::vector<PropertyState> properties;
         bool guarded;
+        std::unordered_set<std::string> touchedProperties;
     };
 
     AssemblyObject& assembly;

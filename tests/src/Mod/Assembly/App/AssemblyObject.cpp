@@ -902,3 +902,40 @@ TEST_F(AssemblyObjectTest, rejectedDragDoesNotRestoreDeletedReferenceTarget)  //
     EXPECT_EQ(reference->getValue(), nullptr);
     EXPECT_EQ(getDocument()->getObject("DeletedTarget"), nullptr);
 }
+
+TEST_F(AssemblyObjectTest, rejectedSolveRestoresHiddenDependentPropertyFilter)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    ASSERT_TRUE(App::GetApplication().isFineGrainedRecomputeEnabled());
+    Base::Interpreter().runString(
+        "_c1_lid.Placement.Base = App.Vector(30, 0, 0)\n"
+        "_j119_binding = _c1_a.Document.addObject('App::FeaturePython', 'Binding')\n"
+        "_j119_binding.addProperty('App::PropertyFloat', 'X')\n"
+        "_j119_binding.addProperty('App::PropertyFloat', 'Y')\n"
+        "_j119_binding.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+        "_j119_x = _c1_a.Document.addObject('App::FeaturePython', 'ReadsX')\n"
+        "_j119_x.addProperty('App::PropertyFloat', 'Value')\n"
+        "_j119_x.setExpression('Value', 'Binding.X')\n"
+        "_j119_y = _c1_a.Document.addObject('App::FeaturePython', 'ReadsY')\n"
+        "_j119_y.addProperty('App::PropertyFloat', 'Value')\n"
+        "_j119_y.setExpression('Value', 'Binding.Y')\n"
+        "_j119_binding.recompute()\n"
+        "_j119_x.recompute()\n"
+        "_j119_y.recompute()\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    auto* binding = getDocument()->getObject("Binding");
+    auto* readsX = getDocument()->getObject("ReadsX");
+    auto* readsY = getDocument()->getObject("ReadsY");
+    // A pre-existing dirty property must survive, while tentative X must not.
+    binding->enforceRecompute("Y");
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    ASSERT_DOUBLE_EQ(binding->getPropertyByName<App::PropertyFloat>("X")->getValue(), 30);
+    // Isolate the propagation filter from any direct expression notifications.
+    readsX->purgeTouched();
+    readsY->purgeTouched();
+    getDocument()->settleRecomputedFeature(*binding);
+    EXPECT_FALSE(readsX->isTouched()) << "rejected hidden-binding X must leave no dirty entry";
+    EXPECT_TRUE(readsY->isTouched()) << "the original dirty Y entry must be preserved";
+}
