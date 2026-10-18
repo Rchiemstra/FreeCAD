@@ -39,6 +39,7 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/GroupExtension.h>
 #include <App/FeaturePythonPyImp.h>
+#include <App/Expression.h>
 #include <App/Link.h>
 #include <App/PropertyPythonObject.h>
 #include <App/PropertyUnits.h>
@@ -533,16 +534,54 @@ public:
                 affected.insert(part);
             }
         }
+        // Hidden expression references have no InList edge, but their bindings
+        // still react to tentative placements. Build the same-document reverse
+        // graph once per journal; dependent objects need flags, not write guards.
+        const auto guarded = affected;
+        std::unordered_map<App::DocumentObject*, std::vector<App::DocumentObject*>> dependents;
+        std::unordered_set<App::Document*> affectedDocuments;
+        for (auto* object : affected) {
+            if (object && object->getDocument()) {
+                affectedDocuments.insert(object->getDocument());
+            }
+        }
+        for (auto* document : affectedDocuments) {
+            for (auto* object : document->getObjects()) {
+                auto dependencies = object->getOutList();
+                for (const auto& [path, expression] : object->ExpressionEngine.getExpressions()) {
+                    boost::ignore_unused(path);
+                    for (const auto& [dependency, hidden] : expression->getDepObjects()) {
+                        boost::ignore_unused(hidden);
+                        dependencies.push_back(dependency);
+                    }
+                }
+                for (auto* dependency : dependencies) {
+                    if (dependency && dependency->getDocument() == document) {
+                        dependents[dependency].push_back(object);
+                    }
+                }
+            }
+        }
+        std::vector<App::DocumentObject*> pending(affected.begin(), affected.end());
+        for (size_t i = 0; i < pending.size(); ++i) {
+            for (auto* dependent : dependents[pending[i]]) {
+                if (affected.insert(dependent).second) {
+                    pending.push_back(dependent);
+                }
+            }
+        }
         for (auto* object : affected) {
             if (!object) {
                 continue;
             }
-            ObjectState state {object, 0, {}};
+            ObjectState state {object, 0, {}, guarded.contains(object)};
             std::vector<App::Property*> properties;
             object->getPropertyList(properties);
             for (auto* property : properties) {
-                auto* placement = dynamic_cast<App::PropertyPlacement*>(property);
-                auto* reference = dynamic_cast<App::PropertyXLinkSub*>(property);
+                auto* placement = state.guarded
+                    ? dynamic_cast<App::PropertyPlacement*>(property) : nullptr;
+                auto* reference = state.guarded
+                    ? dynamic_cast<App::PropertyXLinkSub*>(property) : nullptr;
                 state.properties.push_back({property, 0, placement, {}, reference, nullptr, {}, {}});
             }
             objects.push_back(std::move(state));
@@ -590,7 +629,9 @@ public:
             }
             assembly.placementAttemptInProgress = true;
             for (auto& object : objects) {
-                object.object->setStatus(App::ObjectStatus::NoTouch, true);
+                if (object.guarded) {
+                    object.object->setStatus(App::ObjectStatus::NoTouch, true);
+                }
             }
         }
         catch (...) {
@@ -715,6 +756,7 @@ private:
         App::DocumentObject* object;
         unsigned long status;
         std::vector<PropertyState> properties;
+        bool guarded;
     };
 
     AssemblyObject& assembly;

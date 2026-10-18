@@ -759,3 +759,45 @@ TEST_F(AssemblyObjectTest, ungroundedDragCompletionValidatesSeededIsland)  // NO
     EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::RelationsViolated);
     EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
 }
+
+TEST_F(AssemblyObjectTest, rejectedSolveRestoresHiddenDependentFlags)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    Base::Interpreter().runString(
+        "_c1_lid.Placement.Base = App.Vector(30, 0, 0)\n"
+        "_j117_dependent = _c1_a.Document.addObject('App::FeaturePython', 'Dependent')\n"
+        "_j117_dependent.addProperty('App::PropertyFloat', 'X')\n"
+        "_j117_dependent.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+        "_j117_dependent.recompute()\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    auto* dependent = getDocument()->getObject("Dependent");
+    auto* value = dependent->getPropertyByName<App::PropertyFloat>("X");
+    ASSERT_NE(value, nullptr);
+    const auto before = value->getValue();
+    ASSERT_DOUBLE_EQ(before, 30);
+    const auto objectStatus = dependent->getStatus();
+    std::vector<std::pair<App::Property*, unsigned long>> flags;
+    std::vector<App::Property*> properties;
+    dependent->getPropertyList(properties);
+    for (auto* property : properties) {
+        flags.emplace_back(property, property->getStatus());
+    }
+    bool bindingChanged = false;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == dependent && &property == value) {
+                bindingChanged = true;
+            }
+        }
+    );
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    connection.disconnect();
+    EXPECT_TRUE(bindingChanged) << "the hidden binding must observe the tentative placement";
+    EXPECT_DOUBLE_EQ(value->getValue(), before);
+    EXPECT_EQ(dependent->getStatus(), objectStatus);
+    for (const auto& [property, status] : flags) {
+        EXPECT_EQ(property->getStatus(), status) << property->getName();
+    }
+}
