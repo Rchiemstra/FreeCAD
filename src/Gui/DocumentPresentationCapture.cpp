@@ -86,6 +86,9 @@ PresentationDelta Gui::buildPresentationDeltaOnDocumentThread(const App::Documen
             "Visibility",
             object->Visibility.getValue() ? std::string("true") : std::string("false"));
 
+        // Visibility-only changes have no owner-thread capture request. A newly
+        // shown object stays absent from committed rendering while a lane is busy;
+        // the next recompute boundary restores it.
         if (!object->Visibility.getValue() || !PresentationCaptureRegistry::hasCapture(*object)) {
             continue;
         }
@@ -148,6 +151,7 @@ void Gui::installDocumentPresentationBoundaryHook()
                     if (!provider || provider->ShapeAppearance.getSize() == 0) {
                         continue;
                     }
+                    buffer.material = PresentationRenderMaterial {};
                     auto& material = buffer.material;
                     const auto& values = provider->ShapeAppearance.getValues();
                     const bool perFace = values.size() > 1 && values.size() == buffer.topology.size();

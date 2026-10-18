@@ -7,6 +7,7 @@
 #include <Inventor/actions/SoGetPrimitiveCountAction.h>
 #include <Inventor/actions/SoSearchAction.h>
 #include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoMaterialBinding.h>
 #include <Inventor/nodes/SoSeparator.h>
 
 #include <QApplication>
@@ -333,6 +334,17 @@ protected:
         QApplication::processEvents();
     }
 
+    void captureAndApplyBoundary()
+    {
+        Gui::installDocumentPresentationBoundaryHook();
+        Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+            App::invokeDocumentPresentationBoundary(*document);
+        });
+        QApplication::sendPostedEvents(QCoreApplication::instance(), QEvent::MetaCall);
+        ASSERT_TRUE(guiDocument->presentationApplyScheduler().hasStagingWork());
+        ASSERT_TRUE(guiDocument->pumpPresentationApply(0).committedRevision);
+    }
+
     std::string documentName;
     App::Document* document {};
     App::DocumentObject* object {};
@@ -360,6 +372,8 @@ TEST_F(PartPresentationCaptureTest, BothCoinProducersRoundTripThreeTriangles)
         });
         owner.join();
         ASSERT_TRUE(captured);
+        EXPECT_TRUE(buffer.material.diffuseColor.empty());
+        EXPECT_TRUE(buffer.material.transparency.empty());
         ASSERT_EQ(buffer.indices.size(), 9U);
         EXPECT_EQ(buffer.topology, (std::vector<std::uint32_t> {1, 1, 1}));
         auto delta = makeDelta(1, 1, "captured");
@@ -396,13 +410,31 @@ TEST_F(PartPresentationCaptureTest, PlaneRefreshDoesNotMarkFileChanged)
     connection.disconnect();
 }
 
-TEST_F(PartPresentationCaptureTest, DocumentBoundarySkipsHiddenGeometry)
+TEST_F(PartPresentationCaptureTest, ShownGeometryReturnsAtNextDocumentBoundary)
 {
     object->Visibility.setValue(false);
-    const auto delta = Gui::buildPresentationDeltaOnDocumentThread(*document);
-    ASSERT_EQ(delta.tree.size(), 1U);
-    EXPECT_FALSE(delta.tree.front().visible);
-    EXPECT_TRUE(delta.renderBuffers.empty());
+    captureAndApplyBoundary();
+    auto packet = guiDocument->presentationCache().current();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_EQ(packet->tree.size(), 1U);
+    EXPECT_FALSE(packet->tree.front().visible);
+    EXPECT_TRUE(packet->renderBuffers.empty());
+    EXPECT_EQ(triangleCount(guiDocument->presentationCache().committedCoinRoot()), 0);
+    const auto sequence = guiDocument->presentationCache().committedSequence();
+
+    object->Visibility.setValue(true);
+    QApplication::processEvents();
+    EXPECT_FALSE(guiDocument->presentationApplyScheduler().hasStagingWork());
+    EXPECT_EQ(guiDocument->presentationCache().committedSequence(), sequence);
+    EXPECT_EQ(triangleCount(guiDocument->presentationCache().committedCoinRoot()), 0);
+
+    captureAndApplyBoundary();
+    packet = guiDocument->presentationCache().current();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_EQ(packet->tree.size(), 1U);
+    EXPECT_TRUE(packet->tree.front().visible);
+    ASSERT_EQ(packet->renderBuffers.size(), 1U);
+    EXPECT_EQ(triangleCount(guiDocument->presentationCache().committedCoinRoot()), 3);
 }
 
 TEST_F(PartPresentationCaptureTest, DocumentBoundaryCopiesAppearanceOnGuiThread)
@@ -416,12 +448,7 @@ TEST_F(PartPresentationCaptureTest, DocumentBoundaryCopiesAppearanceOnGuiThread)
     geometry->ShapeAppearance.setValue(material);
     ASSERT_EQ(geometry->ShapeAppearance[0].diffuseColor, material.diffuseColor);
     ASSERT_FLOAT_EQ(geometry->ShapeAppearance[0].transparency, material.transparency);
-    Gui::installDocumentPresentationBoundaryHook();
-    std::thread owner([&] { App::invokeDocumentPresentationBoundary(*document); });
-    owner.join();
-    QApplication::sendPostedEvents(QCoreApplication::instance(), QEvent::MetaCall);
-    ASSERT_TRUE(guiDocument->presentationApplyScheduler().hasStagingWork());
-    ASSERT_TRUE(guiDocument->pumpPresentationApply(0).committedRevision);
+    captureAndApplyBoundary();
     const auto packet = guiDocument->presentationCache().current();
     ASSERT_TRUE(packet.has_value());
     ASSERT_EQ(packet->renderBuffers.size(), 1U);
@@ -429,6 +456,65 @@ TEST_F(PartPresentationCaptureTest, DocumentBoundaryCopiesAppearanceOnGuiThread)
     EXPECT_EQ(appearance.diffuseColor, (std::vector<float> {0.2F, 0.4F, 0.6F}));
     EXPECT_EQ(appearance.transparency, (std::vector<float> {0.35F}));
     EXPECT_EQ(triangleCount(guiDocument->presentationCache().committedCoinRoot()), 3);
+}
+
+TEST_F(PartPresentationCaptureTest, DocumentBoundaryExpandsFaceColoursOverUnequalTriangleCounts)
+{
+    Base::Interpreter().runString(
+        "feature.Shape = Part.makeCompound([Part.Face(Part.makePolygon([\n"
+        "    App.Vector(x, y, 0) for x, y in points])) for points in (\n"
+        "    [(0, 0), (1, 0), (0, 1), (0, 0)],\n"
+        "    [(2, 0), (3, 0), (3, 1), (2, 1), (2, 0)])])\n");
+    Gui::Test::recomputeWithoutBlockingGui(*document);
+    guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    (void)guiDocument->pumpPresentationApply(0);
+    auto* geometry = dynamic_cast<Gui::ViewProviderGeometryObject*>(provider);
+    ASSERT_NE(geometry, nullptr);
+    auto materials = geometry->ShapeAppearance.getValues();
+    materials.resize(2);
+    materials[0].uuid.clear();
+    materials[0].diffuseColor = Base::Color(1.0F, 0.0F, 0.0F);
+    materials[0].transparency = 0.25F;
+    materials[1].uuid.clear();
+    materials[1].diffuseColor = Base::Color(0.0F, 1.0F, 0.0F);
+    materials[1].transparency = 0.5F;
+    geometry->ShapeAppearance.setValues(materials);
+    ASSERT_EQ(geometry->ShapeAppearance.getSize(), 2);
+    ASSERT_EQ(geometry->ShapeAppearance[0].diffuseColor, materials[0].diffuseColor);
+    ASSERT_EQ(geometry->ShapeAppearance[1].diffuseColor, materials[1].diffuseColor);
+
+    captureAndApplyBoundary();
+    const auto packet = guiDocument->presentationCache().current();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_EQ(packet->renderBuffers.size(), 1U);
+    const auto& buffer = packet->renderBuffers.front();
+    EXPECT_EQ(buffer.topology, (std::vector<std::uint32_t> {1, 2}));
+    EXPECT_EQ(buffer.material.binding, Gui::PresentationMaterialBinding::PerFace);
+    EXPECT_EQ(buffer.material.diffuseColor,
+              (std::vector<float> {1, 0, 0, 0, 1, 0, 0, 1, 0}));
+    EXPECT_EQ(buffer.material.transparency, (std::vector<float> {0.25F, 0.5F, 0.5F}));
+    auto* root = guiDocument->presentationCache().committedCoinRoot();
+    EXPECT_EQ(triangleCount(root), 3);
+
+    SoSearchAction search;
+    search.setType(SoMaterialBinding::getClassTypeId());
+    search.apply(root);
+    ASSERT_NE(search.getPath(), nullptr);
+    auto* binding = static_cast<SoMaterialBinding*>(search.getPath()->getTail());
+    EXPECT_EQ(binding->value.getValue(), SoMaterialBinding::PER_FACE);
+    search.setType(SoMaterial::getClassTypeId());
+    search.apply(root);
+    ASSERT_NE(search.getPath(), nullptr);
+    auto* material = static_cast<SoMaterial*>(search.getPath()->getTail());
+    ASSERT_EQ(material->diffuseColor.getNum(), 3);
+    ASSERT_EQ(material->transparency.getNum(), 3);
+    for (int triangle = 0; triangle < 3; ++triangle) {
+        SCOPED_TRACE(triangle);
+        EXPECT_EQ(material->diffuseColor[triangle],
+                  triangle == 0 ? SbColor(1, 0, 0) : SbColor(0, 1, 0));
+        EXPECT_FLOAT_EQ(material->transparency[triangle], triangle == 0 ? 0.25F : 0.5F);
+    }
 }
 
 }  // namespace
