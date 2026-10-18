@@ -342,8 +342,11 @@ bool ViewProviderAssembly::setEdit(int mode)
 void ViewProviderAssembly::unsetEdit(int mode)
 {
     if (mode == ViewProvider::Default) {
+        // Reject tentative placements before edit reset can commit Move part.
+        if (partMoving) {
+            endMove(true);
+        }
         canStartDragging = false;
-        partMoving = false;
         docsToMove.clear();
 
         unsetDragger();
