@@ -44,6 +44,7 @@ class SketcherWorkbench(Workbench):
         # load the module
         import SketcherGui
         import Sketcher
+        import SketchReferenceRepairGui
 
         try:
             import Profiles

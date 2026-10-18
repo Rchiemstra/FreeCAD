@@ -9,6 +9,8 @@ from SketcherTests.TestExternalFacePreselection import TestExternalFacePreselect
 from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
 from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
 
+from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
+
 # Use the module so that code checkers don't complain (flake8)
 (
     True
@@ -21,5 +23,6 @@ from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
     and TestExternalFacePreselection
     and TestSketcherOffsetGui
     and TestVisualLayerListGui
+    and TestSketchReferenceRepairGui
     else False
 )

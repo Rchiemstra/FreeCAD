@@ -12,6 +12,7 @@ set(Sketcher_Scripts
     SketcherExample.py
     TestSketcherApp.py
     Profiles.py
+    SketchReferenceRepair.py
 )
 
 set(Sketcher_TestScripts
@@ -27,11 +28,13 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchEditFailures.py
     SketcherTests/TestSketchMalformedConstraints.py
     SketcherTests/TestSketcherEllipse.py
+    SketcherTests/TestSketchReferenceRepair.py
 )
 
 if(BUILD_GUI)
     list (APPEND Sketcher_Scripts
           InitGui.py
+          SketchReferenceRepairGui.py
           TestSketcherGui.py
     )
     list (APPEND Sketcher_TestScripts
@@ -45,6 +48,7 @@ if(BUILD_GUI)
           SketcherTests/TestSketcherOffsetGui.py
           SketcherTests/TestExternalFacePreselection.py
           SketcherTests/TestVisualLayerListGui.py
+          SketcherTests/TestSketchReferenceRepairGui.py
     )
 endif(BUILD_GUI)
 
