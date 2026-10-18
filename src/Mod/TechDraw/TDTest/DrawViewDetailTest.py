@@ -7,8 +7,7 @@
 import FreeCAD
 from Test.GuiRecompute import recompute_document, close_document
 import unittest
-from .TechDrawTestUtilities import createPageWithSVGTemplate
-from PySide import QtCore
+from .TechDrawTestUtilities import createPageWithSVGTemplate, waitForHLR
 
 class DrawViewDetailTest(unittest.TestCase):
     def setUp(self):
@@ -29,15 +28,7 @@ class DrawViewDetailTest(unittest.TestCase):
         FreeCAD.ActiveDocument.View.Source = [FreeCAD.ActiveDocument.Box]
         recompute_document(FreeCAD.ActiveDocument)
 
-        #wait for threads to complete before checking result
-        loop = QtCore.QEventLoop()
-
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-
-        timer.start(2000)   #2 second delay
-        loop.exec_()
+        waitForHLR(self.view)
         print("DrawViewDetail test: view created")
 
     def tearDown(self):
@@ -62,15 +53,7 @@ class DrawViewDetailTest(unittest.TestCase):
         recompute_document(FreeCAD.ActiveDocument)
         print("DrawViewDetail test: Detail created")
 
-        #wait for threads to complete before checking result
-        loop = QtCore.QEventLoop()
-
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-
-        timer.start(2000)   #2 second delay
-        loop.exec_()
+        waitForHLR(detail)
 
         edges = detail.getVisibleEdges()
 

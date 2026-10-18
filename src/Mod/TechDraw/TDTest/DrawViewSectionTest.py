@@ -3,8 +3,7 @@
 import FreeCAD
 from Test.GuiRecompute import recompute_document, close_document
 import unittest
-from .TechDrawTestUtilities import createPageWithSVGTemplate
-from PySide import QtCore
+from .TechDrawTestUtilities import createPageWithSVGTemplate, waitForHLR
 
 class DrawViewSectionTest(unittest.TestCase):
     def setUp(self):
@@ -29,15 +28,7 @@ class DrawViewSectionTest(unittest.TestCase):
         self.view.Y = 150.0
         recompute_document(FreeCAD.ActiveDocument)
 
-        #wait for threads to complete before checking result
-        loop = QtCore.QEventLoop()
-
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-
-        timer.start(2000)   #2 second delay
-        loop.exec_()
+        waitForHLR(self.view)
 
         print("DrawViewSection test: view created")
 
@@ -63,15 +54,7 @@ class DrawViewSectionTest(unittest.TestCase):
         print("DrawViewSection test: section created")
         recompute_document(FreeCAD.ActiveDocument)
 
-        #wait for threads to complete before checking result
-        loop = QtCore.QEventLoop()
-
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-
-        timer.start(2000)   #2 second delay
-        loop.exec_()
+        waitForHLR(section)
 
         edges = section.getVisibleEdges()
         self.assertEqual(len(edges), 4, "DrawViewSection has wrong number of edges")
