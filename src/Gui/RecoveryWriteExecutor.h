@@ -30,9 +30,11 @@ public:
     bool schedule(App::Document&, const App::RecoverySnapshotSaveOptions&, Completion);
     /** Cancel queued IO and all completion delivery for this document.
      * Already running IO keeps its own lifecycle admission until it retires.
+     * With completedOnly, retire only ready futures, preserving queued and
+     * running writes and their lifecycle pins for direct close rejection.
      * Returns true when an outstanding write was cancelled.
      */
-    bool cancelDocument(App::Document&);
+    bool cancelDocument(App::Document&, bool completedOnly = false);
     bool isAccepting() const;
     /** Returns false when dispatched work outlives the total wait budget. */
     bool shutdown(std::chrono::milliseconds budget = std::chrono::milliseconds(100));

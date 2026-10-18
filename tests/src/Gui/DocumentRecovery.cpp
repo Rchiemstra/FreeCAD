@@ -173,6 +173,9 @@ protected:
 class AutoSaverRecoveryTest: public RecoveryGuiTest
 {
 protected:
+    enum class ClosePath { GuiAsync, WorkerAsync, Direct };
+    void verifyCloseBeforeCompletionPoll(ClosePath path);
+
     static void SetUpTestSuite()
     {
         RecoveryGuiTest::SetUpTestSuite();
@@ -1349,7 +1352,7 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOwnerIngressCloseCancelsPendingWrite)
     EXPECT_FALSE(called);
 }
 
-TEST_F(AutoSaverRecoveryTest, RecoveryOwnerAsyncCloseBeforeCompletionPoll)
+void AutoSaverRecoveryTest::verifyCloseBeforeCompletionPoll(ClosePath path)
 {
     using namespace std::chrono_literals;
     auto lane = document->executionLane()->shared_from_this();
@@ -1375,26 +1378,57 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOwnerAsyncCloseBeforeCompletionPoll)
     ASSERT_TRUE(QFileInfo::exists(metadataPath()));
     ASSERT_TRUE(document->collaborationService().closeAdmissionActive());
     ASSERT_FALSE(called);
-    App::DocumentCommandHandle closeHandle;
-    {
-        Base::PyGILStateLocker gil;
-        Py::Object pythonDocument(document->getPyObject());
-        Py::Object handle = pythonDocument.callMemberFunction("closeAsync");
-        Py::Dict status(handle.callMemberFunction("status"));
-        closeHandle = App::DocumentCommandHandle(
-            Py::Long(status.getItem("id")).as_long(), document->executionHandle().identity());
+    if (path == ClosePath::Direct) {
+        EXPECT_TRUE(App::GetApplication().closeDocument(documentName.c_str()));
     }
-    const auto closeDeadline = std::chrono::steady_clock::now() + 5s;
-    while (!closeHandle.status().terminal()
-           && std::chrono::steady_clock::now() < closeDeadline) {
-        App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
+    else {
+        const auto submitClose = [&] {
+            Base::PyGILStateLocker gil;
+            Py::Object pythonDocument(document->getPyObject());
+            Py::Object handle = pythonDocument.callMemberFunction("closeAsync");
+            Py::Dict status(handle.callMemberFunction("status"));
+            return App::DocumentCommandHandle(
+                Py::Long(status.getItem("id")).as_long(), document->executionHandle().identity());
+        };
+        App::DocumentCommandHandle closeHandle;
+        if (path == ClosePath::WorkerAsync) {
+            auto submitted = std::async(std::launch::async, [&] {
+                EXPECT_FALSE(App::MainThreadSignalConfig::isMainThread());
+                return submitClose();
+            });
+            ASSERT_EQ(submitted.wait_for(5s), std::future_status::ready);
+            closeHandle = submitted.get();
+        }
+        else {
+            closeHandle = submitClose();
+        }
+        const auto closeDeadline = std::chrono::steady_clock::now() + 5s;
+        while (!closeHandle.status().terminal()
+               && std::chrono::steady_clock::now() < closeDeadline) {
+            App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
+        }
+        EXPECT_EQ(closeHandle.status().state, App::DocumentCommandState::Completed)
+            << closeHandle.status().diagnostic;
     }
-    EXPECT_EQ(closeHandle.status().state, App::DocumentCommandState::Completed)
-        << closeHandle.status().diagnostic;
     ASSERT_EQ(App::GetApplication().getDocument(documentName.c_str()), nullptr);
     document = nullptr; guiDocument = nullptr; object = nullptr;
     QCoreApplication::processEvents();
     EXPECT_FALSE(called);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerAsyncCloseBeforeCompletionPoll)
+{
+    verifyCloseBeforeCompletionPoll(ClosePath::GuiAsync);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerWorkerAsyncCloseBeforeCompletionPoll)
+{
+    verifyCloseBeforeCompletionPoll(ClosePath::WorkerAsync);
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOwnerDirectCloseBeforeCompletionPoll)
+{
+    verifyCloseBeforeCompletionPoll(ClosePath::Direct);
 }
 
 TEST_F(AutoSaverRecoveryTest, RecoveryOwnerPythonCloseCancelsUndispatchedThirdWrite)

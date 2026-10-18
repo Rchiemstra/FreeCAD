@@ -564,7 +564,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 186,
+      "line": 190,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -572,7 +572,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 187,
+      "line": 191,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -580,7 +580,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 195,
+      "line": 199,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -588,7 +588,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 240,
+      "line": 244,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -596,7 +596,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 319,
+      "line": 323,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -604,7 +604,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 404,
+      "line": 408,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",

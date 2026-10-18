@@ -82,6 +82,9 @@ AutoSaver::AutoSaver(QObject* parent)
         [this](const App::Document& doc, bool) { slotCreateDocument(doc); });
     closeDocumentConnection = App::GetApplication().signalBeforeCloseDocumentAdmission.connect(
         [this](App::Document& doc) { cancelRecoveryWrite(doc); });
+    lifecycleCloseDocumentConnection =
+        App::GetApplication().signalBeforeCloseDocumentLifecycleAdmission.connect(
+            [this](App::Document& doc) { cancelRecoveryWrite(doc, /*completedOnly=*/true); });
     deleteDocumentConnection = App::GetApplication().signalDeleteDocument.connect(
         [this](const App::Document& doc) { slotDeleteDocument(doc); });
 }
@@ -92,6 +95,7 @@ AutoSaver::~AutoSaver()
     recoveryWriteExecutor->shutdown();
     newDocumentConnection.disconnect();
     closeDocumentConnection.disconnect();
+    lifecycleCloseDocumentConnection.disconnect();
     deleteDocumentConnection.disconnect();
     for (auto& entry : saverMap) delete entry.second;
     self = nullptr;
@@ -112,9 +116,9 @@ RecoveryWriteExecutor& AutoSaver::recoveryWrites()
     return *recoveryWriteExecutor;
 }
 
-void AutoSaver::cancelRecoveryWrite(App::Document& document)
+void AutoSaver::cancelRecoveryWrite(App::Document& document, bool completedOnly)
 {
-    if (!recoveryWriteExecutor->cancelDocument(document)) return;
+    if (!recoveryWriteExecutor->cancelDocument(document, completedOnly)) return;
     const auto saver = saverMap.find(document.getName());
     if (saver != saverMap.end() && saver->second->saveInProgress) {
         // Cancellation drops completion even if executing IO makes Close Busy.
