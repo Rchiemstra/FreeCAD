@@ -462,6 +462,9 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
                 Gui::SyntheticPropertyReplay replay(this, &ShapeAppearance);
                 onChanged(&ShapeAppearance);
             }
+            // Reapply the placement marker without assigning a persistent value.
+            Base::ObjectStatusLocker<App::Property::Status, App::Property> placementReplay(
+                App::Property::NoModify, &ShowPlacement);
             onChanged(&ShowPlacement);
         }
     }

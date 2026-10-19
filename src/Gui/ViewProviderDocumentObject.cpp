@@ -384,6 +384,7 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
             // caller while another thread holds atomic presentation admission.
             // User1 is only the App Visibility mirror; that change is already marked.
             if (!Visibility.testStatus(App::Property::User1)
+                && !Visibility.testStatus(App::Property::NoModify)
                 && !App::atomicPresentationMutationAdmissionHeldByOtherThread(
                     *getObject()->getDocument())) {
                 getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
