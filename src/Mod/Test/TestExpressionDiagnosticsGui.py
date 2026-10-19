@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""The global diagnostics command must be observational and select its rows."""
+"""GUI command and cached expression diagnostics in the property editor."""
 
 import unittest
 
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtGui, QtWidgets
-from TestExpressionDiagnostics import close_document, save_document_as
+from PySide import QtCore, QtGui, QtWidgets
+from TestExpressionDiagnostics import close_document, recompute_document, save_document_as
 import os
 import tempfile
 
@@ -47,3 +47,182 @@ class ExpressionDiagnosticsGuiTests(unittest.TestCase):
                 self.assertTrue(any(a.objectName() == "Std_ExpressionDiagnostics" for a in actions))
         finally:
             Gui.activateWorkbench(original)
+
+
+class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
+    def setUp(self):
+        self.doc = App.newDocument("ExpressionDiagnosticsDataTab")
+        self.obj = self.doc.addObject("App::FeaturePython", "Values")
+        for name in ("Good", "Broken", "Plain"):
+            self.obj.addProperty("App::PropertyFloat", name)
+        self.obj.Good = 2
+        self.obj.setExpression("Good", "2")
+        self.obj.setExpression("Broken", "Absent.Value")
+        self.view = Gui.getMainWindow().findChild(QtWidgets.QTreeView, "propertyEditorData")
+        self.assertIsNotNone(self.view)
+        self.params = App.ParamGet("User parameter:BaseApp/Preferences/PropertyView")
+        self.old_color = self.params.GetUnsigned("ExpressionErrorColor", 0xD35400FF)
+        self.params.SetUnsigned("ExpressionErrorColor", 0xD35400FF)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.obj)
+        self.wait_for(lambda: self.index("Broken").isValid())
+
+    def tearDown(self):
+        self.params.SetUnsigned("ExpressionErrorColor", self.old_color)
+        Gui.Selection.clearSelection()
+        close_document(self.doc)
+
+    def wait_for(self, predicate):
+        import time
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            QtWidgets.QApplication.processEvents()
+            if predicate():
+                return
+            QtCore.QThread.msleep(20)
+        self.fail("Data tab did not update")
+
+    def index(self, name, parent=QtCore.QModelIndex()):
+        model = self.view.model()
+        for row in range(model.rowCount(parent)):
+            index = model.index(row, 0, parent)
+            if index.data() == name:
+                return index.sibling(row, 1)
+            found = self.index(name, index)
+            if found.isValid():
+                return found
+        return QtCore.QModelIndex()
+
+    def color(self, name):
+        color = self.index(name).data(QtCore.Qt.ForegroundRole)
+        return color.color() if isinstance(color, QtGui.QBrush) else color
+
+    def assert_broken(self, name, reason):
+        self.wait_for(lambda: self.color(name) == QtGui.QColor(0xD3, 0x54, 0)
+                      and reason in (self.index(name).data(QtCore.Qt.ToolTipRole) or ""))
+        self.assertIn(reason, self.index(name).data(QtCore.Qt.ToolTipRole))
+
+    def assert_good(self, name):
+        self.wait_for(lambda: self.color(name) == QtWidgets.QApplication.palette().color(
+            QtGui.QPalette.Link))
+        self.assertNotIn("Expression error", self.index(name).data(QtCore.Qt.ToolTipRole) or "")
+
+    def test_roles_and_repair(self):
+        recompute_document(self.doc)
+        self.assert_broken("Broken", "Absent")
+        self.assert_good("Good")
+        self.assertIsNone(self.color("Plain"))
+        self.obj.setExpression("Broken", "3")
+        recompute_document(self.doc)
+        self.assert_good("Broken")
+        self.obj.setExpression("Broken", "1 / 0")
+        recompute_document(self.doc)
+        self.assert_broken("Broken", "zero")
+        self.obj.setExpression("Broken", None)
+        self.wait_for(lambda: self.color("Broken") is None)
+        self.assertNotIn("Expression error", self.index("Broken").data(QtCore.Qt.ToolTipRole) or "")
+
+    def test_reference_creation_rename_delete_and_property_removal(self):
+        self.assert_broken("Broken", "Absent")
+        source = self.doc.addObject("App::FeaturePython", "Absent")
+        source.addProperty("App::PropertyFloat", "Value")
+        source.Value = 7
+        recompute_document(self.doc)
+        self.assert_good("Broken")
+        source.Label = "Input values"
+        self.obj.setExpression("Broken", "<<Input values>>.Value")
+        source.Label = "Renamed values"
+        recompute_document(self.doc)
+        self.assert_good("Broken")
+        source.removeProperty("Value")
+        recompute_document(self.doc)
+        self.assert_broken("Broken", "Value")
+        source.addProperty("App::PropertyFloat", "Value")
+        recompute_document(self.doc)
+        self.assert_good("Broken")
+        self.doc.removeObject(source.Name)
+        recompute_document(self.doc)
+        self.assert_broken("Broken", "Value")
+
+    def test_error_color_parameter(self):
+        self.assert_broken("Broken", "Absent")
+        self.params.SetUnsigned("ExpressionErrorColor", 0xC02030FF)
+        self.wait_for(lambda: self.color("Broken") == QtGui.QColor(0xC0, 0x20, 0x30))
+        self.assert_good("Good")
+
+    def test_role_reads_use_cached_diagnostics(self):
+        from unittest.mock import patch
+        from freecad import expression_diagnostics
+
+        self.assert_broken("Broken", "Absent")
+        # A large tab can request these roles thousands of times per repaint.
+        with patch.object(expression_diagnostics, "diagnose",
+                          wraps=expression_diagnostics.diagnose) as diagnose:
+            for _ in range(1000):
+                for name in ("Good", "Broken", "Plain"):
+                    index = self.index(name)
+                    index.data(QtCore.Qt.ForegroundRole)
+                    index.data(QtCore.Qt.ToolTipRole)
+            self.assertEqual(diagnose.call_count, 0)
+            self.obj.setExpression("Broken", "Absent.Other")
+            self.wait_for(lambda: "Absent.Other" in (
+                self.index("Broken").data(QtCore.Qt.ToolTipRole) or ""))
+            self.assertGreater(diagnose.call_count, 0)
+
+    def test_compound_expression_roles(self):
+        self.obj.addProperty("App::PropertyVector", "Vector")
+        self.obj.setExpression("Vector.x", "Absent.Value")
+        self.obj.setExpression("Vector.y", "2")
+        recompute_document(self.doc)
+        self.wait_for(lambda: self.index("Vector").isValid())
+        self.assert_broken("Vector", "Vector.x")
+        vector = self.index("Vector")
+        parent = vector.sibling(vector.row(), 0)
+        self.wait_for(lambda: self.view.model().rowCount(parent) == 3)
+        x = self.view.model().index(0, 1, parent)
+        y = self.view.model().index(1, 1, parent)
+        self.assertEqual(x.data(QtCore.Qt.ForegroundRole), QtGui.QColor(0xD3, 0x54, 0))
+        self.assertIn("Absent", x.data(QtCore.Qt.ToolTipRole))
+        self.assertEqual(y.data(QtCore.Qt.ForegroundRole),
+                         QtWidgets.QApplication.palette().color(QtGui.QPalette.Link))
+
+
+    def test_named_sketch_constraint_roles(self):
+        import Part
+        import Sketcher
+
+        sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
+        for index, length in enumerate((10, 20)):
+            sketch.addGeometry(Part.LineSegment(
+                App.Vector(0, index * 5, 0), App.Vector(length, index * 5, 0)))
+            constraint = sketch.addConstraint(Sketcher.Constraint("Distance", index, float(length)))
+            sketch.renameConstraint(constraint, ("Width", "Height")[index])
+        sketch.setExpression("Constraints.Width", "Absent.Value")
+        sketch.setExpression("Constraints.Height", "20 mm")
+        recompute_document(self.doc)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch)
+        self.wait_for(lambda: self.index("Width").isValid())
+        self.assert_broken("Width", "Constraints.Width")
+        self.assert_broken("Constraints", "Constraints.Width")
+        self.assert_good("Height")
+
+
+    def test_multi_selection_roles(self):
+        other = self.doc.addObject("App::FeaturePython", "OtherValues")
+        for name in ("Good", "Broken", "Plain"):
+            other.addProperty("App::PropertyFloat", name)
+        other.Broken = 3
+        other.setExpression("Broken", "3")
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(other)
+        self.assert_good("Broken")
+        Gui.Selection.addSelection(self.obj)
+        self.assert_broken("Broken", "Absent")
+
+
+    def test_valid_dependent_expression_keeps_existing_color(self):
+        self.obj.setExpression("Good", "Broken + 2")
+        self.obj.setExpression("Broken", "Missing.Value")
+        self.assert_broken("Broken", "Missing")
+        self.assert_good("Good")
