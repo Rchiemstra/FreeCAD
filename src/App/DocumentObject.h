@@ -362,6 +362,14 @@ public:
     /// Reset the touch flags of the document object.
     void purgeTouched();
 
+    /// Snapshot/restore the fine-grained dirty filter for a rejected placement attempt.
+    const std::unordered_set<std::string>& getTouchedProperties() const
+    {
+        return touchedProps;
+    }
+    void restoreTouchedProperties(const std::unordered_set<std::string>& properties);
+
+
     /// Check whether this document object is in an error state.
     bool isError() const
     {
