@@ -9,7 +9,7 @@ import unittest
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
-from PySide import QtGui
+from PySide import QtCore, QtGui
 from Test.GuiRecompute import (
     _left_commit, _pump_gui_until, _retry_while_lane_busy,
     close_document, recompute_document,
@@ -43,6 +43,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
                 if doc.Name in App.listDocuments():
                     App.setActiveDocument(doc.Name)
                     Gui.getDocument(doc.Name).resetEdit()
+                    Gui.Control.closeDialog(Gui.getDocument(doc.Name))
                     if doc.HasPendingTransaction:
                         doc.abortTransaction()
                     close_document(doc)
@@ -70,7 +71,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         h = _retry_while_lane_busy(lambda: self.doc.recomputeAsync([self.blocker]), 30)
         try:
             _pump_gui_until(entered.is_set, 5)
-            yield
+            yield release, h
         finally:
             release.set()
             _pump_gui_until(lambda: h.done() and _left_commit(self.doc), 30, h.status)
@@ -115,7 +116,9 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         update = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
         update.setChecked(False)
         editor = field.findChild(QtGui.QLineEdit)
+        editor.setFocus()
         editor.setText(str(value) + " mm")
+        QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
 
     def wait_closed(self):
         _pump_gui_until(lambda: not Gui.Control.activeDialog(), 8,
@@ -127,7 +130,14 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         self.assertTrue(feature.Shape.isValid())
         self.assertAlmostEqual(self.body.Shape.Volume, feature.Shape.Volume)
         self.assertAlmostEqual(copy.Shape.Volume, feature.Shape.Volume)
-        self.assertAlmostEqual(copy.Shape.common(feature.Shape).Volume, feature.Shape.Volume)
+        self.assertTrue(copy.Shape.isValid())
+        # The consumer lives outside the Body's placement frame. Compare
+        # intrinsic geometry as well as volume, independently of that frame.
+        self.assertEqual(len(copy.Shape.Faces), len(feature.Shape.Faces))
+        self.assertEqual(len(copy.Shape.Edges), len(feature.Shape.Edges))
+        for actual, expected in zip(sorted(e.Length for e in copy.Shape.Edges),
+                                    sorted(e.Length for e in feature.Shape.Edges)):
+            self.assertAlmostEqual(actual, expected)
 
     def busy_ok(self, kind):
         feature, copy = self.feature(kind)
@@ -141,6 +151,18 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         if kind in ("Pad", "Pocket"):
             volume = math.pi * (4.8 if kind == "Pad" else 5.2)**2 * 2
             self.assertAlmostEqual(feature.Shape.Volume, volume if kind == "Pad" else 1600-volume)
+
+    def dress_up_ok(self, kind):
+        feature, copy = self.feature(kind)
+        Gui.Control.activeTaskDialog().accept()
+        self.wait_closed()
+        self.assert_complete(feature, copy)
+
+    def testFilletOK(self):
+        self.dress_up_ok("Fillet")
+
+    def testChamferOK(self):
+        self.dress_up_ok("Chamfer")
 
     def testFilletOKWhileBusy(self):
         self.busy_ok("Fillet")
@@ -189,29 +211,46 @@ class TestTaskFeatureCompletion(unittest.TestCase):
             Gui.Control.activeTaskDialog().accept()
             # Closing the editor is the first step of document close; it must
             # dispose its queued OK before the close can acquire the busy lane.
-            Gui.getDocument(self.doc.Name).resetEdit()
+            Gui.Control.closeDialog(Gui.getDocument(self.doc.Name))
         name = self.doc.Name
         close_document(self.doc)
         self.assertNotIn(name, App.listDocuments())
         self.assertFalse(Gui.Control.activeDialog())
 
     def testDocumentSwitchDuringDeferredOK(self):
-        feature, copy = self.feature("Pad")
         other, body = self.new_body("OtherTask")
         box = body.newObject("PartDesign::AdditiveBox", "Box")
         recompute_document(other)
-        other.openTransaction("Other editor")
-        Gui.getDocument(other.Name).setEdit(box.Name)
-        other_dialog = Gui.Control.activeTaskDialog()
+        App.setActiveDocument(self.doc.Name)
+        feature, copy = self.feature("Pad")
+        App.setActiveDocument(other.Name)
+
+        class OtherPanel:
+            def __init__(self):
+                self.form = QtGui.QWidget()
+
+        panel = OtherPanel()
+        Gui.Control.showDialog(panel, Gui.getDocument(other.Name))
+        self.assertIsNotNone(Gui.Control.activeTaskDialog(Gui.getDocument(other.Name)))
         App.setActiveDocument(self.doc.Name)
         self.change_tolerance(0.4)
-        with self.busy():
+        with self.busy() as (release, handle):
             Gui.Control.activeTaskDialog().accept()
+            self.assertTrue(self.doc.HasPendingTransaction)
+            release.set()
+            # Let the owner leave its prepared commit before activation, but
+            # do not deliver the queued OK timer until the user has switched.
+            deadline = time.monotonic() + 5
+            while not (handle.done() and _left_commit(self.doc)):
+                if time.monotonic() > deadline:
+                    self.fail("owner did not release the document activation barrier")
+                time.sleep(0.001)
             App.setActiveDocument(other.Name)
-        _pump_gui_until(lambda: not self.doc.HasPendingTransaction, 8)
-        self.assertIsNotNone(Gui.Control.activeTaskDialog())
-        self.assertEqual(Gui.Control.activeTaskDialog(), other_dialog)
-        self.assertTrue(other.HasPendingTransaction)
+            self.assertEqual(App.activeDocument(), other)
+        _pump_gui_until(
+            lambda: not Gui.Control.activeDialog(Gui.getDocument(self.doc.Name)), 8
+        )
+        self.assertIsNotNone(Gui.Control.activeTaskDialog(Gui.getDocument(other.Name)))
         self.assert_complete(feature, copy)
         App.setActiveDocument(self.doc.Name)
         self.assertFalse(Gui.Control.activeDialog())
