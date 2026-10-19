@@ -620,6 +620,7 @@ class TestComponentPatternGui(unittest.TestCase):
         import CommandComponentPattern
 
         panel = CommandComponentPattern.activeTask
+        self.panel = panel
         self.assertIsNotNone(panel)
         self.assertFalse(panel.accept())
         self.waitForPanel(panel)
