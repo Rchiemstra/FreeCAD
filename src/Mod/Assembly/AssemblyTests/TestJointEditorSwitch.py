@@ -36,6 +36,7 @@ class TestJointEditorSwitch(unittest.TestCase):
                 [(part, ["Face1", "Vertex1"]) for part in self.parts[index:index + 2]],
             )
             joint.Label = "SwitchJoint" + str(index)
+            joint.Visibility = False
             self.joints.append(joint)
         self.doc.recompute()
         self.gui_doc.setEdit(self.assembly)
@@ -55,55 +56,90 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.gui_doc.resetEdit()
         App.closeDocument(self.doc.Name)
 
-    def openJoint(self, joint, tree):
+    def mouse(self, widget, point, button=QtCore.Qt.LeftButton,
+              modifiers=QtCore.Qt.NoModifier):
+        for kind in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease):
+            event = QtGui.QMouseEvent(
+                kind, QtCore.QPointF(point), button,
+                button if kind == QtCore.QEvent.MouseButtonPress else QtCore.Qt.NoButton,
+                modifiers,
+            )
+            QtWidgets.QApplication.sendEvent(widget, event)
+
+    def key(self, widget, key, modifiers=QtCore.Qt.NoModifier):
+        for kind in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease):
+            QtWidgets.QApplication.sendEvent(widget, QtGui.QKeyEvent(kind, key, modifiers))
+
+    def finish(self, accept):
+        role = QtWidgets.QDialogButtonBox.Ok if accept else QtWidgets.QDialogButtonBox.Cancel
+        buttons = [box.button(role) for box in
+                   Gui.getMainWindow().findChildren(QtWidgets.QDialogButtonBox)]
+        button = next(button for button in buttons if button and button.isVisible())
+        self.mouse(button, button.rect().center())
+        Gui.updateGui()
+
+    def openJoint(self, joint, tree, expected=None):
+        # Both paths use real tree selection before the editor entry point.
+        items = []
+        for widget in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
+            items = widget.findItems(
+                joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
+            )
+            if items:
+                break
+        self.assertTrue(items, "Joint must be present in the model tree")
+        child = widget
+        parent = child.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QtWidgets.QTabWidget):
+                parent.setCurrentWidget(child)
+            if isinstance(parent, QtWidgets.QDockWidget):
+                parent.show()
+            child, parent = parent, parent.parentWidget()
+        widget.expandAll()
+        Gui.updateGui()
+        item = widget.findItems(
+            joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
+        )[0]
+        widget.scrollToItem(item)
+        Gui.updateGui()
+        item = widget.findItems(
+            joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
+        )[0]
+        rect = widget.visualItemRect(item)
+        point = QtCore.QPoint(rect.right() - 10, rect.center().y())
+        self.mouse(widget.viewport(), point)
         if tree:
-            # Use real clicks: the preceding selection change is part of the
-            # regression, before TreeWidget opens its automatic "Edit" transaction.
-            for widget in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
-                items = widget.findItems(
-                    joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
-                )
-                if items:
-                    break
-            self.assertTrue(items, "Joint must be present in the model tree")
-            child = widget
-            parent = child.parentWidget()
-            while parent is not None:
-                if isinstance(parent, QtWidgets.QTabWidget):
-                    parent.setCurrentWidget(child)
-                if isinstance(parent, QtWidgets.QDockWidget):
-                    parent.show()
-                child, parent = parent, parent.parentWidget()
-            widget.expandAll()
-            Gui.updateGui()
-            # Showing or expanding the model dock can rebuild its items.
-            item = widget.findItems(
-                joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
-            )[0]
-            widget.scrollToItem(item)
-            Gui.updateGui()
-            item = widget.findItems(
-                joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
-            )[0]
-            rect = widget.visualItemRect(item)
-            point = QtCore.QPoint(rect.right() - 10, rect.center().y())
-            for kind in (
-                QtCore.QEvent.MouseButtonPress,
-                QtCore.QEvent.MouseButtonRelease,
-                QtCore.QEvent.MouseButtonDblClick,
-                QtCore.QEvent.MouseButtonRelease,
-            ):
+            for kind in (QtCore.QEvent.MouseButtonDblClick, QtCore.QEvent.MouseButtonRelease):
                 event = QtGui.QMouseEvent(
                     kind, QtCore.QPointF(point), QtCore.Qt.LeftButton,
                     QtCore.Qt.LeftButton, QtCore.Qt.NoModifier,
                 )
                 QtWidgets.QApplication.sendEvent(widget.viewport(), event)
         else:
-            # The Edit Joint context-menu action invokes editJoint directly.
-            self.assertTrue(joint.ViewObject.Proxy.editJoint(joint.ViewObject))
+            self.mouse(widget.viewport(), point, QtCore.Qt.RightButton)
+            triggered = []
+
+            def chooseEdit():
+                menu = QtWidgets.QApplication.activePopupWidget()
+                if isinstance(menu, QtWidgets.QMenu):
+                    for action in menu.actions():
+                        if action.text().replace("&", "") == App.Qt.translate("Assembly", "Edit Joint"):
+                            triggered.append(action.text())
+                            self.mouse(menu, menu.actionGeometry(action).center())
+                            return
+                    menu.close()
+
+            # contextMenuEvent enters QMenu.exec(); choose its real action there.
+            QtCore.QTimer.singleShot(0, chooseEdit)
+            event = QtGui.QContextMenuEvent(
+                QtGui.QContextMenuEvent.Mouse, point, widget.viewport().mapToGlobal(point)
+            )
+            QtWidgets.QApplication.sendEvent(widget.viewport(), event)
+            self.assertTrue(triggered, "Right-click menu must offer Edit Joint")
         Gui.updateGui()
         self.assertIsNotNone(JointObject.activeTask)
-        self.assertEqual(JointObject.activeTask.joint, joint)
+        self.assertEqual(JointObject.activeTask.joint, expected or joint)
 
     def assertUnchanged(self):
         for joint, references in zip(self.joints, self.references):
@@ -118,12 +154,7 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.openJoint(self.joints[0], tree)
         self.openJoint(self.joints[1], tree)
         self.assertUnchanged()
-        task = Gui.Control.activeTaskDialog()
-        if accept:
-            task.accept()
-        else:
-            task.reject()
-        Gui.updateGui()
+        self.finish(accept)
         self.assertFalse(Gui.Control.activeDialog())
         self.assertUnchanged()
         # A real edit after the switch supplies an undo entry even when both
@@ -149,39 +180,39 @@ class TestJointEditorSwitch(unittest.TestCase):
     def test_context_switch_then_cancel(self):
         self.checkSwitch(tree=False, accept=False)
 
-    def checkEditedSwitch(self, tree, accept):
-        originalLabels = [joint.Label for joint in self.joints]
-        self.openJoint(self.joints[0], tree)
-        self.joints[0].Label = "Edited first joint"
-        self.openJoint(self.joints[1], tree)
-        self.assertEqual(self.joints[0].Label, "Edited first joint")
-        self.assertUnchanged()
-        self.joints[1].Label = "Edited second joint"
-        task = Gui.Control.activeTaskDialog()
-        if accept:
-            task.accept()
-        else:
-            task.reject()
+    def changeType(self):
+        combo = JointObject.activeTask.jForm.jointType
+        self.key(combo, QtCore.Qt.Key_Down)
         Gui.updateGui()
-        self.assertFalse(Gui.Control.activeDialog())
+        self.assertEqual(JointObject.activeTask.joint.JointType, "Revolute")
+
+    def assertTypes(self, first, second):
+        self.assertEqual([j.JointType for j in self.joints], [first, second])
         self.assertUnchanged()
-        self.assertEqual(self.joints[0].Label, "Edited first joint")
-        self.assertEqual(
-            self.joints[1].Label, "Edited second joint" if accept else originalLabels[1]
-        )
-        finalLabels = [joint.Label for joint in self.joints]
-        undoCount = self.doc.UndoCount
-        self.assertGreater(undoCount, 0)
-        # Tree double-click also creates an automatic transaction. Check every
-        # entry produced by the switch, including panel cleanup, in both directions.
-        for _ in range(undoCount):
+        self.assertEqual([j.Visibility for j in self.joints], [False, False])
+
+    def checkEditedSwitch(self, tree, accept):
+        self.openJoint(self.joints[0], tree)
+        self.changeType()
+        self.openJoint(self.joints[1], tree)
+        self.assertEqual(self.doc.UndoCount, 1, "A including cleanup is one finished edit")
+        self.assertEqual([j.Visibility for j in self.joints], [False, True])
+        self.changeType()
+        self.finish(accept)
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertTypes("Revolute", "Revolute" if accept else "Fixed")
+        self.assertEqual(self.doc.UndoCount, 2 if accept else 1)
+        if accept:
             self.doc.undo()
-            self.assertUnchanged()
-        self.assertEqual([joint.Label for joint in self.joints], originalLabels)
-        for _ in range(undoCount):
+            self.assertTypes("Revolute", "Fixed")
+        self.doc.undo()
+        self.assertTypes("Fixed", "Fixed")
+        self.assertEqual(self.doc.UndoCount, 0)
+        self.doc.redo()
+        self.assertTypes("Revolute", "Fixed")
+        if accept:
             self.doc.redo()
-            self.assertUnchanged()
-        self.assertEqual([joint.Label for joint in self.joints], finalLabels)
+            self.assertTypes("Revolute", "Revolute")
 
     def test_tree_switch_commits_first_edit_then_ok(self):
         self.checkEditedSwitch(tree=True, accept=True)
@@ -195,15 +226,89 @@ class TestJointEditorSwitch(unittest.TestCase):
     def test_context_switch_commits_first_edit_then_cancel(self):
         self.checkEditedSwitch(tree=False, accept=False)
 
-    def test_edit_reference_delete_after_selection_clear(self):
-        self.openJoint(self.joints[0], tree=False)
-        task = JointObject.activeTask
-        Gui.Selection.clearSelection()
-        self.assertUnchanged()
-        task.jForm.featureList.setCurrentRow(0)
-        task.deleteSelectedItems()
-        self.assertEqual(len(task.refs), 1)
+    def deleteReferences(self, multiple=False):
+        featureList = JointObject.activeTask.jForm.featureList
+        self.mouse(featureList.viewport(), featureList.visualItemRect(featureList.item(0)).center())
+        if multiple:
+            self.mouse(featureList.viewport(), featureList.visualItemRect(featureList.item(1)).center(),
+                       modifiers=QtCore.Qt.ControlModifier)
+            self.assertEqual(len(featureList.selectedIndexes()), 2)
+        self.key(featureList, QtCore.Qt.Key_Delete)
+        Gui.updateGui()
+
+    def checkInvalidSwitch(self, tree):
+        self.openJoint(self.joints[0], tree)
+        self.changeType()
+        self.deleteReferences()
+        self.assertEqual(len(JointObject.activeTask.refs), 1)
         self.assertIsNone(self.joints[0].Reference2)
-        Gui.Control.activeTaskDialog().reject()
+        self.openJoint(self.joints[1], tree, expected=self.joints[0])
+        # Failed validation must leave A's entire transaction available to Cancel.
+        self.assertEqual(self.doc.UndoCount, 0)
+        self.finish(False)
+        self.assertTypes("Fixed", "Fixed")
+        self.assertEqual(self.doc.UndoCount, 0)
+
+    def test_tree_failed_accept_then_cancel_restores_first_joint(self):
+        self.checkInvalidSwitch(tree=True)
+
+    def test_context_failed_accept_then_cancel_restores_first_joint(self):
+        self.checkInvalidSwitch(tree=False)
+
+    def test_delete_multiple_reference_rows(self):
+        self.openJoint(self.joints[0], tree=True)
+        self.deleteReferences(multiple=True)
+        self.assertEqual(JointObject.activeTask.refs, [])
+        self.assertIsNone(self.joints[0].Reference1)
+        self.assertIsNone(self.joints[0].Reference2)
+        self.finish(False)
+        self.assertUnchanged()
+        self.assertEqual(self.doc.UndoCount, 0)
+
+    def viewport(self):
+        widgets = Gui.getMainWindow().findChildren(QtWidgets.QWidget)
+        return next(w for w in widgets if w.isVisible() and
+                    w.metaObject().className() == "QOpenGLWidget")
+
+    def test_viewport_empty_space_keeps_references(self):
+        self.openJoint(self.joints[0], tree=True)
+        view = self.viewport()
+        # Before this branch GreedySelection ignores empty-space clicks, leaving
+        # the existing joint's references selected and the editor open.
+        self.mouse(view, QtCore.QPoint(2, 2))
         Gui.updateGui()
         self.assertUnchanged()
+        self.assertEqual(len(JointObject.activeTask.refs), 2)
+        self.finish(False)
+        self.assertEqual(self.doc.UndoCount, 0)
+
+    def test_viewport_escape_cancels_edit(self):
+        self.openJoint(self.joints[0], tree=True)
+        self.changeType()
+        # Before this branch Escape in the viewport rejects the edit, restoring
+        # the joint and its references without adding an undo entry.
+        self.key(self.viewport(), QtCore.Qt.Key_Escape)
+        Gui.updateGui()
+        self.assertIsNone(JointObject.activeTask)
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertTypes("Fixed", "Fixed")
+        self.assertEqual(self.doc.UndoCount, 0)
+
+    def test_viewport_deselect_removes_reference(self):
+        self.openJoint(self.joints[0], tree=True)
+        view = Gui.activeDocument().activeView()
+        view.viewLeft()
+        view.fitAll()
+        Gui.updateGui()
+        widget = self.viewport()
+        # Face1 is the box's left face. GreedySelection toggles a clicked selected
+        # reference off, as before this branch; Cancel must restore that change.
+        point = view.getPointOnScreen(App.Vector(0, 5, 5))
+        self.mouse(widget, QtCore.QPoint(int(point[0]), int(point[1])),
+                   modifiers=QtCore.Qt.ControlModifier)
+        Gui.updateGui()
+        self.assertEqual(len(JointObject.activeTask.refs), 1)
+        self.assertIsNone(self.joints[0].Reference2)
+        self.finish(False)
+        self.assertUnchanged()
+        self.assertEqual(self.doc.UndoCount, 0)
