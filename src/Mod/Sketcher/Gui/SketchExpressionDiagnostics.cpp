@@ -51,6 +51,13 @@ void SketchExpressionDiagnostics::start(ViewProviderSketch* provider)
             if (name && std::string_view(name) == "Visibility") {
                 return;
             }
+            if (&object == sketch && name
+                && (std::string_view(name) == "Geometry"
+                    || std::string_view(name) == "FullyConstrained")) {
+                checkSolverOutputs = true;
+                requestUpdate();
+                return;
+            }
             invalidate(&object == sketch && name && std::string_view(name) == "Constraints");
         }));
     connections.push_back(app.signalNewObject.connect(
@@ -137,7 +144,7 @@ bool SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
         dirty = dirty || inputs != constraintInputs;
         checkConstraints = false;
     }
-    if (!dirty) {
+    if (!dirty && !checkSolverOutputs) {
         return true;
     }
     Base::PyGILStateLocker lock;
@@ -145,6 +152,16 @@ bool SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
         Py::Module module(PyImport_ImportModule("freecad.sketcher_expression_diagnostics"), true);
         Py::Tuple args(1);
         args.setItem(0, Py::Object(sketch->getPyObject(), true));
+        if (checkSolverOutputs) {
+            if (!dirty) {
+                dirty = Py::Object(Py::Callable(module.getAttr("references_solver_outputs"))
+                                       .apply(args)).isTrue();
+            }
+            checkSolverOutputs = false;
+        }
+        if (!dirty) {
+            return true;
+        }
         Py::Dict result(Py::Callable(module.getAttr("constraint_errors")).apply(args));
         Errors captured;
         PyObject* key = nullptr;

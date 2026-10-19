@@ -59,6 +59,39 @@ def _binding_depends_on(sketch, path, root):
     return False
 
 
+def references_solver_outputs(sketch):
+    """Solver publication matters only if a binding reads those outputs.
+
+    Inspect dependency metadata under the caller's read reservation; do not
+    evaluate expressions just to decide whether the snapshot is invalidated.
+    """
+    pending, seen = list(sketch.Document.Objects), set()
+    while pending:
+        obj = pending.pop()
+        if obj.FullName in seen:
+            continue
+        seen.add(obj.FullName)
+        for _, expression in obj.ExpressionEngine:
+            if not expression:
+                continue
+            try:
+                references = obj.getExpressionReferences(expression)
+            except Exception:
+                continue
+            for ref in references:
+                source = ref["object"]
+                if source is None:
+                    continue
+                if source == sketch and ref["property"].split(".")[0].split("[")[0] in {
+                        "Geometry", "FullyConstrained"}:
+                    return True
+                pending.append(source)
+        for edge in obj.OutListProp:
+            if edge.FromProp != "ExpressionEngine" and edge.ToObj is not None:
+                pending.append(edge.ToObj)
+    return False
+
+
 def constraint_errors(sketch):
     """Return {zero_based_constraint_index: reason}, without changing the sketch."""
     if not any(path.lstrip(".").startswith("Constraints") and expression

@@ -45,6 +45,7 @@ private:
     std::vector<fastsignals::connection> connections;
     bool dirty = true;
     bool checkConstraints = false;
+    bool checkSolverOutputs = false;
 };
 
 QVariant constraintExpressionData(const SketchExpressionDiagnostics& diagnostics,
