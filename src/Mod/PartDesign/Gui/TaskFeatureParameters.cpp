@@ -29,6 +29,7 @@
 #include <App/DocumentObserver.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/Control.h>
 #include <Gui/InputHint.h>
 #include <Gui/Inventor/Draggers/Gizmo.h>
 #include <Gui/MainWindow.h>
@@ -39,6 +40,7 @@
 #include "ui_TaskPreviewParameters.h"
 
 #include "TaskFeatureParameters.h"
+#include "TaskRecomputeRetry.h"
 #include "TaskSketchBasedParameters.h"
 #include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
@@ -170,10 +172,37 @@ void TaskFeatureParameters::recomputeFeature()
 {
     if (!blockUpdate) {
         auto* feature = getObject<PartDesign::Feature>();
-        assert(feature);
+        if (!feature) {
+            return;
+        }
 
-        PartGui::submitDocumentRecomputeOrReport(*feature);
-        feature->recomputePreview();
+        const auto retry = [this] {
+            retryTaskAction(this, "preview_retry_pending", [this] { recomputeFeature(); });
+        };
+        // Joining an identical active request can lose edits made after its
+        // snapshot. Submit the latest preview only once the lane is idle.
+        if (Gui::documentExecutionLaneBusy(*feature->getDocument())) {
+            retry();
+            return;
+        }
+        if (property("preview_recompute_pending").toBool()) {
+            setProperty("preview_recompute_pending", false);
+            feature->recomputePreview();
+            if (!feature->isTouched() || feature->isError()) {
+                return;
+            }
+        }
+        const auto outcome = PartGui::trySubmitDocumentRecompute(*feature);
+        if (outcome.result == App::DocumentCommandSubmitResult::Busy) {
+            retry();
+            return;
+        }
+        if (PartGui::reportDocumentRecomputeSubmitOutcome(outcome)) {
+            // PreviewShape must be derived from the committed feature, and
+            // must not mutate the model while its recompute is still active.
+            setProperty("preview_recompute_pending", true);
+            retry();
+        }
     }
 }
 
@@ -192,43 +221,73 @@ TaskDlgFeatureParameters::~TaskDlgFeatureParameters() = default;
 bool TaskDlgFeatureParameters::accept()
 {
     App::DocumentObject* feature = getObject();
+    // Focus-out may still own the lane when OK is clicked. Retry through
+    // Control so TaskView keeps its normal accept/deletion bookkeeping.
+    const auto deferAccept = [this] {
+        retryTaskAction(this, "accept_retry_pending", [this] {
+            auto* object = getObject();
+            if (object && Gui::Control().activeDialog(object->getDocument()) == this) {
+                Gui::Control().accept(object->getDocument());
+            }
+        });
+        return false;
+    };
+    if (Gui::documentExecutionLaneBusy(*feature->getDocument())) {
+        return deferAccept();
+    }
+    const auto submitRecompute = [&](auto& target) {
+        const auto outcome = PartGui::trySubmitDocumentRecompute(target);
+        if (outcome.result == App::DocumentCommandSubmitResult::Busy) {
+            return deferAccept();
+        }
+        return PartGui::reportDocumentRecomputeSubmitOutcome(outcome);
+    };
     bool isUpdateBlocked = false;
     try {
-        // Iterate over parameter dialogs and apply all parameters from them
-        for (QWidget* wgt : Content) {
-            TaskFeatureParameters* param = qobject_cast<TaskFeatureParameters*>(wgt);
-            if (!param) {
-                continue;
+        if (!property("accept_recompute_pending").toBool()
+            || (feature->isTouched() && !feature->isError())) {
+            // Iterate over parameter dialogs and apply all parameters from them
+            for (QWidget* wgt : Content) {
+                TaskFeatureParameters* param = qobject_cast<TaskFeatureParameters*>(wgt);
+                if (!param) {
+                    continue;
+                }
+
+                param->saveHistory();
+                param->apply();
+                isUpdateBlocked |= param->isUpdateBlocked();
+            }
+            // Make sure the feature is what we are expecting
+            // Should be fine but you never know...
+            if (!feature->isDerivedFrom<PartDesign::Feature>()) {
+                throw Base::TypeError("Bad object processed in the feature dialog.");
             }
 
-            param->saveHistory();
-            param->apply();
-            isUpdateBlocked |= param->isUpdateBlocked();
-        }
-        // Make sure the feature is what we are expecting
-        // Should be fine but you never know...
-        if (!feature->isDerivedFrom<PartDesign::Feature>()) {
-            throw Base::TypeError("Bad object processed in the feature dialog.");
-        }
+            if (isUpdateBlocked || feature->isTouched()) {
+                if (!submitRecompute(*feature)) {
+                    return false;
+                }
+            }
+            else {
+                // object was already computed, nothing more to do with it...
+                Gui::cmdAppDocument(feature, "purgeTouched()");
 
-        if (isUpdateBlocked) {
-            if (!PartGui::submitDocumentRecomputeOrReport(*feature)) {
-                return false;
+                // ...but touch parents to signal the change...
+                for (auto obj : feature->getInList()) {
+                    obj->touch();
+                }
+                // ...and recompute them
+                if (!submitRecompute(*feature->getDocument())) {
+                    return false;
+                }
             }
-        }
-        else {
-            // object was already computed, nothing more to do with it...
-            Gui::cmdAppDocument(feature, "purgeTouched()");
 
-            // ...but touch parents to signal the change...
-            for (auto obj : feature->getInList()) {
-                obj->touch();
-            }
-            // ...and recompute them
-            if (!PartGui::submitDocumentRecomputeOrReport(*feature->getDocument())) {
-                return false;
-            }
+            // Admission is not completion: resetEdit/commitTransaction must
+            // run after the recompute leaves the document's transaction.
+            setProperty("accept_recompute_pending", true);
+            return deferAccept();
         }
+        setProperty("accept_recompute_pending", false);
 
         App::DocumentObject* previous = static_cast<PartDesign::Feature*>(feature)->getBaseObject(
             /* silent = */ true

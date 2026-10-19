@@ -27328,7 +27328,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 156,
+      "line": 158,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -27336,7 +27336,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 221,
+      "line": 273,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
