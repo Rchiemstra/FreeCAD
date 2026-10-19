@@ -22,6 +22,7 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.assembly = self.doc.addObject("Assembly::AssemblyObject", "Assembly")
         group = self.assembly.newObject("Assembly::JointGroup", "Joints")
         source = self.doc.addObject("Part::Box", "Source")
+        source.Visibility = False
         self.parts = [self.assembly.newObject("App::Link", "Part") for _ in range(3)]
         for part in self.parts:
             part.LinkedObject = source
@@ -295,6 +296,9 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.assertEqual(self.doc.UndoCount, 0)
 
     def test_viewport_deselect_removes_reference(self):
+        # Keep a single visible component so the overlapping fixture is unambiguous.
+        for part in self.parts[1:]:
+            part.Visibility = False
         self.openJoint(self.joints[0], tree=True)
         view = Gui.activeDocument().activeView()
         view.viewLeft()
@@ -304,7 +308,7 @@ class TestJointEditorSwitch(unittest.TestCase):
         # Face1 is the box's left face. GreedySelection toggles a clicked selected
         # reference off, as before this branch; Cancel must restore that change.
         point = view.getPointOnScreen(App.Vector(0, 5, 5))
-        self.mouse(widget, QtCore.QPoint(int(point[0]), int(point[1])),
+        self.mouse(widget, QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1])),
                    modifiers=QtCore.Qt.ControlModifier)
         Gui.updateGui()
         self.assertEqual(len(JointObject.activeTask.refs), 1)
