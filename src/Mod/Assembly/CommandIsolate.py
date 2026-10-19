@@ -65,6 +65,17 @@ class _IsolationSession(QtCore.QObject):
         except (ReferenceError, NameError):
             self.clear()
 
+    def suspend(self, document_name):
+        if self.assembly is not None and document_name == self.document_name:
+            # Restore original roots BEFORE handleChildren3D looks for departing
+            # children. Keep the session and reapply after the scene is rebuilt.
+            self.assembly.ViewObject.clearIsolate(True)
+            self.schedule_refresh(document_name)
+
+    def slotBeforeChangeObject(self, obj, prop):
+        if prop == "Group" and obj.Document is not None:
+            self.suspend(obj.Document.Name)
+
     def slotChangedObject(self, obj, prop):
         if prop == "Group" and obj.Document is not None:
             self.refresh_requested.emit(obj.Document.Name)
@@ -73,6 +84,15 @@ class _IsolationSession(QtCore.QObject):
         self.refresh_requested.emit(doc.Name)
 
     def slotAbortTransaction(self, doc):
+        self.refresh_requested.emit(doc.Name)
+
+    def slotUndoDocument(self, doc):
+        self.refresh_requested.emit(doc.Name)
+
+    def slotRedoDocument(self, doc):
+        self.refresh_requested.emit(doc.Name)
+
+    def slotRecomputedDocument(self, doc):
         self.refresh_requested.emit(doc.Name)
 
     def slotActivateDocument(self, doc):
@@ -88,9 +108,17 @@ class _IsolationSession(QtCore.QObject):
             self.clear_requested.emit()
 
 
+class _IsolationViewObserver:
+    def slotResetEdit(self, view):
+        if _session.assembly is not None and view == _session.assembly.ViewObject:
+            _session.clear()
+
+
 _session = _IsolationSession()
+_view_observer = _IsolationViewObserver()
 if App.GuiUp:
     App.addDocumentObserver(_session)
+    Gui.addDocumentObserver(_view_observer)
 
 
 def clear_isolation():
@@ -187,6 +215,8 @@ class CommandIsolateSelection:
         }
 
     def IsActive(self):
+        if is_isolated():
+            return True
         assembly = UtilsAssembly.activeAssembly()
         return assembly is not None and bool(
             selected_components(assembly, Gui.Selection.getSelectionEx("*", 0))
@@ -208,8 +238,7 @@ class CommandExitIsolation:
         }
 
     def IsActive(self):
-        assembly = UtilsAssembly.activeAssembly()
-        return assembly is not None and is_isolated(assembly)
+        return is_isolated()
 
     def Activated(self):
         clear_isolation()

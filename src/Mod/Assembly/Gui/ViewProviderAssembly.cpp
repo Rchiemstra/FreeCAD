@@ -135,6 +135,10 @@ ViewProviderAssembly::ViewProviderAssembly()
     m_deletedObjectConn = App::GetApplication().signalDeletedObject.connect(
         std::bind(&ViewProviderAssembly::slotDeletedObject, this, std::placeholders::_1)
     );
+    m_viewChangedConn = Gui::Application::Instance->signalChangedObject.connect(
+        std::bind(&ViewProviderAssembly::slotChangedViewProvider, this,
+                  std::placeholders::_1, std::placeholders::_2)
+    );
 }
 
 ViewProviderAssembly::~ViewProviderAssembly()
@@ -145,6 +149,7 @@ ViewProviderAssembly::~ViewProviderAssembly()
     m_preTransactionConn.disconnect();
     m_startSaveConn.disconnect();
     m_deletedObjectConn.disconnect();
+    m_viewChangedConn.disconnect();
     QObject::disconnect(workbenchConnection);
 
     updateTaskPanel(false);
@@ -347,6 +352,7 @@ bool ViewProviderAssembly::setEdit(int mode)
 
 void ViewProviderAssembly::unsetEdit(int mode)
 {
+    clearIsolate(true);
     if (mode == ViewProvider::Default) {
         // Reject tentative placements before edit reset can commit Move part.
         if (partMoving) {
@@ -1511,6 +1517,66 @@ PyObject* ViewProviderAssembly::getPyObject()
     return pyViewObject;
 }
 
+void ViewProviderAssembly::slotChangedViewProvider(
+    const Gui::ViewProvider& view, const App::Property& prop
+)
+{
+    if (!selectionIsolation) {
+        return;
+    }
+    auto* vp = dynamic_cast<const Gui::ViewProviderDocumentObject*>(&view);
+    if (!vp || !vp->getObject() || &prop != &vp->DisplayMode) {
+        return;
+    }
+    auto it = stateBackup.find(vp->getObject());
+    if (it != stateBackup.end() && it->second.visibilitySwitch) {
+        // setActiveMode hides providers whose persisted Visibility is false.
+        // Keep the selected occurrence visible after a display-mode rebuild.
+        it->second.visibilitySwitch->whichChild = vp->getActualMode();
+    }
+}
+
+bool ViewProviderAssembly::revealIsolatedContents(
+    App::DocumentObject* current,
+    const std::set<App::DocumentObject*>& selected,
+    bool selectedParent,
+    std::set<App::DocumentObject*>& visited
+)
+{
+    if (!current || !visited.insert(current).second) {
+        return false;
+    }
+    const bool include = selectedParent || selected.count(current);
+    bool retained = include;
+    // Links are occurrences: never reveal or mutate the linked source tree.
+    if (!current->isDerivedFrom<App::Link>()) {
+        if (auto* group = dynamic_cast<App::PropertyLinkList*>(current->getPropertyByName("Group"))) {
+            for (auto* child : group->getValues()) {
+                retained = revealIsolatedContents(child, selected, include, visited) || retained;
+            }
+        }
+    }
+    if (retained) {
+        auto* vp = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+            Gui::Application::Instance->getViewProvider(current)
+        );
+        if (vp && vp->getModeSwitch()->whichChild.getValue() == SO_SWITCH_NONE
+            && vp->getActualMode() >= 0) {
+            // Hidden shapes may never have been tessellated. Build their scene
+            // through the view provider's transient force-update mechanism.
+            vp->forceUpdate(true);
+            vp->forceUpdate(false);
+            ComponentState state;
+            state.visibilitySwitch = vp->getModeSwitch();
+            state.originalSwitchChild = state.visibilitySwitch->whichChild.getValue();
+            stateBackup[current] = state;
+            // Only Coin state changes: Visibility, undo and serialization stay original.
+            state.visibilitySwitch->whichChild = vp->getActualMode();
+        }
+    }
+    return retained;
+}
+
 void ViewProviderAssembly::applyIsolationRecursively(
     App::DocumentObject* current,
     std::set<App::DocumentObject*>& isolateSet,
@@ -1560,7 +1626,7 @@ void ViewProviderAssembly::applyIsolationRecursively(
     auto* vpg = dynamic_cast<Gui::ViewProviderGeometryObject*>(vp);
     if (selectionIsolation) {
         if (!vp || isolate) {
-            return;  // Selected components retain visibility, material and pickability.
+            return;  // Selected components retain their material and pickability.
         }
         // Wrap this occurrence in the assembly, leaving the component root intact.
         // Link snapshots can then continue to read the unmodified source scene.
@@ -1675,6 +1741,10 @@ void ViewProviderAssembly::isolateComponents(
     std::vector<App::DocumentObject*> topLevelChildren = assembly->Group.getValues();
 
     std::set<App::DocumentObject*> visited;
+    if (selection) {
+        revealIsolatedContents(assembly, isolateSet, false, visited);
+        visited.clear();
+    }
     for (auto* child : topLevelChildren) {
         applyIsolationRecursively(child, isolateSet, mode, visited);
     }
@@ -1742,6 +1812,10 @@ void ViewProviderAssembly::clearIsolate(bool selection)
 
         auto* vp = Gui::Application::Instance->getViewProvider(component);
         if (!vp) {
+            continue;
+        }
+        if (state.visibilitySwitch) {
+            state.visibilitySwitch->whichChild = state.originalSwitchChild;
             continue;
         }
         if (state.sceneOverride) {

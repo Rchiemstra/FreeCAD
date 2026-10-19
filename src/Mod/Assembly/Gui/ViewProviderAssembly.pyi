@@ -47,8 +47,8 @@ class ViewProviderAssembly(ViewProvider):
                 - 0: Transparent
                 - 1: Wireframe
                 - 2: Hidden
-            selection (bool): Use scene-only user isolation. Selected objects retain
-                their prior state. Joint isolation and transactions cannot clear it;
+            selection (bool): Use scene-only user isolation. Hidden selected contents are shown without
+                changing persisted visibility. Joint isolation and transactions cannot clear it;
                 call clearIsolate(True) to exit. Defaults to legacy joint isolation.
         """
         ...

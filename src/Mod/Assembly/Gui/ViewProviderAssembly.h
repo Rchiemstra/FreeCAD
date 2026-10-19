@@ -274,6 +274,7 @@ private:
     void slotAboutToOpenTransaction(const std::string& cmdName);
     void slotStartSave(const App::Document& doc, const std::string& filename);
     void slotDeletedObject(const App::DocumentObject& obj);
+    void slotChangedViewProvider(const Gui::ViewProvider& view, const App::Property& prop);
     void slotActivatedVP(const Gui::ViewProviderDocumentObject* vp, const char* name);
 
     void onWorkbenchActivated(const QString& name);
@@ -284,6 +285,8 @@ private:
         bool visibility {};
         bool selectable {};
         // Scene-only wrapper for user isolation; properties remain untouched.
+        Gui::CoinPtr<SoSwitch> visibilitySwitch;
+        int originalSwitchChild {};
         Gui::CoinPtr<SoGroup> sceneParent;
         Gui::CoinPtr<SoGroup> sceneOverride;
     };
@@ -296,6 +299,13 @@ private:
 
     void highlightJointElements(App::DocumentObject* joint);
     void clearJointElementHighlight();
+
+    bool revealIsolatedContents(
+        App::DocumentObject* current,
+        const std::set<App::DocumentObject*>& selected,
+        bool selectedParent,
+        std::set<App::DocumentObject*>& visited
+    );
 
     void applyIsolationRecursively(
         App::DocumentObject* current,
@@ -312,6 +322,7 @@ private:
     fastsignals::scoped_connection m_preTransactionConn;
     fastsignals::scoped_connection m_startSaveConn;
     fastsignals::scoped_connection m_deletedObjectConn;
+    fastsignals::scoped_connection m_viewChangedConn;
 };
 
 }  // namespace AssemblyGui
