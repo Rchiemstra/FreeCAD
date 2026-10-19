@@ -371,14 +371,11 @@ class TestFittingTolerance(unittest.TestCase):
         self.assertAlmostEqual(sketch.Geometry[0].Radius, 5)
 
     def extrusion_mode(self, factory, mode):
-        feature = factory()
-        sketch = feature.Profile[0]
         if mode in ("UpToFirst", "UpToLast") and factory == self.pad:
             base = self.body.newObject("PartDesign::Feature", "Target")
             base.Shape = Part.makeBox(20, 20, 4, App.Vector(-10, -10, 2))
-            self.body.Group = [base, sketch, feature]
-            feature.BaseFeature = base
-            self.body.Tip = feature
+        feature = factory()
+        sketch = feature.Profile[0]
         if mode in ("ThroughAll", "UpToFirst", "UpToLast"):
             feature.Type = mode
         elif mode == "UpToShape":
