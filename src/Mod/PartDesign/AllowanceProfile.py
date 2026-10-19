@@ -120,12 +120,17 @@ def _offset_face(face, distance):
     return wire
 
 
-def offsetProfile(source_shape, allowance, placement):
-    """Offset closed planar loops in placement's XY plane, preserving nesting.
+def offsetProfile(source_shape, allowance, placement=None):
+    """Offset closed planar loops in their support plane, preserving nesting.
 
     Shared by the standalone profile and native Pad/Pocket fitting tolerance.
     The input is in document coordinates; allowance is a boundary distance.
     """
+    if placement is None:
+        plane = source_shape.findPlane()
+        if plane is None:
+            raise ValueError("The profile must lie in a single plane.")
+        placement = App.Placement(plane.Position, App.Rotation(App.Vector(0, 0, 1), plane.Axis))
     shape = source_shape.copy()
     # The single-edge offset wrapper resets edge locations. Apply the frame
     # transform to copied geometry instead of only changing its Placement.
@@ -151,10 +156,10 @@ def offsetProfile(source_shape, allowance, placement):
     return output
 
 
-def fittingProfile(shape, tolerance, additive, placement):
+def fittingProfile(shape, tolerance, additive):
     """Convert a signed size correction to a boundary offset and return faces."""
     distance = (-0.5 if additive else 0.5) * tolerance
-    wires = offsetProfile(shape, distance, placement)
+    wires = offsetProfile(shape, distance)
     result = Part.makeFace(wires.Wires, "Part::FaceMakerBullseye")
     if shape.Faces and result.Faces[0].normalAt(0, 0).dot(shape.Faces[0].normalAt(0, 0)) < 0:
         result.reverse()

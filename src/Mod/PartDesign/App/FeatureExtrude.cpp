@@ -486,11 +486,10 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
         Base::PyGILStateLocker lock;
         try {
             Py::Module module(PyImport_ImportModule("PartDesign.AllowanceProfile"), true);
-            Py::Tuple args(4);
+            Py::Tuple args(3);
             args.setItem(0, Py::asObject(new Part::TopoShapePy(new TopoShape(sketchshape))));
             args.setItem(1, Py::Float(FittingTolerance.getValue()));
             args.setItem(2, Py::Boolean(addSubType == Type::Additive));
-            args.setItem(3, Py::asObject(obj->Placement.getPyObject()));
             Py::Object result = Py::Callable(module.getAttr("fittingProfile")).apply(args);
             sketchshape = *static_cast<Part::TopoShapePy*>(result.ptr())->getTopoShapePtr();
         }
