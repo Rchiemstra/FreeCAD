@@ -221,7 +221,7 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         finally:
             dialog.close()
 
-    def make_pick_fixture(self, vertex=False, switch_workbench=True):
+    def make_pick_fixture(self, vertex=False, switch_workbench=True, replacement=None):
         import Sketcher
         from SketcherTests.TestSketchReferenceRepair import signature
 
@@ -258,7 +258,9 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         self.recompute_gui_document()
         source.Shape = Part.makeCompound([other])
         self.recompute_gui_document()
-        source.Shape = Part.makeCompound([wanted.copy(noElementMap=True), other])
+        source.Shape = Part.makeCompound([
+            wanted.copy(noElementMap=True) if replacement is None else replacement, other
+        ])
         self.recompute_gui_document()
         source.Visibility = True
         Gui.getMainWindow().show()
@@ -621,3 +623,34 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
 
     def test_pending_pick_document_close_restores_scene_and_selection(self):
         self.assert_pending_pick_cancelled("document")
+
+
+    def test_viewport_pick_moved_resized_edge_preserves_settings_and_undo(self):
+        import SketchReferenceReassignGui as pick_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+
+        replacement = Part.makeLine(App.Vector(12, 20, 0), App.Vector(35, 20, 0))
+        sketch, _source, view, before = self.make_pick_fixture(replacement=replacement)
+        undo_count = self.doc.UndoCount
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        try:
+            viewport = view.graphicsView().viewport()
+            point = self.viewport_to_qpoint(
+                view, viewport, view.getPointOnScreen(App.Vector(20, 20, 0))
+            )
+            self.click(viewport, point)
+            self.assertTrue(self.wait_until(lambda: not session.busy, 10000))
+            self.assertTrue(session.closed, session.message.text() if not session.closed else "")
+            self.assertFalse(broken_references(sketch))
+            self.assertEqual(signature(sketch)[:3], before[:3])
+            self.assertLess((sketch.getPoint(0, 1) - App.Vector(12, 20, 0)).Length, 1e-7)
+            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+            self.undo_gui_document()
+            self.recompute_gui_document()
+            self.assertEqual(signature(sketch), before)
+            self.assertEqual(len(broken_references(sketch)), 1)
+        finally:
+            if not session.closed:
+                session.close()
