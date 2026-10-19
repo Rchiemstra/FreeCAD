@@ -30995,6 +30995,30 @@
       "evidence": "\"setTextAndFont(%i, '%s', '%s', %s, %s)\","
     },
     {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 45,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 58,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 114,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "for (auto* document : App::GetApplication().getDocuments()) {"
+    },
+    {
       "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
       "line": 144,
       "category": "live-app-dereference",
@@ -31244,15 +31268,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 3956,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "App::Document* doc = App::GetApplication().getDocument(documentName.c_str());"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5048,
+      "line": 5019,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31260,7 +31276,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5076,
+      "line": 5047,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31268,7 +31284,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5100,
+      "line": 5071,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31276,7 +31292,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5118,
+      "line": 5089,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
