@@ -8,7 +8,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 302 | unsupported |
 | `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotationLabel` | 490 | unsupported |
 | `src/Gui/ViewProviderDragger.cpp` | `ViewProviderDragger` | 78 | unsupported |
-| `src/Gui/ViewProviderFeaturePython.cpp` | `ViewProviderFeaturePythonImp` | 693 | unsupported |
+| `src/Gui/ViewProviderFeaturePython.cpp` | `ViewProviderFeaturePythonImp` | 719 | unsupported |
 | `src/Gui/ViewProviderGeometryObject.cpp` | `ViewProviderGeometryObject` | 171 | unsupported |
 | `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | 360 | unsupported |
 | `src/Gui/ViewProviderInventorObject.cpp` | `ViewProviderInventorObject` | 90 | unsupported |
@@ -23,7 +23,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedViewStep` | 663 | unsupported |
 | `src/Mod/Assembly/Gui/ViewProviderAssembly.cpp` | `ViewProviderAssembly` | 246 | unsupported |
 | `src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp` | `ViewProviderReviewNote` | 488 | unsupported |
-| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1775 | unsupported |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1778 | unsupported |
 | `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | 1251 | unsupported |
 | `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | 566 | unsupported |
 | `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | 190 | unsupported |
