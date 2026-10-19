@@ -136,14 +136,16 @@ private Q_SLOTS:
         doc->addObject(object, "Values");
         auto* prop = object->addDynamicProperty("App::PropertyFloat", "Value");
         {
-            Gui::PropertyEditor::PropertyFloatItem row;
-            row.setPropertyName(QStringLiteral("Value"));
-            row.setPropertyData({prop});
+            std::unique_ptr<Gui::PropertyEditor::PropertyItem> row(
+                static_cast<Gui::PropertyEditor::PropertyItem*>(
+                    Gui::PropertyEditor::PropertyFloatItem::create()));
+            row->setPropertyName(QStringLiteral("Value"));
+            row->setPropertyData({prop});
             object->reads = 0;
             for (int i = 0; i < 100; ++i) {
-                row.data(1, Qt::ForegroundRole);
-                row.data(1, Qt::ToolTipRole);
-                row.data(0, Qt::ToolTipRole);
+                row->data(1, Qt::ForegroundRole);
+                row->data(1, Qt::ToolTipRole);
+                row->data(0, Qt::ToolTipRole);
             }
             QCOMPARE(object->reads, 0);
         }
