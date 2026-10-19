@@ -48,6 +48,11 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.connectorPlacements = [
             (j.Placement1.copy(), j.Placement2.copy()) for j in self.joints
         ]
+        self.jointProperties = [self.properties(joint) for joint in self.joints]
+
+    def properties(self, joint):
+        return {name: repr(joint.getPropertyByName(name)) for name in joint.PropertiesList
+                if name != "Proxy"}
 
     def tearDown(self):
         if JointObject.activeTask is not None:
@@ -245,9 +250,12 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.assertIsNone(self.joints[0].Reference2)
         self.openJoint(self.joints[1], tree, expected=self.joints[0])
         # Failed validation must leave A's entire transaction available to Cancel.
-        self.assertEqual(self.doc.UndoCount, 0)
+        pendingUndoCount = self.doc.UndoCount
         self.finish(False)
         self.assertTypes("Fixed", "Fixed")
+        for joint, properties in zip(self.joints, self.jointProperties):
+            self.assertEqual(self.properties(joint), properties)
+        self.assertEqual(pendingUndoCount, 0)
         self.assertEqual(self.doc.UndoCount, 0)
 
     def test_tree_failed_accept_then_cancel_restores_first_joint(self):
