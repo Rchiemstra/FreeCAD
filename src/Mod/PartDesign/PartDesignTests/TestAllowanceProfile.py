@@ -327,3 +327,17 @@ class TestAllowanceProfile(unittest.TestCase):
                 self.assertTrue(face.isValid())
                 with self.assertRaisesRegex(ValueError, "collapses"):
                     _offset_face(face, allowance)
+
+    def testOffsetErrorsAreTranslated(self):
+        from unittest.mock import patch
+        from PartDesign.AllowanceProfile import offsetProfile
+
+        shape = Part.Wire([Part.makeCircle(5)])
+        with patch.object(App.Qt, "translate", side_effect=lambda context, text: "TRANSLATED " + text) as translate:
+            with self.assertRaisesRegex(ValueError, "TRANSLATED .*loop.*\\."):
+                offsetProfile(shape, -6, App.Placement())
+        self.assertTrue(translate.called)
+        for call in translate.call_args_list:
+            self.assertEqual(call.args[0], "PartDesign_AllowanceProfile")
+            self.assertTrue(call.args[1][0].isupper())
+            self.assertTrue(call.args[1].endswith("."))

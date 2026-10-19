@@ -149,6 +149,158 @@ class TestFittingTolerance(unittest.TestCase):
         center = pad.Profile[0].Placement.multVec(App.Vector(0, 0, 1))
         self.assertLess((pad.Shape.CenterOfMass - center).Length, 1e-6)
 
+    def testSelectedFaceOfRotatedBody(self):
+        for kind in ("Pad", "Pocket"):
+            with self.subTest(feature=kind):
+                self.body = self.doc.addObject("PartDesign::Body", "RotatedBody")
+                self.body.Placement = App.Placement(
+                    App.Vector(13, 17, 23), App.Rotation(App.Vector(1, 1, 0), 63)
+                )
+                base = self.body.newObject("PartDesign::AdditiveBox", "Box")
+                base.Length, base.Width, base.Height = 20, 16, 8
+                self.doc.recompute()
+                # A YZ face is not in the Box object's local XY plane.
+                index = next(i for i, f in enumerate(base.Shape.Faces, 1)
+                             if f.normalAt(0, 0).x > 0.99)
+                feature = self.body.newObject("PartDesign::" + kind, kind)
+                feature.Profile = (base, ["Face%d" % index])
+                feature.Length = 2
+                self.doc.recompute()
+                self.assertNotIn("Invalid", feature.State, feature.getStatusString())
+                nominal = feature.Shape.copy()
+                feature.FittingTolerance = 0.4
+                self.doc.recompute()
+                self.assertNotIn("Invalid", feature.State, feature.getStatusString())
+                self.assertTrue(feature.Shape.isValid())
+                width, height = (15.6, 7.6) if kind == "Pad" else (16.4, 8.4)
+                self.assertAlmostEqual(feature.AddSubShape.Volume, width * height * 2)
+                expected = 2560 + width * height * 2 if kind == "Pad" else 2560 - 16 * 8 * 2
+                self.assertAlmostEqual(feature.Shape.Volume, expected)
+                feature.FittingTolerance = 0
+                self.doc.recompute()
+                self.assertAlmostEqual(feature.Shape.Volume, nominal.Volume)
+
+    def testXZSketchInRotatedBody(self):
+        for factory in (self.pad, self.pocket):
+            with self.subTest(feature=factory.__name__):
+                feature = factory()
+                frame = App.Placement(App.Vector(2, 3, 4), App.Rotation(App.Vector(1, 0, 0), 90))
+                feature.Profile[0].Placement = frame
+                if feature.BaseFeature:
+                    feature.BaseFeature.Placement = frame.multiply(feature.BaseFeature.Placement)
+                self.body.Placement = App.Placement(
+                    App.Vector(13, 17, 23), App.Rotation(App.Vector(1, 1, 0), 63)
+                )
+                feature.FittingTolerance = 0.4
+                self.doc.recompute()
+                self.assertNotIn("Invalid", feature.State, feature.getStatusString())
+                self.assertTrue(feature.Shape.isValid())
+                expected = math.pi * 4.8**2 * 2 if factory == self.pad else 1600 - math.pi * 5.2**2 * 4
+                self.assertAlmostEqual(feature.Shape.Volume, expected)
+                App.closeDocument(self.doc.Name)
+                self.setUp()
+
+    def testPocketIslandShrinks(self):
+        pocket = self.pocket()
+        pocket.Length = 2  # Keep the island joined to the floor.
+        sketch = pocket.Profile[0]
+        sketch.addGeometry(Part.Circle(App.Vector(), App.Vector(0, 0, 1), 2), False)
+        pocket.FittingTolerance = 0.4
+        self.doc.recompute()
+        self.assertSize(pocket, 10.4)
+        self.assertAlmostEqual(pocket.Shape.Volume, 1600 - math.pi * (5.2**2 - 1.8**2) * 2)
+        radii = {round(e.Curve.Radius, 6) for e in pocket.Shape.Edges
+                 if isinstance(e.Curve, Part.Circle)}
+        self.assertEqual(radii, {1.8, 5.2})
+        self.assertEqual([g.Radius for g in sketch.Geometry], [5, 2])
+
+    def testSeveralSeparateWires(self):
+        pocket = self.pocket()
+        sketch = pocket.Profile[0]
+        sketch.delGeometry(0)
+        for x, y in ((-5, 0), (5, 0), (0, 5)):
+            sketch.addGeometry(Part.Circle(App.Vector(x, y, 0), App.Vector(0, 0, 1), 2), False)
+        pocket.FittingTolerance = 0.4
+        self.doc.recompute()
+        self.assertNotIn("Invalid", pocket.State, pocket.getStatusString())
+        self.assertTrue(pocket.Shape.isValid())
+        self.assertEqual(len(pocket.AddSubShape.Solids), 3)
+        self.assertAlmostEqual(pocket.Shape.Volume, 1600 - 3 * math.pi * 2.2**2 * 4)
+        self.assertEqual([g.Radius for g in sketch.Geometry], [2, 2, 2])
+
+    def testTwoDimensionsAndSymmetric(self):
+        for factory in (self.pad, self.pocket):
+            for side in ("Two sides", "Symmetric"):
+                with self.subTest(feature=factory.__name__, side=side):
+                    feature = factory()
+                    if factory == self.pocket:
+                        feature.Profile[0].Placement.Base.z = -2
+                    feature.SideType = side
+                    feature.Length = 1 if side == "Two sides" else 3
+                    feature.Length2 = 2
+                    feature.FittingTolerance = 0.4
+                    self.doc.recompute()
+                    self.assertSize(feature, 9.6 if factory == self.pad else 10.4)
+                    radius = 4.8 if factory == self.pad else 5.2
+                    self.assertAlmostEqual(feature.AddSubShape.Volume, math.pi * radius**2 * 3)
+                    expected = math.pi * radius**2 * 3
+                    self.assertAlmostEqual(feature.Shape.Volume, expected if factory == self.pad else 1600 - expected)
+                    App.closeDocument(self.doc.Name)
+                    self.setUp()
+
+    def testUpToFace(self):
+        for factory in (self.pad, self.pocket):
+            with self.subTest(feature=factory.__name__):
+                feature = factory()
+                if factory == self.pad:
+                    reference = self.doc.addObject("PartDesign::Feature", "Reference")
+                    reference.Shape = Part.makePlane(40, 40, App.Vector(-20, -20, 3))
+                    face = "Face1"
+                    depth, radius = 3, 4.8
+                else:
+                    reference = feature.BaseFeature
+                    index = next(i for i, f in enumerate(reference.Shape.Faces, 1)
+                                 if f.normalAt(0, 0).z < -0.99)
+                    face = "Face%d" % index
+                    depth, radius = 4, 5.2
+                feature.UpToFace = (reference, [face])
+                feature.Type = "UpToFace"
+                feature.FittingTolerance = 0.4
+                self.doc.recompute()
+                self.assertSize(feature, 2 * radius)
+                self.assertAlmostEqual(feature.AddSubShape.Volume, math.pi * radius**2 * depth)
+                expected = math.pi * radius**2 * depth
+                self.assertAlmostEqual(feature.Shape.Volume, expected if factory == self.pad else 1600 - expected)
+                App.closeDocument(self.doc.Name)
+                self.setUp()
+
+    def testUndoRedoToleranceChange(self):
+        from Test.GuiRecompute import recompute_document, undo_document, redo_document
+
+        for factory in (self.pad, self.pocket):
+            with self.subTest(feature=factory.__name__):
+                feature = factory()
+                name = feature.Name
+                self.doc.UndoMode = 1
+                self.doc.openTransaction("Change fitting tolerance")
+                feature.FittingTolerance = 0.4
+                recompute_document(self.doc)
+                self.doc.commitTransaction()
+                expected = 9.6 if factory == self.pad else 10.4
+                self.assertSize(feature, expected)
+                undo_document(self.doc)
+                recompute_document(self.doc)
+                feature = self.doc.getObject(name)
+                self.assertEqual(feature.FittingTolerance.Value, 0)
+                self.assertSize(feature, 10)
+                redo_document(self.doc)
+                recompute_document(self.doc)
+                feature = self.doc.getObject(name)
+                self.assertEqual(feature.FittingTolerance.Value, 0.4)
+                self.assertSize(feature, expected)
+                App.closeDocument(self.doc.Name)
+                self.setUp()
+
     def testLegacyDocumentWithoutProperty(self):
         import xml.etree.ElementTree as ET
         import zipfile
