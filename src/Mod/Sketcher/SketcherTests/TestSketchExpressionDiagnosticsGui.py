@@ -127,3 +127,52 @@ class TestSketchExpressionDiagnosticsGui(SketcherGuiTestCase):
                       f"Radius reproduction: {self.sketch.ConstraintCount} constraints; {messages!r}")
         self.assertIn("Width", text)
         self.assertIn("Dimensions", text)
+
+    def test_expression_changes_and_failed_recompute_refresh_without_solve(self):
+        # Repair the deleted source, then exercise auto-update while still editing.
+        for name, value in (("Width", "20 mm"), ("Height", "10 mm")):
+            self.sketch.setExpression("Constraints." + name, value)
+        self.recompute_gui_document()
+        self.flush_gui(150)
+        self.assertFalse(self.message_label().isVisible())
+        self.sketch.setExpression("Constraints.Width", "Missing.Value")
+        self.recompute_gui_document()
+        self.flush_gui(150)
+        self.assertIsNotNone(self.constraint_list().item(8).data(QtCore.Qt.ForegroundRole))
+        self.assertIn("Missing", self.constraint_list().item(8).toolTip())
+        self.assertIn("1 constraint with a broken expression", self.message_label().text())
+        self.sketch.setExpression("Constraints.Width", "20 mm")
+        self.recompute_gui_document()
+        self.flush_gui(150)
+        self.assertFalse(self.message_label().isVisible())
+        self.assertIsNone(self.constraint_list().item(8).data(QtCore.Qt.ForegroundRole))
+
+    def test_dependency_change_refreshes_without_solver_notification(self):
+        variables = self.doc.addObject("App::VarSet", "Dimensions")
+        for name, value in (("Width", 20), ("Height", 10)):
+            variables.addProperty("App::PropertyLength", name)
+            setattr(variables, name, value)
+        self.recompute_gui_document()
+        self.flush_gui(150)
+        self.assertFalse(self.message_label().isVisible())
+        variables.setExpression("Width", "Missing.Value")
+        self.recompute_gui_document()
+        self.flush_gui(150)
+        self.assertIn("1 constraint with a broken expression", self.message_label().text())
+        self.assertIn("Missing", self.constraint_list().item(8).toolTip())
+
+    def test_visibility_and_solver_notifications_reuse_evaluation(self):
+        from unittest.mock import patch
+        from freecad import sketcher_expression_diagnostics as diagnostics
+        self.flush_gui(150)
+        with patch.object(diagnostics, "diagnose", wraps=diagnostics.diagnose) as evaluate:
+            for visible in (False, True, False, True):
+                self.sketch.setVisibility(8, visible)
+                self.flush_gui(100)
+            self.sketch.solve()
+            self.flush_gui(100)
+            self.assertEqual(evaluate.call_count, 0)
+            self.sketch.setExpression("Constraints.Width", "20 mm")
+            self.recompute_gui_document()
+            self.flush_gui(150)
+            self.assertGreater(evaluate.call_count, 0)

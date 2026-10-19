@@ -63,3 +63,27 @@ class TestSketchExpressionDiagnostics(unittest.TestCase):
         self.sketch.setExpression("Constraints.Width", "Source.Output.x")
         self.assertEqual(set(self.findings()), {8})
         self.assertIn("Missing", self.findings()[8])
+
+    def test_unrelated_input_through_intermediate_binding_is_healthy(self):
+        copy = self.doc.addObject("App::VarSet", "Copy")
+        copy.addProperty("App::PropertyLength", "Value")
+        copy.Value = 10
+        copy.setExpression("Value", "Dimensions.Height")
+        self.sketch.setExpression("Constraints.Height", "Copy.Value")
+        self.doc.Dimensions.setExpression("Width", "Missing.Value")
+        self.assertEqual(set(self.findings()), {8})
+        # A binding that actually reads the failed parameter still propagates.
+        copy.setExpression("Value", "Dimensions.Width")
+        self.assertEqual(set(self.findings()), {8, 9})
+
+    def test_dependency_reason_uses_translated_structured_fields(self):
+        from unittest.mock import patch
+        from freecad import sketcher_expression_diagnostics as diagnostics
+        self.doc.Dimensions.setExpression("Width", "Missing.Value")
+        def translate(context, text):
+            return "TRANSLATED " + text
+        with patch.object(diagnostics, "translate", translate, create=True):
+            reason = self.findings()[8]
+        self.assertIn("TRANSLATED Depends on", reason)
+        self.assertIn("TRANSLATED Unresolved reference", reason)
+        self.assertNotIn("unresolved_reference", reason)
