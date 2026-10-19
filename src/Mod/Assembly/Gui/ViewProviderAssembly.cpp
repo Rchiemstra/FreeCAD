@@ -34,6 +34,8 @@
 #include <Inventor/draggers/SoDragger.h>
 #include <Inventor/events/SoKeyboardEvent.h>
 #include <Inventor/nodes/SoSwitch.h>
+#include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoPickStyle.h>
 #include <Inventor/nodes/SoTransform.h>
 #include <Inventor/sensors/SoFieldSensor.h>
 #include <Inventor/sensors/SoSensor.h>
@@ -44,6 +46,7 @@
 #include <algorithm>
 #include <iterator>
 #include <Inventor/SoPath.h>
+#include <Inventor/actions/SoSearchAction.h>
 #include <Inventor/details/SoDetail.h>
 
 #include <App/Link.h>
@@ -136,6 +139,9 @@ ViewProviderAssembly::ViewProviderAssembly()
 
 ViewProviderAssembly::~ViewProviderAssembly()
 {
+    if (selectionIsolation) {
+        clearIsolate(true);
+    }
     m_preTransactionConn.disconnect();
     m_startSaveConn.disconnect();
     m_deletedObjectConn.disconnect();
@@ -1518,7 +1524,15 @@ void ViewProviderAssembly::applyIsolationRecursively(
 
     bool isolate = isolateSet.count(current);
 
+    // The root assembly can itself be selected to retain the whole assembly.
+    if (selectionIsolation && isolateSet.count(getObject())) {
+        return;
+    }
+
     if (auto* group = dynamic_cast<App::DocumentObjectGroup*>(current)) {
+        if (selectionIsolation && isolate) {
+            isolateSet.insert(group->Group.getValues().begin(), group->Group.getValues().end());
+        }
         for (auto* child : group->Group.getValues()) {
             applyIsolationRecursively(child, isolateSet, mode, visited);
         }
@@ -1544,6 +1558,56 @@ void ViewProviderAssembly::applyIsolationRecursively(
     auto* vp = Gui::Application::Instance->getViewProvider(current);
     auto* vpl = dynamic_cast<Gui::ViewProviderLink*>(vp);
     auto* vpg = dynamic_cast<Gui::ViewProviderGeometryObject*>(vp);
+    if (selectionIsolation) {
+        if (!vp || isolate) {
+            return;  // Selected components retain visibility, material and pickability.
+        }
+        // Wrap this occurrence in the assembly, leaving the component root intact.
+        // Link snapshots can then continue to read the unmodified source scene.
+        auto* root = vp->getRoot();
+        SoSearchAction search;
+        search.setNode(root);
+        search.setSearchingAll(true);
+        search.apply(getRoot());
+        auto* path = search.getPath();
+        if (!path || path->getLength() < 2) {
+            return;
+        }
+        auto* parent = dynamic_cast<SoGroup*>(path->getNodeFromTail(1));
+        if (!parent) {
+            return;
+        }
+        auto* scene = new SoSwitch;
+        scene->setName("AssemblyIsolation");
+        scene->whichChild = mode == IsolateMode::Hidden ? SO_SWITCH_NONE : SO_SWITCH_ALL;
+        // A switch does not push Coin state. Scope overrides so later siblings
+        // retain their own material and pick style.
+        auto* scope = new SoSeparator;
+        scope->addChild(scene);
+        auto* pick = new SoPickStyle;
+        pick->style = SoPickStyle::UNPICKABLE;
+        pick->setOverride(true);
+        scene->addChild(pick);
+        if (mode != IsolateMode::Hidden) {
+            auto* material = new SoMaterial;
+            material->setName("AssemblyIsolationMaterial");
+            material->ambientColor.setIgnored(true);
+            material->diffuseColor.setIgnored(true);
+            material->specularColor.setIgnored(true);
+            material->emissiveColor.setIgnored(true);
+            material->shininess.setIgnored(true);
+            material->transparency = 0.8f;
+            material->setOverride(true);
+            scene->addChild(material);
+        }
+        scene->addChild(root);
+        parent->replaceChild(root, scope);
+        ComponentState state;
+        state.sceneParent = parent;
+        state.sceneOverride = scope;
+        stateBackup[current] = state;
+        return;
+    }
     if (!vpl && !vpg) {
         return;  // we process only geometric objects and links.
     }
@@ -1588,11 +1652,20 @@ void ViewProviderAssembly::applyIsolationRecursively(
     }
 }
 
-void ViewProviderAssembly::isolateComponents(std::set<App::DocumentObject*>& isolateSet, IsolateMode mode)
+void ViewProviderAssembly::isolateComponents(
+    std::set<App::DocumentObject*>& isolateSet, IsolateMode mode, bool selection
+)
 {
-    if (!stateBackup.empty()) {
-        clearIsolate();
+    if (selectionIsolation && !selection) {
+        return;  // Joint tasks must not replace user isolation.
     }
+    if (selection || !stateBackup.empty()) {
+        clearIsolate(selection);
+    }
+    if (selection && isolateSet.empty()) {
+        return;
+    }
+    selectionIsolation = selection;
 
     auto* assembly = getObject<AssemblyObject>();
     if (!assembly) {
@@ -1609,7 +1682,7 @@ void ViewProviderAssembly::isolateComponents(std::set<App::DocumentObject*>& iso
 
 void ViewProviderAssembly::isolateJointReferences(App::DocumentObject* joint, IsolateMode mode)
 {
-    if (!joint || isolatedJoint == joint) {
+    if (selectionIsolation || !joint || isolatedJoint == joint) {
         return;
     }
 
@@ -1645,8 +1718,12 @@ void ViewProviderAssembly::isolateJointReferences(App::DocumentObject* joint, Is
     highlightJointElements(joint);
 }
 
-void ViewProviderAssembly::clearIsolate()
+void ViewProviderAssembly::clearIsolate(bool selection)
 {
+    if (selectionIsolation && !selection) {
+        return;
+    }
+    selectionIsolation = false;
     if (isolatedJoint) {
         if (!isolatedJointVisibilityBackup) {
             isolatedJoint->Visibility.setValue(false);
@@ -1663,8 +1740,18 @@ void ViewProviderAssembly::clearIsolate()
             continue;
         }
 
-        component->Visibility.setValue(state.visibility);
         auto* vp = Gui::Application::Instance->getViewProvider(component);
+        if (!vp) {
+            continue;
+        }
+        if (state.sceneOverride) {
+            auto* parent = state.sceneParent.get();
+            if (parent && parent->findChild(state.sceneOverride) >= 0) {
+                parent->replaceChild(state.sceneOverride, vp->getRoot());
+            }
+            continue;
+        }
+        component->Visibility.setValue(state.visibility);
         if (auto* vpl = dynamic_cast<Gui::ViewProviderLink*>(vp)) {
             vpl->Selectable.setValue(state.selectable);
         }
@@ -1744,9 +1831,9 @@ void ViewProviderAssembly::slotStartSave(const App::Document& doc, const std::st
 {
     Q_UNUSED(filename);
 
-    // Isolation and temporary explosion mutate persisted state (Selectable,
-    // Visibility, Placements) and hold their restore data only in memory, so clear
-    // both before serialization rather than writing the transient state to file.
+    // Legacy joint isolation and temporary explosion mutate persisted state, so
+    // restore them before serialization. User isolation changes only the scene
+    // and deliberately survives saving.
     Gui::Document* guiDoc = getDocument();
     if (!guiDoc || guiDoc->getDocument() != &doc) {
         return;  // not our document
