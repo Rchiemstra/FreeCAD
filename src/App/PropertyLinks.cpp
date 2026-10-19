@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <mutex>
 #include <set>
 
 #include <QDir>
@@ -3409,6 +3410,18 @@ bool PropertyLinkSubList::adjustLink(const std::set<App::DocumentObject*>& inLis
 // some user (especially Linux user) use symlink to organize file tree.
 using DocInfoMap = std::map<QString, DocInfoPtr>;
 DocInfoMap _DocInfoMap;
+// GUI readiness timers read this registry while other document owners unlink.
+// Hold only for registry access; callbacks and document work run after unlocking.
+static std::recursive_mutex xlinkRegistryMutex;
+
+#if defined(FREECAD_XLINK_REGISTRY_TEST_API)
+namespace App {
+AppExport std::recursive_mutex& xlinkRegistryMutexForTesting()
+{
+    return xlinkRegistryMutex;
+}
+}
+#endif
 
 class App::DocInfo: public std::enable_shared_from_this<App::DocInfo>
 {
@@ -3481,10 +3494,19 @@ public:
 
         FC_LOG("finding doc " << filename);
 
-        auto it = _DocInfoMap.find(path);
         DocInfoPtr info;
-        if (it != _DocInfoMap.end()) {
-            info = it->second;
+        bool inserted;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            auto ret = _DocInfoMap.try_emplace(path, std::make_shared<DocInfo>());
+            inserted = ret.second;
+            info = ret.first->second;
+            if (inserted) {
+                info->myPos = ret.first;
+                info->myPath = path.toUtf8().constData();
+            }
+        }
+        if (!inserted) {
             if (!info->pcDoc) {
                 QString fullpath(info->getFullPath());
                 if (fullpath.size()
@@ -3503,9 +3525,7 @@ public:
             }
         }
         else {
-            info = std::make_shared<DocInfo>();
-            auto ret = _DocInfoMap.insert(std::make_pair(path, info));
-            info->init(ret.first, objName, l);
+            info->init(objName, l);
         }
 
         if (info->pcDoc) {
@@ -3516,6 +3536,7 @@ public:
             }
         }
 
+        std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
         info->links.insert(l);
         return info;
     }
@@ -3535,11 +3556,15 @@ public:
 
     QString getFullPath() const
     {
-        QString path = myPos->first;
+        QString path;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            path = myPos->first;
+        }
         if (path.startsWith(QLatin1String("https://"))) {
             return path;
         }
-        return QFileInfo(myPos->first).absoluteFilePath();
+        return QFileInfo(path).absoluteFilePath();
     }
 
     const char* filePath() const
@@ -3550,24 +3575,26 @@ public:
     void deinit()
     {
         FC_LOG("deinit " << (pcDoc ? pcDoc->getName() : filePath()));
-        assert(links.empty());
+        auto me = shared_from_this();
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            if (!links.empty()) {
+                return;
+            }
+            _DocInfoMap.erase(myPos);
+            myPos = _DocInfoMap.end();
+            myPath.clear();
+            pcDoc = nullptr;
+        }
         connFinishRestoreDocument.disconnect();
         connPendingReloadDocument.disconnect();
         connDeleteDocument.disconnect();
         connSaveDocument.disconnect();
         connDeletedObject.disconnect();
-
-        auto me = shared_from_this();
-        _DocInfoMap.erase(myPos);
-        myPos = _DocInfoMap.end();
-        myPath.clear();
-        pcDoc = nullptr;
     }
 
-    void init(DocInfoMap::iterator pos, const char* objName, PropertyXLink* l)
+    void init(const char* objName, PropertyXLink* l)
     {
-        myPos = pos;
-        myPath = myPos->first.toUtf8().constData();
         App::Application& app = App::GetApplication();
         // NOLINTBEGIN
         connFinishRestoreDocument = app.signalFinishRestoreDocument.connect(
@@ -3603,13 +3630,14 @@ public:
 
     void attach(Document* doc)
     {
-        assert(!pcDoc);
-        pcDoc = doc;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            assert(!pcDoc);
+            pcDoc = doc;
+        }
         FC_LOG("attaching " << doc->getName() << ", " << doc->getFileName());
         std::map<App::PropertyLinkBase*, std::vector<App::PropertyXLink*>> parentLinks;
-        for (auto it = links.begin(), itNext = it; it != links.end(); it = itNext) {
-            ++itNext;
-            auto link = *it;
+        for (auto link : snapshotLinks()) {
             if (link->_pcLink) {
                 continue;
             }
@@ -3658,24 +3686,40 @@ public:
         }
     }
 
+    std::set<PropertyXLink*> snapshotLinks() const
+    {
+        std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+        return links;
+    }
+
     void remove(PropertyXLink* l)
     {
-        auto it = links.find(l);
-        if (it != links.end()) {
-            links.erase(it);
-            if (links.empty()) {
-                deinit();
+        bool empty;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            if (!links.erase(l)) {
+                return;
             }
+            empty = links.empty();
+        }
+        if (empty) {
+            deinit();
         }
     }
 
     static void restoreDocument(const App::Document& doc)
     {
-        auto it = _DocInfoMap.find(getFullPath(doc.FileName.getValue()));
-        if (it == _DocInfoMap.end()) {
-            return;
+        auto path = getFullPath(doc.FileName.getValue());
+        DocInfoPtr info;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            auto it = _DocInfoMap.find(path);
+            if (it == _DocInfoMap.end()) {
+                return;
+            }
+            info = it->second;
         }
-        it->second->slotFinishRestoreDocument(doc);
+        info->slotFinishRestoreDocument(doc);
     }
 
     void slotFinishRestoreDocument(const App::Document& doc)
@@ -3708,7 +3752,12 @@ public:
             return;
         }
 
-        QFileInfo info(myPos->first);
+        QString savedPath;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            savedPath = myPos->first;
+        }
+        QFileInfo info(savedPath);
         QString path(info.absoluteFilePath());
         const char* filename = doc.getFileName();
         QString docPath(getFullPath(filename));
@@ -3716,18 +3765,24 @@ public:
         if (path.isEmpty() || path != docPath) {
             FC_LOG("document '" << doc.getName() << "' path changed");
             auto me = shared_from_this();
-            auto ret = _DocInfoMap.insert(std::make_pair(docPath, me));
-            if (!ret.second) {
+            std::set<PropertyXLink*> tmp;
+            bool inserted;
+            {
+                std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+                auto ret = _DocInfoMap.insert(std::make_pair(docPath, me));
+                inserted = ret.second;
+                if (inserted) {
+                    _DocInfoMap.erase(myPos);
+                    myPos = ret.first;
+                    tmp.swap(links);
+                }
+            }
+            if (!inserted) {
                 // is that even possible?
                 FC_WARN("document '" << doc.getName() << "' path exists, detach");
                 slotDeleteDocument(doc);
                 return;
             }
-            _DocInfoMap.erase(myPos);
-            myPos = ret.first;
-
-            std::set<PropertyXLink*> tmp;
-            tmp.swap(links);
             for (auto link : tmp) {
                 auto owner = static_cast<DocumentObject*>(link->getContainer());
                 // adjust file path for each PropertyXLink
@@ -3737,7 +3792,7 @@ public:
 
         // time stamp changed, touch the linking document.
         std::set<Document*> docs;
-        for (auto link : links) {
+        for (auto link : snapshotLinks()) {
             auto linkdoc = static_cast<DocumentObject*>(link->getContainer())->getDocument();
             auto ret = docs.insert(linkdoc);
             if (ret.second) {
@@ -3751,19 +3806,20 @@ public:
 
     void slotDeleteDocument(const App::Document& doc)
     {
-        for (auto it = links.begin(), itNext = it; it != links.end(); it = itNext) {
-            ++itNext;
-            auto link = *it;
+        for (auto link : snapshotLinks()) {
             auto obj = freecad_cast<DocumentObject*>(link->getContainer());
             if (obj && obj->getDocument() == &doc) {
-                links.erase(it);
+                {
+                    std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+                    links.erase(link);
+                }
                 // must call unlink here, so that PropertyLink::resetLink can
                 // remove back link before the owner object is marked as being
                 // destroyed
                 link->unlink();
             }
         }
-        if (links.empty()) {
+        if (snapshotLinks().empty()) {
             deinit();
             return;
         }
@@ -3771,7 +3827,7 @@ public:
             return;
         }
         std::map<App::PropertyLinkBase*, std::vector<App::PropertyXLink*>> parentLinks;
-        for (auto link : links) {
+        for (auto link : snapshotLinks()) {
             link->setFlag(PropertyLinkBase::LinkDetached);
             if (link->parentProp) {
                 parentLinks[link->parentProp].push_back(link);
@@ -3793,13 +3849,15 @@ public:
                 v.first->setFlag(PropertyLinkBase::LinkDetached, false);
             }
         }
+        std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
         pcDoc = nullptr;
     }
 
     bool hasXLink(const App::Document* doc) const
     {
+        std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
         for (auto link : links) {
-            auto obj = freecad_cast<DocumentObject*>(link->getContainer());
+            auto obj = dynamic_cast<DocumentObject*>(link->getContainer());
             if (obj && obj->getDocument() == doc) {
                 return true;
             }
@@ -3810,18 +3868,18 @@ public:
     static void breakLinks(App::DocumentObject* obj, bool clear)
     {
         auto doc = obj->getDocument();
-        for (auto itD = _DocInfoMap.begin(), itDNext = itD; itD != _DocInfoMap.end();
-             itD = itDNext) {
-            ++itDNext;
-            auto docInfo = itD->second;
-            if (docInfo->pcDoc != doc) {
-                continue;
+        std::vector<DocInfoPtr> infos;
+        {
+            std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+            for (const auto& entry : _DocInfoMap) {
+                if (entry.second->pcDoc == doc) {
+                    infos.push_back(entry.second);
+                }
             }
-            auto& links = docInfo->links;
+        }
+        for (const auto& info : infos) {
             std::set<PropertyLinkBase*> parentLinks;
-            for (auto it = links.begin(), itNext = it; it != links.end(); it = itNext) {
-                ++itNext;
-                auto link = *it;
+            for (auto link : info->snapshotLinks()) {
                 if (link->_pcLink != obj && !(clear && link->getContainer() == obj)) {
                     continue;
                 }
@@ -4634,6 +4692,7 @@ bool PropertyXLink::supportXLink(const App::Property* prop)
 
 bool PropertyXLink::hasXLink(const App::Document* doc)
 {
+    std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
     for (auto& v : _DocInfoMap) {
         if (v.second->hasXLink(doc)) {
             return true;
@@ -4672,6 +4731,7 @@ void PropertyXLink::restoreDocument(const App::Document& doc)
 std::map<App::Document*, std::set<App::Document*>>
 PropertyXLink::getDocumentOutList(App::Document* doc)
 {
+    std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
     std::map<App::Document*, std::set<App::Document*>> ret;
     for (auto& v : _DocInfoMap) {
         for (auto link : v.second->links) {
@@ -4682,7 +4742,7 @@ PropertyXLink::getDocumentOutList(App::Document* doc)
                 continue;
             }
             auto obj = dynamic_cast<App::DocumentObject*>(link->getContainer());
-            if (!obj || !obj->isAttachedToDocument() || !obj->getDocument()) {
+            if (!obj || !obj->DocumentObject::isAttachedToDocument() || !obj->getDocument()) {
                 continue;
             }
             if (doc && obj->getDocument() != doc) {
@@ -4697,6 +4757,7 @@ PropertyXLink::getDocumentOutList(App::Document* doc)
 std::map<App::Document*, std::set<App::Document*>>
 PropertyXLink::getDocumentInList(App::Document* doc)
 {
+    std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
     std::map<App::Document*, std::set<App::Document*>> ret;
     for (auto& v : _DocInfoMap) {
         if (!v.second->pcDoc || (doc && doc != v.second->pcDoc) || v.second->links.empty()) {
@@ -4710,7 +4771,7 @@ PropertyXLink::getDocumentInList(App::Document* doc)
                 continue;
             }
             auto obj = dynamic_cast<App::DocumentObject*>(link->getContainer());
-            if (obj && obj->isAttachedToDocument() && obj->getDocument()) {
+            if (obj && obj->DocumentObject::isAttachedToDocument() && obj->getDocument()) {
                 docs.insert(obj->getDocument());
             }
         }
@@ -4722,14 +4783,18 @@ std::set<Document*> App::externalSourceDependentDocuments(
     const Document& source, bool includeRetiredExpressions)
 {
     std::set<Document*> dependents;
-    for (auto& entry : _DocInfoMap) {
-        if (entry.second->pcDoc != &source) {
-            continue;
-        }
-        for (auto* link : entry.second->links) {
-            auto* owner = dynamic_cast<DocumentObject*>(link->getContainer());
-            if (owner && owner->isAttachedToDocument() && owner->getDocument() != &source) {
-                dependents.insert(owner->getDocument());
+    {
+        std::lock_guard<std::recursive_mutex> guard(xlinkRegistryMutex);
+        for (auto& entry : _DocInfoMap) {
+            if (entry.second->pcDoc != &source) {
+                continue;
+            }
+            for (auto* link : entry.second->links) {
+                auto* owner = dynamic_cast<DocumentObject*>(link->getContainer());
+                if (owner && owner->DocumentObject::isAttachedToDocument()
+                    && owner->getDocument() != &source) {
+                    dependents.insert(owner->getDocument());
+                }
             }
         }
     }
