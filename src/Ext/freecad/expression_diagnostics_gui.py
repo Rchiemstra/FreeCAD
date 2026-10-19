@@ -4,6 +4,7 @@
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
+from freecad import expression_diagnostics_property_editor  # install the Data-tab observer
 
 translate = App.Qt.translate
 _dialogs = []

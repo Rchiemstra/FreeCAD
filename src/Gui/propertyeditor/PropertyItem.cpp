@@ -55,6 +55,7 @@
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Command.h>
+#include <Gui/ExpressionDiagnosticsPresentation.h>
 #include <Gui/Control.h>
 #include <Gui/Dialogs/DlgPropertyLink.h>
 #include <Gui/FileDialog.h>
@@ -832,6 +833,18 @@ QVariant PropertyItem::dataValue(int role) const
 
 QVariant PropertyItem::data(int column, int role) const
 {
+    if (role == Qt::ToolTipRole
+        || (role == Qt::ForegroundRole && column == PropertyItem::ValueColumn)) {
+        const QString reason = Gui::expressionDiagnosticReason(getPath(), getPropertyData());
+        if (!reason.isEmpty()) {
+            if (role == Qt::ForegroundRole) {
+                return Gui::expressionDiagnosticColor();
+            }
+            const QVariant tip = column == PropertyItem::NameColumn
+                ? dataPropertyName(role) : dataValue(role);
+            return tip.toString() + tr("\n\nExpression error: ") + reason;
+        }
+    }
     if (column == PropertyItem::NameColumn) {
         return dataPropertyName(role);
     }

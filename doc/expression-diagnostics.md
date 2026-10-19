@@ -20,6 +20,28 @@ read-only; selecting a row selects its object. Close and invoke the command agai
 for a fresh report. Rows continue to show the captured report if the document
 changes; selecting a row for a deleted object/document does nothing.
 
+The property editor's **Data** tab uses the same diagnostics to show broken
+expressions in orange, with the expression path, formula and reason in the
+property/value tooltip. Compound properties also indicate failures in their
+children, and merged rows indicate failures in any selected object. Good expressions retain the existing palette link colour; stale values
+and expressions that could not safely be evaluated are not labelled broken.
+Bindings that still evaluate successfully keep their normal colour even when
+the Tools report identifies exposure to a failed input.
+`User parameter:BaseApp/Preferences/PropertyView/ExpressionErrorColor` is an
+unsigned packed RGBA colour (default `0xD35400FF`). Parameter changes apply live.
+Checkbox value labels use the same error colour. Diagnostic refreshes preserve
+uncommitted text in active value editors.
+
+A GUI-thread timer coalesces document changes and recompute completion into a
+cached report, including reference creation, label changes, property removal,
+object deletion, undo/redo and document closure. Observer callbacks only queue
+invalidation, including when recompute runs on a worker. On this fork, observation
+waits for the existing live-presentation reservation; upstream's synchronous
+execution needs no additional admission. Diagnostic colour/tooltip lookups only read cached plain data:
+they neither invoke Python nor evaluate expressions. The Tools table remains an
+explicit snapshot. Sketcher edit-mode constraint colours and solver messages,
+and explanations for rejected new constraints, remain follow-up work for #26496.
+
 Diagnosis evaluates each expression against currently stored input values and
 compares its result with the stored destination. It never calls recompute, sets
 properties, clears touched flags, opens external documents, or creates transactions.
@@ -53,8 +75,11 @@ Merge exposure (upstream commits since 2026-04-01, measured with
 | --- | ---: | --- |
 | `src/App/CMakeLists.txt` | 12 | Register one new binding source |
 | `src/App/DocumentObject.pyi` | 7 | Declare read-only parser binding |
+| `src/Gui/propertyeditor/PropertyItem.cpp` | 8 | Small cached colour/tooltip hook |
+| `src/Gui/propertyeditor/PropertyItemDelegate.cpp` | 2 | Use cached error colour for checkbox labels |
+| `src/Gui/CMakeLists.txt` | 38 | Register presentation helper header |
 | `src/Gui/FreeCADGuiInit.py` | 4 | Import global command before initial workbench activation |
-| `src/Ext/freecad/CMakeLists.txt` | 1 | Install two new Python files |
+| `src/Ext/freecad/CMakeLists.txt` | 1 | Install diagnostics and presentation Python files |
 | `src/Mod/Test/CMakeLists.txt` | 19 | Register two new test files |
 | `src/Mod/Test/Init.py` | 8 | Register application tests |
 | `src/Mod/Test/InitGui.py` | 8 | Register GUI tests |
