@@ -26,6 +26,8 @@
 
 
 #include <type_traits>
+#include <optional>
+#include <App/DocumentCommandHandle.h>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 #include <Gui/DocumentObserver.h>
@@ -180,9 +182,16 @@ public:
     }
 
 protected:
+    bool deferParameterApplication();
     PartDesignGui::TaskPreviewParameters* preview;
 
 private:
+    bool finishAccept();
+    bool deferAccept();
+    bool acceptPending {false};
+    bool cancelPending {false};
+    bool acceptParametersApplied {false};
+    std::optional<App::DocumentCommandHandle> acceptRecompute;
     PartDesignGui::ViewProvider* vp;
 };
 

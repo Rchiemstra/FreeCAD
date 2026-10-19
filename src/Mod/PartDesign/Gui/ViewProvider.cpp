@@ -230,7 +230,7 @@ void ViewProvider::unsetEdit(int ModNum)
 
     if (ModNum == ViewProvider::Default) {
         // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
     }
     else {
         PartGui::ViewProviderPart::unsetEdit(ModNum);
