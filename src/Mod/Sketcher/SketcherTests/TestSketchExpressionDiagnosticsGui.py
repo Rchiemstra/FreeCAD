@@ -10,6 +10,9 @@ from SketcherTests.ExpressionDiagnosticsFixture import make_box
 class TestSketchExpressionDiagnosticsGui(SketcherGuiTestCase):
     def setUp(self):
         super().setUp()
+        self.preferences = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Sketcher")
+        self.auto_update = self.preferences.GetBool("AutoRecompute", False)
+        self.preferences.SetBool("AutoRecompute", True)
         Gui.activateWorkbench("SketcherWorkbench")
         self.doc = App.newDocument("SketchExpressionDiagnosticsGui")
         self.sketch = make_box(self.doc)
@@ -19,8 +22,13 @@ class TestSketchExpressionDiagnosticsGui(SketcherGuiTestCase):
         self.doc.commitTransaction()
         self.recompute_gui_document()
         Gui.activeDocument().setEdit(self.sketch.Name)
-        self.sketch.solve()
         self.flush_gui(100)
+
+    def tearDown(self):
+        try:
+            super().tearDown()
+        finally:
+            self.preferences.SetBool("AutoRecompute", self.auto_update)
 
     def constraint_list(self):
         for widget in Gui.getMainWindow().findChildren(QtWidgets.QListWidget):
