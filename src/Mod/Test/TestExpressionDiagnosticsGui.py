@@ -301,9 +301,11 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
         return self.index("x", position.sibling(position.row(), 0))
 
     def test_readonly_placement_leaf_identity(self):
+        Gui.Selection.clearSelection()
+        self.wait_for(lambda: not self.index("Broken").isValid())
         self.obj.addProperty("App::PropertyPlacement", "Placement")
-        self.obj.setExpression("Placement.Base.x", "Absent.Value")
         self.obj.setEditorMode("Placement", 1)
+        self.obj.setExpression("Placement.Base.x", "Absent.Value")
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.obj)
         self.assert_broken("Placement", "Placement.Base.x")
@@ -346,6 +348,7 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "external.FCStd")
                 save_document_as(external, path)
+                save_document_as(self.doc, os.path.join(tmp, "owner.FCStd"))
                 self.obj.addProperty("App::PropertyXLink", "External")
                 self.obj.External = target
                 self.obj.setExpression("External", "Absent.Value")
