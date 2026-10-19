@@ -38,6 +38,7 @@ class AssemblyObject(Part):
         -5 if malformed constraints
         -1 if solver error,
         -2 if redundant constraints.
+        -7 if joint relation validation could not run or returned an invalid result.
         """
         ...
 
@@ -81,6 +82,10 @@ class AssemblyObject(Part):
     @constmethod
     def updateSolveStatus(self) -> Any:
         """updateSolveStatus()
+
+        Notify listeners using the cached result of the last explicit solve.
+        This does not solve or modify the document. Before the first solve,
+        status is unknown (DoF -1 in the C++ solver information).
 
         Args: None
 

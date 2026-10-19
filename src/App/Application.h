@@ -395,6 +395,10 @@ public:
 
     /// Signal on a newly created document.
     fastsignals::signal<void (const Document&, bool)> signalNewDocument;
+    /// GUI-thread notification before close ingress waits for lane admission.
+    fastsignals::signal<void (Document&)> signalBeforeCloseDocumentAdmission;
+    /// GUI-thread notification to retire completed recovery before lifecycle admission.
+    fastsignals::signal<void (Document&)> signalBeforeCloseDocumentLifecycleAdmission;
     /// Signal on a document getting deleted.
     App::ResilientSignal<void (const Document&)> signalDeleteDocument;
     /// Signal that a document has been deleted.

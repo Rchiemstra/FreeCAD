@@ -10,6 +10,8 @@ from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
 from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
 from SketcherTests.TestSketchExpressionDiagnosticsGui import TestSketchExpressionDiagnosticsGui
 
+from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
+
 # Use the module so that code checkers don't complain (flake8)
 (
     True
@@ -23,5 +25,6 @@ from SketcherTests.TestSketchExpressionDiagnosticsGui import TestSketchExpressio
     and TestSketcherOffsetGui
     and TestVisualLayerListGui
     and TestSketchExpressionDiagnosticsGui
+    and TestSketchReferenceRepairGui
     else False
 )

@@ -28,42 +28,6 @@
 
 using namespace Assembly;
 
-namespace
-{
-
-// MbD drops a conflicting orientation constraint as redundant and still
-// returns success. Name the joints whose relation does not hold.
-bool solvedJointRelationsFail(AssemblyObject* assembly)
-{
-    PyObject* module = PyImport_ImportModule("UtilsAssembly");
-    if (!module) {
-        PyErr_Clear();
-        return false;
-    }
-
-    PyObject* function = PyObject_GetAttrString(module, "violatedJointLabels");
-    Py_DECREF(module);
-    if (!function) {
-        PyErr_Clear();
-        return false;
-    }
-
-    PyObject* assemblyPy = assembly->getPyObject();
-    PyObject* result = PyObject_CallFunctionObjArgs(function, assemblyPy, nullptr);
-    Py_DECREF(assemblyPy);
-    Py_DECREF(function);
-    if (!result) {
-        PyErr_Clear();
-        return false;
-    }
-
-    const bool violated = PyList_Check(result) && PyList_Size(result) > 0;
-    Py_DECREF(result);
-    return violated;
-}
-
-}  // namespace
-
 // returns a string which represents the object e.g. when printed in python
 std::string AssemblyObjectPy::representation() const
 {
@@ -98,12 +62,8 @@ PyObject* AssemblyObjectPy::solve(PyObject* args) const
         enableUndo = Base::asBoolean(enableUndoPy);
     }
 
-    int ret = this->getAssemblyObjectPtr()->solve(enableUndo);
-    if (ret == 0 && solvedJointRelationsFail(this->getAssemblyObjectPtr())) {
-        // Documented code for conflicting constraints.
-        ret = -3;
-    }
-    return Py_BuildValue("i", ret);
+    const SolveResult result = this->getAssemblyObjectPtr()->solve(enableUndo);
+    return Py_BuildValue("i", static_cast<int>(result));
 }
 
 PyObject* AssemblyObjectPy::generateSimulation(PyObject* args) const

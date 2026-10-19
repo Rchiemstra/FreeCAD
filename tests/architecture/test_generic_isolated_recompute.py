@@ -839,12 +839,17 @@ def test_unconditional_executors_are_never_bookkeeping_only_recompute_targets() 
     assert "object.getTypeId().isDerivedFrom(assemblyType)" in predicate
 
     # The premises: the extension really does re-derive on every execution, and
-    # the assembly really does solve from execute() without declaring it.
+    # the assembly still solves ordinary execute() calls without declaring that work.
     mapping = _compact(_body(_read("src/Mod/Part/App/AttachExtension.h"), "isTouched_Mapping"))
     assert mapping == "returntrue;"
     assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
     assert "solve(false);" in _compact(_body(assembly, "AssemblyObject::execute"))
-    assert "AssemblyObject::mustExecute" not in assembly
+    # Only a deferred explicit request is declared by mustExecute(). Ordinary
+    # solve-on-recompute work still falls through to Part, so the generic
+    # bookkeeping shortcut must continue to exclude assemblies.
+    eligibility = _compact(_body(assembly, "AssemblyObject::mustExecute"))
+    assert "solvePending" in eligibility
+    assert eligibility.endswith("returnApp::Part::mustExecute();")
 
 
 def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
@@ -863,7 +868,9 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
     assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
     solve = _compact(_body(assembly, "AssemblyObject::solve"))
     assert "ensureIdentityPlacements();" in solve
-    assert "setNewPlacements();" in solve
+    assert "validateAndCommitPlacements(attempt,true)" in solve
+    commit = _compact(_body(assembly, "AssemblyObject::validateAndCommitPlacements"))
+    assert "setNewPlacements(candidates);" in commit
     identity = _compact(_body(assembly, "AssemblyObject::ensureIdentityPlacements"))
     assert "pPlc->setValue(Base::Placement());" in identity
 

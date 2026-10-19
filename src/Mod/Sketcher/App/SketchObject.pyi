@@ -397,6 +397,25 @@ class SketchObject(Part2DObject):
         """
         ...
 
+    @constmethod
+    def getExternalReferenceType(self, geo_id: int, /) -> str:
+        """
+        Return the source subelement type (Edge, Vertex or Face), or empty if unknown.
+
+        Uses the stored reference, including missing mapped element names, rather
+        than the projected geometry type: an edge may project to a point.
+        """
+        ...
+
+    def attachExternal(self, geo_id: int, obj_name: str, sub_name: str, /) -> int:
+        """
+        Reattach an external geometry and its related projections to a subelement.
+
+        Keeps geometry IDs and constraints. Returns the external link index.
+        The caller owns the transaction and must check projection compatibility.
+        """
+        ...
+
     def delExternal(self, ext_geo_id: int, /) -> None:
         """
         Delete an external geometry link from the sketch.

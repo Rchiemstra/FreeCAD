@@ -474,6 +474,8 @@ target_sources(FreeCADApp PRIVATE ${FreeCADApp_SRCS})
 target_link_libraries(FreeCADApp ${FreeCADApp_LIBS})
 
 if(ENABLE_DEVELOPER_TESTS)
+    set_property(SOURCE PropertyLinks.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS FREECAD_XLINK_REGISTRY_TEST_API)
     # Keep DocumentFileWriter private in production while allowing its focused
     # cross-platform boundary tests to link against the Windows DLL.
     target_compile_definitions(FreeCADApp PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
