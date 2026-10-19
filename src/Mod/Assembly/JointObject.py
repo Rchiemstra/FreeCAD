@@ -1389,11 +1389,17 @@ class ViewProviderJoint:
         return self.editJoint(vobj)
 
     def editJoint(self, vobj):
-        App.ActiveDocument.abortTransaction()  # Close the auto-transaction
-
-        task = Gui.Control.activeTaskDialog()
-        if task:
-            task.reject()
+        if activeTask is not None:
+            # The tree may already have committed its transaction when opening
+            # the automatic "Edit" transaction. Finish the panel consistently
+            # for both double-click and context-menu editing.
+            if not activeTask.accept():
+                return False
+        else:
+            App.ActiveDocument.abortTransaction()  # Close the auto-transaction
+            task = Gui.Control.activeTaskDialog()
+            if task:
+                task.reject()
 
         assembly = vobj.Object.Proxy.getAssembly(vobj.Object)
 
@@ -2470,12 +2476,17 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             self.accept()
 
     def _removeSelectedItems(self, selected_indexes):
-        for index in selected_indexes:
+        for index in sorted(selected_indexes, key=lambda index: index.row(), reverse=True):
             row = index.row()
             if row < len(self.refs):
                 ref = self.refs[row]
                 sub = UtilsAssembly.addTipNameToSub(ref)
                 Gui.Selection.removeSelection(ref[0], sub)
+                # The tree or an empty-space click may have cleared the GUI
+                # selection without removing the edited joint's references.
+                if ref in self.refs:
+                    self.refs.remove(ref)
+                    self.updateJoint()
             else:
                 print(f"Row {row} is out of bounds for refs (length: {len(self.refs)})")
 
@@ -2616,5 +2627,8 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.presel_ref = [comp, [new_sub]]
 
     def clearSelection(self, doc_name):
-        self.refs.clear()
-        self.updateJoint()
+        # Tree selection changes precede its automatic transaction, which
+        # commits the current edit. Deselecting must not erase an existing joint.
+        if self.creating:
+            self.refs.clear()
+            self.updateJoint()
