@@ -55,6 +55,7 @@
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Command.h>
+#include <Gui/ExpressionDiagnosticsPresentation.h>
 #include <Gui/Control.h>
 #include <Gui/Dialogs/DlgPropertyLink.h>
 #include <Gui/FileDialog.h>
@@ -187,6 +188,7 @@ void PropertyItem::setPropertyData(const std::vector<App::Property*>& items)
     propertyItems = items;
     updateData();
     this->initialize();
+    Gui::ExpressionDiagnosticsPresentation::populate(*this);
 }
 
 void PropertyItem::updateData()
@@ -832,6 +834,9 @@ QVariant PropertyItem::dataValue(int role) const
 
 QVariant PropertyItem::data(int column, int role) const
 {
+    if (auto cached = Gui::ExpressionDiagnosticsPresentation::data(*this, column, role)) {
+        return *cached;
+    }
     if (column == PropertyItem::NameColumn) {
         return dataPropertyName(role);
     }
@@ -4893,6 +4898,10 @@ QString PropertyLinkItem::toString(const QVariant& prop) const
 
 QVariant PropertyLinkItem::data(int column, int role) const
 {
+    if (auto cached = Gui::ExpressionDiagnosticsPresentation::data(*this, column, role)) {
+        return *cached;
+    }
+
     if (!propertyItems.empty() && column == 1
         && (role == Qt::ForegroundRole || role == Qt::ToolTipRole)) {
         if (auto propLink = dynamic_cast<const App::PropertyLinkBase*>(propertyItems[0])) {

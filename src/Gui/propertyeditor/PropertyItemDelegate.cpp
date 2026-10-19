@@ -30,6 +30,7 @@
 #include <QKeyEvent>
 
 #include <Base/Tools.h>
+#include <Gui/ExpressionDiagnosticsPresentation.h>
 
 #include "PropertyItemDelegate.h"
 #include "MDIView.h"
@@ -148,7 +149,10 @@ void PropertyItemDelegate::paint(
             option.rect.right() - (checkboxOption.rect.right() + spacing),
             checkboxOption.rect.height()
         );
-        if (readonly) {
+        if (!Gui::ExpressionDiagnosticsPresentation::reason(*property).isEmpty()) {
+            painter->setPen(index.data(Qt::ForegroundRole).value<QColor>());
+        }
+        else if (readonly) {
             painter->setPen(palette.color(QPalette::Disabled, QPalette::Text));
         }
         else {
