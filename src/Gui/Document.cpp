@@ -1474,23 +1474,10 @@ void Document::catchUpIdleLivePresentation()
         return;
     }
 
-    // updateView() restores property status bits from ObjectStatusLocker
-    // destructors. Under an atomic presentation admission (for any document)
-    // the mutation guard throws there, and a throw from a destructor
-    // terminates, so wait for the admission to end.
-    if (deferLivePresentationUpdates()
-        || d->_pcDocument->mustExecute()
-        || d->_pcDocument->testStatus(App::Document::Recomputing)
-        || App::atomicPresentationMutationAdmissionActive()) {
-        scheduleLivePresentationCatchUp();
-        return;
-    }
-
-    // Close the gap between the idle checks and provider callbacks. The
-    // reservation never holds its mutex while refreshing or redrawing, and
-    // refuses new admission until all live presentation work has returned.
+    // Reserve before consulting live App state. The lane/replay checks guard
+    // executing work; pending recompute need not delay idle presentation.
     App::LivePresentationRefreshScope refresh;
-    if (!refresh.acquired()) {
+    if (!refresh.acquired() || deferLivePresentationUpdates()) {
         scheduleLivePresentationCatchUp();
         return;
     }
