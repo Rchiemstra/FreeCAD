@@ -181,6 +181,36 @@ class TestComponentPattern(unittest.TestCase):
             self.assertFalse(pattern.PlacementDriver.Visibility)
             self.assertFalse(pattern.ParameterSource.Visibility)
 
+    def test_save_reload_upgrades_original_pattern_schema(self):
+        pattern = self.create(joints=[self.seedJoint()])
+        for child in pattern.Copies + pattern.JointCopies:
+            if "PatternOwner" in child.PropertiesList:
+                child.removeProperty("PatternOwner")
+        for name in ("Copies", "JointCopies", "Joints"):
+            values = list(getattr(pattern, name))
+            pattern.removeProperty(name)
+            pattern.addProperty("App::PropertyLinkList", name, "Component Pattern")
+            setattr(pattern, name, values)
+        for name in ("PlacementDrivers", "StatusMessage"):
+            if name in pattern.PropertiesList:
+                pattern.removeProperty(name)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "original-pattern.FCStd")
+            self.doc.saveAs(path)
+            self.flushGui()
+            App.closeDocument(self.doc.Name)
+            self.doc = App.openDocument(path)
+            pattern = self.doc.getObject("ComponentPattern")
+            source = self.doc.getObject("HolePattern")
+            source.Occurrences = 3
+            self.doc.recompute()
+            self.assertEqual(len(pattern.Copies), 2)
+            self.assertEqual(len(pattern.JointCopies), 2)
+            self.assertNotIn("Invalid", pattern.State)
+            self.assertEqual(
+                pattern.getTypeIdOfProperty("Copies"), "App::PropertyLinkListHidden"
+            )
+
     def seedJoint(self):
         # Select the actual cylindrical wall of the first hole through its assembly link.
         for i, face in enumerate(self.source.Shape.Faces, 1):
