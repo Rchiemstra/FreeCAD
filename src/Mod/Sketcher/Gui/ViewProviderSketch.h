@@ -771,6 +771,7 @@ public:
     //@{
     friend class ViewProviderSketchDrawSketchHandlerAttorney;
     friend class ViewProviderSketchCoinAttorney;
+    friend class SketchExpressionDiagnostics;
     friend class ViewProviderSketchSnapAttorney;
     friend class ViewProviderSketchCommandConstraintsAttorney;
     //@}
