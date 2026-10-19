@@ -14,6 +14,12 @@
 
 namespace Gui
 {
+inline const App::ObjectIdentifier& PropertyEditor::PropertyItemAttorney::diagnosticPath(
+    const PropertyItem& item)
+{
+    return item.getPath();
+}
+
 // Explicit model-population request, issued only by the admitted observer.
 // Normal paint/tooltip roles never resolve paths, properties or document objects.
 inline constexpr int expressionDiagnosticsPopulateRole = Qt::UserRole + 26496;
@@ -58,8 +64,8 @@ inline void captureRow(PropertyItem& item, QStringList owners = {}, QString path
     else if (item.isBound()) {
         // Constraint rows have canonical names/indexes different from their Qt
         // object names. This is population, so resolving that identity is safe.
-        path = QString::fromStdString(item.getPath().getPropertyName()
-                                     + item.getPath().getSubPathStr());
+        const auto& binding = PropertyEditor::PropertyItemAttorney::diagnosticPath(item);
+        path = QString::fromStdString(binding.getPropertyName() + binding.getSubPathStr());
     }
     QStringList keys;
     for (const auto& owner : owners) {
