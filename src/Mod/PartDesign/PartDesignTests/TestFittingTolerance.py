@@ -8,6 +8,7 @@ import unittest
 
 import FreeCAD as App
 import Part
+from Test.GuiRecompute import close_document
 
 
 class TestFittingTolerance(unittest.TestCase):
@@ -16,7 +17,7 @@ class TestFittingTolerance(unittest.TestCase):
         self.body = self.doc.addObject("PartDesign::Body", "Body")
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document(self.doc)
 
     def circle(self, radius=5):
         sketch = self.body.newObject("Sketcher::SketchObject", "Nominal")
@@ -87,7 +88,7 @@ class TestFittingTolerance(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     path = os.path.join(directory, "fit.FCStd")
                     self.doc.saveAs(path)
-                    App.closeDocument(self.doc.Name)
+                    close_document(self.doc)
                     self.doc = App.openDocument(path)
                     self.body = self.doc.getObject("Body")
                     feature = self.doc.getObject(name)
@@ -98,7 +99,7 @@ class TestFittingTolerance(unittest.TestCase):
                     self.doc.recompute()
                     self.assertAlmostEqual(feature.FittingTolerance.Value, 0.3)
                     self.assertSize(feature, 9.7 if factory.__name__ == "pad" else 10.3)
-                App.closeDocument(self.doc.Name)
+                close_document(self.doc)
                 self.setUp()
 
     def testAllowanceProfileComposition(self):
@@ -202,7 +203,7 @@ class TestFittingTolerance(unittest.TestCase):
                 self.assertTrue(feature.Shape.isValid())
                 expected = math.pi * 4.8**2 * 2 if factory == self.pad else 1600 - math.pi * 5.2**2 * 4
                 self.assertAlmostEqual(feature.Shape.Volume, expected)
-                App.closeDocument(self.doc.Name)
+                close_document(self.doc)
                 self.setUp()
 
     def testPocketIslandShrinks(self):
@@ -250,7 +251,7 @@ class TestFittingTolerance(unittest.TestCase):
                     self.assertAlmostEqual(feature.AddSubShape.Volume, math.pi * radius**2 * 3)
                     expected = math.pi * radius**2 * 3
                     self.assertAlmostEqual(feature.Shape.Volume, expected if factory == self.pad else 1600 - expected)
-                    App.closeDocument(self.doc.Name)
+                    close_document(self.doc)
                     self.setUp()
 
     def testUpToFace(self):
@@ -276,7 +277,7 @@ class TestFittingTolerance(unittest.TestCase):
                 self.assertAlmostEqual(feature.AddSubShape.Volume, math.pi * radius**2 * depth)
                 expected = math.pi * radius**2 * depth
                 self.assertAlmostEqual(feature.Shape.Volume, expected if factory == self.pad else 1600 - expected)
-                App.closeDocument(self.doc.Name)
+                close_document(self.doc)
                 self.setUp()
 
     def testUndoRedoToleranceChange(self):
@@ -304,7 +305,7 @@ class TestFittingTolerance(unittest.TestCase):
                 feature = self.doc.getObject(name)
                 self.assertEqual(feature.FittingTolerance.Value, 0.4)
                 self.assertSize(feature, expected)
-                App.closeDocument(self.doc.Name)
+                close_document(self.doc)
                 self.setUp()
 
     def testLegacyDocumentWithoutProperty(self):
@@ -335,12 +336,12 @@ class TestFittingTolerance(unittest.TestCase):
                                 data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                             target.writestr(member, data)
                         self.assertGreater(removed, 0)
-                    App.closeDocument(self.doc.Name)
+                    close_document(self.doc)
                     self.doc = App.openDocument(legacy)
                     self.body = self.doc.getObject("Body")
                     feature = self.doc.getObject(name)
                     self.assertEqual(feature.FittingTolerance.Value, 0)
                     self.doc.recompute(None, True, True)
                     self.assertAlmostEqual(feature.Shape.Volume, volume)
-                App.closeDocument(self.doc.Name)
+                close_document(self.doc)
                 self.setUp()

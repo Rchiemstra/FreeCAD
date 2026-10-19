@@ -8,6 +8,7 @@ import unittest
 
 import FreeCAD as App
 import Part
+from Test.GuiRecompute import close_document
 import Sketcher
 
 
@@ -17,7 +18,7 @@ class TestAllowanceProfile(unittest.TestCase):
         self.body = self.doc.addObject("PartDesign::Body", "Body")
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document(self.doc)
 
     def circle(self, radius=5):
         sketch = self.body.newObject("Sketcher::SketchObject", "Nominal")
@@ -167,7 +168,7 @@ class TestAllowanceProfile(unittest.TestCase):
             path = os.path.join(directory, "allowance.FCStd")
             self.doc.recompute()
             self.doc.saveAs(path)
-            App.closeDocument(self.doc.Name)
+            close_document(self.doc)
             self.doc = App.openDocument(path)
             p = self.doc.getObject(name)
             p.Source.setDatum(0, App.Units.Quantity("10 mm"))
