@@ -48,6 +48,7 @@
 #include <Base/ProgramVersion.h>
 #include <Base/PyObjectBase.h>
 #include <Base/Tools.h>
+#include <Base/Translation.h>
 #include <Mod/Part/App/ExtrusionHelper.h>
 #include <Mod/Part/App/Tools.h>
 #include <Mod/Part/App/TopoShapePy.h>
@@ -76,8 +77,11 @@ FeatureExtrude::FeatureExtrude()
         (0.0),
         "Profile",
         App::Prop_None,
-        "Signed size correction: positive enlarges Pocket profiles and shrinks Pad profiles; "
-        "half is applied at each boundary. A 10 mm circular Pocket with 0.4 mm gives 10.4 mm."
+        QT_TRANSLATE_NOOP(
+            "App::Property",
+            "Signed size correction: positive enlarges Pocket profiles and shrinks Pad profiles; "
+            "half is applied at each boundary. A 10 mm circular Pocket with 0.4 mm gives 10.4 mm."
+        )
     );
     ADD_PROPERTY_TYPE(
         UseLegacyTaperDirection,
@@ -496,7 +500,10 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
         catch (Py::Exception&) {
             Base::PyException error;
             return new App::DocumentObjectExecReturn(
-                std::string("Invalid fitting tolerance: ") + error.what()
+                Base::Translation::translate(
+                    "Exception",
+                    QT_TRANSLATE_NOOP("Exception", "Cannot apply the fitting tolerance.")
+                ) + "\n" + error.what()
             );
         }
     }
