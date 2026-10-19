@@ -18,7 +18,11 @@ import UtilsAssembly
 _PATTERN_TYPES = {
     "PartDesign::PolarPattern": "Polar",
     "PartDesign::LinearPattern": "Linear",
+    "PartDesign::Mirrored": "Mirrored",
+    "PartDesign::MultiTransform": "MultiTransform",
 }
+translate = App.Qt.translate
+
 _COMMON = ("Occurrences", "Mode", "Reversed", "Offset", "Spacings", "SpacingPattern")
 _LINEAR = (
     "Direction",
@@ -98,8 +102,105 @@ def _owner(assembly, source):
         )
     ]
     if len(candidates) > 1:
-        raise ValueError("Choose the assembly component containing the pattern source")
+        raise ValueError(
+            translate(
+                "Assembly",
+                "Choose the assembly component containing the pattern source",
+            )
+        )
     return candidates[0] if candidates else None
+
+
+def _validateExplicit(count, kind, angle, length, axis, direction):
+    if count < 1 or kind not in ("Polar", "Linear"):
+        raise ValueError(translate("Assembly", "Invalid explicit pattern parameters"))
+    if kind == "Polar":
+        if axis.Length < 1e-12:
+            raise ValueError(translate("Assembly", "Polar axis must be nonzero"))
+        if count > 1 and abs(angle) < 1e-12:
+            raise ValueError(translate("Assembly", "Polar angle must be nonzero"))
+    else:
+        if direction.Length < 1e-12:
+            raise ValueError(translate("Assembly", "Linear direction must be nonzero"))
+        if count > 1 and length <= 0:
+            raise ValueError(translate("Assembly", "Linear length must be positive"))
+
+
+def _sourceLeaves(source):
+    kind = _PATTERN_TYPES.get(source.TypeId)
+    if kind is None:
+        raise ValueError(translate("Assembly", "Unsupported PartDesign pattern source"))
+    if kind == "MultiTransform":
+        return [leaf for sub in source.Transformations for leaf in _sourceLeaves(sub)]
+    return [source] if kind in ("Polar", "Linear") else []
+
+
+def _mirrorMatrix(source):
+    ref, subs = source.MirrorPlane
+    if ref is None:
+        raise ValueError(translate("Assembly", "The mirror plane is missing"))
+    sub = subs[0] if subs else ""
+    if hasattr(ref, "getAxis"):
+        axes = {"": -3, "N_Axis": -3, "H_Axis": -2, "V_Axis": -1}
+        axis = ref.getAxis(axes[sub] if sub in axes else int(sub[4:]))
+        base, normal = axis.Base, axis.Direction
+        if sub.startswith("Axis"):
+            base += normal * 0.5
+            normal = App.Vector(-normal.y, normal.x, normal.z)
+        base = ref.Placement.multVec(base)
+        normal = ref.Placement.Rotation.multVec(normal)
+    elif ref.TypeId in ("App::Plane", "PartDesign::Plane"):
+        placement = ref.getGlobalPlacement()
+        base, normal = placement.Base, placement.Rotation.multVec(App.Vector(0, 0, 1))
+        parent = ref.getParentGeoFeatureGroup()
+        if parent and parent.TypeId == "PartDesign::Body":
+            inverse = parent.getGlobalPlacement().inverse()
+            base, normal = inverse.multVec(base), inverse.Rotation.multVec(normal)
+    else:
+        face = ref.getSubObject(sub)
+        if face is None or not isinstance(face.Surface, Part.Plane):
+            raise ValueError(translate("Assembly", "Mirror face must be planar"))
+        base, normal = face.Surface.Position, face.Surface.Axis
+    inverse = source.Placement.inverse()
+    base, normal = inverse.multVec(base), inverse.Rotation.multVec(normal)
+    normal.normalize()
+    matrix = App.Matrix()
+    for row in range(3):
+        for column in range(3):
+            setattr(
+                matrix,
+                f"A{row + 1}{column + 1}",
+                (1 if row == column else 0) - 2 * normal[row] * normal[column],
+            )
+        setattr(matrix, f"A{row + 1}4", 2 * normal[row] * normal.dot(base))
+    return matrix
+
+
+def _sourceTransforms(source, drivers):
+    kind = _PATTERN_TYPES.get(source.TypeId)
+    if kind == "MultiTransform":
+        result = [App.Matrix()]
+        for sub in source.Transformations:
+            result = [
+                new * old for new in _sourceTransforms(sub, drivers) for old in result
+            ]
+    elif kind == "Mirrored":
+        result = [App.Matrix(), _mirrorMatrix(source)]
+    elif kind in ("Polar", "Linear"):
+        driver = drivers.get(source)
+        if driver is None or "Invalid" in driver.State:
+            raise ValueError(
+                translate("Assembly", "Cannot evaluate source pattern placements")
+            )
+        result = [p.toMatrix() for p in driver.PlacementList]
+    else:
+        raise ValueError(translate("Assembly", "Unsupported PartDesign pattern source"))
+    suppressed = set(getattr(source, "SuppressedIndices", []))
+    if 0 in suppressed:
+        raise ValueError(
+            translate("Assembly", "The source pattern's seed instance is suppressed")
+        )
+    return [p for i, p in enumerate(result) if i not in suppressed]
 
 
 def createComponentPattern(
@@ -125,27 +226,47 @@ def createComponentPattern(
     The source component remains instance zero and is never duplicated or deleted.
     """
     if assembly is None or not assembly.isDerivedFrom("Assembly::AssemblyObject"):
-        raise ValueError("An Assembly is required")
+        raise ValueError(translate("Assembly", "An Assembly is required"))
     if (
         component is None
         or not UtilsAssembly.isLink(component)
         or component not in UtilsAssembly.getMovablePartsWithin(assembly)
         or UtilsAssembly.isLinkArray(component)
     ):
-        raise ValueError("Choose one component link in the assembly")
+        raise ValueError(
+            translate("Assembly", "Choose one component link in the assembly")
+        )
     if source is not None and source.TypeId not in _PATTERN_TYPES:
-        raise ValueError("Choose a PartDesign PolarPattern or LinearPattern")
-    if count < 1 or patternType not in ("Polar", "Linear"):
-        raise ValueError("Invalid explicit pattern parameters")
+        raise ValueError(translate("Assembly", "Unsupported PartDesign pattern source"))
+    if source is None:
+        _validateExplicit(
+            count,
+            patternType,
+            angle,
+            length,
+            axis if axis is not None else App.Vector(0, 0, 1),
+            direction if direction is not None else App.Vector(1, 0, 0),
+        )
+    else:
+        _sourceLeaves(
+            source
+        )  # Reject unsupported sub-transforms before creating objects.
     if source is not None and patternComponent is None:
         patternComponent = _owner(assembly, source)
     members = UtilsAssembly.getMovablePartsWithin(assembly)
     if patternComponent is not None and patternComponent not in members:
-        raise ValueError("The pattern component must belong to this assembly")
+        raise ValueError(
+            translate("Assembly", "The pattern component must belong to this assembly")
+        )
     if source is not None and patternComponent is not None:
         linked = patternComponent.getLinkedObject()
         if linked != source and source not in linked.OutListRecursive:
-            raise ValueError("The patterned component must contain the pattern source")
+            raise ValueError(
+                translate(
+                    "Assembly",
+                    "The patterned component must contain the pattern source",
+                )
+            )
     group = UtilsAssembly.getJointGroup(assembly)
     for joint in joints:
         if (
@@ -157,7 +278,11 @@ def createComponentPattern(
                 UtilsAssembly.getMovingPart(joint.Reference2),
             )
         ):
-            raise ValueError("Choose joints of the source component in this assembly")
+            raise ValueError(
+                translate(
+                    "Assembly", "Choose joints of the source component in this assembly"
+                )
+            )
     obj = assembly.newObject("App::FeaturePython", "ComponentPattern")
     ComponentPattern(obj)
     obj.Component = component
@@ -165,7 +290,11 @@ def createComponentPattern(
     obj.UseSource = source is not None
     obj.PatternComponent = patternComponent
     obj.Joints = list(joints)
-    obj.PatternType = _PATTERN_TYPES[source.TypeId] if source else patternType
+    obj.PatternType = (
+        _PATTERN_TYPES[source.TypeId]
+        if source and _PATTERN_TYPES[source.TypeId] in ("Polar", "Linear")
+        else patternType
+    )
     obj.Count = count
     obj.Angle = angle
     obj.Length = length
@@ -191,10 +320,13 @@ class ComponentPattern:
         obj.Proxy = self
         self._executing = False
         self._configuring = False
+        self._deleting = False
         for kind, name, description in (
             ("String", "Type", "Assembly object type"),
+            ("String", "StatusMessage", "Component pattern status"),
+            ("XLinkList", "PlacementDrivers", "Native sub-transform calculators"),
             ("Link", "Component", "Source component (instance zero)"),
-            ("XLink", "PatternSource", "PartDesign polar or linear pattern"),
+            ("XLink", "PatternSource", "PartDesign pattern"),
             (
                 "Bool",
                 "UseSource",
@@ -246,9 +378,12 @@ class ComponentPattern:
         obj.Axis = App.Vector(0, 0, 1)
         obj.Direction = App.Vector(1, 0, 0)
         obj.setEditorMode("Type", 2)
+        obj.setEditorMode("StatusMessage", 1)
+        obj.setPropertyStatus("StatusMessage", ["NoRecompute", "Output"])
         for name in (
             "Copies",
             "JointCopies",
+            "PlacementDrivers",
             "PlacementDriver",
             "ParameterSource",
             "ReferenceDrivers",
@@ -258,7 +393,12 @@ class ComponentPattern:
                 (
                     2
                     if name
-                    in ("PlacementDriver", "ParameterSource", "ReferenceDrivers")
+                    in (
+                        "PlacementDriver",
+                        "PlacementDrivers",
+                        "ParameterSource",
+                        "ReferenceDrivers",
+                    )
                     else 1
                 ),
             )
@@ -270,14 +410,16 @@ class ComponentPattern:
     def loads(self, state):
         self._executing = False
         self._configuring = False
+        self._deleting = False
 
     def unsetupObject(self, obj):
         # Document-side deletion also handles scripts and transaction rollback.
         self._deleting = True
         children = list(obj.JointCopies) + list(obj.Copies) + list(obj.ReferenceDrivers)
+        children += list(getattr(obj, "PlacementDrivers", []))
         if obj.ParameterSource:
             children.insert(0, obj.ParameterSource)
-        if obj.PlacementDriver:
+        if obj.PlacementDriver and obj.PlacementDriver not in children:
             children.append(obj.PlacementDriver)
         for child in children:
             if obj.Document.getObject(child.Name) is not None:
@@ -286,6 +428,7 @@ class ComponentPattern:
     def onDocumentRestored(self, obj):
         self._executing = False
         self._configuring = False
+        self._deleting = False
         _ensureParameterViews()
         self._ensureViewProvider(obj)
 
@@ -310,25 +453,35 @@ class ComponentPattern:
             )
         ):
             return
-        if not obj.UseSource or obj.Component is None or obj.PatternSource is None:
+        if obj.Component is None or (obj.UseSource and obj.PatternSource is None):
+            self._clearGenerated(obj)
+            obj.StatusMessage = (
+                translate("Assembly", "The source component is missing")
+                if obj.Component is None
+                else translate("Assembly", "The pattern source is missing")
+            )
+            return
+        if not obj.UseSource:
             return
         self._configuring = True
         try:
             _ensureParameterViews()
             source = obj.PatternSource
-            kind = _PATTERN_TYPES.get(source.TypeId)
-            if kind is None:
-                raise ValueError("Unsupported pattern source")
-            driver = obj.PlacementDriver
-            if driver is not None and driver.TypeId != "Part::LinkArray" + kind:
-                obj.Document.removeObject(driver.Name)
-                driver = None
-            if driver is None:
-                driver = obj.Document.addObject(
-                    "Part::LinkArray" + kind, obj.Name + "Placements"
-                )
-                driver.ShowElement = False
-                obj.PlacementDriver = driver
+            leaves = _sourceLeaves(source)
+            drivers = list(obj.PlacementDrivers)
+            if not drivers and obj.PlacementDriver:
+                drivers = [obj.PlacementDriver]
+            kinds = ["Part::LinkArray" + _PATTERN_TYPES[leaf.TypeId] for leaf in leaves]
+            if [driver.TypeId for driver in drivers] != kinds:
+                for driver in drivers:
+                    obj.Document.removeObject(driver.Name)
+                drivers = []
+                for kind in kinds:
+                    driver = obj.Document.addObject(kind, obj.Name + "Placements")
+                    driver.ShowElement = False
+                    drivers.append(driver)
+            obj.PlacementDrivers = drivers
+            obj.PlacementDriver = drivers[0] if drivers else None
             parameters = obj.ParameterSource
             if parameters is None:
                 parameters = obj.Document.addObject(
@@ -339,26 +492,36 @@ class ComponentPattern:
             parameters.Owner = obj
             parameters.Source = source
             parameters.Component = obj.Component
-            parameters.Driver = driver
-            if "Parameters" not in driver.PropertiesList:
-                driver.addProperty(
-                    "App::PropertyLink", "Parameters", "Component Pattern"
-                )
-                driver.setEditorMode("Parameters", 2)
-            driver.Parameters = parameters
-            # The helper graph exists before recompute starts: source -> parameters
-            # -> native array -> component pattern. No nested recompute is needed.
-            if source.Document != obj.Document:
-                for name in (
-                    ("Axis",) if kind == "Polar" else ("Direction", "Direction2")
-                ):
-                    self._referenceProxy(obj, name)
-            self._updateDriver(obj, driver)
-            for helper in (parameters, driver):
+            parameters.Driver = obj.PlacementDriver
+            for leaf, driver in zip(leaves, drivers):
+                if "Parameters" not in driver.PropertiesList:
+                    driver.addProperty(
+                        "App::PropertyLink", "Parameters", "Component Pattern"
+                    )
+                    driver.setEditorMode("Parameters", 2)
+                driver.Parameters = parameters
+                if leaf.Document != obj.Document:
+                    for name in (
+                        ("Axis",)
+                        if _PATTERN_TYPES[leaf.TypeId] == "Polar"
+                        else ("Direction", "Direction2")
+                    ):
+                        self._referenceProxy(obj, name, leaf)
+                self._updateDriver(obj, driver, leaf)
+            for helper in [parameters] + drivers:
                 helper.Visibility = False
                 self._hideHelper(helper)
         finally:
             self._configuring = False
+
+    @staticmethod
+    def _clearGenerated(obj):
+        children = list(obj.JointCopies) + list(obj.Copies)
+        obj.JointCopies = []
+        obj.Copies = []
+        for child in children:
+            if obj.Document.getObject(child.Name):
+                obj.Document.removeObject(child.Name)
 
     @staticmethod
     def _hideHelper(helper):
@@ -369,8 +532,8 @@ class ComponentPattern:
             view.Visibility = False
             view.ShowInTree = False
 
-    def _updateDriver(self, obj, driver):
-        source = obj.PatternSource
+    def _updateDriver(self, obj, driver, source=None):
+        source = source or obj.PatternSource
         if source is None or obj.Component is None or driver is None:
             return
         values = {
@@ -388,19 +551,20 @@ class ComponentPattern:
                     and value
                     and value[0] is not None
                 ):
-                    value = self._localReference(obj, name, value)
+                    value = self._localReference(obj, name, value, source)
                 values[name] = value
         # Mode precedes dimensions, whose native setters synchronize spacing/extent.
         for name, value in values.items():
             if getattr(driver, name) != value:
                 setattr(driver, name, value)
 
-    def _referenceProxy(self, obj, name):
+    def _referenceProxy(self, obj, name, source=None):
+        label = obj.Name + ": " + (source.Name + ": " if source else "") + name
         proxies = list(obj.ReferenceDrivers)
-        proxy = next((p for p in proxies if p.Label == obj.Name + ": " + name), None)
+        proxy = next((p for p in proxies if p.Label == label), None)
         if proxy is None:
             proxy = obj.Document.addObject("Part::Feature", obj.Name + name)
-            proxy.Label = obj.Name + ": " + name
+            proxy.Label = label
             proxy.Visibility = False
             proxies.append(proxy)
             obj.ReferenceDrivers = proxies
@@ -410,17 +574,23 @@ class ComponentPattern:
     def _placements(self, obj, assembly):
         source = obj.PatternSource if obj.UseSource else None
         if obj.UseSource and source is None:
-            raise ValueError("The pattern source is missing")
+            raise ValueError(translate("Assembly", "The pattern source is missing"))
         if source is None:
             count = obj.Count
             if count < 1:
-                raise ValueError("At least one component is required")
+                raise ValueError(
+                    translate("Assembly", "At least one component is required")
+                )
             if obj.PatternType == "Linear":
                 if count > 1 and obj.Length.Value <= 0:
-                    raise ValueError("Linear length must be positive")
+                    raise ValueError(
+                        translate("Assembly", "Linear length must be positive")
+                    )
                 direction = App.Vector(obj.Direction)
                 if direction.Length < 1e-12:
-                    raise ValueError("Linear direction must be nonzero")
+                    raise ValueError(
+                        translate("Assembly", "Linear direction must be nonzero")
+                    )
                 direction.normalize()
                 return [
                     App.Placement(
@@ -430,9 +600,9 @@ class ComponentPattern:
                     for k in range(count)
                 ]
             if obj.Axis.Length < 1e-12:
-                raise ValueError("Polar axis must be nonzero")
+                raise ValueError(translate("Assembly", "Polar axis must be nonzero"))
             if count > 1 and abs(obj.Angle.Value) < 1e-12:
-                raise ValueError("Polar angle must be nonzero")
+                raise ValueError(translate("Assembly", "Polar angle must be nonzero"))
             step = obj.Angle.Value / max(
                 1, count if abs(obj.Angle.Value - 360) < 1e-7 else count - 1
             )
@@ -444,12 +614,10 @@ class ComponentPattern:
                 for k in range(count)
             ]
         if source.TypeId not in _PATTERN_TYPES:
-            raise ValueError("Unsupported pattern source")
+            raise ValueError(translate("Assembly", "Unsupported pattern source"))
         if "Invalid" in source.State:
-            raise ValueError("The pattern source is invalid")
-        driver = obj.PlacementDriver
-        if driver is None or "Invalid" in driver.State:
-            raise ValueError("Cannot evaluate source pattern placements")
+            raise ValueError(translate("Assembly", "The pattern source is invalid"))
+
         frame = source.getGlobalPlacement()
         if obj.PatternComponent:
             linked = obj.PatternComponent.getLinkedObject()
@@ -459,20 +627,19 @@ class ComponentPattern:
                 * frame
             )
         frame = _global(assembly).inverse() * frame
-        placements = list(driver.PlacementList)
+        leaves = _sourceLeaves(source)
+        drivers = dict(zip(leaves, obj.PlacementDrivers))
+        placements = _sourceTransforms(source, drivers)
         if not placements:
-            raise ValueError("The source pattern produced no instances")
-        origin = placements[0].inverse()
-        suppressed = set(getattr(source, "SuppressedIndices", []))
-        if 0 in suppressed:
-            raise ValueError("The source pattern's seed instance is suppressed")
-        return [
-            frame * p * origin * frame.inverse()
-            for i, p in enumerate(placements)
-            if i not in suppressed
-        ]
+            raise ValueError(
+                translate("Assembly", "The source pattern produced no instances")
+            )
+        origin = App.Matrix(placements[0]).inverse()
+        frame = frame.toMatrix()
+        inverse = App.Matrix(frame).inverse()
+        return [frame * p * origin * inverse for p in placements]
 
-    def _localReference(self, obj, name, reference):
+    def _localReference(self, obj, name, reference, source=None):
         """Native Part pattern axis properties require same-document references.
 
         Copy only the reference geometry when the source lives in an imported
@@ -481,7 +648,7 @@ class ComponentPattern:
         ref, subs = reference
         if ref.Document == obj.Document:
             return reference
-        proxy = self._referenceProxy(obj, name)
+        proxy = self._referenceProxy(obj, name, source)
         proxy.Visibility = False
         sub = subs[0] if subs else ""
         axes = {"H_Axis": -1, "V_Axis": -2, "N_Axis": -3}
@@ -515,7 +682,10 @@ class ComponentPattern:
                 subs = ["Edge1" if ref.TypeId == "PartDesign::Line" else "Face1"]
         else:
             raise ValueError(
-                "External pattern reference requires axes or feature geometry"
+                translate(
+                    "Assembly",
+                    "External pattern reference requires axes or feature geometry",
+                )
             )
         import JointObject
 
@@ -528,8 +698,15 @@ class ComponentPattern:
     def execute(self, obj):
         if getattr(self, "_executing", False):
             return
-        if obj.Component is None:
-            raise ValueError("The source component is missing")
+        if obj.Component is None or (obj.UseSource and obj.PatternSource is None):
+            self._clearGenerated(obj)
+            obj.StatusMessage = (
+                translate("Assembly", "The source component is missing")
+                if obj.Component is None
+                else translate("Assembly", "The pattern source is missing")
+            )
+            raise ValueError(obj.StatusMessage)
+        obj.StatusMessage = ""
         self._executing = True
         try:
             self._ensureViewProvider(obj)
@@ -537,7 +714,11 @@ class ComponentPattern:
             if assembly is None or not assembly.isDerivedFrom(
                 "Assembly::AssemblyObject"
             ):
-                raise ValueError("Component pattern must be inside an Assembly")
+                raise ValueError(
+                    translate(
+                        "Assembly", "Component pattern must be inside an Assembly"
+                    )
+                )
             if not obj.Joints:
                 # A seed joint can move instance zero when the hole's radius changes.
                 # Seat it before evaluating copies even when joint copying is off.
@@ -554,9 +735,15 @@ class ComponentPattern:
                     result = assembly.solve()
                     if result != 0:
                         raise ValueError(
-                            "Cannot solve the source component (" + str(result) + ")"
+                            translate(
+                                "Assembly", "Cannot solve the source component (%1)"
+                            ).replace("%1", str(result))
                         )
             transforms = self._placements(obj, assembly)
+            transforms = [
+                t.toMatrix() if isinstance(t, App.Placement) else t for t in transforms
+            ]
+            seed_placement = _global(assembly).inverse() * _global(obj.Component)
             # Resolve every reference before changing the generated objects. A missing
             # or ambiguous face is an error, never a silent attachment to another hole.
             refs = [
@@ -578,9 +765,17 @@ class ComponentPattern:
                 copy = copies[k]
                 copy.LinkedObject = obj.Component.LinkedObject
                 copy.LinkTransform = obj.Component.LinkTransform
-                copy.ScaleVector = obj.Component.ScaleVector
+                matrix = delta * seed_placement.toMatrix()
+                sign = -1 if matrix.determinant() < 0 else 1
+                copy.ScaleVector = obj.Component.ScaleVector * sign
+                if sign < 0:
+                    # A reflection is a proper rotation followed by uniform negative scale.
+                    for row in range(3):
+                        for column in range(3):
+                            name = f"A{row + 1}{column + 1}"
+                            setattr(matrix, name, -getattr(matrix, name))
                 copy.Label = obj.Component.Label + " (" + str(k + 2) + ")"
-                copy.Placement = delta * obj.Component.Placement
+                copy.Placement = App.Placement(matrix)
                 for j, seed in enumerate(obj.Joints):
                     index = k * len(obj.Joints) + j
                     ref1, ref2 = [
@@ -620,9 +815,10 @@ class ComponentPattern:
                 result = assembly.solve()
                 if result != 0:
                     raise ValueError(
-                        "Assembly solve failed for component pattern ("
-                        + str(result)
-                        + ")"
+                        translate(
+                            "Assembly",
+                            "Assembly solve failed for component pattern (%1)",
+                        ).replace("%1", str(result))
                     )
         finally:
             self._executing = False
@@ -631,7 +827,11 @@ class ComponentPattern:
         refs = []
         for ref in (joint.Reference1, joint.Reference2):
             if ref is None:
-                raise ValueError("A selected joint has an incomplete reference")
+                raise ValueError(
+                    translate(
+                        "Assembly", "A selected joint has an incomplete reference"
+                    )
+                )
             if ref[0] == obj.Component:
                 refs.append((obj.Component, list(ref[1])))
             else:
@@ -646,14 +846,21 @@ def _matchingElement(component, sub, delta):
     match = re.search(r"(Face|Edge|Vertex)([0-9]+)$", sub)
     if not match:
         raise ValueError(
-            "Joint counterpart must reference a patterned face, edge or vertex"
+            translate(
+                "Assembly",
+                "Joint counterpart must reference a patterned face, edge or vertex",
+            )
         )
     prefix = sub[: match.start()]
     selected = component.getSubObject(sub)
     if selected is None or selected.isNull():
-        raise ValueError("Unresolved joint reference: " + sub)
+        raise ValueError(
+            translate("Assembly", "Unresolved joint reference: %1").replace("%1", sub)
+        )
     target = selected.copy()
-    target.transformShape(delta.toMatrix())
+    target.transformShape(
+        delta.toMatrix() if isinstance(delta, App.Placement) else delta
+    )
     root = component.getSubObject(prefix) if prefix else component.Shape
     elements = getattr(
         root, {"Face": "Faces", "Edge": "Edges", "Vertex": "Vertexes"}[match[1]]
@@ -681,7 +888,9 @@ def _matchingElement(component, sub, delta):
         matches.append(prefix + match[1] + str(i))
     if len(matches) != 1:
         raise ValueError(
-            "No unique patterned counterpart for " + component.Label + "." + sub
+            translate("Assembly", "No unique patterned counterpart for %1").replace(
+                "%1", component.Label + "." + sub
+            )
         )
     return matches[0]
 
@@ -701,8 +910,11 @@ class PatternPlacementParameters:
 
     def execute(self, obj):
         obj.Visibility = False
-        if obj.Owner and obj.Driver and obj.Source and obj.Component:
-            obj.Owner.Proxy._updateDriver(obj.Owner, obj.Driver)
+        if obj.Owner and obj.Source and obj.Component:
+            for source, driver in zip(
+                _sourceLeaves(obj.Source), obj.Owner.PlacementDrivers
+            ):
+                obj.Owner.Proxy._updateDriver(obj.Owner, driver, source)
 
     def dumps(self):
         return None
@@ -724,10 +936,11 @@ class ViewProviderComponentPattern:
             list(self.Object.Copies)
             + list(self.Object.JointCopies)
             + list(self.Object.ReferenceDrivers)
+            + list(self.Object.PlacementDrivers)
         )
         if self.Object.ParameterSource:
             children.append(self.Object.ParameterSource)
-        if self.Object.PlacementDriver:
+        if self.Object.PlacementDriver and self.Object.PlacementDriver not in children:
             children.append(self.Object.PlacementDriver)
         return children
 

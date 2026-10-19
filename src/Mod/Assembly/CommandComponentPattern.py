@@ -6,7 +6,7 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 import UtilsAssembly
-from ComponentPattern import createComponentPattern
+from ComponentPattern import createComponentPattern, _PATTERN_TYPES
 
 translate = App.Qt.translate
 activeTask = None
@@ -54,6 +54,11 @@ class CommandComponentPattern:
 class TaskComponentPattern:
     def __init__(self, assembly):
         self.assembly = assembly
+        self._pending = False
+        self._rejecting = False
+        self._timer = QtCore.QTimer()
+        self._timer.setInterval(10)
+        self._timer.timeout.connect(self._recomputed)
         self.form = QtWidgets.QWidget()
         self.form.setWindowTitle(translate("Assembly", "Pattern component"))
         layout = QtWidgets.QFormLayout(self.form)
@@ -66,7 +71,7 @@ class TaskComponentPattern:
             o
             for doc in App.listDocuments().values()
             for o in doc.Objects
-            if o.TypeId in ("PartDesign::PolarPattern", "PartDesign::LinearPattern")
+            if o.TypeId in _PATTERN_TYPES
         ]
         self.component = QtWidgets.QComboBox()
         self.source = QtWidgets.QComboBox()
@@ -87,7 +92,8 @@ class TaskComponentPattern:
         fields = QtWidgets.QFormLayout(self.parameters)
         fields.setContentsMargins(0, 0, 0, 0)
         self.kind = QtWidgets.QComboBox()
-        self.kind.addItems(["Polar", "Linear"])
+        self.kind.addItem(translate("Assembly", "Polar"), "Polar")
+        self.kind.addItem(translate("Assembly", "Linear"), "Linear")
         self.count = QtWidgets.QSpinBox()
         self.count.setRange(1, 10000)
         self.count.setValue(6)
@@ -154,7 +160,8 @@ class TaskComponentPattern:
         return QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
 
     def accept(self):
-        global activeTask
+        if self._pending:
+            return False
         doc = self.assembly.Document
         if self.component.currentIndex() < 0:
             self.error.setText(translate("Assembly", "Choose a component link"))
@@ -168,7 +175,10 @@ class TaskComponentPattern:
                     ("axis", self.axis),
                     ("direction", self.direction),
                 ):
-                    values = [float(v.strip()) for v in widget.text().split(",")]
+                    try:
+                        values = [float(v.strip()) for v in widget.text().split(",")]
+                    except ValueError:
+                        values = []
                     if len(values) != 3:
                         raise ValueError(
                             translate(
@@ -177,7 +187,7 @@ class TaskComponentPattern:
                             )
                         )
                     vectors[prop] = App.Vector(*values)
-            createComponentPattern(
+            self.pattern = createComponentPattern(
                 self.assembly,
                 self.components[self.component.currentIndex()],
                 self.sources[self.source.currentIndex()],
@@ -194,22 +204,56 @@ class TaskComponentPattern:
                 count=self.count.value(),
                 angle=self.angle.value(),
                 length=self.length.value(),
-                patternType=self.kind.currentText(),
+                patternType=self.kind.currentData(),
                 recompute=False,
                 **vectors,
             )
-            doc.commitTransaction()
+            self.recomputeHandle = doc.recomputeAsync()
+            self._pending = True
+            self.form.setEnabled(False)
+            self._timer.start()
         except Exception as exc:
             doc.abortTransaction()
             self.error.setText(str(exc))
             return False
-        self.recomputeHandle = doc.recomputeAsync()
+        # TaskView closes the panel when accept returns True. Keep it alive until
+        # the timer observes completion and the complete transaction is committed.
+        return False
+
+    def _recomputed(self):
+        global activeTask
+        if not self._pending or not self.recomputeHandle.done():
+            return
+        self._timer.stop()
+        self._pending = False
+        self.form.setEnabled(True)
+        doc = self.assembly.Document
+        status = self.recomputeHandle.status()
+        if (
+            self._rejecting
+            or status["state"] != "completed"
+            or "Invalid" in self.pattern.State
+        ):
+            doc.abortTransaction()
+            self.error.setText(
+                translate("Assembly", "Component pattern could not be recomputed")
+                + ": "
+                + status.get("diagnostic", "")
+            )
+            if self._rejecting:
+                activeTask = None
+                Gui.Control.closeDialog()
+            return
+        doc.commitTransaction()
         activeTask = None
         Gui.Control.closeDialog()
-        return True
 
     def reject(self):
         global activeTask
+        if self._pending:
+            self._rejecting = True
+            self.recomputeHandle.cancel()
+            return False
         activeTask = None
         Gui.Control.closeDialog()
         return True
