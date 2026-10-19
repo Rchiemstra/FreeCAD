@@ -128,17 +128,27 @@ class TestJointEditorSwitch(unittest.TestCase):
             self.mouse(widget.viewport(), point, QtCore.Qt.RightButton)
             triggered = []
             offered = []
+            attempts = []
 
             def chooseEdit():
-                menu = QtWidgets.QApplication.activePopupWidget()
-                if isinstance(menu, QtWidgets.QMenu):
+                menus = [w for w in QtWidgets.QApplication.topLevelWidgets()
+                         if isinstance(w, QtWidgets.QMenu) and w.isVisible()]
+                if not menus and len(attempts) < 50:
+                    attempts.append(None)
+                    QtCore.QTimer.singleShot(10, chooseEdit)
+                    return
+                for menu in menus:
                     for action in menu.actions():
                         text = action.text().replace("&", "")
                         offered.append(text)
                         if text == App.Qt.translate("Assembly", "Edit Joint"):
-                            triggered.append(action.text())
+                            action.triggered.connect(
+                                lambda checked=False, text=text: triggered.append(text)
+                            )
                             self.mouse(menu, menu.actionGeometry(action).center())
+                            menu.close()
                             return
+                for menu in menus:
                     menu.close()
 
             # contextMenuEvent enters QMenu.exec(); choose its real action there.
@@ -304,6 +314,7 @@ class TestJointEditorSwitch(unittest.TestCase):
             part.Visibility = False
         self.openJoint(self.joints[0], tree=True)
         view = Gui.activeDocument().activeView()
+        view.setAnimationEnabled(False)
         view.viewLeft()
         view.fitAll()
         Gui.updateGui()
@@ -311,10 +322,12 @@ class TestJointEditorSwitch(unittest.TestCase):
         # Face1 is the box's left face. GreedySelection toggles a clicked selected
         # reference off, as before this branch; Cancel must restore that change.
         point = view.getPointOnScreen(App.Vector(0, 5, 5))
+        picked = view.getObjectInfo((int(point[0]), int(point[1])))
+        self.assertIsNotNone(picked, "The deselection click must hit the component")
         self.mouse(widget, QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1])),
                    modifiers=QtCore.Qt.ControlModifier)
         Gui.updateGui()
-        self.assertEqual(len(JointObject.activeTask.refs), 1)
+        self.assertEqual(len(JointObject.activeTask.refs), 1, repr(picked))
         self.assertIsNone(self.joints[0].Reference2)
         self.finish(False)
         self.assertUnchanged()
