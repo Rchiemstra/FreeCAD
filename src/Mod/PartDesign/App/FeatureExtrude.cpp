@@ -79,8 +79,9 @@ FeatureExtrude::FeatureExtrude()
         App::Prop_None,
         QT_TRANSLATE_NOOP(
             "App::Property",
-            "Signed size correction: positive enlarges Pocket profiles and shrinks Pad profiles; "
-            "half is applied at each boundary. A 10 mm circular Pocket with 0.4 mm gives 10.4 mm."
+            "A positive fitting tolerance enlarges Pocket profiles and shrinks Pad profiles. "
+            "Half of the tolerance is applied at each boundary. A 10 mm circular Pocket with "
+            "a fitting tolerance of 0.4 mm has a diameter of 10.4 mm."
         )
     );
     ADD_PROPERTY_TYPE(

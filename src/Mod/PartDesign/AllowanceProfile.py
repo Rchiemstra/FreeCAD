@@ -21,10 +21,10 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 _TOLERANCE = 1e-7
 _ALLOWANCE_DOC = QT_TRANSLATE_NOOP(
     "App::Property",
-    "Signed boundary distance (not diameter): positive expands outer loops and "
-    "shrinks holes; negative shrinks outer loops and expands holes. "
-    "Positive adds material to a Pad and removes more material with a Pocket. "
-    "For a 10 mm circular Pocket, +0.2 mm gives a 10.4 mm diameter.",
+    "The allowance is a signed boundary distance. Positive values expand outer loops and "
+    "shrink holes; negative values shrink outer loops and expand holes. "
+    "Positive values add material to a Pad and remove more material with a Pocket. "
+    "For a 10 mm circular Pocket, an allowance of +0.2 mm gives a 10.4 mm diameter.",
 )
 
 
