@@ -443,7 +443,12 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.assertFalse(broken_references(self.sketch))
         self.assertEqual(signature(self.sketch), before)
         self.assertEqual(self.doc.UndoCount, undo_count + 1)
-        self.assertIn("Replacement.Edge2", external_geometry(self.sketch)[0].reference)
+        linked_source, linked_subs = self.sketch.ExternalGeometry[0]
+        self.assertIs(linked_source, replacement)
+        self.assertEqual(len(linked_subs), 1)
+        self.assertTrue(
+            linked_source.getSubObject(linked_subs[0]).isSame(replacement.Shape.Edges[1])
+        )
         self.doc.undo()
         self.doc.recompute()
         self.assertEqual(len(broken_references(self.sketch)), 1)

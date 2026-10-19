@@ -76,7 +76,7 @@ _operations = set()
 
 
 class RepairOperation(QtCore.QObject):
-    """Observe the document command off Qt, then admit its presentation callback."""
+    """Resolve/commit a repair off Qt, then admit its presentation callback."""
 
     completed = QtCore.Signal(str)
 
@@ -105,7 +105,8 @@ class RepairOperation(QtCore.QObject):
             sketch = doc.getObject(self.name)
             if sketch is None or sketch.ID != self.object_id:
                 raise RepairError("Sketch changed; reopen the repair command")
-            prepared = prepare_repair(sketch, self.choices)
+            choices = self.choices() if callable(self.choices) else self.choices
+            prepared = prepare_repair(sketch, choices)
             result = doc.commitCompatibilityMutationAsync(
                 lambda: apply_prepared(sketch, prepared),
                 object_name=self.name,
@@ -354,6 +355,13 @@ Gui.addCommand("Sketcher_RepairReferences", command)
 class RepairMenu:
     """Extend the native C++ workbench without editing its menu implementation."""
 
+    def modifyContextMenu(self, recipient):
+        from SketchReferenceReassignGui import command
+
+        if recipient == "Sketch" and command.IsActive():
+            return [{"insert": "Sketcher_ReassignBrokenReference", "menuItem": "Std_Delete"}]
+        return []
+
     def modifyMenuBar(self):
         return [
             {
@@ -365,3 +373,6 @@ class RepairMenu:
 
 menu_manipulator = RepairMenu()
 Gui.addWorkbenchManipulator(menu_manipulator)
+
+# Register the in-view command after the shared dialog/operation are available.
+import SketchReferenceReassignGui  # noqa: E402,F401

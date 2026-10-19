@@ -220,11 +220,15 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         finally:
             dialog.close()
 
-    def make_pick_fixture(self, vertex=False):
+    def make_pick_fixture(self, vertex=False, switch_workbench=True):
         import Sketcher
         from SketcherTests.TestSketchReferenceRepair import signature
 
-        Gui.activateWorkbench("SketcherWorkbench")
+        Gui.activateWorkbench(
+            "SketcherWorkbench" if switch_workbench else "PartWorkbench"
+        )
+        import SketcherGui  # noqa: F401 - native editor, without Python workbench initialization
+
         self.doc = App.newDocument("ReassignInView")
         self.doc.UndoMode = 1
         source = self.doc.addObject("PartDesign::Feature", "Source")
@@ -257,6 +261,8 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         self.recompute_gui_document()
         source.Visibility = True
         Gui.getMainWindow().show()
+        if not switch_workbench:
+            sketch.ViewObject.EditingWorkbench = ""
         Gui.activeDocument().setEdit(sketch.Name)
         view = Gui.activeDocument().activeView()
         view.viewTop()
@@ -273,6 +279,8 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
 
         sketch, source, view, before = self.make_pick_fixture()
         undo_count = self.doc.UndoCount
+        provider_root = sketch.ViewObject.RootNode
+        provider_children = provider_root.getNumChildren()
         self.assertTrue(pick_gui.command.IsActive())
         viewport = view.graphicsView().viewport()
         point = self.viewport_to_qpoint(
@@ -285,7 +293,7 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
             if isinstance(menu, QtGui.QMenu):
                 for action in menu.actions():
                     if action.objectName() == "Sketcher_ReassignBrokenReference":
-                        seen.append(action.text())
+                        seen.append((action.text(), action.isEnabled()))
                         action.trigger()
                         menu.close()
                         return
@@ -294,11 +302,15 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         QtCore.QTimer.singleShot(100, choose)
         self.right_click(viewport, point)
         self.assertTrue(seen, "Broken geometry context menu has no reassign action")
+        self.assertTrue(seen[0][1], "Reassign action is disabled during sketch editing")
         session = pick_gui.command.session
+        self.assertIsNotNone(session)
         try:
             self.assertFalse(session.closed)
+            self.assertEqual(str(session.root.getName()), "Sketch_EditRoot")
+            self.assertEqual(provider_root.getNumChildren(), provider_children)
             self.assertAlmostEqual(
-                session.material.transparency.getValue()[0], 0.65, places=5
+                session.material.transparency.getValues()[0], 0.65, places=5
             )
             self.assertEqual(self.doc.UndoCount, undo_count)
             self.assertIs(Gui.activeDocument().getInEdit().Object, sketch)
@@ -467,3 +479,30 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
             release.set()
             if not session.closed:
                 session.close()
+
+    def test_context_entry_with_workbench_switch_disabled(self):
+        # Run this method by itself in a fresh FreeCAD process too: importing
+        # the Python repair command before opening the menu would hide a native
+        # initialization regression.
+        _sketch, _source, view, _before = self.make_pick_fixture(switch_workbench=False)
+        self.assertEqual(Gui.activeWorkbench().name(), "PartWorkbench")
+        import os
+        import sys
+
+        if os.environ.get("FREECAD_REPAIR_FRESH_CONTEXT") == "1":
+            self.assertNotIn("SketchReferenceRepairGui", sys.modules)
+        viewport = view.graphicsView().viewport()
+        point = self.viewport_to_qpoint(
+            view, viewport, view.getPointOnScreen(App.Vector(5, 10, 0))
+        )
+        seen = []
+
+        def inspect():
+            menu = QtGui.QApplication.activePopupWidget()
+            if isinstance(menu, QtGui.QMenu):
+                seen.extend(action.objectName() for action in menu.actions())
+                menu.close()
+
+        QtCore.QTimer.singleShot(100, inspect)
+        self.right_click(viewport, point)
+        self.assertIn("Sketcher_ReassignBrokenReference", seen)

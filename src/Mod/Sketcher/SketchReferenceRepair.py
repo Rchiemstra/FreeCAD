@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Conservative, explicit repair of cached Sketcher references.
 
-Ranking is read-only and restricted to the original source object. This first
-slice accepts one-to-one projections whose ordered geometry is unchanged within
-model tolerance. A nearby edge is offered for inspection, but cannot silently
-move a constrained endpoint. Faces are supported for single-face attachments.
+Ranking is read-only and restricted to the original source object; an explicit
+viewport pick can use another source. Repair accepts one-to-one projections
+whose ordered geometry is unchanged within model tolerance. A nearby edge is
+offered for inspection, but cannot silently move a constrained endpoint. Faces
+are supported for single-face attachments.
 No persistent cache or document properties are added.
 """
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import FreeCAD as App
 import Part
@@ -40,6 +41,7 @@ class Candidate:
     reason: str = ""
     source_identity: tuple = ()
     shape_signature: tuple = ()
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,7 +189,7 @@ def _source_stamp(source):
     )
 
 
-def iter_candidates(sketch, reference):
+def iter_candidates(sketch, reference, source=None):
     """Rank same-type subelements; include refusal reasons for inspection."""
     if reference not in broken_references(sketch):
         raise RepairError("Reference is no longer broken; refresh the list")
@@ -197,10 +199,12 @@ def iter_candidates(sketch, reference):
             raise RepairError(
                 "Attachments in another document cannot be repaired by this command"
             )
-    else:
+    elif source is None:
         source = sketch.Document.getObject(reference.source)
     if source is None or not hasattr(source, "Shape"):
         return []
+    if source is sketch or source.Document is not sketch.Document:
+        raise RepairError("Pick external geometry in the sketch document")
     facade = None
     if reference.kind == "external":
         facades = external_geometry(sketch)
@@ -262,6 +266,29 @@ def candidates(sketch, reference):
     )
 
 
+def picked_candidate(sketch, reference, source, subelement):
+    """Validate an explicit viewport choice, including a different source object.
+
+    A user pick disambiguates coincident candidates. Automatic ranking still
+    refuses ties; all topology, projection and constraint checks remain shared.
+    """
+    if reference.kind != "external":
+        raise RepairError("Only external edges and vertices can be picked")
+    selected = next(
+        (
+            c
+            for c in iter_candidates(sketch, reference, source)
+            if c.subelement == subelement
+        ),
+        None,
+    )
+    if selected is None:
+        raise RepairError("Pick an edge or vertex of the same reference type")
+    if not selected.compatible:
+        raise RepairError(selected.reason)
+    return replace(selected, explicit=True)
+
+
 _CONSTRAINT_FIELDS = (
     "Type",
     "Name",
@@ -309,7 +336,11 @@ def prepare_repair(sketch, choices):
         raise RepairError("Finish the current transaction before repairing references")
     keys, targets = set(), set()
     for reference, selected in choices:
-        ranked = candidates(sketch, reference)
+        ranked = (
+            list(iter_candidates(sketch, reference, doc.getObject(selected.source)))
+            if selected.explicit
+            else candidates(sketch, reference)
+        )
         fresh = next(
             (
                 c
@@ -330,7 +361,8 @@ def prepare_repair(sketch, choices):
         if not fresh.compatible:
             raise RepairError(fresh.reason)
         if (
-            sum(
+            not selected.explicit
+            and sum(
                 c.compatible and abs(c.score - fresh.score) <= TOLERANCE for c in ranked
             )
             > 1

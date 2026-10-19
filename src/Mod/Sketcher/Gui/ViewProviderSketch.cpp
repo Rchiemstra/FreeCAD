@@ -5768,6 +5768,8 @@ void ViewProviderSketch::generateContextMenu(const Gui::View3DInventorViewer* vi
              << "Sketcher_LeaveSketch";
     }
     // create context menu
+    // Load Python extensions when sketch editing keeps another workbench active.
+    Gui::Command::addModule(Gui::Command::Gui, "SketchReferenceRepairGui");
     Gui::Application::Instance->setupContextMenu("Sketch", &menu);
     QMenu contextMenu(viewer->getGLWidget());
     Gui::MenuManager::getInstance()->setupContextMenu(&menu, contextMenu);
