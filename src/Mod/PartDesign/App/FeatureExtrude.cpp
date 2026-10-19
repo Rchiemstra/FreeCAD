@@ -44,10 +44,13 @@
 #include <App/Document.h>
 #include <App/ObjectIdentifier.h>
 #include <Base/Converter.h>
+#include <Base/Interpreter.h>
 #include <Base/ProgramVersion.h>
+#include <Base/PyObjectBase.h>
 #include <Base/Tools.h>
 #include <Mod/Part/App/ExtrusionHelper.h>
 #include <Mod/Part/App/Tools.h>
+#include <Mod/Part/App/TopoShapePy.h>
 #include "Mod/Part/App/TopoShapeOpCode.h"
 #include <Mod/Part/App/PartFeature.h>
 
@@ -69,6 +72,14 @@ App::PropertyAngle::Constraints FeatureExtrude::floatAngle = {-maxAngle, maxAngl
 FeatureExtrude::FeatureExtrude()
 {
     ADD_PROPERTY_TYPE(
+        FittingTolerance,
+        (0.0),
+        "Profile",
+        App::Prop_None,
+        "Signed size correction: positive enlarges Pocket profiles and shrinks Pad profiles; "
+        "half is applied at each boundary. A 10 mm circular Pocket with 0.4 mm gives 10.4 mm."
+    );
+    ADD_PROPERTY_TYPE(
         UseLegacyTaperDirection,
         (false),
         "Compatibility",
@@ -85,7 +96,8 @@ short FeatureExtrude::mustExecute() const
         || ReferenceAxis.isTouched() || AlongSketchNormal.isTouched() || Offset.isTouched()
         || Offset2.isTouched() || StartType.isTouched() || StartOffset.isTouched()
         || StartReference.isTouched() || UpToFace.isTouched() || UpToFace2.isTouched()
-        || UpToShape.isTouched() || UpToShape2.isTouched() || UseLegacyTaperDirection.isTouched()) {
+        || UpToShape.isTouched() || UpToShape2.isTouched() || UseLegacyTaperDirection.isTouched()
+        || FittingTolerance.isTouched()) {
         return 1;
     }
     return ProfileBased::mustExecute();
@@ -468,6 +480,26 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
     }
     catch (const Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
+    }
+
+    if (FittingTolerance.getValue() != 0.0) {
+        Base::PyGILStateLocker lock;
+        try {
+            Py::Module module(PyImport_ImportModule("PartDesign.AllowanceProfile"), true);
+            Py::Tuple args(4);
+            args.setItem(0, Py::asObject(new Part::TopoShapePy(new TopoShape(sketchshape))));
+            args.setItem(1, Py::Float(FittingTolerance.getValue()));
+            args.setItem(2, Py::Boolean(addSubType == Type::Additive));
+            args.setItem(3, Py::asObject(obj->Placement.getPyObject()));
+            Py::Object result = Py::Callable(module.getAttr("fittingProfile")).apply(args);
+            sketchshape = *static_cast<Part::TopoShapePy*>(result.ptr())->getTopoShapePtr();
+        }
+        catch (Py::Exception&) {
+            Base::PyException error;
+            return new App::DocumentObjectExecReturn(
+                std::string("Invalid fitting tolerance: ") + error.what()
+            );
+        }
     }
 
     // if the Base property has a valid shape, fuse the prism into it

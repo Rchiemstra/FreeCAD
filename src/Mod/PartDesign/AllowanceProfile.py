@@ -6,6 +6,12 @@ values enlarge the filled profile (outer boundaries expand, holes contract).
 A Pad therefore gains material and a Pocket removes more material. Corners use
 intersections of the offset edges. Topology changes are deliberately rejected:
 a disappearing hole or narrow region must not silently become a different part.
+
+Native Pad/Pocket FittingTolerance uses this same offset algorithm but measures
+full size change, with clearance signs: +0.4 mm makes a 10 mm Pocket 10.4 mm
+wide and a 10 mm circular Pad 9.6 mm wide (0.2 mm per boundary). It composes with an
+AllowanceProfile when one is used as the feature's Profile. Zero bypasses the
+native offset path, including when restoring files predating FittingTolerance.
 """
 
 import FreeCAD as App
@@ -38,18 +44,24 @@ def makeAllowanceProfile(source, allowance=0):
     return obj
 
 
+def _planar_face(wire):
+    # Keep containment and recovery checks on the same local support plane;
+    # OCC can infer either plane orientation from a verified extrusion face.
+    return Part.Face(Part.Plane(), wire)
+
+
 def _offset_wire(wire, distance):
     # OCC can return a reversed top-level wire after an outward circle offset.
     # Rebuilding from its oriented edges makes subsequent signed offsets stable.
     wire = Part.Wire(wire.Edges)
-    return wire.makeOffset2D(distance, join=2)
+    return _planar_face(wire).makeOffset2D(distance, join=2)
 
 
 def _loop_faces(wires):
     """Validate simple disjoint boundaries and return their containment depths."""
     if not wires or any(not wire.isClosed() or not wire.isValid() for wire in wires):
         raise ValueError("source must contain closed, valid wires")
-    faces = [Part.Face(wire) for wire in wires]
+    faces = [_planar_face(wire) for wire in wires]
     if any(not face.isValid() or face.Area <= _TOLERANCE**2 for face in faces):
         raise ValueError("a loop is collapsed or self-intersecting")
     depths = [0] * len(wires)
@@ -74,7 +86,7 @@ def _offset_face(face, distance):
     wire = result.Wires[0]
     if not wire.isClosed() or not wire.isValid():
         raise ValueError("offset boundary is open or self-intersecting")
-    result_face = Part.Face(wire)
+    result_face = _planar_face(wire)
     if not result_face.isValid() or result_face.Area <= _TOLERANCE**2:
         raise ValueError("offset boundary is collapsed or self-intersecting")
     # Boundary position error accumulates with perimeter, not filled area.
@@ -94,7 +106,7 @@ def _offset_face(face, distance):
     restored = _offset_wire(wire, -distance)
     if restored.isNull() or len(restored.Wires) != 1:
         raise ValueError("offset collapses a narrow region")
-    restored_face = Part.Face(restored.Wires[0])
+    restored_face = _planar_face(restored.Wires[0])
     difference = face.Area + restored_face.Area - 2 * face.common(restored_face).Area
     # A tiny lost detail can fit within the global area tolerance on a large
     # loop. Check nominal edge endpoints and interior samples locally as well.
@@ -106,6 +118,47 @@ def _offset_face(face, distance):
     if abs(difference) > area_tolerance or not boundary_recovered:
         raise ValueError("offset collapses a narrow region (boundary cannot be recovered)")
     return wire
+
+
+def offsetProfile(source_shape, allowance, placement):
+    """Offset closed planar loops in placement's XY plane, preserving nesting.
+
+    Shared by the standalone profile and native Pad/Pocket fitting tolerance.
+    The input is in document coordinates; allowance is a boundary distance.
+    """
+    shape = source_shape.copy()
+    # The single-edge offset wrapper resets edge locations. Apply the frame
+    # transform to copied geometry instead of only changing its Placement.
+    shape.transformShape(placement.inverse().toMatrix(), True)
+    wires = shape.Wires
+    if sum(len(w.Edges) for w in wires) != len(shape.Edges):
+        raise ValueError("source contains edges outside closed wires")
+    faces, depths = _loop_faces(wires)
+    if abs(allowance) <= _TOLERANCE:
+        return source_shape
+    result = [
+        _offset_face(face, allowance if depth % 2 == 0 else -allowance)
+        for face, depth in zip(faces, depths)
+    ]
+    _, result_depths = _loop_faces(result)
+    if result_depths != depths:
+        raise ValueError("offset changes loop nesting or collapses the intervening region")
+    output = Part.makeCompound(result)
+    filled = Part.makeFace(output.Wires, "Part::FaceMakerBullseye")
+    if not filled.isValid():
+        raise ValueError("offset produces a self-intersecting profile")
+    output.Placement = placement
+    return output
+
+
+def fittingProfile(shape, tolerance, additive, placement):
+    """Convert a signed size correction to a boundary offset and return faces."""
+    distance = (-0.5 if additive else 0.5) * tolerance
+    wires = offsetProfile(shape, distance, placement)
+    result = Part.makeFace(wires.Wires, "Part::FaceMakerBullseye")
+    if shape.Faces and result.Faces[0].normalAt(0, 0).dot(shape.Faces[0].normalAt(0, 0)) < 0:
+        result.reverse()
+    return result
 
 
 class AllowanceProfile:
@@ -128,29 +181,7 @@ class AllowanceProfile:
             if source.getParentGeoFeatureGroup() != obj.getParentGeoFeatureGroup():
                 raise ValueError("source sketch must be in the same Body")
             obj.Placement = source.Placement
-            shape = source.Shape.copy()
-            shape.Placement = App.Placement()
-            wires = shape.Wires
-            if sum(len(w.Edges) for w in wires) != len(shape.Edges):
-                raise ValueError("source contains edges outside closed wires")
-            faces, depths = _loop_faces(wires)
-            allowance = obj.Allowance.Value
-            if abs(allowance) <= _TOLERANCE:
-                obj.Shape = source.Shape
-                return
-            result = [
-                _offset_face(face, allowance if depth % 2 == 0 else -allowance)
-                for face, depth in zip(faces, depths)
-            ]
-            _, result_depths = _loop_faces(result)
-            if result_depths != depths:
-                raise ValueError("offset changes loop nesting or collapses the intervening region")
-            output = Part.makeCompound(result)
-            filled = Part.makeFace(output.Wires, "Part::FaceMakerBullseye")
-            if not filled.isValid():
-                raise ValueError("offset produces a self-intersecting profile")
-            output.Placement = source.Placement
-            obj.Shape = output
+            obj.Shape = offsetProfile(source.Shape, obj.Allowance.Value, source.Placement)
         except Exception as exc:
             obj.Shape = Part.Shape()
             raise ValueError("Invalid allowance profile: " + str(exc)) from exc

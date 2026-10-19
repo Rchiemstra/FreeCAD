@@ -149,12 +149,27 @@ class TestAllowanceProfileGui(unittest.TestCase):
         self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.4)
 
     def testPocketDialogFittingTolerance(self):
-        from PySide import QtCore, QtGui
-        from Test.GuiRecompute import _left_commit, _pump_gui_until
+        self.pocket_dialog_fitting_tolerance(accept_immediately=False)
 
-        def wait_for_preview():
-            # The task's transaction deliberately stays open while editing.
-            _pump_gui_until(lambda: _left_commit(self.doc) and not self.doc.mustExecute(), 30)
+    def testPocketDialogAcceptsPendingFittingTolerance(self):
+        self.pocket_dialog_fitting_tolerance(accept_immediately=True)
+
+    def pocket_dialog_fitting_tolerance(self, accept_immediately):
+        from PySide import QtCore, QtGui
+        from Test.GuiRecompute import _left_commit, _pump_gui_until, _retry_while_lane_busy
+
+        def settle_recompute():
+            handle = _retry_while_lane_busy(self.doc.recomputeAsync, 30)
+            _pump_gui_until(lambda: handle.done() and _left_commit(self.doc), 30, handle.status)
+
+        def wait_for_preview(feature):
+            # Preview recomputes the feature; its Body stays dirty until accept.
+            # The task's transaction also deliberately stays open while editing.
+            _pump_gui_until(
+                lambda: _left_commit(self.doc) and "Touched" not in feature.State, 30,
+                lambda: {"readiness": self.doc.getMutationReadiness(),
+                         "feature": feature.State, "status": feature.getStatusString()},
+            )
 
         base = self.body.newObject("PartDesign::AdditiveBox", "Base")
         base.Length = base.Width = 20
@@ -167,10 +182,10 @@ class TestAllowanceProfileGui(unittest.TestCase):
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.sketch)
         Gui.runCommand("PartDesign_Pocket")
-        wait_for_preview()
         self.assertTrue(Gui.Control.activeDialog())
         pocket = self.doc.getObject("Pocket")
         self.assertIsNotNone(pocket)
+        wait_for_preview(pocket)
         field = Gui.getMainWindow().findChild(QtGui.QWidget, "fittingToleranceEdit")
         self.assertIsNotNone(field)
         self.assertIn("10.4", field.toolTip())
@@ -180,12 +195,21 @@ class TestAllowanceProfileGui(unittest.TestCase):
         editor = field.findChild(QtGui.QLineEdit)
         self.assertIsNotNone(editor)
         editor.setFocus()
+        # Finish the previous editor's focus-out recompute before the next edit.
+        settle_recompute()
         editor.setText("0.4 mm")
         QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
-        wait_for_preview()
+        if not accept_immediately:
+            wait_for_preview(pocket)
+            settle_recompute()
         Gui.Control.activeTaskDialog().accept()
         recompute_document(self.doc)
         self.assertFalse(Gui.Control.activeDialog())
         self.assertAlmostEqual(pocket.FittingTolerance.Value, 0.4)
-        self.assertAlmostEqual(pocket.AddSubShape.BoundBox.XLength, 10.4)
-        self.assertAlmostEqual(self.sketch.Shape.BoundBox.XLength, 10)
+        self.assertTrue(pocket.Shape.isValid())
+        # GUI tessellation makes bounding boxes approximate; measure the rims.
+        rims = [edge.Curve for edge in pocket.Shape.Edges if isinstance(edge.Curve, Part.Circle)]
+        self.assertEqual(len(rims), 2)
+        for rim in rims:
+            self.assertAlmostEqual(2 * rim.Radius, 10.4)
+        self.assertAlmostEqual(self.sketch.Geometry[0].Radius, 5)
