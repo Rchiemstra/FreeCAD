@@ -287,6 +287,135 @@ class TestComponentPattern(unittest.TestCase):
         self.assertIsNotNone(self.doc.getObject(self.bolt.Name))
         self.assertIsNotNone(self.doc.getObject(self.source.Name))
 
+    def test_required_input_deletion_cleans_generated_objects(self):
+        for input_name in ("Bolt", "HolePattern"):
+            with self.subTest(input=input_name):
+                pattern = self.create(joints=[self.seedJoint()])
+                names = [o.Name for o in pattern.Copies + pattern.JointCopies]
+                self.doc.removeObject(input_name)
+                self.doc.recompute()
+                self.assertTrue(all(self.doc.getObject(n) is None for n in names))
+                self.assertFalse(pattern.Copies)
+                self.assertFalse(pattern.JointCopies)
+                self.assertIn("missing", pattern.StatusMessage.lower())
+            if input_name == "Bolt":
+                # Rebuild the fixture for the independent source deletion case.
+                self.tearDown()
+                self.setUp()
+
+    def test_nested_seed_and_later_placement_change(self):
+        from ComponentPattern import createComponentPattern
+
+        nested = Assembly.createAssembly(self.doc)
+        self.assembly.addObject(nested)
+        nested.Placement = App.Placement(
+            App.Vector(7, 11, 4), App.Rotation(App.Vector(0, 0, 1), 35)
+        )
+        nested.addObject(self.bolt)
+        self.assembly.Placement = App.Placement(
+            App.Vector(3, -8, 6), App.Rotation(App.Vector(1, 0, 0), 20)
+        )
+        pattern = createComponentPattern(
+            self.assembly, self.bolt, count=3, patternType="Linear", length=12
+        )
+        for shift in (App.Vector(), App.Vector(2, 3, 1)):
+            self.bolt.Placement.Base += shift
+            self.doc.recompute()
+            seed = nested.Placement * self.bolt.Placement
+            for k, copy in enumerate(pattern.Copies, 1):
+                expected = App.Placement(App.Vector(6 * k, 0, 0), App.Rotation()) * seed
+                self.assertTrue(copy.Placement.isSame(expected, 1e-6))
+
+    def test_grounded_seed_and_later_placement_change(self):
+        from ComponentPattern import createComponentPattern
+
+        Assembly.createGroundedJoint(self.assembly, self.bolt, recompute=False)
+        pattern = createComponentPattern(self.assembly, self.bolt, count=3)
+        self.assertEqual(len(pattern.Copies), 2)
+        self.assertFalse(pattern.JointCopies)
+        self.bolt.Placement.Base = App.Vector(25, 0, 0)
+        self.doc.recompute()
+        self.assertPolar(pattern, 3, radius=25)
+
+    def test_count_shrink_removes_copied_joints(self):
+        pattern = self.create(joints=[self.seedJoint()])
+        removed = [o.Name for o in pattern.JointCopies[1:] + pattern.Copies[1:]]
+        self.source.Occurrences = 2
+        self.doc.recompute()
+        self.assertEqual(len(pattern.JointCopies), 1)
+        self.assertEqual(len(pattern.Copies), 1)
+        self.assertTrue(all(self.doc.getObject(n) is None for n in removed))
+
+    def test_mirrored_source(self):
+        mirror = self.body.newObject("PartDesign::Mirrored", "MirroredHoles")
+        mirror.Originals = self.source.Originals
+        mirror.MirrorPlane = (self.hole, ["V_Axis"])
+        self.source = mirror
+        self.body.Tip = mirror
+        self.doc.recompute()
+        pattern = self.create()
+        self.assertEqual(len(pattern.Copies), 1)
+        self.assertLess((pattern.Copies[0].Placement.Base - App.Vector(-20, 0, 0)).Length, 1e-6)
+        self.assertAlmostEqual(pattern.Copies[0].Shape.Volume, self.bolt.Shape.Volume, places=5)
+        # Check the entire reflected geometry, including handedness.
+        reflected = self.bolt.Shape.copy()
+        matrix = App.Matrix()
+        matrix.A11 = -1
+        reflected.transformShape(matrix)
+        self.assertAlmostEqual(pattern.Copies[0].Shape.common(reflected).Volume, reflected.Volume, places=5)
+
+    def test_multitransform_source_composes_helpers(self):
+        linear = self.body.newObject("PartDesign::LinearPattern", "LinearHelper")
+        linear.Direction = (self.hole, ["V_Axis"])
+        linear.Length = 12
+        linear.Occurrences = 3
+        mirror = self.body.newObject("PartDesign::Mirrored", "MirrorHelper")
+        mirror.MirrorPlane = (self.hole, ["V_Axis"])
+        multi = self.body.newObject("PartDesign::MultiTransform", "MultiHoles")
+        multi.Originals = self.source.Originals
+        multi.Transformations = [linear, mirror]
+        self.source = multi
+        self.body.Tip = multi
+        self.doc.recompute()
+        pattern = self.create()
+        expected = [(20, 6), (20, 12), (-20, 0), (-20, 6), (-20, 12)]
+        self.assertEqual(len(pattern.Copies), len(expected))
+        for copy, (x, y) in zip(pattern.Copies, expected):
+            self.assertLess((copy.Placement.Base - App.Vector(x, y, 0)).Length, 1e-6)
+        linear.Occurrences = 2
+        linear.Length = 10
+        self.doc.recompute()
+        self.assertEqual(len(pattern.Copies), 3)
+        self.assertLess((pattern.Copies[-1].Placement.Base - App.Vector(-20, 10, 0)).Length, 1e-6)
+
+    def test_translated_errors_and_unsupported_source(self):
+        import ComponentPattern
+        from unittest.mock import patch
+
+        before = len(self.doc.Objects)
+        with patch.object(ComponentPattern, "translate", side_effect=lambda context, text: "TR:" + text):
+            with self.assertRaisesRegex(ValueError, "TR:"):
+                ComponentPattern.createComponentPattern(self.assembly, self.bolt, self.hole)
+        self.assertEqual(len(self.doc.Objects), before)
+
+    def test_invalid_explicit_parameters_leave_no_objects(self):
+        from ComponentPattern import createComponentPattern
+
+        for kwargs in ({"count": 0}, {"axis": App.Vector()},
+                       {"patternType": "Linear", "length": 0},
+                       {"patternType": "Linear", "direction": App.Vector()}):
+            with self.subTest(parameters=kwargs):
+                before = len(self.doc.Objects)
+                with self.assertRaises(ValueError):
+                    createComponentPattern(self.assembly, self.bolt, **kwargs)
+                self.assertEqual(len(self.doc.Objects), before)
+
+    def test_standard_suite_registers_both_classes(self):
+        import TestAssemblyWorkbench
+
+        self.assertIs(TestAssemblyWorkbench.TestComponentPattern, TestComponentPattern)
+        self.assertIs(TestAssemblyWorkbench.TestComponentPatternGui, TestComponentPatternGui)
+
     def test_invalid_seed_is_rejected_without_objects(self):
         from ComponentPattern import createComponentPattern
 
@@ -302,6 +431,125 @@ class TestComponentPatternGui(unittest.TestCase):
     tearDown = TestComponentPattern.tearDown
     assertPolar = TestComponentPattern.assertPolar
     flushGui = TestComponentPattern.flushGui
+
+    seedJoint = TestComponentPattern.seedJoint
+
+    def waitForPanel(self, panel):
+        import time
+        from PySide import QtCore
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            QtCore.QCoreApplication.processEvents()
+            if panel.recomputeHandle.done() and not getattr(panel, "_pending", False):
+                break
+            time.sleep(0.01)
+        self.assertTrue(panel.recomputeHandle.done(), panel.recomputeHandle.status())
+        self.assertFalse(getattr(panel, "_pending", False))
+        self.flushGui()
+
+    def openPanel(self):
+        import FreeCADGui as Gui
+        import CommandComponentPattern
+
+        Gui.activateWorkbench("AssemblyWorkbench")
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.bolt)
+        Gui.Selection.addSelection(self.source)
+        Gui.runCommand("Assembly_ComponentPattern", 0)
+        return CommandComponentPattern.activeTask
+
+    def test_command_undo_redo_and_no_synchronous_recompute(self):
+        import FreeCADGui as Gui
+        from unittest.mock import patch
+        from PySide import QtCore
+        import CommandComponentPattern
+
+        joint = self.seedJoint()
+        self.doc.UndoMode = 1
+        panel = self.openPanel()
+        panel.joints.item(panel.availableJoints.index(joint)).setCheckState(QtCore.Qt.Checked)
+        before = {o.Name for o in self.doc.Objects}
+
+        class AsyncOnlyDocument:
+            def __getattr__(wrapper, name):
+                if name == "recompute":
+                    raise AssertionError("command called synchronous recompute")
+                return getattr(self.doc, name)
+
+        class AssemblyFacade:
+            Document = AsyncOnlyDocument()
+            def __getattr__(wrapper, name):
+                return getattr(self.assembly, name)
+
+        real_create = CommandComponentPattern.createComponentPattern
+        def create(assembly, *args, **kwargs):
+            self.assertIs(kwargs.get("recompute"), False)
+            return real_create(self.assembly, *args, **kwargs)
+
+        panel.assembly = AssemblyFacade()
+        with patch.object(CommandComponentPattern, "createComponentPattern", side_effect=create):
+            self.assertTrue(panel.accept())
+            self.waitForPanel(panel)
+        self.assertIsNone(CommandComponentPattern.activeTask)
+        pattern = next(o for o in self.doc.Objects if getattr(o, "Type", "") == "ComponentPattern")
+        self.assertEqual(len(pattern.JointCopies), 5)
+        generated = {o.Name for o in self.doc.Objects} - before
+        self.assertTrue(generated)
+        self.doc.undo()
+        self.assertEqual({o.Name for o in self.doc.Objects}, before)
+        self.doc.redo()
+        self.assertEqual({o.Name for o in self.doc.Objects}, before | generated)
+        self.assertPolar(self.doc.getObject(pattern.Name), 6)
+        Gui.Selection.clearSelection()
+
+    def test_command_async_failure_rolls_back_and_reports(self):
+        import CommandComponentPattern
+        from unittest.mock import patch
+
+        panel = self.openPanel()
+        before = {o.Name for o in self.doc.Objects}
+        real_create = CommandComponentPattern.createComponentPattern
+        def invalid(*args, **kwargs):
+            pattern = real_create(*args, **kwargs)
+            pattern.UseSource = False
+            pattern.Axis = App.Vector()
+            return pattern
+        with patch.object(CommandComponentPattern, "createComponentPattern", side_effect=invalid):
+            self.assertTrue(panel.accept())
+            self.waitForPanel(panel)
+        self.assertIs(CommandComponentPattern.activeTask, panel)
+        self.assertTrue(panel.error.text())
+        self.assertEqual({o.Name for o in self.doc.Objects}, before)
+        panel.reject()
+
+    def test_command_translated_kind_retains_internal_key(self):
+        import CommandComponentPattern
+        from unittest.mock import patch
+
+        panel = self.openPanel()
+        panel.reject()
+        with patch.object(CommandComponentPattern, "translate", side_effect=lambda context, text: "TR:" + text):
+            panel = CommandComponentPattern.TaskComponentPattern(self.assembly)
+        self.assertEqual(panel.kind.itemText(0), "TR:Polar")
+        self.assertEqual(panel.kind.itemData(0), "Polar")
+        self.assertEqual(panel.kind.itemData(1), "Linear")
+        panel.form.deleteLater()
+
+    def test_command_rejects_invalid_inputs(self):
+        panel = self.openPanel()
+        panel.source.setCurrentIndex(0)
+        before = {o.Name for o in self.doc.Objects}
+        for kind, widget in ((0, panel.axis), (1, panel.direction)):
+            panel.kind.setCurrentIndex(kind)
+            widget.setText("0, 0, 0")
+            self.assertFalse(panel.accept())
+            self.assertTrue(panel.error.text())
+            self.assertEqual({o.Name for o in self.doc.Objects}, before)
+            widget.setText("1, 0, 0")
+        panel.length.setValue(0)
+        self.assertFalse(panel.accept())
+        panel.reject()
 
     def test_command(self):
         import FreeCADGui as Gui
