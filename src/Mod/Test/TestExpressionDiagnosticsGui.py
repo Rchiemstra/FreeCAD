@@ -38,6 +38,176 @@ class ExpressionDiagnosticsGuiTests(unittest.TestCase):
         finally:
             close_document(doc)
 
+    def test_report_defers_all_model_reads_and_selection_while_busy(self):
+        from unittest.mock import patch
+        from freecad import expression_diagnostics as diagnostics
+        from freecad.expression_diagnostics_gui import DiagnosticsDialog
+
+        doc = App.newDocument("DiagnosticsBusy")
+        dialog = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Values")
+            obj.addProperty("App::PropertyFloat", "Value")
+            obj.setExpression("Value", "Missing.Value")
+            with patch.object(Gui, "tryRunPresentationCallback", return_value=False), \
+                    patch.object(diagnostics, "diagnose", wraps=diagnostics.diagnose) as reads, \
+                    patch.object(App, "listDocuments", wraps=App.listDocuments) as documents:
+                dialog = DiagnosticsDialog(doc)
+                self.assertEqual(reads.call_count, 0)
+                self.assertEqual(documents.call_count, 0)
+                self.assertTrue(dialog.timer.isActive())
+            dialog.refresh()
+            self.assertEqual(dialog.table.rowCount(), 1)
+            Gui.Selection.clearSelection()
+            tabs = Gui.getMainWindow().findChild(QtWidgets.QTabWidget, "propertyTab")
+            tabs.setCurrentIndex(0)
+            with patch.object(Gui, "tryRunPresentationCallback", return_value=False), \
+                    patch.object(App, "listDocuments", wraps=App.listDocuments) as documents:
+                dialog.table.selectRow(0)
+                self.assertEqual(documents.call_count, 0)
+                self.assertEqual(Gui.Selection.getSelection(), [])
+            dialog.refresh()
+            self.assertEqual(Gui.Selection.getSelection(), [obj])
+            view = Gui.getMainWindow().findChild(QtWidgets.QTreeView, "propertyEditorData")
+            import time
+            deadline = time.monotonic() + 5
+            while view.currentIndex().data() != "Value" and time.monotonic() < deadline:
+                QtWidgets.QApplication.processEvents()
+                QtCore.QThread.msleep(20)
+            self.assertEqual(view.currentIndex().data(), "Value")
+            self.assertEqual(tabs.currentWidget(), view)
+        finally:
+            if dialog is not None:
+                dialog.close()
+            Gui.Selection.clearSelection()
+            close_document(doc)
+
+    def test_report_selects_nested_property(self):
+        from freecad.expression_diagnostics_gui import DiagnosticsDialog
+        import time
+
+        doc = App.newDocument("DiagnosticsNested")
+        dialog = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Values")
+            obj.addProperty("App::PropertyPlacement", "Placement")
+            obj.setExpression("Placement.Base.x", "Missing.Value")
+            dialog = DiagnosticsDialog(doc)
+            dialog.table.selectRow(0)
+            view = Gui.getMainWindow().findChild(QtWidgets.QTreeView, "propertyEditorData")
+            key = obj.FullName + ".Placement.Base.x"
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                QtWidgets.QApplication.processEvents()
+                if key in (view.currentIndex().data(QtCore.Qt.UserRole + 26497) or []):
+                    break
+                QtCore.QThread.msleep(20)
+            self.assertIn(key, view.currentIndex().data(QtCore.Qt.UserRole + 26497) or [])
+            self.assertEqual(view.currentIndex().data(), "x")
+        finally:
+            if dialog is not None:
+                dialog.close()
+            Gui.Selection.clearSelection()
+            close_document(doc)
+
+    def test_report_reserves_external_documents_refreshes_and_closes(self):
+        from unittest.mock import patch
+        from freecad.expression_diagnostics_gui import DiagnosticsDialog
+
+        doc = App.newDocument("DiagnosticsConsumer")
+        source = App.newDocument("DiagnosticsSource")
+        dialog = None
+        try:
+            value = source.addObject("App::FeaturePython", "Input")
+            value.addProperty("App::PropertyFloat", "Value")
+            value.setExpression("Value", "Missing.Value")
+            obj = doc.addObject("App::FeaturePython", "Values")
+            obj.addProperty("App::PropertyFloat", "Value")
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            save_document_as(source, os.path.join(temporary.name, "source.FCStd"))
+            save_document_as(doc, os.path.join(temporary.name, "consumer.FCStd"))
+            obj.setExpression("Value", source.Name + "#Input.Value")
+            original = Gui.tryRunPresentationCallback
+            scopes = []
+            def admitted(callback, document=None):
+                if document is not None:
+                    scopes.append(document.Name)
+                return original(callback, document) if document is not None else original(callback)
+            with patch.object(Gui, "tryRunPresentationCallback", admitted):
+                dialog = DiagnosticsDialog(doc)
+            self.assertIn(doc.Name, scopes)
+            self.assertIn(source.Name, scopes)
+            from freecad import expression_diagnostics as diagnostics
+            def source_busy(callback, document=None):
+                if document is source:
+                    return False
+                return admitted(callback, document)
+            with patch.object(Gui, "tryRunPresentationCallback", source_busy), \
+                    patch.object(diagnostics, "diagnose", wraps=diagnostics.diagnose) as reads:
+                dialog.refresh()
+                self.assertEqual(reads.call_count, 0)
+                self.assertFalse(dialog.table.isEnabled())
+                self.assertTrue(dialog.timer.isActive())
+            dialog.refresh()
+            self.assertGreater(dialog.table.rowCount(), 0)
+            value.setExpression("Value", "0")
+            # Refresh from queued observer notifications, without reopening.
+            import time
+            deadline = time.monotonic() + 5
+            while dialog.table.rowCount() and time.monotonic() < deadline:
+                QtWidgets.QApplication.processEvents()
+                QtCore.QThread.msleep(20)
+            self.assertEqual(dialog.table.rowCount(), 0)
+            dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+            dialog.show()
+            close_document(doc)
+            doc = None
+            QtWidgets.QApplication.processEvents()
+            dialog.refresh()
+            self.assertTrue(dialog.stopped)
+            self.assertFalse(dialog.isVisible())
+        finally:
+            if dialog is not None and not getattr(dialog, "stopped", False):
+                dialog.close()
+            if doc is not None:
+                close_document(doc)
+            close_document(source)
+
+    def test_report_uses_real_french_catalogue(self):
+        from freecad.expression_diagnostics_gui import DiagnosticsDialog
+        from freecad.expression_diagnostics_text import role_text, kind_text, reason_text
+
+        catalogue = QtCore.QTranslator()
+        # Built with FreeCAD and embedded in its normal resource collection.
+        self.assertTrue(catalogue.load(":/translations/FreeCAD_fr.qm"))
+        app = QtWidgets.QApplication.instance()
+        app.installTranslator(catalogue)
+        doc = App.newDocument("DiagnosticsFrench")
+        dialog = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Values")
+            obj.addProperty("App::PropertyFloat", "Value")
+            obj.setExpression("Value", "Missing.Value")
+            dialog = DiagnosticsDialog(doc)
+            self.assertEqual(dialog.table.horizontalHeaderItem(0).text(), "Objet")
+            self.assertEqual(dialog.table.horizontalHeaderItem(5).text(), "Cause")
+            self.assertEqual(role_text("root"), "Cause première")
+            self.assertEqual(kind_text("unresolved_reference"), "Référence introuvable")
+            self.assertIn("Détails", dialog.table.item(0, 5).text())
+            for kind in ("stale_value", "not_evaluated", "dependency_cycle"):
+                row = dict(role="root", kind=kind, message="unused", chain=[
+                    dict(object="Doc#Object", property="Value")])
+                self.assertNotEqual(reason_text(row), "unused")
+                self.assertNotEqual(kind_text(kind), kind)
+            self.assertEqual(reason_text(dict(role="affected", kind="dependency", chain=[
+                dict(object="Doc#Object", property="Value")])), "Dépend de Doc#Object.Value.")
+        finally:
+            if dialog is not None:
+                dialog.close()
+            app.removeTranslator(catalogue)
+            close_document(doc)
+
     def test_menu_in_multiple_workbenches(self):
         original = Gui.activeWorkbench().name()
         try:
