@@ -46,8 +46,13 @@ class TestFittingTolerance(unittest.TestCase):
     def assertSize(self, feature, diameter):
         self.assertNotIn("Invalid", feature.State, feature.getStatusString())
         self.assertTrue(feature.Shape.isValid())
-        self.assertAlmostEqual(feature.AddSubShape.BoundBox.XLength, diameter, places=6)
-        self.assertAlmostEqual(feature.Profile[0].Shape.BoundBox.XLength, 10, places=6)
+        # GUI tessellation makes bounding boxes approximate. Measure the
+        # analytic circular rims while keeping the same dimensional precision.
+        radii = [edge.Curve.Radius for edge in feature.AddSubShape.Edges
+                 if isinstance(edge.Curve, Part.Circle)]
+        self.assertTrue(radii)
+        self.assertAlmostEqual(2 * max(radii), diameter, places=6)
+        self.assertAlmostEqual(2 * feature.Profile[0].Shape.Edges[0].Curve.Radius, 10, places=6)
 
     def testPadSizeAndZero(self):
         pad = self.pad()
@@ -284,8 +289,9 @@ class TestFittingTolerance(unittest.TestCase):
                 self.doc.UndoMode = 1
                 self.doc.openTransaction("Change fitting tolerance")
                 feature.FittingTolerance = 0.4
-                recompute_document(self.doc)
                 self.doc.commitTransaction()
+                # GUI mutation readiness excludes an open transaction.
+                recompute_document(self.doc)
                 expected = 9.6 if factory == self.pad else 10.4
                 self.assertSize(feature, expected)
                 undo_document(self.doc)
