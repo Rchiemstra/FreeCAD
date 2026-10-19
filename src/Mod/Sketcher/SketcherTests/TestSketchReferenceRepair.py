@@ -549,3 +549,29 @@ class TestSketchReferenceRepair(unittest.TestCase):
                     with self.assertRaisesRegex(RepairError, "^translated: "):
                         module.picked_candidate(self.sketch, ref, self.source, subelement)
         self.assertEqual(rejected_snapshot(self.sketch), before)
+
+
+    def test_explicit_pick_updates_reference_measurement_keeps_settings(self):
+        from SketchReferenceRepair import picked_candidate
+
+        self.broken()
+        dim = self.sketch.addConstraint(
+            Sketcher.Constraint("DistanceX", -3, 1, -3, 2, 10.0)
+        )
+        self.sketch.setDriving(dim, False)
+        self.sketch.renameConstraint(dim, "ExternalWidth")
+        self.sketch.setVirtualSpace(dim, True)
+        self.source.Shape = Part.makeCompound([edge(12, 23), edge(30)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = signature(self.sketch)
+        selected = picked_candidate(self.sketch, reference, self.source, "Edge1")
+        repair(self.sketch, [(reference, selected)])
+        self.doc.recompute()
+        after = signature(self.sketch)
+        self.assertEqual(after[0][:-1], before[0][:-1])
+        self.assertEqual(after[0][-1][:8], before[0][-1][:8])
+        self.assertEqual(after[0][-1][9:], before[0][-1][9:])
+        self.assertEqual(after[1:3], before[1:3])
+        self.assertAlmostEqual(self.sketch.Constraints[dim].Value, 23.0)
+        self.assertFalse(broken_references(self.sketch))
