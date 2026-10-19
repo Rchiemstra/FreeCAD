@@ -32,8 +32,26 @@
 #include <Gui/ViewProviderPresentationCapability.h>
 #include <src/App/InitApplication.h>
 
+#if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
+#include <Mod/Part/Gui/DocumentPresentationCapture.h>
+#include <Mod/Part/App/PartFeature.h>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRep_Builder.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <TopLoc_Location.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
+#endif
+
 #include "CollaborationGuiTestHelpers.h"
 
+#include <atomic>
+#include <barrier>
+#include <chrono>
+#include <future>
 #include <string>
 #include <thread>
 #include <utility>
@@ -516,5 +534,473 @@ TEST_F(PartPresentationCaptureTest, DocumentBoundaryExpandsFaceColoursOverUnequa
         EXPECT_FLOAT_EQ(material->transparency[triangle], triangle == 0 ? 0.25F : 0.5F);
     }
 }
+
+#if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheReusesPackedGeometryFromBothProducers)
+{
+    Base::Interpreter().runString(
+        "feature.Placement = App.Placement(App.Vector(17, 4, 2), App.Rotation())\n");
+    for (bool fromProvider : {false, true}) {
+        SCOPED_TRACE(fromProvider);
+        const std::string identity = document->collaborationObjectIdentity(*object)
+            + (fromProvider ? "-reuse-provider" : "-reuse-registry");
+        auto capture = [&] {
+            return Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+                Gui::PresentationRenderBuffer buffer;
+                bool captured;
+                if (fromProvider) {
+                    Gui::ViewProviderPresentationCaptureRequest request;
+                    request.stableObjectIdentity = identity;
+                    captured = provider->capturePresentationRenderBuffer(request, buffer);
+                }
+                else {
+                    captured = Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer);
+                }
+                EXPECT_TRUE(captured);
+                return buffer;
+            });
+        };
+        const auto before = PartGui::presentationCaptureCacheStatistics().tessellations;
+        auto first = capture();
+        ASSERT_FALSE(first.vertices.empty());
+        const auto vertices = first.vertices;
+        const auto normals = first.normals;
+        const auto indices = first.indices;
+        const auto topology = first.topology;
+        // GUI-side edits to a packet must not mutate cached geometry/material.
+        first.vertices.front() = 12345.0F;
+        first.material.diffuseColor = {1, 0, 0};
+        for (int repeat = 0; repeat < 4; ++repeat) {
+            const auto reused = capture();
+            EXPECT_EQ(reused.vertices, vertices);
+            EXPECT_EQ(reused.normals, normals);
+            EXPECT_EQ(reused.indices, indices);
+            EXPECT_EQ(reused.topology, topology);
+            EXPECT_TRUE(reused.material.diffuseColor.empty());
+            EXPECT_TRUE(reused.material.transparency.empty());
+        }
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 1);
+    }
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheInvalidatesAllGeometryInputs)
+{
+    const std::string identity = document->collaborationObjectIdentity(*object) + "-inputs";
+    auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    const auto before = PartGui::presentationCaptureCacheStatistics().tessellations;
+    auto capture = [&](const TopoDS_Shape& value, double deviation = 0.2,
+                       double angle = 28.65, bool uv = false) {
+        return Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+            Gui::PresentationRenderBuffer buffer;
+            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                *document, identity, value, deviation, angle, uv, buffer));
+            return buffer;
+        });
+    };
+    const auto original = capture(shape);
+    ASSERT_FALSE(original.vertices.empty());
+    EXPECT_EQ(capture(shape).vertices, original.vertices);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 1);
+
+    gp_Trsf translation;
+    translation.SetTranslation(gp_Vec(17, 0, 0));
+    const auto moved = shape.Moved(TopLoc_Location(translation));
+    ASSERT_TRUE(shape.IsPartner(moved));
+    ASSERT_FALSE(shape.IsEqual(moved));
+    const auto placed = capture(moved);
+    ASSERT_EQ(placed.vertices.size(), original.vertices.size());
+    // Keep the existing Coin placement convention; the location change must
+    // force a fresh capture even when some emitted coordinates coincide.
+    EXPECT_FALSE(placed.vertices.empty());
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 2);
+
+    const auto reversed = moved.Reversed();
+    ASSERT_TRUE(moved.IsSame(reversed));
+    ASSERT_FALSE(moved.IsEqual(reversed));
+    capture(reversed);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 3);
+
+    shape = BRepPrimAPI_MakeBox(5, 6, 7).Shape();
+    EXPECT_NE(capture(shape).vertices, original.vertices);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 4);
+    capture(shape, 0.1);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 5);
+    capture(shape, 0.1, 14.0);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 6);
+    const auto uv = capture(shape, 0.1, 14.0, true);
+    EXPECT_EQ(capture(shape, 0.1, 14.0, true).normals, uv.normals);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 7);
+
+    const auto empty = capture(TopoDS_Shape {});
+    EXPECT_TRUE(empty.vertices.empty());
+    EXPECT_TRUE(empty.indices.empty());
+    capture(shape, 0.1, 14.0, true);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before + 8);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheSeparatesDocumentsAndClearsOnClose)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const std::string otherName = App::GetApplication().getUniqueDocumentName("captureCacheOther");
+    auto* other = App::GetApplication().newDocument(otherName.c_str(), "Other", flags);
+    ASSERT_NE(other, nullptr);
+    const auto before = PartGui::presentationCaptureCacheStatistics();
+    for (auto* doc : {document, other}) {
+        Gui::Test::runOnDocumentOwnerWhilePumpingGui(*doc, [&] {
+            Gui::PresentationRenderBuffer buffer;
+            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                *doc, "same-object-identity", shape, 0.2, 28.65, false, buffer));
+        });
+    }
+    const auto populated = PartGui::presentationCaptureCacheStatistics();
+    EXPECT_EQ(populated.entries, before.entries + 2);
+    EXPECT_EQ(populated.tessellations, before.tessellations + 2);
+    bool acceptedDuringClose = true;
+    auto connection = App::GetApplication().signalDeleteDocument.connect(
+        [&](const App::Document& closing) {
+            if (&closing != other) {
+                return;
+            }
+            std::thread capture([&] {
+                Gui::PresentationRenderBuffer buffer;
+                acceptedDuringClose = PartGui::capturePartPresentationRenderBuffer(
+                    closing, "late-capture", shape, 0.2, 28.65, false, buffer);
+            });
+            capture.join();
+        });
+    EXPECT_TRUE(App::GetApplication().closeDocument(otherName.c_str()));
+    connection.disconnect();
+    EXPECT_FALSE(acceptedDuringClose);
+    const auto closed = PartGui::presentationCaptureCacheStatistics();
+    EXPECT_EQ(closed.entries, populated.entries - 1);
+    EXPECT_LT(closed.packedBytes, populated.packedBytes);
+    EXPECT_EQ(closed.tessellations, populated.tessellations);
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *document, "same-object-identity", shape, 0.2, 28.65, false, buffer));
+    });
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, populated.tessellations);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheAllowsConcurrentMisses)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    constexpr std::size_t workers = 8;
+    std::barrier start(static_cast<std::ptrdiff_t>(workers));
+    std::vector<Gui::PresentationRenderBuffer> results(workers);
+    std::vector<std::thread> threads;
+    const auto before = PartGui::presentationCaptureCacheStatistics().tessellations;
+    for (std::size_t i = 0; i < workers; ++i) {
+        threads.emplace_back([&, i] {
+            start.arrive_and_wait();
+            for (int repeat = 0; repeat < 4; ++repeat) {
+                EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                    *document, "concurrent", shape, 0.2, 28.65, false, results[i]));
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    ASSERT_FALSE(results.front().vertices.empty());
+    for (const auto& buffer : results) {
+        EXPECT_EQ(buffer.vertices, results.front().vertices);
+        EXPECT_EQ(buffer.normals, results.front().normals);
+        EXPECT_EQ(buffer.indices, results.front().indices);
+        EXPECT_EQ(buffer.topology, results.front().topology);
+    }
+    const auto meshed = PartGui::presentationCaptureCacheStatistics().tessellations;
+    EXPECT_GE(meshed, before + 1);
+    EXPECT_LE(meshed, before + workers);
+}
+
+// Pause a miss in its mesh stage. A bounded wait also lets a locking regression
+// fail and unwind its worker threads instead of hanging the test process.
+class CaptureMeshPause
+{
+public:
+    explicit CaptureMeshPause(const std::string& identity)
+        : entered(enteredPromise.get_future())
+        , resumed(resumePromise.get_future().share())
+    {
+        PartGui::setPresentationCaptureMeshHook([this, identity](const std::string& key) {
+            if (key == identity && !claimed.exchange(true)) {
+                enteredPromise.set_value();
+                EXPECT_EQ(resumed.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+            }
+        });
+    }
+
+    ~CaptureMeshPause()
+    {
+        PartGui::setPresentationCaptureMeshHook({});
+    }
+
+    bool wait()
+    {
+        return entered.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    }
+
+    void resume()
+    {
+        resumePromise.set_value();
+    }
+
+private:
+    std::promise<void> enteredPromise;
+    std::promise<void> resumePromise;
+    std::future<void> entered;
+    std::shared_future<void> resumed;
+    std::atomic<bool> claimed {false};
+};
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheMeshesDocumentsIndependently)
+{
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const std::string otherName = App::GetApplication().getUniqueDocumentName("captureOverlap");
+    auto* other = App::GetApplication().newDocument(otherName.c_str(), "Other", flags);
+    ASSERT_NE(other, nullptr);
+    // Deliberately share a TShape: private copies must isolate OCC meshing too.
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    CaptureMeshPause pause("held-mesh");
+    std::thread held([&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *document, "held-mesh", shape, 0.2, 28.65, false, buffer));
+        EXPECT_FALSE(buffer.vertices.empty());
+    });
+    EXPECT_TRUE(pause.wait());
+    std::promise<void> completed;
+    auto ready = completed.get_future();
+    std::thread independent([&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *other, "independent-mesh", shape, 0.2, 28.65, false, buffer));
+        EXPECT_FALSE(buffer.vertices.empty());
+        completed.set_value();
+    });
+    const bool progressed = ready.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    EXPECT_TRUE(progressed);
+    if (progressed) {
+        // GUI diagnostics and deletion must complete while the first mesh waits.
+        const auto populated = PartGui::presentationCaptureCacheStatistics();
+        EXPECT_TRUE(App::GetApplication().closeDocument(otherName.c_str()));
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().entries, populated.entries - 1);
+    }
+    pause.resume();
+    held.join();
+    independent.join();
+    if (!progressed) {
+        App::GetApplication().closeDocument(otherName.c_str());
+    }
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheDoesNotPublishMissAfterClose)
+{
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const std::string otherName = App::GetApplication().getUniqueDocumentName("captureClosing");
+    auto* other = App::GetApplication().newDocument(otherName.c_str(), "Other", flags);
+    ASSERT_NE(other, nullptr);
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    const auto before = PartGui::presentationCaptureCacheStatistics().entries;
+    CaptureMeshPause pause("closing-mesh");
+    std::thread held([&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *other, "closing-mesh", shape, 0.2, 28.65, false, buffer));
+        EXPECT_FALSE(buffer.vertices.empty());
+    });
+    EXPECT_TRUE(pause.wait());
+    EXPECT_TRUE(App::GetApplication().closeDocument(otherName.c_str()));
+    pause.resume();
+    held.join();
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().entries, before);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheInvalidatesShapePropertyWithSameTShape)
+{
+    auto* feature = dynamic_cast<Part::Feature*>(object);
+    ASSERT_NE(feature, nullptr);
+    const auto shape = BRepBuilderAPI_MakeVertex(gp_Pnt(1, 2, 3)).Vertex();
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] { feature->Shape.setValue(shape); });
+    const std::string identity = document->collaborationObjectIdentity(*object);
+    auto capture = [&] {
+        return Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+            Gui::PresentationRenderBuffer buffer;
+            EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+            return buffer;
+        });
+    };
+    const auto original = capture();
+    ASSERT_FALSE(original.vertices.empty());
+    const auto populated = PartGui::presentationCaptureCacheStatistics();
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        BRep_Builder().UpdateVertex(shape, gp_Pnt(7, 8, 9), 1e-7);
+        feature->Shape.setValue(shape);
+        EXPECT_TRUE(feature->Shape.getValue().IsEqual(shape));
+    });
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().entries, populated.entries - 1);
+    EXPECT_NE(capture().vertices, original.vertices);
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations,
+              populated.tessellations + 1);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheDoesNotPublishInvalidatedMiss)
+{
+    auto* feature = dynamic_cast<Part::Feature*>(object);
+    ASSERT_NE(feature, nullptr);
+    const auto shape = feature->Shape.getValue();
+    const std::string identity = document->collaborationObjectIdentity(*object);
+    // The fixture's presentation boundary may already have cached this object.
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] { feature->Shape.setValue(shape); });
+    const auto before = PartGui::presentationCaptureCacheStatistics().entries;
+    CaptureMeshPause pause(identity);
+    std::thread held([&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *document, identity, shape, 0.2, 28.65, false, buffer));
+    });
+    EXPECT_TRUE(pause.wait());
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] { feature->Shape.setValue(shape); });
+    pause.resume();
+    held.join();
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().entries, before);
+    const auto meshed = PartGui::presentationCaptureCacheStatistics().tessellations;
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+    });
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, meshed + 1);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheEvictsDeletedObject)
+{
+    const auto identity = document->collaborationObjectIdentity(*object);
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+    });
+    const auto populated = PartGui::presentationCaptureCacheStatistics();
+    Base::Interpreter().runString("doc.removeObject('Plane')\n");
+    const auto removed = PartGui::presentationCaptureCacheStatistics();
+    EXPECT_EQ(removed.entries, populated.entries - 1);
+    EXPECT_LT(removed.packedBytes, populated.packedBytes);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheEvictsDeletedObjectAfterDeferredNotification)
+{
+    const auto identity = document->collaborationObjectIdentity(*object);
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+    });
+    const auto populated = PartGui::presentationCaptureCacheStatistics();
+    bool replayed = false;
+    auto connection = App::GetApplication().signalDeletedObject.connect(
+        [&](const App::DocumentObject& removed) {
+            if (&removed == object) {
+                replayed = document->collaborationNotificationsReplaying();
+            }
+        });
+    const auto outcome = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *document,
+        {App::CollaborationCompatibilityScope::Structural, {}, {}, {}},
+        [&] { document->removeObject("Plane"); });
+    connection.disconnect();
+    ASSERT_TRUE(outcome.committed()) << outcome.message;
+    EXPECT_TRUE(replayed);
+    const auto removed = PartGui::presentationCaptureCacheStatistics();
+    EXPECT_EQ(removed.entries, populated.entries - 1);
+    EXPECT_LT(removed.packedBytes, populated.packedBytes);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheEvictsLeastRecentlyUsedEntriesAtBound)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        auto capture = [&](const std::string& identity) {
+            Gui::PresentationRenderBuffer buffer;
+            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                *document, identity, shape, 0.2, 28.65, false, buffer));
+        };
+        for (std::size_t i = 0; i < PartGui::PresentationCaptureCacheMaxEntries; ++i) {
+            capture("bounded-" + std::to_string(i));
+        }
+        const auto full = PartGui::presentationCaptureCacheStatistics();
+        EXPECT_EQ(full.entries, PartGui::PresentationCaptureCacheMaxEntries);
+        EXPECT_LE(full.packedBytes, PartGui::PresentationCaptureCacheMaxBytes);
+        capture("bounded-0");  // Touch the oldest entry before admitting one more.
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, full.tessellations);
+        capture("bounded-extra");
+        capture("bounded-0");
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, full.tessellations + 1);
+        capture("bounded-1");
+        const auto evicted = PartGui::presentationCaptureCacheStatistics();
+        EXPECT_EQ(evicted.tessellations, full.tessellations + 2);
+        EXPECT_EQ(evicted.entries, PartGui::PresentationCaptureCacheMaxEntries);
+        EXPECT_LE(evicted.packedBytes, PartGui::PresentationCaptureCacheMaxBytes);
+    });
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheEnforcesByteBudget)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        // Large identities exercise byte eviction with a small, cheap shape.
+        const std::string prefix(4U * 1024U * 1024U, 'x');
+        constexpr std::size_t count = 24;
+        for (std::size_t i = 0; i < count; ++i) {
+            Gui::PresentationRenderBuffer buffer;
+            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                *document, prefix + std::to_string(i), shape, 0.2, 28.65, false, buffer));
+            EXPECT_LE(PartGui::presentationCaptureCacheStatistics().packedBytes,
+                      PartGui::PresentationCaptureCacheMaxBytes);
+        }
+        EXPECT_LT(PartGui::presentationCaptureCacheStatistics().entries, count);
+    });
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureCacheRetriesFailuresWithoutReturningOldGeometry)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    TopoDS_Face invalid;
+    BRep_Builder builder;
+    builder.MakeFace(invalid);
+    TopoDS_Compound broken;
+    builder.MakeCompound(broken);
+    builder.Add(broken, shape);  // Keep the compound non-empty (it has vertices).
+    builder.Add(broken, invalid);
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        Gui::PresentationRenderBuffer buffer;
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *document, "failure", shape, 0.2, 28.65, false, buffer));
+        ASSERT_FALSE(buffer.vertices.empty());
+        const auto before = PartGui::presentationCaptureCacheStatistics();
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+                *document, "failure", broken, 0.2, 28.65, false, buffer));
+            EXPECT_TRUE(buffer.vertices.empty());
+            EXPECT_TRUE(buffer.normals.empty());
+            EXPECT_TRUE(buffer.indices.empty());
+            EXPECT_TRUE(buffer.topology.empty());
+        }
+        const auto failed = PartGui::presentationCaptureCacheStatistics();
+        EXPECT_EQ(failed.entries, before.entries - 1);
+        EXPECT_EQ(failed.tessellations, before.tessellations + 2);
+        EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            *document, "failure", shape, 0.2, 28.65, false, buffer));
+        EXPECT_FALSE(buffer.vertices.empty());
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations,
+                  before.tessellations + 3);
+    });
+}
+
+#endif
 
 }  // namespace
