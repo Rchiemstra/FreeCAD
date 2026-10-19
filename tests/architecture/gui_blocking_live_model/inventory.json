@@ -3134,7 +3134,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 667,
+      "line": 668,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -3142,7 +3142,7 @@
     },
     {
       "path": "src/Gui/ViewProviderDocumentObject.cpp",
-      "line": 843,
+      "line": 844,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -26782,7 +26782,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
-      "line": 983,
+      "line": 986,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -27710,7 +27710,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProvider.cpp",
-      "line": 108,
+      "line": 109,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -31246,7 +31246,23 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5060,
+      "line": 4257,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connectExplicitTouch = getObject()->getDocument()->signalTouchedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
+      "line": 4264,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connectPersistentTouch = getObject()->getDocument()->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
+      "line": 5077,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31254,7 +31270,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5088,
+      "line": 5105,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31262,7 +31278,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5112,
+      "line": 5129,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31270,7 +31286,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5130,
+      "line": 5147,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31278,7 +31294,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.h",
-      "line": 681,
+      "line": 682,
       "category": "update-data-provider",
       "subsystem": "Sketcher",
       "disposition": "migrate",
