@@ -499,11 +499,9 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
         }
         catch (Py::Exception&) {
             Base::PyException error;
+            const char* message = QT_TRANSLATE_NOOP("Exception", "Cannot apply the fitting tolerance.");
             return new App::DocumentObjectExecReturn(
-                Base::Translation::translate(
-                    "Exception",
-                    QT_TRANSLATE_NOOP("Exception", "Cannot apply the fitting tolerance.")
-                ) + "\n" + error.what()
+                Base::Translation::translate("Exception", message) + "\n" + error.what()
             );
         }
     }
