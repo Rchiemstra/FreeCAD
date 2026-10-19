@@ -74,6 +74,7 @@ if(BUILD_GUI)
     list(APPEND PartDesign_TestScripts
         PartDesignTests/TestMaterial.py
         PartDesignTests/TestAllowanceProfileGui.py
+        PartDesignTests/TestTaskFeatureCompletion.py
         PartDesignTests/TestSuppressed.py
     )
 endif(BUILD_GUI)

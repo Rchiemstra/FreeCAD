@@ -345,3 +345,112 @@ class TestFittingTolerance(unittest.TestCase):
                     self.assertAlmostEqual(feature.Shape.Volume, volume)
                 close_document(self.doc)
                 self.setUp()
+
+    def testSharedSketchMatingParts(self):
+        # Both features consume exactly the same nominal sketch. Opposite
+        # signed corrections give a line-to-line fit; positive Pad tolerance
+        # additionally provides radial clearance.
+        pocket = self.pocket()
+        sketch = pocket.Profile[0]
+        shaft_body = self.doc.addObject("PartDesign::Body", "ShaftBody")
+        shaft = shaft_body.newObject("PartDesign::Pad", "Shaft")
+        shaft.Profile = sketch
+        shaft.Reversed = True
+        shaft.Length = 4
+        pocket.FittingTolerance = 0.4
+        shaft.FittingTolerance = -0.4
+        self.doc.recompute()
+        self.assertSize(pocket, 10.4)
+        self.assertSize(shaft, 10.4)
+        self.assertAlmostEqual(pocket.Shape.common(shaft.Shape).Volume, 0, places=6)
+        self.assertAlmostEqual(pocket.Shape.Volume + shaft.Shape.Volume, 1600)
+        shaft.FittingTolerance = 0.4
+        self.doc.recompute()
+        self.assertSize(shaft, 9.6)
+        self.assertAlmostEqual(pocket.Shape.common(shaft.Shape).Volume, 0, places=6)
+        self.assertAlmostEqual(sketch.Geometry[0].Radius, 5)
+
+    def extrusion_mode(self, factory, mode):
+        feature = factory()
+        sketch = feature.Profile[0]
+        if mode in ("UpToFirst", "UpToLast") and factory == self.pad:
+            base = self.body.newObject("PartDesign::Feature", "Target")
+            base.Shape = Part.makeBox(20, 20, 4, App.Vector(-10, -10, 2))
+            self.body.Group = [base, sketch, feature]
+            feature.BaseFeature = base
+            self.body.Tip = feature
+        if mode in ("ThroughAll", "UpToFirst", "UpToLast"):
+            feature.Type = mode
+        elif mode == "UpToShape":
+            target = self.doc.addObject("Part::Feature", "TargetPlane")
+            z = 3 if factory == self.pad else -3
+            target.Shape = Part.makePlane(40, 40, App.Vector(-20, -20, z))
+            feature.UpToShape = [(target, ["Face1"])]
+            feature.Type = mode
+        elif mode == "Taper":
+            feature.Length = 2
+            feature.TaperAngle = 5
+        elif mode == "Reversed":
+            feature.Reversed = True
+            if factory == self.pocket:
+                sketch.Placement.Base.z = -4
+        elif mode == "CustomDirection":
+            feature.UseCustomVector = True
+            feature.Direction = App.Vector(0.1, 0, 1 if factory == self.pad else -1)
+            feature.Length = 2
+        elif mode in ("Offset", "Reference"):
+            feature.Length = 1
+            feature.StartType = mode
+            feature.StartOffset = 0.5
+            if mode == "Reference":
+                target = self.doc.addObject("Part::Feature", "StartPlane")
+                target.Shape = Part.makePlane(40, 40, App.Vector(-20, -20, 0))
+                feature.StartReference = (target, ["Face1"])
+        feature.FittingTolerance = 0.4
+        self.doc.recompute()
+        self.assertNotIn("Invalid", feature.State, feature.getStatusString())
+        actual = feature.Shape.copy()
+        tool = feature.AddSubShape.copy()
+        self.assertTrue(actual.isValid())
+        self.assertGreater(actual.Volume, 0)
+        self.assertAlmostEqual(sketch.Geometry[0].Radius, 5)
+        # Independent geometric oracle: an explicitly resized sketch and zero
+        # tolerance must produce the complete same solid for this mode.
+        radius = 4.8 if factory == self.pad else 5.2
+        sketch.delGeometry(0)
+        sketch.addGeometry(Part.Circle(App.Vector(), App.Vector(0, 0, 1), radius), False)
+        feature.FittingTolerance = 0
+        self.doc.recompute()
+        self.assertNotIn("Invalid", feature.State, feature.getStatusString())
+        self.assertAlmostEqual(actual.Volume, feature.Shape.Volume, places=5)
+        self.assertAlmostEqual(tool.Volume, feature.AddSubShape.Volume, places=5)
+        self.assertAlmostEqual(actual.cut(feature.Shape).Volume, 0, places=5)
+        self.assertAlmostEqual(feature.Shape.cut(actual).Volume, 0, places=5)
+        close_document(self.doc)
+        self.setUp()
+
+    def testThroughAllWithTolerance(self):
+        self.extrusion_mode(self.pocket, "ThroughAll")
+
+    def testUpToFirstLastWithTolerance(self):
+        for factory, mode in ((self.pad, "UpToFirst"), (self.pad, "UpToLast"),
+                              (self.pocket, "UpToFirst")):
+            with self.subTest(feature=factory.__name__, mode=mode):
+                self.extrusion_mode(factory, mode)
+
+    def testUpToShapeWithTolerance(self):
+        for factory in (self.pad, self.pocket):
+            with self.subTest(feature=factory.__name__):
+                self.extrusion_mode(factory, "UpToShape")
+
+    def testTaperReversedCustomDirectionWithTolerance(self):
+        for factory in (self.pad, self.pocket):
+            for mode in ("Taper", "Reversed", "CustomDirection"):
+                with self.subTest(feature=factory.__name__, mode=mode):
+                    self.extrusion_mode(factory, mode)
+
+    def testOffsetStartModesWithTolerance(self):
+        for factory in (self.pad, self.pocket):
+            for mode in ("Offset", "Reference"):
+                with self.subTest(feature=factory.__name__, mode=mode):
+                    self.extrusion_mode(factory, mode)

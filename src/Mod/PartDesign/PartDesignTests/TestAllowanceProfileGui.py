@@ -242,7 +242,8 @@ class TestAllowanceProfileGui(unittest.TestCase):
         _pump_gui_until(lambda: not Gui.Control.activeDialog(), 30,
                         self.doc.getMutationReadiness)
         self.assertFalse(self.doc.HasPendingTransaction)
-        recompute_document(self.doc)
+        self.assertFalse(self.doc.mustExecute(), [(o.Name, o.State) for o in self.doc.Objects])
+        self.assertAlmostEqual(self.body.Shape.Volume, pocket.Shape.Volume)
         self.assertFalse(Gui.Control.activeDialog())
         self.assertAlmostEqual(pocket.FittingTolerance.Value, 0.4)
         self.assertTrue(pocket.Shape.isValid())
