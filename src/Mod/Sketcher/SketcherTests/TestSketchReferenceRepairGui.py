@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
+from contextlib import nullcontext
 import threading
 import time
 from unittest.mock import patch
@@ -506,3 +507,117 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         QtCore.QTimer.singleShot(100, inspect)
         self.right_click(viewport, point)
         self.assertIn("Sketcher_ReassignBrokenReference", seen)
+
+
+    def assert_pending_pick_cancelled(self, action, phase="validation"):
+        import SketchReferenceReassignGui as pick_gui
+        import SketchReferenceRepairGui as repair_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+        from Test.GuiRecompute import close_document
+
+        sketch, source, view, before = self.make_pick_fixture()
+        undo_count = self.doc.UndoCount
+        original_selection = [
+            (item.ObjectName, tuple(item.SubElementNames))
+            for item in Gui.Selection.getSelectionEx()
+        ]
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        root = session.root
+        root.ref()  # Inspect cleanup even after resetEdit/document destruction.
+        entered, release = threading.Event(), threading.Event()
+        module, name = {
+            "validation": (pick_gui, "picked_candidate"),
+            "submission": (repair_gui, "prepare_repair"),
+            "mutation": (repair_gui, "apply_prepared"),
+            "commit": (repair_gui, "check_repair"),
+        }[phase]
+        original = getattr(module, name)
+
+        def stalled(*args):
+            # For commit, pause after the model/postcondition work, immediately
+            # before returning to the native transaction commit.
+            result = original(*args) if phase != "mutation" else None
+            entered.set()
+            if not release.wait(15):
+                raise RuntimeError("test pending repair timed out")
+            return original(*args) if phase == "mutation" else result
+
+        prepares = []
+        original_prepare = repair_gui.prepare_repair
+
+        def record_prepare(*args):
+            prepares.append(True)
+            return original_prepare(*args)
+
+        try:
+            with patch.object(module, name, stalled):
+                with (
+                    patch.object(repair_gui, "prepare_repair", record_prepare)
+                    if phase == "validation" else nullcontext()
+                ):
+                    point = view.getPointOnScreen(App.Vector(5, 10, 0))
+                    session.pick(tuple(point))
+                    self.assertTrue(self.wait_until(entered.is_set, 5000))
+                    if action == "escape":
+                        self.key_click(view.graphicsView().viewport(), QtCore.Qt.Key_Escape)
+                    elif action == "button":
+                        session.cancel_button.click()
+                    elif action == "edit":
+                        Gui.activeDocument().resetEdit()
+                    elif action == "document":
+                        close_document(self.doc)
+                        self.doc = None
+                    else:
+                        session.close()
+                    closed = self.wait_until(lambda: session.closed, 2000)
+                    release.set()
+                    self.assertTrue(self.wait_until(lambda: not repair_gui._operations, 10000))
+            self.assertTrue(closed, "pending picker could not be cancelled")
+            self.assertIsNone(session.material)
+            self.assertFalse(any(
+                str(root.getChild(i).getName()) == "ReferenceRepairTransparency"
+                for i in range(root.getNumChildren())
+            ))
+            if phase == "validation":
+                self.assertFalse(prepares, "cancelled validation submitted a repair")
+            if action == "document":
+                self.assertEqual(Gui.Selection.getSelection(), [])
+            else:
+                self.assertEqual(self.doc.UndoCount, undo_count)
+                self.assertFalse(self.doc.HasPendingTransaction)
+                self.assertEqual(signature(sketch), before)
+                self.assertEqual(len(broken_references(sketch)), 1)
+                self.assertTrue(source.Visibility)
+                if action != "edit":
+                    self.assertEqual([
+                        (item.ObjectName, tuple(item.SubElementNames))
+                        for item in Gui.Selection.getSelectionEx()
+                    ], original_selection)
+        finally:
+            release.set()
+            if not session.closed:
+                session.close()
+            root.unref()
+
+    def test_pending_pick_cancel_button_restores_scene_selection_and_undo(self):
+        self.assert_pending_pick_cancelled("button")
+
+    def test_pending_pick_escape_restores_scene_selection_and_undo(self):
+        self.assert_pending_pick_cancelled("escape")
+
+    def test_pending_pick_close_fences_submission(self):
+        self.assert_pending_pick_cancelled("close", "submission")
+
+    def test_pending_pick_close_fences_mutation(self):
+        self.assert_pending_pick_cancelled("close", "mutation")
+
+    def test_pending_pick_close_fences_commit(self):
+        self.assert_pending_pick_cancelled("close", "commit")
+
+    def test_pending_pick_edit_end_restores_scene_without_undo(self):
+        self.assert_pending_pick_cancelled("edit")
+
+    def test_pending_pick_document_close_restores_scene_and_selection(self):
+        self.assert_pending_pick_cancelled("document")
