@@ -353,6 +353,12 @@ void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
     StatusBits.set(static_cast<size_t>(pos), on);
 }
 
+void DocumentObject::restoreTouchedProperties(const std::unordered_set<std::string>& properties)
+{
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    touchedProps = properties;
+}
+
 void DocumentObject::enforceRecompute(const std::string& propName)
 {
     enforceAtomicPresentationMutationTarget(_pDoc);

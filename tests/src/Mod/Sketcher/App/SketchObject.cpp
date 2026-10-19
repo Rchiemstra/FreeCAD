@@ -2,10 +2,14 @@
 
 #include <FCConfig.h>
 
+#include <cstdlib>
+
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/Expression.h>
 #include <App/ObjectIdentifier.h>
+#include <Base/Interpreter.h>
+#include <Base/PyObjectBase.h>
 #include <Mod/Sketcher/App/GeoEnum.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 #include "SketcherTestHelpers.h"
@@ -856,4 +860,27 @@ TEST_F(SketchObjectTest, testGetElementName)
     EXPECT_STREQ(reverse_normal_name.oldName.c_str(), "Vertex2");
     EXPECT_STREQ(reverse_export_name.newName.c_str(), (";" + tagName + "v1;SKT.Vertex1").c_str());
     EXPECT_STREQ(reverse_export_name.oldName.c_str(), "Vertex1");
+}
+
+// Run in a child process so a documentless binding regression is a test failure,
+// rather than terminating the remaining Sketcher tests.
+TEST_F(SketchObjectTest, attachExternalRejectsDocumentlessSketch)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    ASSERT_EXIT(
+        {
+            Py_Initialize();
+            Base::PyGILStateLocker gil;
+            Sketcher::SketchObject sketch;
+            PyObject* object = sketch.getPyObject();
+            PyObject* result =
+                PyObject_CallMethod(object, "attachExternal", "iss", -3, "Source", "Edge1");
+            const bool rejected = !result && PyErr_ExceptionMatches(PyExc_ValueError);
+            Py_XDECREF(result);
+            PyErr_Clear();
+            Py_DECREF(object);
+            std::_Exit(rejected ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0),
+        "");
 }

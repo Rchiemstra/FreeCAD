@@ -34,6 +34,7 @@
 #include <Base/Tools.h>
 
 #include "AutoSaver.h"
+#include "RecoveryWriteExecutor.h"
 #include "Utilities.h"
 #include "Application.h"
 #include "Document.h"
@@ -71,18 +72,60 @@ const int AutoSaveTimeout = 900000;
 
 AutoSaver::AutoSaver(QObject* parent)
     : QObject(parent)
+    , recoveryWriteExecutor(std::make_unique<RecoveryWriteExecutor>())
+    , recoveryCallbackContext(std::make_unique<QObject>())
     , timeout(AutoSaveTimeout)
     , compressed(true)
 {
-    App::GetApplication().signalNewDocument.connect([this](const App::Document& doc, bool) {
-        slotCreateDocument(doc);
-    });
-    App::GetApplication().signalDeleteDocument.connect([this](const App::Document& doc) {
-        slotDeleteDocument(doc);
-    });
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &AutoSaver::shutdownRecoveryWrites);
+    newDocumentConnection = App::GetApplication().signalNewDocument.connect(
+        [this](const App::Document& doc, bool) { slotCreateDocument(doc); });
+    closeDocumentConnection = App::GetApplication().signalBeforeCloseDocumentAdmission.connect(
+        [this](App::Document& doc) { cancelRecoveryWrite(doc); });
+    lifecycleCloseDocumentConnection =
+        App::GetApplication().signalBeforeCloseDocumentLifecycleAdmission.connect(
+            [this](App::Document& doc) { cancelRecoveryWrite(doc, /*completedOnly=*/true); });
+    deleteDocumentConnection = App::GetApplication().signalDeleteDocument.connect(
+        [this](const App::Document& doc) { slotDeleteDocument(doc); });
 }
 
-AutoSaver::~AutoSaver() = default;
+AutoSaver::~AutoSaver()
+{
+    recoveryCallbackContext.reset();
+    recoveryWriteExecutor->shutdown();
+    newDocumentConnection.disconnect();
+    closeDocumentConnection.disconnect();
+    lifecycleCloseDocumentConnection.disconnect();
+    deleteDocumentConnection.disconnect();
+    for (auto& entry : saverMap) delete entry.second;
+    self = nullptr;
+}
+
+void AutoSaver::shutdownRecoveryWrites()
+{
+    if (self) {
+        // Drop queued completion/admission retries before document teardown,
+        // including the FIFO reservations retained by their functors.
+        self->recoveryCallbackContext.reset();
+        self->recoveryWriteExecutor->shutdown();
+    }
+}
+
+RecoveryWriteExecutor& AutoSaver::recoveryWrites()
+{
+    return *recoveryWriteExecutor;
+}
+
+void AutoSaver::cancelRecoveryWrite(App::Document& document, bool completedOnly)
+{
+    if (!recoveryWriteExecutor->cancelDocument(document, completedOnly)) return;
+    const auto saver = saverMap.find(document.getName());
+    if (saver != saverMap.end() && saver->second->saveInProgress) {
+        // Cancellation drops completion even if executing IO makes Close Busy.
+        // Retain the attempt's dirty work for the surviving document's timer.
+        saver->second->restoreFailedSaveAttempt();
+    }
+}
 
 AutoSaver* AutoSaver::instance()
 {
@@ -187,8 +230,9 @@ void AutoSaver::queueRecoveryAdmissionRetry(const std::string& name,
                                              const std::uint64_t documentInstanceId,
                                              const std::uint64_t lifecycleEpoch)
 {
-    scheduleGuiSingleShot(10, [name, documentInstanceId, lifecycleEpoch] {
-        AutoSaver::instance()->flushPendingSaveForIdentity(
+    if (!recoveryWriteExecutor->isAccepting()) return;
+    QTimer::singleShot(10, recoveryCallbackContext.get(), [this, name, documentInstanceId, lifecycleEpoch] {
+        flushPendingSaveForIdentity(
             QString::fromStdString(name), documentInstanceId, lifecycleEpoch);
     });
 }
@@ -237,7 +281,7 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     // AutoSaver runs on the GUI thread. Never call dispatchToOwner / sync
     // Document::save here — finish via the async recovery write and a queued
     // GUI callback when the worker completes.
-    scheduleRecoverySnapshotWrite(
+    const bool accepted = recoveryWriteExecutor->schedule(
         *doc,
         options,
         [this,
@@ -253,6 +297,9 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
                 written,
                 failure);
         });
+    if (!accepted) {
+        saver.restoreFailedSaveAttempt();
+    }
 }
 
 void AutoSaver::completeRecoverySnapshotSave(
@@ -265,6 +312,7 @@ void AutoSaver::completeRecoverySnapshotSave(
     std::shared_ptr<App::RecoveryAdmission> admission)
 {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!recoveryWriteExecutor->isAccepting()) return;
 
     const auto saverIt = saverMap.find(name);
     if (saverIt == saverMap.end()) {
@@ -305,7 +353,7 @@ void AutoSaver::completeRecoverySnapshotSave(
         admission = std::make_shared<App::RecoveryAdmission>();
     }
     if (targetBusy || !admission->tryAcquire()) {
-        scheduleGuiSingleShot(10, [this, name, documentInstanceId, lifecycleEpoch,
+        QTimer::singleShot(10, recoveryCallbackContext.get(), [this, name, documentInstanceId, lifecycleEpoch,
                                   startTime, written, failure, admission = std::move(admission)] {
             completeRecoverySnapshotSave(
                 name, documentInstanceId, lifecycleEpoch, startTime, written, failure, admission);
@@ -495,8 +543,10 @@ void AutoSaveProperty::scheduleQueuedRetry(const App::Document& document)
     // Queue a later GUI-thread pass instead of flushing inline from
     // signalBecameStable(). beginSaveAttempt() re-checks dirty state when the
     // queued retry runs.
-    scheduleGuiSingleShot(0, [qDocumentName, identity]() {
-        AutoSaver::instance()->flushPendingSaveForIdentity(
+    auto* saver = AutoSaver::instance();
+    if (!saver->recoveryWriteExecutor->isAccepting()) return;
+    QTimer::singleShot(0, saver->recoveryCallbackContext.get(), [saver, qDocumentName, identity]() {
+        saver->flushPendingSaveForIdentity(
             qDocumentName, identity.instanceId, identity.lifecycleEpoch);
     });
 }

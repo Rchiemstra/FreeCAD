@@ -23,8 +23,10 @@
 namespace Gui
 {
 class Document;
+class RecoveryWriteExecutor;
 namespace Test
 {
+class RecoveryWaitTestAccess;
 class SharedPresentationSerializeTestAccess;
 }
 }
@@ -225,6 +227,7 @@ private:
 
     friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
+    friend class Gui::RecoveryWriteExecutor;
     friend class Application;
     friend class Internal::PreparedLabelReferenceUpdates;
     friend class Document;
@@ -236,6 +239,8 @@ private:
     friend class Internal::GenericIsolatedRecomputeAccess;
     // Gui integration tests supply a serialize hook without a production GUI wait.
     friend class Gui::Test::SharedPresentationSerializeTestAccess;
+    // The Gui test recovery wait keeps a lifecycle pin in worker-owned state.
+    friend class Gui::Test::RecoveryWaitTestAccess;
     friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& doc,
         const RecoverySnapshotSaveOptions& options);

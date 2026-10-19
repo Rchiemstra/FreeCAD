@@ -40,3 +40,5 @@ from SketcherTests.TestSketcherEllipse import TestSketcherEllipse
 from SketcherTests.TestSketcherSolver import CreateCircleSketch
 from SketcherTests.TestSketcherSolver import CreateRectangleSketch
 from SketcherTests.TestSketcherSolver import CreateSlotPlateSet
+
+from SketcherTests.TestSketchReferenceRepair import TestSketchReferenceRepair

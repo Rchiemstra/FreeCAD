@@ -78,6 +78,20 @@ struct ObjRef
     App::PropertyXLinkSub* ref;
 };
 
+// Public solve return codes. RelationsViolated also covers constraints that
+// MbD silently drops as redundant. A solve is successful only after validation.
+enum class SolveResult: int
+{
+    Success = 0,
+    SolverFailure = -1,
+    RedundantConstraints = -2,
+    RelationsViolated = -3,
+    OverConstrained = -4,
+    MalformedConstraints = -5,
+    NoGroundedParts = -6,
+    ValidationFailed = -7,
+};
+
 class AssemblyExport AssemblyObject: public App::Part
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Assembly::AssemblyObject);
@@ -121,6 +135,7 @@ public:
         const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
     );
 
+    short mustExecute() const override;
     App::DocumentObjectExecReturn* execute() override;
 
     /** Assembly solving cannot be reproduced in the isolated worker.
@@ -142,13 +157,17 @@ public:
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
     being in an active transaction (joint creation).*/
-    int solve(bool enableRedo = false);
+    SolveResult solve(bool enableRedo = false);
     int generateSimulation(App::DocumentObject* sim);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
-    void preDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult preDrag(std::vector<App::DocumentObject*> dragParts);
     void doDragStep();
-    void postDrag();
+    SolveResult postDrag(bool abort = false);
+    /// Capture drag state before the GUI changes joint visibility.
+    void saveDragState();
+    /// Restore rejected drag flags after the GUI has aborted its transaction.
+    void finishDrag();
     void savePlacementsForUndo();
     void undoSolve();
     void clearUndo();
@@ -267,7 +286,14 @@ public:
     bool isEmpty() const;
     int numberOfComponents() const;
 
+    /// Whether an explicit solve has produced a status in this session.
+    inline bool hasSolveResult() const
+    {
+        return solveResultAvailable;
+    }
+    /// Notify listeners using the last explicit solve's cache; never solve or modify the document.
     void updateSolveStatus();
+    /// DoF from the last accepted solve; -1 (unknown) before solving or after rejection.
     inline int getLastDoF() const
     {
         return lastDoF;
@@ -290,7 +316,7 @@ public:
     }
     inline int getLastSolverStatus() const
     {
-        return lastSolverStatus;
+        return static_cast<int>(lastSolveResult);
     }
     inline const std::vector<std::string>& getLastConflicting() const
     {
@@ -311,12 +337,23 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    friend class AssemblyObjectTest;
+    class PlacementAttempt;
+    using PlacementCandidates = std::vector<std::pair<App::DocumentObject*, Base::Placement>>;
+    PlacementCandidates computePlacementCandidates();
+    bool validateNewPlacements(const PlacementCandidates& candidates);
+    void setNewPlacements(const PlacementCandidates& candidates);
+    SolveResult validateAndCommitPlacements(
+        PlacementAttempt& attempt, bool checkRelations,
+        const std::vector<App::DocumentObject*>* joints = nullptr
+    );
+    void cacheSolveStatus();
     void rebuildRigidClusters();
     App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
     const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
     void syncActiveRigidGroupPlacements();
     void updateRigidPlacementCache();
-    void prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
+    SolveResult prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
 
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
@@ -326,21 +363,33 @@ private:
     std::unordered_map<App::DocumentObject*, Base::Placement> rigidPlacementCache;
     std::vector<std::pair<App::DocumentObject*, double>> objMasses;
     std::vector<App::DocumentObject*> draggedParts;
+    std::vector<App::DocumentObject*> dragJoints;
     std::vector<App::DocumentObject*> motions;
 
     std::vector<std::pair<App::DocumentObject*, Base::Placement>> previousPositions;
 
     bool bundleFixed;
 
-    // True while solve() is running; breaks the solve()/updateSolveStatus() cycle.
+    // Block reentrant solves while preparing or applying solve/drag placements.
     bool solveInProgress {false};
+    bool placementAttemptInProgress {false};
+    // Requests from placement observers are left for a later recompute.
+    bool solvePending {false};
+    std::shared_ptr<PlacementAttempt> dragStepAttempt;
+    std::shared_ptr<PlacementAttempt> dragStartAttempt;
+    bool dragActive {false};
+    bool dragPrepared {false};
+    SolveResult dragResult {SolveResult::Success};
 
     int lastDoF;
     bool lastHasConflict;
     bool lastHasRedundancies;
     bool lastHasPartialRedundancies;
     bool lastHasMalformedConstraints;
-    int lastSolverStatus;
+    SolveResult lastSolveResult {SolveResult::Success};
+    bool solveResultAvailable {false};
+    // Diagnostic returned by execute(), rather than an unrelated document error.
+    std::string solveDiagnostic;
 
     std::vector<std::string> lastRedundantJoints;
     std::vector<std::string> lastConflictingJoints;

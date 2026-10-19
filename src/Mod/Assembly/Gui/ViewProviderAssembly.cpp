@@ -342,8 +342,11 @@ bool ViewProviderAssembly::setEdit(int mode)
 void ViewProviderAssembly::unsetEdit(int mode)
 {
     if (mode == ViewProvider::Default) {
+        // Reject tentative placements before edit reset can commit Move part.
+        if (partMoving) {
+            endMove(true);
+        }
         canStartDragging = false;
-        partMoving = false;
         docsToMove.clear();
 
         unsetDragger();
@@ -1066,10 +1069,19 @@ void ViewProviderAssembly::initMove(const SbVec2s& cursorPos, Gui::View3DInvento
 {
     try {
         tryInitMove(cursorPos, viewer);
+        return;
     }
     catch (const Base::Exception& e) {
         Base::Console().warning("{}\n", e.what());
     }
+    catch (const std::exception& e) {
+        Base::Console().warning("{}\n", e.what());
+    }
+    catch (...) {
+        Base::Console().warning("Assembly drag preparation failed\n");
+    }
+    // Preparation may throw after opening Move part and disabling selection.
+    endMove(true);
 }
 
 void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer)
@@ -1080,6 +1092,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
     }
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    assemblyPart->saveDragState();
     // When the user drag parts, we switch off all joints visibility and only show the movingjoint
     jointVisibilitiesBackup.clear();
     auto joints = assemblyPart->getJoints();
@@ -1164,21 +1177,54 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
         }
 
         assemblyPart->setObjMasses(objectMasses);
-        assemblyPart->preDrag(dragParts);
+        if (assemblyPart->preDrag(dragParts) != SolveResult::Success) {
+            endMove(true);
+        }
     }
     else {
         assemblyPart->redrawJointPlacements(assemblyPart->getJoints());
     }
 }
 
-void ViewProviderAssembly::endMove()
+void ViewProviderAssembly::endMove(bool abort)
 {
+    const bool wasMoving = partMoving;
     docsToMove.clear();
     partMoving = false;
     canStartDragging = false;
     forceSolveOnMoveForRigid = false;
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    bool accept = false;
+    const auto reportCleanupFailure = [](const char* message) noexcept {
+        try {
+            Base::Console().error("{}\n", message);
+        }
+        catch (...) {
+        }
+    };
+    Base::ScopeGuard cleanup([&] {
+        // Transaction notifications must not prevent the journal's final cleanup.
+        try {
+            if (moveInCommand && wasMoving) {
+                if (accept) {
+                    getDocument()->commitCommand();
+                }
+                else {
+                    getDocument()->abortCommand();
+                }
+            }
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag transaction cleanup failed");
+        }
+        try {
+            assemblyPart->finishDrag();
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag journal cleanup failed");
+        }
+    });
     auto joints = assemblyPart->getJoints();
     for (auto pair : jointVisibilitiesBackup) {
         bool visible = pair.first->Visibility.getValue();
@@ -1196,18 +1242,10 @@ void ViewProviderAssembly::endMove()
         view->getViewer()->setSelectionEnabled(true);
     }
 
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Mod/Assembly"
-    );
-    bool solveOnMove = hGrp->GetBool("SolveOnMove", true);
-    if (solveOnMove) {
-        assemblyPart->postDrag();
-        assemblyPart->setObjMasses({});
-    }
+    const auto dragResult = assemblyPart->postDrag(abort);
+    assemblyPart->setObjMasses({});
 
-    if (moveInCommand) {
-        getDocument()->commitCommand();
-    }
+    accept = !abort && dragResult == SolveResult::Success;
 }
 
 void ViewProviderAssembly::initMoveDragger()
@@ -1893,11 +1931,19 @@ void ViewProviderAssembly::UpdateSolverInformation()
     int dofs = assembly->getLastDoF();
     bool hasRedundancies = assembly->getLastHasRedundancies();
     bool hasMalformed = assembly->getLastHasMalformedConstraints();
+    const auto solveResult = static_cast<SolveResult>(assembly->getLastSolverStatus());
 
     if (assembly->isEmpty()) {
         signalSetUp(QStringLiteral("empty"), tr("Empty Assembly"), QString(), QString());
     }
-    else if (dofs < 0 || /*hasConflicts*/ hasRedundancies) {  // over-constrained
+    else if (!assembly->hasSolveResult()) {
+        signalSetUp(QStringLiteral("empty"), tr("Not solved yet"), QString(), QString());
+    }
+    // Unknown DoF after a rejected solve must not hide its actual failure.
+    else if ((solveResult == SolveResult::Success && dofs < 0)
+             || solveResult == SolveResult::RelationsViolated
+             || solveResult == SolveResult::OverConstrained
+             || solveResult == SolveResult::RedundantConstraints || hasRedundancies) {
         // Currently the solver does not distinguish between conflicts and redundancies.
         /*signalSetUp(QStringLiteral("conflicting_constraints"),
                     tr("Over-constrained:") + QLatin1String(" "),
@@ -1936,7 +1982,7 @@ void ViewProviderAssembly::UpdateSolverInformation()
             QStringLiteral("(%1)").arg(objListHelper(assembly,
     assembly->getLastPartiallyRedundant())));
     }*/
-    else if (assembly->getLastSolverStatus() != 0) {
+    else if (solveResult != SolveResult::Success) {
         signalSetUp(
             QStringLiteral("solver_failed"),
             tr("Solver failed to converge"),

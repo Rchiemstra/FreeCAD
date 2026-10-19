@@ -113,37 +113,17 @@ GuiExport void reportGroupedUndoRedoUnsupported(App::Document& document, bool un
 GuiExport bool submitDocumentSave(App::Document& document);
 
 /**
- * Admit save on the execution lane and poll the GUI event loop until the Save
- * command reaches a terminal state. Returns true only on Completed. Does not
- * schedule the passive completion timer used by submitDocumentSave().
- *
- * Close/test-only: pumps QApplication::processEvents while waiting. Use from
- * Document::canClose(), MainWindow::closeAllDocuments(), and automated tests —
- * never from File→Save or other interactive save menus (use submitDocumentSave()
- * for admit-only nonblocking save).
- */
-GuiExport bool submitDocumentSaveAwaitingCompletion(
-    App::Document& document,
-    std::string* failureDiagnostic = nullptr);
-
-/**
  * Write a recovery snapshot on the lane owner thread without blocking the GUI.
  *
- * Runs dispatchToOwner on a worker thread and delivers onFinished on the Qt GUI
- * thread (queued). Never pumps QApplication::processEvents on the GUI thread.
+ * Uses AutoSaver's bounded RecoveryWriteExecutor and existing owner lanes.
+ * Returns false if not admitted. Completion for admitted writes is observed
+ * on the GUI thread and dropped on close/shutdown.
+ * Never pumps QApplication::processEvents on the GUI thread.
  */
-GuiExport void scheduleRecoverySnapshotWrite(
+GuiExport bool scheduleRecoverySnapshotWrite(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options,
     std::function<void(bool written, std::exception_ptr failure)> onFinished);
-
-/**
- * Test-only: worker hop + GUI event-loop pump until the write finishes.
- * Production AutoSaver uses scheduleRecoverySnapshotWrite() instead.
- */
-GuiExport bool writeRecoverySnapshotAwaitingOwnerThread(
-    App::Document& document,
-    const App::RecoverySnapshotSaveOptions& options);
 
 /** Poll Save command status without waiting; update GUI modified state on terminal. */
 GuiExport void scheduleSaveCommandCompletion(

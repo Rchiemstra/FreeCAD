@@ -98,6 +98,20 @@ private:
     std::thread _thread;  // last: the flags must exist before the worker starts
 };
 
+// The pump defers while the GIL or a document lane is momentarily busy on
+// another thread of the test process; production retries on its next scheduled
+// pump, so the tests retry within a bounded window instead of pumping once.
+std::size_t pumpQueuedCallbacksWithinDeadline()
+{
+    std::size_t pumped = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while ((pumped += Gui::GuiPythonGate::pumpQueuedCallbacks()) == 0
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    return pumped;
+}
+
 }  // namespace
 
 TEST_F(GuiPythonGateTest, NonModelCallbackQueuesWhenGilIsHeldElsewhere)
@@ -113,7 +127,7 @@ TEST_F(GuiPythonGateTest, NonModelCallbackQueuesWhenGilIsHeldElsewhere)
 
     holder.release();
 
-    EXPECT_GE(Gui::GuiPythonGate::pumpQueuedCallbacks(), 1U);
+    EXPECT_GE(pumpQueuedCallbacksWithinDeadline(), 1U);
     EXPECT_TRUE(ran.load(std::memory_order_relaxed));
 }
 
@@ -147,5 +161,5 @@ TEST_F(GuiPythonGateTest, ObserverEventsEnqueueWithoutLiveModelReferences)
     event.eventKind = "ObjectCreated";
     event.payloadJson = "{\"name\":\"Box\"}";
     Gui::GuiPythonGate::enqueueObserverValueEvent(std::move(event));
-    EXPECT_GE(Gui::GuiPythonGate::pumpQueuedCallbacks(), 1U);
+    EXPECT_GE(pumpQueuedCallbacksWithinDeadline(), 1U);
 }
