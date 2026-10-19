@@ -87,6 +87,15 @@ class TestJointEditorSwitch(unittest.TestCase):
         Gui.updateGui()
 
     def openJoint(self, joint, tree, expected=None):
+        if not tree:
+            # TreeWidget synchronizes the connector selection on a deferred
+            # timer. Let it finish before making a fresh, single-item selection.
+            timeout = App.ParamGet("User parameter:BaseApp/Preferences/TreeView").GetInt(
+                "SelectionTimeout", 100
+            )
+            loop = QtCore.QEventLoop()
+            QtCore.QTimer.singleShot(max(1, timeout) + 20, loop.quit)
+            loop.exec_()
         # Both paths use real tree selection before the editor entry point.
         items = []
         for widget in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
@@ -125,7 +134,22 @@ class TestJointEditorSwitch(unittest.TestCase):
                 )
                 QtWidgets.QApplication.sendEvent(widget.viewport(), event)
         else:
+            Gui.updateGui()
+            # Selecting B can rebuild/expand tree rows through selection observers.
+            item = widget.findItems(
+                joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
+            )[0]
+            widget.scrollToItem(item)
+            rect = widget.visualItemRect(item)
+            point = QtCore.QPoint(rect.right() - 10, rect.center().y())
             self.mouse(widget.viewport(), point, QtCore.Qt.RightButton)
+            Gui.updateGui()
+            item = widget.findItems(
+                joint.Label, QtCore.Qt.MatchExactly | QtCore.Qt.MatchRecursive
+            )[0]
+            rect = widget.visualItemRect(item)
+            point = QtCore.QPoint(rect.right() - 10, rect.center().y())
+            self.assertEqual([item.text(0) for item in widget.selectedItems()], [joint.Label])
             triggered = []
             offered = []
             attempts = []
@@ -259,7 +283,14 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.openJoint(self.joints[1], tree, expected=self.joints[0])
         # Failed validation must leave A's entire transaction available to Cancel.
         pendingUndoCount = self.doc.UndoCount
-        self.finish(False)
+        if tree:
+            self.finish(False)
+        else:
+            # The context menu leaves the model tree raised. The viewport's
+            # existing Escape shortcut invokes the same Cancel/reject path.
+            self.key(self.viewport(), QtCore.Qt.Key_Escape)
+            Gui.updateGui()
+        self.assertFalse(Gui.Control.activeDialog())
         self.assertTypes("Fixed", "Fixed")
         for joint, properties in zip(self.joints, self.jointProperties):
             self.assertEqual(self.properties(joint), properties)
