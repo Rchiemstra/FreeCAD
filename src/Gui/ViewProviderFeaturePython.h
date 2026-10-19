@@ -72,6 +72,7 @@ public:
     ValueT setEditViewer(View3DInventorViewer*, int ModNum);
     ValueT unsetEditViewer(View3DInventorViewer*);
     ValueT doubleClicked();
+    bool getTransactionText(std::string& text) const;
     bool setupContextMenu(QMenu* menu);
 
     /** @name Update data methods*/
@@ -166,6 +167,7 @@ private:
     FC_PY_ELEMENT(setEditViewer) \
     FC_PY_ELEMENT(unsetEditViewer) \
     FC_PY_ELEMENT(doubleClicked) \
+    FC_PY_ELEMENT(getTransactionText) \
     FC_PY_ELEMENT(setupContextMenu) \
     FC_PY_ELEMENT(attach) \
     FC_PY_ELEMENT(updateData) \
@@ -731,6 +733,14 @@ public:
         }
     }
 
+    const char* getTransactionText() const override
+    {
+        if (imp->getTransactionText(transactionText)) {
+            return transactionText.empty() ? nullptr : transactionText.c_str();
+        }
+        return ViewProviderT::getTransactionText();
+    }
+
 protected:
     bool doubleClicked() override
     {
@@ -773,6 +783,7 @@ public:
 
 private:
     ViewProviderFeaturePythonImp* imp;
+    mutable std::string transactionText;
     App::PropertyPythonObject Proxy;
     mutable std::string defaultMode;
     std::string viewerMode;
