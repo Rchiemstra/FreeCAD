@@ -111,36 +111,47 @@ class PropertyDiagnostics(QtCore.QObject):
             return
         from freecad import expression_diagnostics
 
-        documents = App.listDocuments()
-        names = set(documents)
-        updated = bool(set(self.reports) - names)
-        self.reports = {name: rows for name, rows in self.reports.items() if name in names}
-        if self.dirty:
-            self.pending = names
-            self.dirty = False
-        else:
-            self.pending.intersection_update(names)
         admit = getattr(Gui, "tryRunPresentationCallback", None)
-        for name in sorted(self.pending):
-            document = documents[name]
+        updated = False
 
-            def observe():
-                nonlocal updated
-                self.reports[name] = expression_diagnostics.diagnose(document)
-                updated = True
+        def discover():
+            nonlocal updated
+            # Discovery itself reads the application/document registry. Keep it
+            # in the same reservation as report pruning and per-document reads.
+            documents = App.listDocuments()
+            names = set(documents)
+            updated = bool(set(self.reports) - names)
+            self.reports = {name: rows for name, rows in self.reports.items() if name in names}
+            if self.dirty:
+                self.pending = names
+                self.dirty = False
+            else:
+                self.pending.intersection_update(names)
+            for name in sorted(self.pending):
+                document = documents[name]
 
-            # This fork admits live reads through the presentation reservation;
-            # upstream is synchronous and has no such admission API.
-            try:
-                if admit is None:
-                    observe()
+                def observe():
+                    nonlocal updated
+                    self.reports[name] = expression_diagnostics.diagnose(document)
+                    updated = True
+
+                try:
+                    if admit is None or admit(observe, document):
+                        if admit is None:
+                            observe()
+                        self.pending.discard(name)
+                except ReferenceError:
+                    updated = self.reports.pop(name, None) is not None or updated
                     self.pending.discard(name)
-                elif admit(observe, document):
-                    self.pending.discard(name)
-            except ReferenceError:
-                # A close may have invalidated the wrapper after listDocuments.
-                updated = self.reports.pop(name, None) is not None or updated
-                self.pending.discard(name)
+            if not self.pending:
+                self.populate_rows()
+
+        # Upstream is synchronous and has no presentation reservation API.
+        if admit is None:
+            discover()
+        elif not admit(discover):
+            self.timer.start()
+            return
         if self.pending:
             self.timer.start()
         if not updated:
@@ -168,6 +179,15 @@ class PropertyDiagnostics(QtCore.QObject):
             self.published = reasons
             self.parent().setProperty("expressionDiagnosticsReasons", reasons)
             self.repaint()
+
+    def populate_rows(self):
+        # C++ snapshots all row identities and legacy presentation roles here,
+        # under the discovery reservation. QModelIndex/Qt strings are the only
+        # things used by subsequent paint and tooltip requests.
+        for view in self.parent().findChildren(QtWidgets.QTreeView, "propertyEditorData"):
+            model = view.model()
+            for row in range(model.rowCount()):
+                model.index(row, 0).data(QtCore.Qt.UserRole + 26496)
 
     def repaint(self):
         # These are presentation roles. dataChanged would reset live editors

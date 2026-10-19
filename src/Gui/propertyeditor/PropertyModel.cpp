@@ -29,6 +29,7 @@
 #include <App/DocumentObject.h>
 #include <Base/Tools.h>
 #include <Base/Type.h>
+#include <Gui/ExpressionDiagnosticsPresentation.h>
 
 #include "DocumentExecutionIngress.h"
 #include "PropertyItem.h"
@@ -525,6 +526,7 @@ void PropertyModel::updateProperty(const App::Property& prop)
     item->updateData();
     QModelIndex parent = this->index(item->parent()->row(), 0, QModelIndex());
     item->assignProperty(&prop);
+    Gui::ExpressionDiagnosticsPresentation::populate(*item);
     QModelIndex data = this->index(item->row(), column, parent);
     Q_EMIT dataChanged(data, data);
     updateChildren(item, column, data);

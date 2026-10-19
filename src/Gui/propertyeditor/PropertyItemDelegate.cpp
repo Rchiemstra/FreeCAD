@@ -149,8 +149,8 @@ void PropertyItemDelegate::paint(
             option.rect.right() - (checkboxOption.rect.right() + spacing),
             checkboxOption.rect.height()
         );
-        if (!Gui::expressionDiagnosticReason({}, property->getPropertyData()).isEmpty()) {
-            painter->setPen(Gui::expressionDiagnosticColor().value<QColor>());
+        if (!Gui::ExpressionDiagnosticsPresentation::reason(*property).isEmpty()) {
+            painter->setPen(index.data(Qt::ForegroundRole).value<QColor>());
         }
         else if (readonly) {
             painter->setPen(palette.color(QPalette::Disabled, QPalette::Text));
