@@ -474,7 +474,7 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.assertEqual(rejected_snapshot(self.sketch), before)
 
 
-    def assert_moved_pick(self, replacement_shape, vertex=False, wanted=None):
+    def assert_moved_pick(self, replacement_shape, vertex=False, wanted=None, expected=None):
         from SketchReferenceRepair import picked_candidate
 
         self.broken(vertex=vertex, wanted=wanted)
@@ -502,7 +502,8 @@ class TestSketchReferenceRepair(unittest.TestCase):
         self.assertEqual(after[:3], before[:3])
         self.assertEqual(after[3][0][:2], before[3][0][:2])
         self.assertNotEqual(after[4], before[4], "solver did not move the sketch")
-        expected = replacement_shape.Vertexes[0].Point
+        if expected is None:
+            expected = replacement_shape.Vertexes[0].Point
         self.assertLess((self.sketch.getPoint(0, 1) - expected).Length, 1e-7)
         self.assertAlmostEqual(self.sketch.Geometry[0].length(), 5.0)
         self.assertEqual(self.doc.UndoCount, undo_count + 1)
@@ -526,7 +527,9 @@ class TestSketchReferenceRepair(unittest.TestCase):
         new = Part.Arc(
             App.Vector(12, 0, 0), App.Vector(22, 10, 0), App.Vector(32, 0, 0)
         ).toShape()
-        self.assert_moved_pick(new, wanted=old)
+        # Sketcher canonicalizes clockwise arcs to the sketch's +Z normal;
+        # constraint point 1 is consequently the source arc's last endpoint.
+        self.assert_moved_pick(new, wanted=old, expected=App.Vector(32, 0, 0))
 
     def test_explicit_pick_kind_refusals_are_translated(self):
         import SketchReferenceRepair as module

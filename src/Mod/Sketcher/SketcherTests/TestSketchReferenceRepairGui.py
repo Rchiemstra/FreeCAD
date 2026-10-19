@@ -519,7 +519,17 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         from Test.GuiRecompute import close_document
 
         sketch, source, view, before = self.make_pick_fixture()
-        undo_count = self.doc.UndoCount
+        undo_count, redo_count = self.doc.UndoCount, self.doc.RedoCount
+        deleted_history = []
+
+        class HistoryObserver:
+            def slotDeletedDocument(observer, document):
+                if document is target_document:
+                    deleted_history.append((document.UndoCount, document.RedoCount))
+
+        target_document = self.doc
+        history_observer = HistoryObserver()
+        App.addDocumentObserver(history_observer)
         original_selection = [
             (item.ObjectName, tuple(item.SubElementNames))
             for item in Gui.Selection.getSelectionEx()
@@ -573,6 +583,10 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
                         self.doc = None
                     else:
                         session.close()
+                    lifecycle_selection = [
+                        (item.ObjectName, tuple(item.SubElementNames))
+                        for item in Gui.Selection.getSelectionEx()
+                    ]
                     closed = self.wait_until(lambda: session.closed, 2000)
                     release.set()
                     self.assertTrue(self.wait_until(lambda: not repair_gui._operations, 10000))
@@ -584,10 +598,15 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
             ))
             if phase == "validation":
                 self.assertFalse(prepares, "cancelled validation submitted a repair")
+            self.assertEqual([
+                (item.ObjectName, tuple(item.SubElementNames))
+                for item in Gui.Selection.getSelectionEx()
+            ], lifecycle_selection)
             if action == "document":
+                self.assertEqual(deleted_history, [(undo_count, redo_count)])
                 self.assertEqual(Gui.Selection.getSelection(), [])
             else:
-                self.assertEqual(self.doc.UndoCount, undo_count)
+                self.assertEqual((self.doc.UndoCount, self.doc.RedoCount), (undo_count, redo_count))
                 self.assertFalse(self.doc.HasPendingTransaction)
                 self.assertEqual(signature(sketch), before)
                 self.assertEqual(len(broken_references(sketch)), 1)
@@ -598,6 +617,7 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
                         for item in Gui.Selection.getSelectionEx()
                     ], original_selection)
         finally:
+            App.removeDocumentObserver(history_observer)
             release.set()
             if not session.closed:
                 session.close()
