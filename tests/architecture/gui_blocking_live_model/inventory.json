@@ -27,6 +27,7 @@
     "src/Mod/Start/Gui",
     "src/Mod/Surface/Gui",
     "src/Mod/TechDraw/Gui",
+    "src/Mod/AddonManager/InitGui.py",
     "src/Mod/Assembly/InitGui.py",
     "src/Mod/BIM/InitGui.py",
     "src/Mod/CAM/InitGui.py",
@@ -272,7 +273,19 @@
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Sketcher/SketchReferenceRepairGui.py",
     "src/Mod/Sketcher/SketchReferenceRepair.py",
-    "src/Mod/Start/StartMigrator.py"
+    "src/Mod/Start/StartMigrator.py",
+    "src/Mod/AddonManager/AddonManager.py",
+    "src/Mod/AddonManager/addonmanager_python_deps.py",
+    "src/Mod/AddonManager/addonmanager_python_deps_commands.py",
+    "src/Mod/AddonManager/NetworkManager.py",
+    "src/Mod/AddonManager/addonmanager_connection_checker.py",
+    "src/Mod/AddonManager/addonmanager_installer.py",
+    "src/Mod/AddonManager/addonmanager_installer_gui.py",
+    "src/Mod/AddonManager/addonmanager_package_details_controller.py",
+    "src/Mod/AddonManager/addonmanager_uninstaller_gui.py",
+    "src/Mod/AddonManager/addonmanager_update_all_gui.py",
+    "src/Mod/AddonManager/addonmanager_utilities.py",
+    "src/Mod/AddonManager/addonmanager_workers_utility.py"
   ],
   "categories": [
     "thread-waits",
@@ -3382,6 +3395,222 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 276,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "finished = thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 313,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(25)"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 316,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/NetworkManager.py",
+      "line": 439,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "while not completion.wait(0.1):"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_connection_checker.py",
+      "line": 97,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.connection_checker.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer.py",
+      "line": 364,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer.py",
+      "line": 387,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 113,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(100)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 115,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 296,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 303,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(50)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 304,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 331,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "remover.wait(50)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 332,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 406,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 457,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 692,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(100)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 694,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 1129,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.dependency_worker_thread.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_package_details_controller.py",
+      "line": 97,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_python_deps.py",
+      "line": 404,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "if not thread.wait(CANCELLATION_TIMEOUT_MS):"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_uninstaller_gui.py",
+      "line": 259,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_update_all_gui.py",
+      "line": 340,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 796,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "process.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 797,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "reader.join()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 818,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "process.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_workers_utility.py",
+      "line": 68,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "while not self.response_received.wait(0.1):"
     },
     {
       "path": "src/Mod/Assembly/CommandCreateAssembly.py",
