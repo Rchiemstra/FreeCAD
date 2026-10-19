@@ -147,3 +147,45 @@ class TestAllowanceProfileGui(unittest.TestCase):
         recompute_document(self.doc)
         self.assertEqual(dict(p.ExpressionEngine)["Allowance"], current_expression)
         self.assertAlmostEqual(p.Shape.Edges[0].Curve.Radius, 5.4)
+
+    def testPocketDialogFittingTolerance(self):
+        from PySide import QtCore, QtGui
+        from Test.GuiRecompute import _left_commit, _pump_gui_until
+
+        def wait_for_preview():
+            # The task's transaction deliberately stays open while editing.
+            _pump_gui_until(lambda: _left_commit(self.doc) and not self.doc.mustExecute(), 30)
+
+        base = self.body.newObject("PartDesign::AdditiveBox", "Base")
+        base.Length = base.Width = 20
+        base.Height = 4
+        base.Placement.Base = App.Vector(-10, -10, -4)
+        # Put the nominal sketch after the solid in the Body history.
+        self.body.Group = [base, self.sketch]
+        self.body.Tip = base
+        recompute_document(self.doc)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.sketch)
+        Gui.runCommand("PartDesign_Pocket")
+        wait_for_preview()
+        self.assertTrue(Gui.Control.activeDialog())
+        pocket = self.doc.getObject("Pocket")
+        self.assertIsNotNone(pocket)
+        field = Gui.getMainWindow().findChild(QtGui.QWidget, "fittingToleranceEdit")
+        self.assertIsNotNone(field)
+        self.assertIn("10.4", field.toolTip())
+        update_view = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
+        self.assertIsNotNone(update_view)
+        update_view.setChecked(True)
+        editor = field.findChild(QtGui.QLineEdit)
+        self.assertIsNotNone(editor)
+        editor.setFocus()
+        editor.setText("0.4 mm")
+        QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
+        wait_for_preview()
+        Gui.Control.activeTaskDialog().accept()
+        recompute_document(self.doc)
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertAlmostEqual(pocket.FittingTolerance.Value, 0.4)
+        self.assertAlmostEqual(pocket.AddSubShape.BoundBox.XLength, 10.4)
+        self.assertAlmostEqual(self.sketch.Shape.BoundBox.XLength, 10)

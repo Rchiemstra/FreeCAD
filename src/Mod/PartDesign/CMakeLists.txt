@@ -43,6 +43,7 @@ set(PartDesign_TestScripts
     PartDesignTests/TestDatum.py
     PartDesignTests/TestShapeBinder.py
     PartDesignTests/TestPad.py
+    PartDesignTests/TestFittingTolerance.py
     PartDesignTests/TestAllowanceProfile.py
     PartDesignTests/TestPocket.py
     PartDesignTests/TestHelix.py

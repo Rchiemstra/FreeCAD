@@ -69,3 +69,4 @@ from PartDesignTests.TestSuppressed import TestSuppressed
 from PartDesignTests.TestTopologicalNamingProblem import TestTopologicalNamingProblem
 
 from PartDesignTests.TestAllowanceProfile import TestAllowanceProfile
+from PartDesignTests.TestFittingTolerance import TestFittingTolerance
