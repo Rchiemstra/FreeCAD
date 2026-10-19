@@ -80,6 +80,7 @@
 #include <Quarter/Quarter.h>
 
 #include "Application.h"
+#include "AutoSaver.h"
 #include "DocumentPresentationCapture.h"
 #include "ApplicationPy.h"
 #include "AxisOriginPy.h"
@@ -877,6 +878,7 @@ Application::Application(bool GUIenabled)
 
 Application::~Application()
 {
+    AutoSaver::shutdownRecoveryWrites();
     Base::Console().log("Destruct Gui::Application\n");
 #ifdef USE_3DCONNEXION_NAVLIB
     if (pNavlibInterface) {
@@ -3283,6 +3285,7 @@ void Application::runApplication()
 
 void Application::shutdown()
 {
+    AutoSaver::shutdownRecoveryWrites();
     d->isClosing = true;
     App::GetApplication().closeAllDocuments();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

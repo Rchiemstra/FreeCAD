@@ -8,6 +8,7 @@ Gui_tests_run
 GuiShutdown_tests_run
 Assembly_tests_run
 AssemblyGui_tests_run
+AssemblyDragGui_tests_run
 CAM_tests_run
 Material_tests_run
 Measure_tests_run

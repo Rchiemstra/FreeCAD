@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "Application.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentCommand.h"
@@ -2419,6 +2420,13 @@ PyObject* DocumentPy::closeAsync(PyObject* args)
     {
         if (!getDocumentPtr()->executionLane()) {
             DocumentWouldBlock::throwIfGuiThread("FreeCAD.closeDocument()", "Document.closeAsync()");
+        }
+        if (DocumentWouldBlock::isGuiThread()) {
+            // Completed recovery IO can still retain its GUI lifecycle pin
+            // until the executor polls completion. Cancel before Close is
+            // admitted, just as synchronous Python close does. Running IO
+            // retains its own pin and keeps admission Busy until it retires.
+            GetApplication().signalBeforeCloseDocumentAdmission(*getDocumentPtr());
         }
         return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close);
     }

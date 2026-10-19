@@ -2,6 +2,12 @@
 
 #include "gtest/gtest.h"
 
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <mutex>
+#include <thread>
+
 #include <src/App/InitApplication.h>
 
 #include <App/Application.h>
@@ -10,6 +16,11 @@
 #include <App/Link.h>
 #include <Base/Placement.h>
 #include <Base/Vector3D.h>
+
+namespace App {
+// Available only in developer-test builds; keep the production API unchanged.
+AppExport std::recursive_mutex& xlinkRegistryMutexForTesting();
+}
 
 using namespace App;
 
@@ -342,3 +353,63 @@ TEST_F(LinkTest, linkPlacementAndPlacementStayInSync)
 }
 
 // NOLINTEND(readability-magic-numbers,cppcoreguidelines-avoid-magic-numbers)
+
+TEST_F(LinkTest, xlinkRegistryReaderWaitsForWriter)
+{
+    std::unique_lock<std::recursive_mutex> writer(App::xlinkRegistryMutexForTesting());
+    std::promise<void> started;
+    auto entered = started.get_future();
+    auto reader = std::async(std::launch::async, [&] {
+        started.set_value();
+        return PropertyXLink::hasXLink(_doc);
+    });
+    entered.wait();
+    EXPECT_EQ(reader.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    writer.unlock();
+    EXPECT_EQ(reader.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_FALSE(reader.get());
+}
+
+TEST_F(LinkTest, xlinkRegistryReaderDuringDocumentClose)
+{
+    auto& app = App::GetApplication();
+    _doc->FileName.setValue("/tmp/xlink-registry-reader.FCStd");
+    auto* anchor = _doc->addObject("App::DocumentObject", "Anchor");
+    std::atomic<bool> stop {false};
+    std::atomic<unsigned int> reads {0};
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            PropertyXLink::hasXLink(_doc);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    // Join even if document creation/linking throws.
+    const auto finish = [&] {
+        stop.store(true, std::memory_order_release);
+        reader.join();
+    };
+    try {
+        for (int i = 0; i < 2000; ++i) {
+            auto* first = app.newDocument("XLinkRegistryFirst");
+            auto* second = app.newDocument("XLinkRegistrySecond");
+            first->FileName.setValue("/tmp/xlink-registry-first.FCStd");
+            second->FileName.setValue("/tmp/xlink-registry-second.FCStd");
+            auto* target = second->addObject("App::DocumentObject", "Target");
+            auto* forward = addLink(first);
+            forward->LinkedObject.setValue(target);
+            auto* back = addLink(second);
+            back->LinkedObject.setValue(anchor);
+            EXPECT_TRUE(PropertyXLink::hasXLink(first));
+            EXPECT_TRUE(PropertyXLink::hasXLink(second));
+            EXPECT_FALSE(PropertyXLink::hasXLink(_doc));
+            app.closeDocument(i % 2 ? "XLinkRegistryFirst" : "XLinkRegistrySecond");
+            app.closeDocument(i % 2 ? "XLinkRegistrySecond" : "XLinkRegistryFirst");
+        }
+    }
+    catch (...) {
+        finish();
+        throw;
+    }
+    finish();
+    EXPECT_GT(reads.load(), 0u);
+}

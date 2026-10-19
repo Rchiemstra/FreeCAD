@@ -32,3 +32,28 @@ else()
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
     )
 endif()
+
+# Drag lifecycle uses complete Coin initialization in its own process.
+add_executable(AssemblyDragGui_tests_run ViewProviderAssembly.cpp)
+if (NOT FREECAD_USE_EXTERNAL_ONDSELSOLVER)
+    target_include_directories(AssemblyDragGui_tests_run PUBLIC
+        ${CMAKE_SOURCE_DIR}/src/3rdParty/OndselSolver
+    )
+endif ()
+target_link_libraries(AssemblyDragGui_tests_run
+    GTest::gtest
+    ${Python3_LIBRARIES}
+    Assembly
+    AssemblyGui
+    PartGui
+    FreeCADGui
+)
+if(WIN32)
+    set_target_properties(AssemblyDragGui_tests_run PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+else()
+    set_target_properties(AssemblyDragGui_tests_run PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+    )
+endif()
