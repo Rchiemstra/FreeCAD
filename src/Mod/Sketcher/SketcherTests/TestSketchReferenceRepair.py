@@ -37,6 +37,7 @@ def signature(sketch):
             c.Value,
             c.Driving,
             c.IsActive,
+            c.InVirtualSpace,
         )
         for c in sketch.Constraints
     )
@@ -425,3 +426,44 @@ class TestSketchReferenceRepair(unittest.TestCase):
             ).Length,
             1e-7,
         )
+
+    def test_explicit_pick_different_source_and_duplicate_geometry(self):
+        from SketchReferenceRepair import picked_candidate
+
+        wanted = self.broken()
+        replacement = self.doc.addObject("PartDesign::Feature", "Replacement")
+        replacement.Shape = Part.makeCompound([wanted, wanted.copy(noElementMap=True)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = signature(self.sketch)
+        undo_count = self.doc.UndoCount
+        selected = picked_candidate(self.sketch, reference, replacement, "Edge2")
+        repair(self.sketch, [(reference, selected)])
+        self.doc.recompute()
+        self.assertFalse(broken_references(self.sketch))
+        self.assertEqual(signature(self.sketch), before)
+        self.assertEqual(self.doc.UndoCount, undo_count + 1)
+        self.assertIn("Replacement.Edge2", external_geometry(self.sketch)[0].reference)
+        self.doc.undo()
+        self.doc.recompute()
+        self.assertEqual(len(broken_references(self.sketch)), 1)
+        self.assertEqual(signature(self.sketch), before)
+
+    def test_explicit_pick_rejects_incompatible_and_stale_geometry(self):
+        from SketchReferenceRepair import picked_candidate
+
+        wanted = self.broken()
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaises(RepairError):
+            picked_candidate(self.sketch, reference, self.source, "Vertex1")
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+        selected = picked_candidate(self.sketch, reference, self.source, "Edge1")
+        self.source.Shape = Part.makeCompound([edge(30)])
+        self.doc.recompute()
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaises(RepairError):
+            repair(self.sketch, [(reference, selected)])
+        self.assertEqual(rejected_snapshot(self.sketch), before)
