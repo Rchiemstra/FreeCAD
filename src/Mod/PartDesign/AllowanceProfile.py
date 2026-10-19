@@ -63,9 +63,13 @@ def _planar_face(wire):
 
 
 def _offset_wire(wire, distance):
-    # OCC can return a reversed top-level wire after an outward circle offset.
-    # Rebuilding from its oriented edges makes subsequent signed offsets stable.
-    wire = Part.Wire(wire.Edges)
+    # OCC can reverse both the wire and its closed edge after an offset.
+    # Normalize both before recovery, including when the inferred support
+    # plane points opposite to a circle's geometric axis.
+    edges = wire.Edges
+    if len(edges) == 1 and edges[0].Orientation == "Reversed":
+        edges[0].reverse()
+    wire = Part.Wire(edges)
     return _planar_face(wire).makeOffset2D(distance, join=2)
 
 
