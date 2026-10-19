@@ -132,7 +132,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Robot/Gui/ViewProviderRobotObject.cpp` | `ViewProviderRobotObject` | 170 | unsupported |
 | `src/Mod/Robot/Gui/ViewProviderTrajectory.cpp` | `ViewProviderTrajectory` | 126 | unsupported |
 | `src/Mod/Sketcher/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 59 | unsupported |
-| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3914 | unsupported |
+| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3915 | unsupported |
 | `src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp` | `ViewProviderSheet` | 189 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 52 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp` | `ViewProviderBalloon` | 114 | unsupported |

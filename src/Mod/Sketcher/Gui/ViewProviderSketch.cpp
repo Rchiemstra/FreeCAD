@@ -96,6 +96,7 @@
 #include "TaskSketcherValidation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
+#include "SketchEditState.h"
 #include "ViewProviderSketchGeometryExtension.h"
 #include "Workbench.h"
 
@@ -4334,6 +4335,8 @@ bool ViewProviderSketch::setEdit(int ModNum)
 
     // visibility automation
     try {
+        // Temporary view changes must not advance authoritative Appearance tokens.
+        App::Document::FileChangeTrackingScope visibilityChanges(*getObject()->getDocument());
         Gui::Command::addModule(Gui::Command::Gui, "Show");
         try {
             QString cmdstr =
@@ -4415,6 +4418,9 @@ bool ViewProviderSketch::setEdit(int ModNum)
     // property to be updated with the solver information, including solver extensions, and triggers
     // a draw(true) via ViewProvider::UpdateData.
     try {
+        // Initial solver geometry/extensions are edit caches, not a user edit.
+        // Unlike upstream, this fork tracks file changes at property mutation.
+        App::Document::FileChangeTrackingScope cacheChanges(*sketch->getDocument());
         getSketchObject()->solve(true);
 
         // Enable solver initial solution update while dragging.
@@ -4616,7 +4622,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
     auto gridnode = getGridNode();
     pcRoot->removeChild(gridnode);
 
-    if (isInEditMode()) {
+    const bool wasInEditMode = isInEditMode();
+    if (wasInEditMode) {
         if (sketchHandler) {
             deactivateHandler();
         }
@@ -4631,16 +4638,6 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             // Restore the object as it was when edit is set.
             getObject()->restoreFromStream(sketchBackup);
             getSketchObject()->purgeTouched();
-        }
-        else {
-            App::AutoTransaction trans(getDocument()->getDocument(), "Sketch recompute");
-            try {
-                // and update the sketch
-                // getSketchObject()->getDocument()->recompute();
-                Gui::Command::updateActive();
-            }
-            catch (...) {
-            }
         }
     }
 
@@ -4657,6 +4654,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
 
     // visibility automation
     try {
+        // Temporary view changes must not advance authoritative Appearance tokens.
+        App::Document::FileChangeTrackingScope visibilityChanges(*getObject()->getDocument());
         QString cmdstr =
             QStringLiteral("ActiveSketch = App.getDocument('%1').getObject('%2')\n"
                                 "tv = ActiveSketch.ViewObject.TempoVis\n"
@@ -4675,6 +4674,22 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             "ViewProviderSketch",
             "unsetEdit: visibility automation failed with an error: {} \n",
             e.what());
+    }
+
+    // TempoVis also mirrors temporary visibility into the fork's App object.
+    // Compare only after restoring it, so the snapshot contains persistent state.
+    if (wasInEditMode && !editingCancelled) {
+        if (sketchEditStateUnchanged(*getSketchObject(), sketchBackup)) {
+            getSketchObject()->purgeTouched();
+        }
+        else {
+            App::AutoTransaction trans(getDocument()->getDocument(), "Sketch recompute");
+            try {
+                Gui::Command::updateActive();
+            }
+            catch (...) {
+            }
+        }
     }
 }
 
