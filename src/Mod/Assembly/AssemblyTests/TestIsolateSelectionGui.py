@@ -81,18 +81,47 @@ class TestIsolateSelectionGui(unittest.TestCase):
     def assertOriginal(self, obj):
         self.assertEqual(self.isolated_nodes(obj), [], obj.Name)
 
-    def picked(self, obj):
+    def picked_root(self, root):
+        # A camera provides the ray aperture needed for picking sketch edges.
+        scene = self.coin.SoSeparator()
+        camera = self.coin.SoOrthographicCamera()
+        camera.position = (5, 5, 100)
+        camera.height = 20
+        camera.nearDistance = 1
+        camera.farDistance = 200
+        scene.addChild(camera)
+        scene.addChild(root)
         action = self.coin.SoRayPickAction(self.coin.SbViewportRegion(100, 100))
-        action.setRay(self.coin.SbVec3f(5, 5, 100), self.coin.SbVec3f(0, 0, -1))
-        overrides = self.isolated_nodes(obj)
-        action.apply(overrides[0] if overrides else obj.ViewObject.RootNode)
+        action.setPoint(self.coin.SbVec2s(50, 50))
+        action.apply(scene)
         return action.getPickedPoint() is not None
 
+    def picked(self, obj):
+        overrides = self.isolated_nodes(obj)
+        return self.picked_root(overrides[0] if overrides else obj.ViewObject.RootNode)
+
     def picked_scene(self):
-        action = self.coin.SoRayPickAction(self.coin.SbViewportRegion(100, 100))
-        action.setRay(self.coin.SbVec3f(5, 5, 100), self.coin.SbVec3f(0, 0, -1))
-        action.apply(self.assembly.ViewObject.RootNode)
-        return action.getPickedPoint() is not None
+        return self.picked_root(self.assembly.ViewObject.RootNode)
+
+    def triangles(self, obj):
+        # Traverse the viewer scene, so a detached root cannot masquerade as restored.
+        count = [0]
+        def triangle(data, action, *vertices):
+            if action.getCurPath().containsNode(obj.ViewObject.RootNode):
+                count[0] += 1
+        action = self.coin.SoCallbackAction()
+        action.addTriangleCallback(self.coin.SoShape.getClassTypeId(), triangle, None)
+        action.apply(self.Gui.activeDocument().activeView().getSceneGraph())
+        return count[0]
+
+    def assertRestoredScene(self, objects, before):
+        self.Gui.updateGui()
+        for obj in objects:
+            self.assertEqual((self.triangles(obj), self.picked(obj)), before[obj.Name], obj.Name)
+
+    def sceneState(self, objects):
+        self.Gui.updateGui()
+        return {obj.Name: (self.triangles(obj), self.picked(obj)) for obj in objects}
 
     def state(self):
         return {
@@ -115,7 +144,9 @@ class TestIsolateSelectionGui(unittest.TestCase):
         self.assertOriginal(self.box)
         self.assertOriginal(self.sibling)
         self.assertFalse(self.sibling.Visibility)
-        self.assertHidden(self.other)
+        self.assertGreater(self.triangles(self.sibling), 0)
+        self.command.clear_isolation()
+        self.assertEqual(self.triangles(self.sibling), 0)
 
     def test_subassembly_at_depth(self):
         sub = self.inner.newObject("Assembly::AssemblyObject", "Subassembly")
@@ -166,8 +197,17 @@ class TestIsolateSelectionGui(unittest.TestCase):
         self.assertHidden(self.box)
         self.assertOriginal(self.other)
 
-    def test_selected_hidden_component_stays_hidden(self):
+    def test_selected_hidden_component_is_revealed(self):
         self.isolate(self.sibling)
+        self.assertGreater(self.triangles(self.sibling), 0)
+        self.assertTrue(self.picked(self.sibling))
+        self.sibling.ViewObject.DisplayMode = "Shaded"
+        self.Gui.updateGui()
+        self.assertGreater(self.triangles(self.sibling), 0)
+        self.sibling.Length = 12
+        self.doc.recompute()
+        self.Gui.updateGui()
+        self.assertGreater(self.triangles(self.sibling), 0)
         self.assertFalse(self.sibling.Visibility)
         self.assertOriginal(self.sibling)
         self.assertHidden(self.box)
@@ -275,16 +315,28 @@ class TestIsolateSelectionGui(unittest.TestCase):
     def test_sketch_and_datum_selection(self):
         sketch = self.inner.newObject("Sketcher::SketchObject", "Sketch")
         datum = self.inner.newObject("PartDesign::Plane", "Datum")
+        sketch.addGeometry(Part.LineSegment(App.Vector(0, 0, 0), App.Vector(10, 10, 0)))
+        sketch.Visibility = False
+        datum.Visibility = False
         self.doc.recompute()
+        self.Gui.updateGui()
         self.command.isolate_selection(
             self.assembly, self.selection(sketch) + self.selection(datum)
         )
+        self.Gui.updateGui()
         self.assertOriginal(sketch)
         self.assertOriginal(datum)
+        self.assertTrue(self.picked(sketch))
+        self.assertTrue(self.picked(datum))
+        self.assertFalse(sketch.Visibility)
+        self.assertFalse(datum.Visibility)
         self.assertHidden(self.box)
         self.isolate()
         self.assertHidden(sketch)
         self.assertHidden(datum)
+        self.command.clear_isolation()
+        self.assertFalse(self.picked(sketch))
+        self.assertFalse(self.picked(datum))
 
     def test_existing_unpickability_is_preserved(self):
         self.box.ViewObject.Selectable = False
@@ -330,7 +382,10 @@ class TestIsolateSelectionGui(unittest.TestCase):
 
     def test_empty_selection_exits(self):
         self.isolate()
-        self.command.isolate_selection(self.assembly, [])
+        self.Gui.Selection.clearSelection()
+        self.assertTrue(self.command.CommandIsolateSelection().IsActive())
+        self.Gui.runCommand("Assembly_IsolateSelection")
+        self.Gui.updateGui()
         self.assertOriginal(self.other)
         self.assertFalse(self.command.is_isolated(self.assembly))
 
@@ -438,6 +493,164 @@ class TestIsolateSelectionGui(unittest.TestCase):
         self.doc.removeObject(self.assembly.Name)
         self.assertFalse(self.command.is_isolated())
 
+    def test_ungroup_and_move_background_restore_scene(self):
+        child = self.inner.newObject("Part::Box", "BackgroundChild")
+        self.doc.recompute()
+        objects = (self.box, child, self.other, self.sibling, self.outside)
+        before = self.sceneState(objects)
+        for transparent in (False, True):
+            self.pref.SetBool("IsolateSelectionTransparent", transparent)
+            for destination in (None, self.outer):
+                with self.subTest(transparent=transparent, destination=destination):
+                    self.inner.addObject(child)
+                    self.isolate()
+                    self.inner.removeObject(child)
+                    if destination is not None:
+                        destination.addObject(child)
+                    self.Gui.updateGui()
+                    self.command.clear_isolation()
+                    self.assertRestoredScene(objects, before)
+
+    def test_deactivation_and_reset_edit_exit(self):
+        objects = (self.box, self.other)
+        before = self.sceneState(objects)
+        for double_click in (True, False):
+            self.isolate()
+            if double_click:
+                self.assembly.ViewObject.doubleClicked()
+            else:
+                self.Gui.activeDocument().resetEdit()
+            self.Gui.updateGui()
+            self.assertFalse(self.command.is_isolated())
+            self.assertRestoredScene(objects, before)
+            self.Gui.activeDocument().setEdit(self.assembly)
+
+    def test_hidden_ancestors_save_originals(self):
+        self.outer.Visibility = False
+        self.inner.Visibility = False
+        self.box.Visibility = False
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "hidden.FCStd")
+            self.doc.saveAs(path)
+            self.doc.clearUndos()
+            before = self.state()
+            for transparent in (False, True):
+                self.pref.SetBool("IsolateSelectionTransparent", transparent)
+                self.isolate(self.outer)
+                self.assertGreater(self.triangles(self.box), 0)
+                self.assertGreater(self.triangles(self.sibling), 0)
+                self.assertTrue(self.picked_scene())
+                self.assertEqual(self.state(), before)
+                self.assertEqual(self.doc.UndoCount, 0)
+                self.assertFalse(self.Gui.activeDocument().Modified)
+                self.doc.save()
+                self.command.clear_isolation()
+                self.assertEqual(self.triangles(self.box), 0)
+            App.closeDocument(self.doc.Name)
+            self.doc = App.openDocument(path)
+            self.assertEqual(self.state(), before)
+
+    def test_lifecycle_undo_redo_rebuild_recompute_delete(self):
+        child = self.inner.newObject("Part::Box", "LifecycleChild")
+        self.other.ViewObject.Selectable = True
+        self.doc.recompute()
+        objects = (self.box, child, self.other)
+        before = self.sceneState(objects)
+        self.doc.UndoMode = 1
+        for transparent in (False, True):
+            self.pref.SetBool("IsolateSelectionTransparent", transparent)
+            self.isolate()
+            self.doc.openTransaction("Ungroup background")
+            self.inner.removeObject(child)
+            self.doc.commitTransaction()
+            self.Gui.updateGui()
+            self.doc.undo()
+            self.Gui.updateGui()
+            self.doc.redo()
+            self.Gui.updateGui()
+            self.box.Length = self.box.Length.Value + 1
+            self.other.Length = self.other.Length.Value + 1
+            child.Length = child.Length.Value + 1
+            self.doc.recompute()
+            display = "Shaded" if not transparent else "Flat Lines"
+            self.box.ViewObject.DisplayMode = display
+            self.other.ViewObject.DisplayMode = display
+            self.Gui.updateGui()
+            self.assertTrue(self.picked(self.box))
+            self.assertFalse(self.picked(self.other))
+            if self.doc.getObject("Sibling"):
+                self.doc.removeObject("Sibling")
+            self.Gui.updateGui()
+            self.command.clear_isolation()
+            self.assertRestoredScene(objects, before)
+            self.inner.addObject(child)
+
+    def test_nested_link_joint_edit_reference_modes_restore(self):
+        import JointObject
+
+        source = self.doc.addObject("Part::Box", "JointSource")
+        nested = self.doc.addObject("App::Link", "NestedLink")
+        nested.setLink(source)
+        link = self.inner.newObject("App::Link", "JointOccurrence")
+        link.setLink(nested)
+        for obj in (nested, link):
+            obj.ViewObject.OverrideMaterial = True
+            material = obj.ViewObject.ShapeAppearance[0]
+            material.DiffuseColor = (0.2, 0.4, 0.6)
+            material.Transparency = 0.31
+            obj.ViewObject.ShapeAppearance = [material]
+        self.other.ViewObject.Selectable = True
+        joint = self.joints.newObject("App::FeaturePython", "Joint")
+        JointObject.Joint(joint, 0)
+        joint.Reference1 = (link, ["", ""])
+        joint.Reference2 = (self.box, ["Face1", "Vertex1"])
+        self.doc.recompute()
+        objects = (link, nested, source, self.box, self.other)
+        def material_state():
+            rendered = {obj.Name: [] for obj in (link, nested)}
+
+            def triangle(data, action, *vertices):
+                colors = action.getMaterial()
+                material = tuple(tuple(color.getValue()) for color in colors[:4]) + tuple(colors[4:])
+                for obj in (link, nested):
+                    if action.getCurPath().containsNode(obj.ViewObject.RootNode):
+                        rendered[obj.Name].append(material)
+
+            action = self.coin.SoCallbackAction()
+            action.addTriangleCallback(self.coin.SoShape.getClassTypeId(), triangle, None)
+            action.apply(self.Gui.activeDocument().activeView().getSceneGraph())
+            return {
+                obj.Name: (obj.ViewObject.OverrideMaterial, tuple(obj.ViewObject.ShapeAppearance),
+                           sorted(rendered[obj.Name]))
+                for obj in (link, nested)
+            }
+
+        for user in (False, True):
+            link.Visibility = not user
+            before = self.sceneState(objects)
+            state = self.state()
+            materials = material_state()
+            for mode in (2, 0, 1):
+                if user:
+                    self.isolate(link)
+                panel = JointObject.TaskAssemblyCreateJoint(0, joint)
+                self.Gui.Control.showDialog(panel)
+                panel.jForm.isolateType.setCurrentIndex(mode)
+                panel.updateIsolation()
+                self.Gui.updateGui()
+                self.assertTrue(self.picked(link))
+                self.assertGreater(self.triangles(link), 0)
+                self.assertFalse(self.picked(self.other))
+                panel.reject()
+                self.Gui.updateGui()
+                if user:
+                    self.assertTrue(self.command.is_isolated())
+                    self.assertFalse(self.picked(self.other))
+                    self.command.clear_isolation()
+                self.assertEqual(self.state(), state)
+                self.assertEqual(material_state(), materials)
+                self.assertRestoredScene(objects, before)
+
     def test_transparent_preference_page_roundtrip(self):
         import AssemblyPreferences
 
@@ -486,6 +699,8 @@ class TestIsolateSelectionGui(unittest.TestCase):
         self.assertTrue(isolate.IsActive())
         isolate.Activated()
         self.assertTrue(exit_isolation.IsActive())
+        with patch("UtilsAssembly.activeAssembly", return_value=None):
+            self.assertTrue(exit_isolation.IsActive())
         self.Gui.Selection.clearSelection()
         exit_isolation.Activated()
         self.assertOriginal(self.other)
