@@ -303,7 +303,7 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
     def test_readonly_placement_leaf_identity(self):
         Gui.Selection.clearSelection()
         self.wait_for(lambda: not self.index("Broken").isValid())
-        self.obj.addProperty("App::PropertyPlacement", "Placement")
+        self.obj.addProperty("App::PropertyPlacement", "Placement", "Test", "", 1)
         self.obj.setEditorMode("Placement", 1)
         self.obj.setExpression("Placement.Base.x", "Absent.Value")
         Gui.Selection.clearSelection()
