@@ -11,6 +11,8 @@ import FreeCAD as App
 
 from freecad.expression_diagnostics import diagnose, _path_related
 
+translate = App.Qt.translate
+
 _FAILURES = {"unresolved_reference", "external_document", "unit_error",
              "evaluation_error", "dependency_cycle"}
 
@@ -100,7 +102,16 @@ def constraint_errors(sketch):
             continue
         reason = f'{path} = {row["expression"]}\n{root["message"]}'
         if row["role"] == "affected":
-            reason += "\n" + row["message"]
+            kinds = {
+                "unresolved_reference": translate("SketcherExpressionDiagnostics", "Unresolved reference"),
+                "external_document": translate("SketcherExpressionDiagnostics", "Unavailable external document"),
+                "unit_error": translate("SketcherExpressionDiagnostics", "Unit error"),
+                "evaluation_error": translate("SketcherExpressionDiagnostics", "Evaluation error"),
+                "dependency_cycle": translate("SketcherExpressionDiagnostics", "Dependency cycle"),
+            }
+            reason += "\n" + translate(
+                "SketcherExpressionDiagnostics", "Depends on {object}.{property} ({kind})."
+            ).format(object=root["object"], property=root["property"], kind=kinds[root["kind"]])
         reasons = errors.setdefault(index, [])
         if reason not in reasons:
             reasons.append(reason)
