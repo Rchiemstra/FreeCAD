@@ -70,7 +70,8 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
     def tearDown(self):
         self.params.SetUnsigned("ExpressionErrorColor", self.old_color)
         Gui.Selection.clearSelection()
-        close_document(self.doc)
+        if self.doc is not None:
+            close_document(self.doc)
 
     def wait_for(self, predicate):
         import time
@@ -276,3 +277,123 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
         finally:
             QtCore.QCoreApplication.sendEvent(editor, QtGui.QKeyEvent(
                 QtCore.QEvent.KeyPress, QtCore.Qt.Key_Escape, QtCore.Qt.NoModifier))
+
+
+    def test_document_discovery_requires_presentation_admission(self):
+        from unittest.mock import patch
+        from freecad.expression_diagnostics_property_editor import _cache
+
+        self.assert_broken("Broken", "Absent")
+        _cache.timer.stop()
+        _cache.dirty = True
+        with patch.object(Gui, "tryRunPresentationCallback", return_value=False), \
+                patch.object(App, "listDocuments", wraps=App.listDocuments) as documents:
+            _cache.refresh()
+            self.assertEqual(documents.call_count, 0,
+                             "Document discovery ran without a presentation reservation")
+        self.assertTrue(_cache.timer.isActive())
+        _cache.refresh()
+        self.assert_broken("Broken", "Absent")
+
+    def placement_leaf(self):
+        placement = self.index("Placement")
+        position = self.index("Position", placement.sibling(placement.row(), 0))
+        return self.index("x", position.sibling(position.row(), 0))
+
+    def test_readonly_placement_leaf_identity(self):
+        self.obj.addProperty("App::PropertyPlacement", "Placement")
+        self.obj.setExpression("Placement.Base.x", "Absent.Value")
+        self.obj.setEditorMode("Placement", 1)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.obj)
+        self.assert_broken("Placement", "Placement.Base.x")
+        self.wait_for(lambda: self.placement_leaf().data(QtCore.Qt.ForegroundRole)
+                      == QtGui.QColor(0xD3, 0x54, 0))
+        self.assertIn("Absent", self.placement_leaf().data(QtCore.Qt.ToolTipRole))
+        self.assertFalse(self.placement_leaf().flags() & QtCore.Qt.ItemIsEditable)
+
+    def test_merged_placement_leaf_all_owners(self):
+        other = self.doc.addObject("App::FeaturePython", "OtherPlacement")
+        for obj in (other, self.obj):
+            obj.addProperty("App::PropertyPlacement", "Placement")
+        self.obj.setExpression("Placement.Base.x", "Absent.Value")
+        other.setExpression("Placement.Base.x", "AnotherMissing.Value")
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(other)
+        Gui.Selection.addSelection(self.obj)
+        self.assert_broken("Placement", "Absent")
+        self.wait_for(lambda: self.placement_leaf().data(QtCore.Qt.ForegroundRole)
+                      == QtGui.QColor(0xD3, 0x54, 0))
+        tooltip = self.placement_leaf().data(QtCore.Qt.ToolTipRole)
+        self.assertIn("Absent", tooltip)
+        self.assertIn("AnotherMissing", tooltip)
+        y = self.placement_leaf().sibling(1, 1)
+        self.assertNotIn("Expression error", y.data(QtCore.Qt.ToolTipRole) or "")
+
+    def test_list_and_link_diagnostics(self):
+        self.obj.addProperty("App::PropertyFloatList", "Samples")
+        self.obj.Samples = [1, 2]
+        self.obj.setExpression("Samples[1]", "Absent.Value")
+        self.obj.addProperty("App::PropertyLink", "Target")
+        self.obj.setExpression("Target", "Absent.Value")
+        self.assert_broken("Samples", "Samples[1]")
+        self.assert_broken("Target", "Absent")
+
+    def test_xlink_tooltip_preserves_path_and_appends_reason(self):
+        external = App.newDocument("DiagnosticsExternal")
+        try:
+            target = external.addObject("App::FeaturePython", "Target")
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "external.FCStd")
+                save_document_as(external, path)
+                self.obj.addProperty("App::PropertyXLink", "External")
+                self.obj.External = target
+                self.obj.setExpression("External", "Absent.Value")
+                Gui.Selection.clearSelection()
+                Gui.Selection.addSelection(self.obj)
+                self.assert_broken("External", "Absent")
+                self.assertIn("external.FCStd", self.index("External").data(QtCore.Qt.ToolTipRole))
+        finally:
+            close_document(external)
+
+    def test_failed_recompute_skips_execute_and_refreshes(self):
+        class ExecutionProbe:
+            def __init__(self):
+                self.calls = 0
+
+            def execute(self, obj):
+                self.calls += 1
+
+        probe = ExecutionProbe()
+        self.obj.Proxy = probe
+        recompute_document(self.doc)
+        self.assertEqual(probe.calls, 0)
+        self.assert_broken("Broken", "Absent")
+        self.obj.setExpression("Broken", "3")
+        recompute_document(self.doc)
+        self.assertGreater(probe.calls, 0)
+        self.assert_good("Broken")
+
+    def test_undo_redo_and_close_clear_diagnostics(self):
+        from freecad.expression_diagnostics_property_editor import _cache
+        from Test.GuiRecompute import wait_for_mutation_ready
+
+        self.assert_broken("Broken", "Absent")
+        wait_for_mutation_ready(self.doc)
+        self.doc.openTransaction("Repair expression")
+        self.obj.setExpression("Broken", "3")
+        self.doc.commitTransaction()
+        self.assert_good("Broken")
+        self.doc.undo()
+        self.assert_broken("Broken", "Absent")
+        self.doc.redo()
+        self.assert_good("Broken")
+        self.doc.undo()
+        self.assert_broken("Broken", "Absent")
+        name = self.doc.Name
+        key = self.obj.FullName + ".Broken"
+        Gui.Selection.clearSelection()
+        close_document(self.doc)
+        self.doc = None
+        self.wait_for(lambda: name not in _cache.reports and key not in (_cache.published or {}))
+        self.assertFalse(self.index("Broken").isValid())

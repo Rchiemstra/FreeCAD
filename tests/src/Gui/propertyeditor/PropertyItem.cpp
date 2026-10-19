@@ -5,6 +5,8 @@
 #include <QtTest/QTest>
 
 #include <App/Application.h>
+#include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <Base/Quantity.h>
 
 #include "Gui/QuantitySpinBox.h"
@@ -49,6 +51,18 @@ public:
     TestPropertyUnitItem()
         : PropertyUnitItem()
     {}
+};
+
+// Count real ObjectIdentifier resolution, including healthy-expression painting.
+class DiagnosticReadProbe: public App::DocumentObject
+{
+public:
+    App::Property* getPropertyByName(const char* name) const override
+    {
+        ++reads;
+        return App::DocumentObject::getPropertyByName(name);
+    }
+    mutable int reads = 0;
 };
 
 class testPropertyItem: public QObject
@@ -110,6 +124,30 @@ private Q_SLOTS:
     {
         item->setPropertyName(QLatin1String("Box_Length"));
         QCOMPARE(item->propertyName(), QLatin1String("Box_Length"));
+    }
+
+    void test_diagnosticRolesDoNotResolveDocumentPaths()  // NOLINT
+    {
+        App::DocumentInitFlags flags;
+        flags.createView = false;
+        auto& app = App::GetApplication();
+        auto* doc = app.newDocument("DiagnosticPaintReads", "testUser", flags);
+        auto* object = new DiagnosticReadProbe;
+        doc->addObject(object, "Values");
+        auto* prop = object->addDynamicProperty("App::PropertyFloat", "Value");
+        {
+            Gui::PropertyEditor::PropertyFloatItem row;
+            row.setPropertyName(QStringLiteral("Value"));
+            row.setPropertyData({prop});
+            object->reads = 0;
+            for (int i = 0; i < 100; ++i) {
+                row.data(1, Qt::ForegroundRole);
+                row.data(1, Qt::ToolTipRole);
+                row.data(0, Qt::ToolTipRole);
+            }
+            QCOMPARE(object->reads, 0);
+        }
+        app.closeDocument(doc->getName());
     }
 
     void test_quantityEditorUsesItsWidgetLocale()  // NOLINT
