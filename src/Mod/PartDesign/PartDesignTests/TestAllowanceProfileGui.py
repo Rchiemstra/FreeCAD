@@ -211,23 +211,16 @@ class TestAllowanceProfileGui(unittest.TestCase):
             import threading
 
             entered, release = threading.Event(), threading.Event()
-            errors = []
 
-            def hold_lane():
-                entered.set()
-                if not release.wait(10):
-                    raise RuntimeError("test did not release execution lane")
+            class BlockingProxy:
+                def execute(self, obj):
+                    entered.set()
+                    if not release.wait(10):
+                        raise RuntimeError("test did not release execution lane")
 
-            def worker():
-                try:
-                    self.doc.commitCompatibilityMutation(
-                        hold_lane, structural=False, recompute=False
-                    )
-                except BaseException as exc:
-                    errors.append(exc)
-
-            thread = threading.Thread(target=worker)
-            thread.start()
+            blocker = self.doc.addObject("App::FeaturePython", "LaneBlocker")
+            blocker.Proxy = BlockingProxy()
+            handle = _retry_while_lane_busy(lambda: self.doc.recomputeAsync([blocker]), 30)
             try:
                 _pump_gui_until(entered.is_set, 5)
                 update_view.setChecked(True)
@@ -237,9 +230,8 @@ class TestAllowanceProfileGui(unittest.TestCase):
                     self.assertTrue(Gui.Control.activeDialog())
             finally:
                 release.set()
-                _pump_gui_until(lambda: not thread.is_alive(), 10)
-                thread.join()
-            self.assertEqual(errors, [])
+                _pump_gui_until(lambda: handle.done() and _left_commit(self.doc), 30,
+                                handle.status)
         if not accept_immediately:
             wait_for_preview(pocket)
             settle_recompute()
