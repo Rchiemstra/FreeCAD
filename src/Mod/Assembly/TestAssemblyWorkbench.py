@@ -24,6 +24,7 @@
 import TestApp
 
 from AssemblyTests.TestCore import TestCore
+from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
 from AssemblyTests.TestCommandCreateView import TestCommandCreateView
 from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
@@ -39,6 +40,7 @@ from AssemblyTests.TestReviewNotesIssues import (
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
+True if TestJointEditorSwitch else False
 True if TestCommandInsertLink else False
 True if TestCommandCreateView else False
 True if TestCrossBodyDatumStaleness else False
