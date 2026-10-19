@@ -325,7 +325,7 @@ class ComponentPattern:
             ("String", "Type", "Assembly object type"),
             ("String", "StatusMessage", "Component pattern status"),
             ("XLinkList", "PlacementDrivers", "Native sub-transform calculators"),
-            ("Link", "Component", "Source component (instance zero)"),
+            ("LinkGlobal", "Component", "Source component (instance zero)"),
             ("XLink", "PatternSource", "PartDesign pattern"),
             (
                 "Bool",
@@ -333,12 +333,12 @@ class ComponentPattern:
                 "Follow a PartDesign pattern instead of explicit parameters",
             ),
             (
-                "Link",
+                "LinkGlobal",
                 "PatternComponent",
                 "Assembly instance containing the pattern source",
             ),
             (
-                "LinkList",
+                "LinkListHidden",
                 "Joints",
                 "Source joints to copy for each additional instance",
             ),
@@ -354,11 +354,11 @@ class ComponentPattern:
             ("Vector", "Axis", "Polar axis in assembly coordinates"),
             ("Vector", "Direction", "Linear direction in assembly coordinates"),
             (
-                "LinkList",
+                "LinkListHidden",
                 "Copies",
                 "Generated component links, excluding instance zero",
             ),
-            ("LinkList", "JointCopies", "Generated joints"),
+            ("LinkListHidden", "JointCopies", "Generated joints"),
             ("XLink", "PlacementDriver", "Private native placement calculator"),
             ("XLink", "ParameterSource", "Ordered source parameter evaluator"),
             (
@@ -429,8 +429,48 @@ class ComponentPattern:
         self._executing = False
         self._configuring = False
         self._deleting = False
+        self._upgradeProperties(obj)
         _ensureParameterViews()
         self._ensureViewProvider(obj)
+
+    def _upgradeProperties(self, obj):
+        # Documents saved by the first implementation have dependency links for
+        # generated objects and only a single calculator. Preserve their objects.
+        self._configuring = True
+        try:
+            for name, kind in (
+                ("Component", "LinkGlobal"),
+                ("PatternComponent", "LinkGlobal"),
+                ("Copies", "LinkListHidden"),
+                ("JointCopies", "LinkListHidden"),
+                ("Joints", "LinkListHidden"),
+            ):
+                if obj.getTypeIdOfProperty(name) != "App::Property" + kind:
+                    value = getattr(obj, name)
+                    description = obj.getDocumentationOfProperty(name)
+                    obj.removeProperty(name)
+                    obj.addProperty(
+                        "App::Property" + kind, name, "Component Pattern", description
+                    )
+                    setattr(obj, name, value)
+            if "PlacementDrivers" not in obj.PropertiesList:
+                obj.addProperty(
+                    "App::PropertyXLinkList", "PlacementDrivers", "Component Pattern"
+                )
+                obj.PlacementDrivers = (
+                    [obj.PlacementDriver] if obj.PlacementDriver else []
+                )
+            if "StatusMessage" not in obj.PropertiesList:
+                obj.addProperty(
+                    "App::PropertyString", "StatusMessage", "Component Pattern"
+                )
+            for name in ("Copies", "JointCopies", "PlacementDrivers", "StatusMessage"):
+                obj.setEditorMode(name, 2 if name == "PlacementDrivers" else 1)
+                obj.setPropertyStatus(name, ["NoRecompute", "Output"])
+            for child in obj.Copies + obj.JointCopies:
+                self._setOwner(child, obj)
+        finally:
+            self._configuring = False
 
     def _ensureViewProvider(self, obj):
         if App.GuiUp:
@@ -454,7 +494,8 @@ class ComponentPattern:
         ):
             return
         if obj.Component is None or (obj.UseSource and obj.PatternSource is None):
-            self._clearGenerated(obj)
+            # Link removal callbacks run while Document is traversing dependents.
+            # Remove generated dependents only once that traversal has finished.
             obj.StatusMessage = (
                 translate("Assembly", "The source component is missing")
                 if obj.Component is None
@@ -513,6 +554,15 @@ class ComponentPattern:
                 self._hideHelper(helper)
         finally:
             self._configuring = False
+
+    @staticmethod
+    def _setOwner(child, owner):
+        # Generated objects depend on their producer. The producer's bookkeeping
+        # lists are hidden links so stale generated joints cannot block its update.
+        if "PatternOwner" not in child.PropertiesList:
+            child.addProperty("App::PropertyLink", "PatternOwner", "Component Pattern")
+            child.setEditorMode("PatternOwner", 2)
+        child.PatternOwner = owner
 
     @staticmethod
     def _clearGenerated(obj):
@@ -722,16 +772,21 @@ class ComponentPattern:
             if not obj.Joints:
                 # A seed joint can move instance zero when the hole's radius changes.
                 # Seat it before evaluating copies even when joint copying is off.
-                source_joints = UtilsAssembly.getJointGroup(assembly).Group
-                if any(
-                    hasattr(j, "Reference1")
+                source_joints = [
+                    joint
+                    for joint in UtilsAssembly.getJointGroup(assembly).Group
+                    if hasattr(joint, "Reference1")
                     and obj.Component
                     in (
-                        UtilsAssembly.getMovingPart(j.Reference1),
-                        UtilsAssembly.getMovingPart(j.Reference2),
+                        UtilsAssembly.getMovingPart(joint.Reference1),
+                        UtilsAssembly.getMovingPart(joint.Reference2),
                     )
-                    for j in source_joints
-                ):
+                ]
+                if source_joints:
+                    # The seed joint may execute later in this document pass. Refresh
+                    # its connectors from the current geometry before asking the solver.
+                    for joint in source_joints:
+                        joint.Proxy.updateJCSPlacements(joint)
                     result = assembly.solve()
                     if result != 0:
                         raise ValueError(
@@ -763,6 +818,7 @@ class ComponentPattern:
                         assembly.newObject("App::Link", obj.Component.Name + "Pattern")
                     )
                 copy = copies[k]
+                self._setOwner(copy, obj)
                 copy.LinkedObject = obj.Component.LinkedObject
                 copy.LinkTransform = obj.Component.LinkTransform
                 matrix = delta * seed_placement.toMatrix()
@@ -795,6 +851,7 @@ class ComponentPattern:
                             )
                         )
                     joint = joint_copies[index]
+                    self._setOwner(joint, obj)
                     # Clear references while setting joint parameters, to suppress
                     # interactive per-property solving in JointObject.onChanged.
                     joint.Reference1 = None
