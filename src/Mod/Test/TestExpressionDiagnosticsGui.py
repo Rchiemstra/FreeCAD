@@ -226,3 +226,53 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
         self.obj.setExpression("Broken", "Missing.Value")
         self.assert_broken("Broken", "Missing")
         self.assert_good("Good")
+
+
+    def test_boolean_error_is_painted(self):
+        self.obj.addProperty("App::PropertyBool", "Flag")
+        self.obj.setExpression("Flag", "Absent.Value")
+        self.wait_for(lambda: self.index("Flag").isValid())
+        self.assert_broken("Flag", "Absent")
+        image = QtGui.QImage(180, 32, QtGui.QImage.Format_ARGB32)
+        image.fill(QtCore.Qt.transparent)
+        option = QtWidgets.QStyleOptionViewItem()
+        option.initFrom(self.view)
+        option.rect = QtCore.QRect(0, 0, 180, 32)
+        painter = QtGui.QPainter(image)
+        try:
+            self.view.itemDelegate().paint(painter, option, self.index("Flag"))
+        finally:
+            painter.end()
+        self.assertTrue(any(
+            color.alpha() and color.red() > 150 and color.green() < 140 and color.blue() < 80
+            for y in range(image.height()) for x in range(image.width())
+            for color in (image.pixelColor(x, y),)),
+            "The checkbox label did not use the expression error colour")
+
+    def test_cache_refresh_preserves_uncommitted_text(self):
+        from unittest.mock import patch
+        from freecad import expression_diagnostics
+
+        self.obj.addProperty("App::PropertyString", "Text")
+        self.obj.Text = "stored"
+        other = self.doc.addObject("App::FeaturePython", "Other")
+        other.addProperty("App::PropertyFloat", "Value")
+        other.setExpression("Value", "Absent.Value")
+        self.wait_for(lambda: self.index("Text").isValid())
+        self.view.edit(self.index("Text"))
+        editor = self.view.findChild(QtWidgets.QLineEdit)
+        self.assertIsNotNone(editor)
+        editor.blockSignals(True)
+        editor.setText("draft")
+        editor.setModified(True)
+        editor.blockSignals(False)
+        self.assertEqual(self.obj.Text, "stored")
+        try:
+            with patch.object(expression_diagnostics, "diagnose",
+                              wraps=expression_diagnostics.diagnose) as diagnose:
+                other.setExpression("Value", "AnotherMissing.Value")
+                self.wait_for(lambda: diagnose.call_count > 0)
+                self.assertEqual(editor.text(), "draft")
+        finally:
+            QtCore.QCoreApplication.sendEvent(editor, QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress, QtCore.Qt.Key_Escape, QtCore.Qt.NoModifier))
