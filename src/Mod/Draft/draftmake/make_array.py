@@ -123,14 +123,15 @@ def make_array(base_object, arg1, arg2, arg3, arg4=None, arg5=None, arg6=None, u
         new_obj.Angle = arg2
         new_obj.NumberPolar = arg3
 
+    if App.GuiUp and not use_link and new_obj.ArrayType == "circular":
+        # Prepare Count for DiffuseColor in the model mutation, before a
+        # deferred presentation callback can run after recompute has settled.
+        new_obj.Proxy.execute(new_obj)
+
     def setup_view():
         if use_link:
             ViewProviderDraftLink(new_obj.ViewObject)
         else:
-            if new_obj.ArrayType == "circular":
-                new_obj.Proxy.execute(
-                    new_obj
-                )  # Updates Count which is required for correct DiffuseColor.
             ViewProviderDraftArray(new_obj.ViewObject)
             gui_utils.format_object(new_obj, new_obj.Base)
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
