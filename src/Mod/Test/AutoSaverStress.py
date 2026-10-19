@@ -141,9 +141,10 @@ class TestAutoSaverStress(unittest.TestCase):
         return os.path.join(document.TransientDir, "fc_recovery_file.fcstd")
 
     def _removeRecoveryArchive(self, document):
-        archive = self._recoveryArchive(document)
-        if os.path.exists(archive):
-            os.remove(archive)
+        for filename in ("fc_recovery_file.fcstd", "fc_recovery_file.xml"):
+            path = os.path.join(document.TransientDir, filename)
+            if os.path.exists(path):
+                os.remove(path)
 
     def _invokeAutoSaverFlush(self, document):
         invoked = QtCore.QMetaObject.invokeMethod(
@@ -156,13 +157,28 @@ class TestAutoSaverStress(unittest.TestCase):
 
     def _processEventsUntil(self, predicate):
         deadline = time.monotonic() + self.wait_timeout
+        ready = False
         while time.monotonic() < deadline:
             QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
-            if predicate():
+            was_ready = ready
+            ready = predicate()
+            # Give the queued autosaver completion another event-loop turn.
+            if ready and was_ready:
                 return True
             time.sleep(0.01)
 
         return predicate()
+
+    def _waitForRecoveryArchive(self, document):
+        archive = self._recoveryArchive(document)
+        metadata = os.path.join(document.TransientDir, "fc_recovery_file.xml")
+        # Metadata is published atomically after the archive write completes.
+        self.assertTrue(
+            self._processEventsUntil(
+                lambda: os.path.isfile(metadata) and zipfile.is_zipfile(archive)
+            ),
+            f"Timed out waiting for recovery archive and metadata: {archive}, {metadata}",
+        )
 
     def _assertRecoveryArchiveContains(self, document, expected_label):
         archive = self._recoveryArchive(document)
@@ -190,6 +206,7 @@ class TestAutoSaverStress(unittest.TestCase):
                 start = time.monotonic()
                 self._invokeAutoSaverFlush(document)
                 self.direct_flush_durations.append(time.monotonic() - start)
+                self._waitForRecoveryArchive(document)
                 self._assertRecoveryArchiveContains(
                     document,
                     f"{direct_label}-{self.object_count - 1}",
@@ -207,11 +224,7 @@ class TestAutoSaverStress(unittest.TestCase):
 
                 start = time.monotonic()
                 document.commitTransaction()
-                self.assertTrue(
-                    self._processEventsUntil(
-                        lambda: os.path.exists(self._recoveryArchive(document))
-                    )
-                )
+                self._waitForRecoveryArchive(document)
                 self.queued_flush_durations.append(time.monotonic() - start)
                 self._assertRecoveryArchiveContains(document, blocked_label)
 

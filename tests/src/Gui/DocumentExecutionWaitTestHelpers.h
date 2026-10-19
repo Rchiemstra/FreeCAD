@@ -20,9 +20,8 @@ bool submitDocumentSaveAwaitingCompletion(
 
 /**
  * Test-only nested Qt wait for recovery completion. On timeout, throws while
- * the production scheduler's detached worker finishes with shared state and
- * its retained lane. A lifecycle pin rejects document close until the queued
- * GUI completion releases it. The legacy no-lane path completes synchronously.
+ * the production executor finishes with shared state on its retained lane.
+ * A lifecycle pin rejects close until the queued GUI completion releases it. The legacy no-lane path completes synchronously.
  */
 bool writeRecoverySnapshotAwaitingOwnerThread(
     App::Document& document,

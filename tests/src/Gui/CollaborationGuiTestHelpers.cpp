@@ -165,6 +165,10 @@ public:
         AutoSaver::instance()->completeRecoverySnapshotSave(
             name, instance, epoch, Base::TimeElapsed(), false, {});
     }
+    static void deliverRetry(const std::string& name, std::uint64_t instance, std::uint64_t epoch)
+    {
+        AutoSaver::instance()->flushPendingSaveForIdentity(QString::fromStdString(name), instance, epoch);
+    }
     static void flushPendingSaveWithoutBlockingGui(App::Document& document)
     {
         auto* const saver = AutoSaver::instance();
@@ -520,4 +524,10 @@ void Gui::Test::deliverRecoveryCompletion(const std::string& name, std::uint64_t
                                          std::uint64_t epoch)
 {
     AutoSaverRecoveryTestAccess::deliverCompletion(name, instance, epoch);
+}
+
+void Gui::Test::deliverRecoveryRetry(const std::string& name, std::uint64_t instance,
+                                    std::uint64_t epoch)
+{
+    AutoSaverRecoveryTestAccess::deliverRetry(name, instance, epoch);
 }

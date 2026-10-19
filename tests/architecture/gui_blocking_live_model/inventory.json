@@ -271,6 +271,8 @@
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
+    "src/Mod/Sketcher/SketchReferenceRepairGui.py",
+    "src/Mod/Sketcher/SketchReferenceRepair.py",
     "src/Mod/Start/StartMigrator.py",
     "src/Mod/AddonManager/AddonManager.py",
     "src/Mod/AddonManager/addonmanager_python_deps.py",
@@ -300,7 +302,7 @@
   "findings": [
     {
       "path": "src/Gui/Application.cpp",
-      "line": 925,
+      "line": 927,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -308,7 +310,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 930,
+      "line": 932,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -316,7 +318,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 932,
+      "line": 934,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -324,7 +326,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1019,
+      "line": 1021,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -332,7 +334,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1122,
+      "line": 1124,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -340,7 +342,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1216,
+      "line": 1218,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -348,7 +350,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1217,
+      "line": 1219,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -356,7 +358,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1218,
+      "line": 1220,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -364,7 +366,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1296,
+      "line": 1298,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -372,7 +374,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1303,
+      "line": 1305,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -380,7 +382,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1324,
+      "line": 1326,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -388,7 +390,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1369,
+      "line": 1371,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -396,7 +398,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1510,
+      "line": 1512,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -404,7 +406,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1512,
+      "line": 1514,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -412,7 +414,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1516,
+      "line": 1518,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -420,7 +422,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1611,
+      "line": 1613,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -428,7 +430,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1626,
+      "line": 1628,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -436,7 +438,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1821,
+      "line": 1823,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -444,7 +446,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1830,
+      "line": 1832,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -452,7 +454,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1833,
+      "line": 1835,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -460,7 +462,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1873,
+      "line": 1875,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -468,7 +470,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1944,
+      "line": 1946,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -476,7 +478,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 2222,
+      "line": 2224,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -564,7 +566,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 147,
+      "line": 190,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -572,7 +574,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 148,
+      "line": 191,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -580,7 +582,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 156,
+      "line": 199,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -588,7 +590,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 200,
+      "line": 244,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -596,7 +598,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 275,
+      "line": 323,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -604,7 +606,7 @@
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
-      "line": 360,
+      "line": 408,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1564,7 +1566,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1573,
+      "line": 1560,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1572,7 +1574,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1585,
+      "line": 1572,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1580,7 +1582,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1609,
+      "line": 1596,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1588,7 +1590,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1798,
+      "line": 1785,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1596,7 +1598,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2951,
+      "line": 2938,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1604,7 +1606,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3359,
+      "line": 3346,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1612,7 +1614,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3373,
+      "line": 3360,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1620,7 +1622,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3487,
+      "line": 3474,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1628,7 +1630,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4677,
+      "line": 4664,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1636,7 +1638,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4909,
+      "line": 4896,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1708,19 +1710,11 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 327,
+      "line": 328,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto* appDocument = App::GetApplication().getDocument(appDocumentName);"
-    },
-    {
-      "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 563,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",
@@ -2465,6 +2459,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "this->signalthread->wait();"
+    },
+    {
+      "path": "src/Gui/RecoveryWriteExecutor.cpp",
+      "line": 124,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getDocument(job.name.c_str());"
     },
     {
       "path": "src/Gui/Selection/BoxSelection.cpp",
@@ -4084,7 +4086,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 362,
+      "line": 365,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4092,7 +4094,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1337,
+      "line": 1375,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4100,7 +4102,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1419,
+      "line": 1457,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4108,7 +4110,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1720,
+      "line": 1758,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -13908,7 +13910,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 497,
+      "line": 502,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13916,7 +13918,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 500,
+      "line": 505,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13924,7 +13926,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13932,7 +13934,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13940,7 +13942,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 502,
+      "line": 507,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13948,7 +13950,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 506,
+      "line": 511,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13956,7 +13958,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13964,7 +13966,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13972,7 +13974,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 509,
+      "line": 514,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13980,7 +13982,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -13988,7 +13990,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -13996,7 +13998,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 526,
+      "line": 531,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -14004,7 +14006,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 611,
+      "line": 616,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14012,7 +14014,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 615,
+      "line": 620,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14020,7 +14022,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 618,
+      "line": 623,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14028,7 +14030,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "direct-recompute",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -14036,7 +14038,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -14044,7 +14046,7 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
-      "line": 632,
+      "line": 637,
       "category": "sync-document-api",
       "subsystem": "CAM",
       "disposition": "migrate",
@@ -17604,7 +17606,15 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 248,
+      "line": 122,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "self.document = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Draft/DraftGui.py",
+      "line": 260,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17612,7 +17622,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 1871,
+      "line": 1908,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17620,7 +17630,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2077,
+      "line": 2114,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17628,7 +17638,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2096,
+      "line": 2133,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17636,7 +17646,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17644,7 +17654,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17652,7 +17662,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2223,
+      "line": 2264,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17660,7 +17670,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2230,
+      "line": 2271,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17668,7 +17678,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17676,7 +17686,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17684,7 +17694,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2245,
+      "line": 2286,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17692,7 +17702,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -17700,7 +17710,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -17708,7 +17718,7 @@
     },
     {
       "path": "src/Mod/Draft/DraftGui.py",
-      "line": 2249,
+      "line": 2290,
       "category": "sync-document-api",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -18036,7 +18046,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 501,
+      "line": 505,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18044,7 +18054,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 733,
+      "line": 737,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18052,7 +18062,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 794,
+      "line": 798,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18060,7 +18070,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 796,
+      "line": 800,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -18068,7 +18078,7 @@
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_edit.py",
-      "line": 811,
+      "line": 815,
       "category": "direct-recompute",
       "subsystem": "Draft",
       "disposition": "migrate",
@@ -19316,7 +19326,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 278,
+      "line": 298,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19324,7 +19334,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 285,
+      "line": 305,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19332,7 +19342,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 778,
+      "line": 798,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19340,7 +19350,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 917,
+      "line": 937,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19348,7 +19358,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1055,
+      "line": 1075,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19356,7 +19366,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1091,
+      "line": 1111,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -19364,7 +19374,7 @@
     },
     {
       "path": "src/Mod/Draft/draftutils/gui_utils.py",
-      "line": 1176,
+      "line": 1196,
       "category": "process-events-polling",
       "subsystem": "Draft",
       "disposition": "investigate",
@@ -31236,7 +31246,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5047,
+      "line": 5045,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31244,7 +31254,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5075,
+      "line": 5073,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31252,7 +31262,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5099,
+      "line": 5097,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31260,7 +31270,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5117,
+      "line": 5115,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",

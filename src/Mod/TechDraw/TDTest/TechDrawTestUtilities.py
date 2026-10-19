@@ -2,6 +2,25 @@
 
 import FreeCAD
 import os
+import time
+
+
+def waitForHLR(view):
+    """Pump Qt events for up to 60 seconds until a new view has HLR geometry."""
+    from PySide import QtCore
+
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        # The HLR busy flags are not exposed to Python. For a new view, edges
+        # become available when onHlrFinished installs the projected geometry.
+        if "Up-to-date" in view.State and view.getVisibleEdges():
+            return
+        time.sleep(0.01)
+    raise AssertionError(
+        f"Timed out after 60 s waiting for HLR of {view.Name}: "
+        f"State={view.State}, visible edges={len(view.getVisibleEdges())}"
+    )
 
 
 def createPageWithSVGTemplate(doc=None):

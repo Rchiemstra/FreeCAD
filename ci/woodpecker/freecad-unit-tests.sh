@@ -2,92 +2,52 @@
 set -e
 
 mkdir -p /tmp/gtest
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Preflight the whole inventory before running anything. Never infer coverage
+# from whichever executables happen to exist in an incomplete build.
+expected=$(python3 "$script_dir/check-test-results.py" inventory build/debug/tests)
+results=$(mktemp -d /tmp/gtest/run.XXXXXX)
+echo "== C++ test results: $results =="
+started=$(date +%s)
 rc=0
 failed=""
+all_reports=""
 
+# Keep the GUI families isolated; validate each process and report separately.
 run_gtest() {
   t="$1"
   name=$(basename "$t")
-  echo "== C++ gtest: $name =="
-  case "$name" in
-    Gui_tests_run|GuiShutdown_tests_run|*Gui*_tests_run)
-      if [ ! -x /usr/bin/xvfb-run ]; then
-        echo "FATAL: mandatory /usr/bin/xvfb-run is missing or not executable (required for $name OpenGL tests)" >&2
-        exit 1
-      fi
-      # Heavy Collaboration* Gui suites leave Coin/MainWindow state that causes
-      # later in-process suites (ViewIsolation, Responsiveness) to SIGSEGV.
-      # Run the rest of Gui_tests_run first, then each Collaboration* family alone.
-      if [ "$name" = "Gui_tests_run" ]; then
-        main_log="/tmp/gtest/$name.log"
-        main_only_log="/tmp/gtest/$name-main-only.log"
-        : >"$main_log"
-        env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-          "$t" \
-          --gtest_filter=-CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*:CollaborationViewIsolation*:CollaborationResponsiveness* \
-          --gtest_output=json:/tmp/gtest/"$name"-main.json >>"$main_log" 2>&1
-        main_rc=$?
-        # Evaluate main-batch teardown tolerance against the main log only,
-        # before Collaboration filters append PASSED lines that could mask a
-        # crashed main batch (no [ FAILED ], no main [ PASSED ]).
-        cp "$main_log" "$main_only_log"
-        if [ "$main_rc" -ne 0 ] \
-          && grep -q '\[  PASSED  \]' "$main_only_log" \
-          && ! grep -q '\[  FAILED  \]' "$main_only_log"; then
-          echo "WARN: accepting $name main batch exit $main_rc after all tests passed (teardown)" \
-            | tee -a "$main_log"
-          main_rc=0
-        fi
-        collab_rc=0
-        for part in \
-          'CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*' \
-          'CollaborationViewIsolation*' \
-          'CollaborationResponsiveness*'
-        do
-          safe=$(echo "$part" | tr -c 'A-Za-z0-9._-' '_')
-          part_log="/tmp/gtest/$name-$safe.log"
-          env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-            "$t" --gtest_filter="$part" \
-            --gtest_output=json:/tmp/gtest/"$name-$safe".json \
-            >"$part_log" 2>&1
-          part_rc=$?
-          cat "$part_log" >>"$main_log"
-          # Coin/Qt global teardown can SIGSEGV after all tests passed on this image.
-          if [ "$part_rc" -ne 0 ] \
-            && grep -q '\[  PASSED  \]' "$part_log" \
-            && ! grep -q '\[  FAILED  \]' "$part_log"; then
-            echo "WARN: accepting $name filter='$part' exit $part_rc after all tests passed (teardown)" \
-              | tee -a "$main_log"
-            part_rc=0
-          fi
-          if [ "$part_rc" -ne 0 ]; then
-            collab_rc=$part_rc
-          fi
-        done
-        if [ "$main_rc" -ne 0 ]; then
-          return "$main_rc"
-        fi
-        return "$collab_rc"
-      fi
-      env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
-        "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
-      ;;
-    App_tests_run)
-      # Property rename/save tests write relative FCStd paths; on 9p bind mounts
-      # retained writer handles break post-rename verification (see doc handoff).
-      ws="${CI_WORKSPACE:-$(pwd)}"
-      (cd /tmp && "$ws/$t" --gtest_output=json:/tmp/gtest/"$name".json) \
-        >"/tmp/gtest/$name.log" 2>&1
-      ;;
-    *)
-      "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
-      ;;
-  esac
+  reports=""
+  main_log="$results/$name.log"
+  : >"$main_log"
+  binary_status=0
+  if [ "$name" = "Gui_tests_run" ]; then
+    filters='-CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*:CollaborationViewIsolation*:CollaborationResponsiveness*
+CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*
+CollaborationViewIsolation*
+CollaborationResponsiveness*'
+  else
+    filters='*'
+  fi
+  index=0
+  # Each filter is a line without whitespace; suppress pathname expansion.
+  set -f
+  for part in $filters; do
+    index=$((index + 1))
+    stem="$results/$name-$index"
+    reports="$reports $stem.xml"
+    if ! sh "$script_dir/run-gtest.sh" "$t" "$part" "$stem"; then
+      binary_status=1
+    fi
+    cat "$stem.log" >>"$main_log"
+  done
+  set +f
+  return "$binary_status"
 }
 
 dump_gtest_failure() {
   name="$1"
-  log="/tmp/gtest/$name.log"
+  log="$results/$name.log"
   echo "== $name =="
   if [ ! -f "$log" ]; then
     echo "(no log file)"
@@ -118,10 +78,19 @@ dump_gtest_failure() {
   fi
 }
 
-for t in build/debug/tests/*_tests_run; do
-  [ -x "$t" ] || continue
-  name=$(basename "$t")
+for name in $expected; do
+  t="build/debug/tests/$name"
+  binary_rc=0
   if ! run_gtest "$t"; then
+    binary_rc=1
+  fi
+  # Paths are generated under mktemp's /tmp/gtest/run.* and contain no spaces.
+  # Check every invocation, including each Gui filter, even after a process fails.
+  if ! python3 "$script_dir/check-test-results.py" xml $reports; then
+    binary_rc=1
+  fi
+  all_reports="$all_reports $reports"
+  if [ "$binary_rc" -ne 0 ]; then
     rc=1
     failed="$failed $name"
   fi
@@ -134,3 +103,6 @@ if [ "$rc" -ne 0 ]; then
   done
   exit 1
 fi
+
+python3 "$script_dir/check-test-results.py" xml $all_reports
+echo "== C++ inventory complete: $(echo "$expected" | wc -w) binaries; duration=$(($(date +%s) - started))s =="

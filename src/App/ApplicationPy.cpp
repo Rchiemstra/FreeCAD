@@ -260,6 +260,9 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
                 DocumentWouldBlock::throwIfGuiThread(
                     "FreeCAD.closeDocument()", "Document.closeAsync()");
             }
+            // Cancel recovery before waiting: undispatched jobs need the Qt
+            // executor timer, which this marshalled-task-only wait never runs.
+            GetApplication().signalBeforeCloseDocumentAdmission(*doc);
             const std::string name = doc->getName();
             // A handle, not doc: another close may finish while this one waits.
             auto executionHandle = doc->executionHandle();
