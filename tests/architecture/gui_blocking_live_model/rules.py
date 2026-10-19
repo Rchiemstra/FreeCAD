@@ -179,6 +179,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
     "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandIsolate.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     # Joint task and view-provider handlers imported by Assembly commands.
     "src/Mod/Assembly/JointObject.py",
