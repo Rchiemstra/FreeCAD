@@ -174,39 +174,99 @@ class ExpressionDiagnosticsGuiTests(unittest.TestCase):
                 close_document(doc)
             close_document(source)
 
-    def test_report_uses_real_french_catalogue(self):
+    def test_report_and_property_editor_use_translator(self):
+        import time
         from freecad.expression_diagnostics_gui import DiagnosticsDialog
         from freecad.expression_diagnostics_text import role_text, kind_text, reason_text
 
-        catalogue = QtCore.QTranslator()
-        # Built with FreeCAD and embedded in its normal resource collection.
-        self.assertTrue(catalogue.load(":/translations/FreeCAD_fr.qm"))
+        # Exact pairs make wrong contexts and changed/untranslated sources fail.
+        sources = (
+            "Expression diagnostics", "Object", "Property", "Expression", "Role", "Kind",
+            "Reason", "Dependency chain", "Current stored values; no recompute performed.",
+            "Root cause", "Unresolved reference", "{kind}. Details: {details}",
+            "Stored value needs recompute", "Not evaluated", "Dependency cycle",
+            "Stored value differs from the expression evaluated with current inputs.",
+            "Evaluation was skipped because accessing Python attributes may modify the document.",
+            "Expression dependency cycle: {chain}", "Depends on {object}.{property}.",
+        )
+        translations = {("ExpressionDiagnostics", source): "[translated] " + source
+                        for source in sources}
+
+        class MarkedTranslator(QtCore.QTranslator):
+            def isEmpty(self):
+                # Qt otherwise rejects a translator with no loaded catalogue.
+                return False
+
+            def translate(self, context, sourceText, disambiguation=None, n=-1):
+                return translations.get((context, sourceText), sourceText)
+
+        translator = MarkedTranslator()
         app = QtWidgets.QApplication.instance()
-        app.installTranslator(catalogue)
-        doc = App.newDocument("DiagnosticsFrench")
+        self.assertTrue(app.installTranslator(translator))
+        doc = None
         dialog = None
         try:
+            doc = App.newDocument("DiagnosticsTranslation")
             obj = doc.addObject("App::FeaturePython", "Values")
             obj.addProperty("App::PropertyFloat", "Value")
             obj.setExpression("Value", "Missing.Value")
             dialog = DiagnosticsDialog(doc)
-            self.assertEqual(dialog.table.horizontalHeaderItem(0).text(), "Objet")
-            self.assertEqual(dialog.table.horizontalHeaderItem(5).text(), "Cause")
-            self.assertEqual(role_text("root"), "Cause première")
-            self.assertEqual(kind_text("unresolved_reference"), "Référence introuvable")
-            self.assertIn("Détails", dialog.table.item(0, 5).text())
-            for kind in ("stale_value", "not_evaluated", "dependency_cycle"):
+            self.assertEqual(dialog.windowTitle(), "[translated] Expression diagnostics — " + doc.Label)
+            for column, source in enumerate(("Object", "Property", "Expression", "Role", "Kind",
+                                             "Reason", "Dependency chain")):
+                self.assertEqual(dialog.table.horizontalHeaderItem(column).text(),
+                                 "[translated] " + source)
+            self.assertEqual(dialog.status.text(),
+                             "[translated] Current stored values; no recompute performed.")
+            self.assertEqual(dialog.table.rowCount(), 1)
+            self.assertEqual(dialog.table.item(0, 3).text(), "[translated] Root cause")
+            self.assertEqual(dialog.table.item(0, 4).text(), "[translated] Unresolved reference")
+            reason = "[translated] [translated] Unresolved reference. Details: " + dialog.rows[0]["message"]
+            self.assertEqual(dialog.table.item(0, 5).text(), reason)
+            self.assertEqual(role_text("root"), "[translated] Root cause")
+            for kind, label, explanation in (
+                    ("stale_value", "Stored value needs recompute",
+                     "Stored value differs from the expression evaluated with current inputs."),
+                    ("not_evaluated", "Not evaluated",
+                     "Evaluation was skipped because accessing Python attributes may modify the document."),
+                    ("dependency_cycle", "Dependency cycle",
+                     "Expression dependency cycle: Doc#Object.Value")):
                 row = dict(role="root", kind=kind, message="unused", chain=[
                     dict(object="Doc#Object", property="Value")])
-                self.assertNotEqual(reason_text(row), "unused")
-                self.assertNotEqual(kind_text(kind), kind)
+                self.assertEqual(reason_text(row), "[translated] " + explanation)
+                self.assertEqual(kind_text(kind), "[translated] " + label)
             self.assertEqual(reason_text(dict(role="affected", kind="dependency", chain=[
-                dict(object="Doc#Object", property="Value")])), "Dépend de Doc#Object.Value.")
+                dict(object="Doc#Object", property="Value")])),
+                "[translated] Depends on Doc#Object.Value.")
+
+            dialog.table.selectRow(0)
+            view = Gui.getMainWindow().findChild(QtWidgets.QTreeView, "propertyEditorData")
+            self.assertIsNotNone(view)
+            key = obj.FullName + ".Value"
+
+            def property_tooltip(parent=QtCore.QModelIndex()):
+                model = view.model()
+                for row in range(model.rowCount(parent)):
+                    index = model.index(row, 0, parent)
+                    if key in (index.data(QtCore.Qt.UserRole + 26497) or []):
+                        return index.sibling(row, 1).data(QtCore.Qt.ToolTipRole) or ""
+                    tooltip = property_tooltip(index)
+                    if tooltip:
+                        return tooltip
+                return ""
+
+            deadline = time.monotonic() + 5
+            while reason not in property_tooltip() and time.monotonic() < deadline:
+                QtWidgets.QApplication.processEvents()
+                QtCore.QThread.msleep(20)
+            self.assertIn("Value = Missing.Value\n" + reason, property_tooltip())
         finally:
             if dialog is not None:
                 dialog.close()
-            app.removeTranslator(catalogue)
-            close_document(doc)
+            app.removeTranslator(translator)
+            Gui.Selection.clearSelection()
+            if doc is not None:
+                close_document(doc)
 
     def test_menu_in_multiple_workbenches(self):
         original = Gui.activeWorkbench().name()
