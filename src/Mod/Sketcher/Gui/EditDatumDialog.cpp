@@ -314,8 +314,6 @@ void EditDatumDialog::accepted()
                 );
             }
 
-            Gui::Command::commitCommand(transactionID);
-
             // THIS IS A WORK-AROUND NOT TO DELAY 0.19 RELEASE
             //
             // depsAreTouched is not returning true in this case:
@@ -333,6 +331,7 @@ void EditDatumDialog::accepted()
             sketch->solve();
             //}
 
+            Gui::Command::commitCommand(transactionID);
             tryAutoRecompute(sketch);
             success = true;
         }

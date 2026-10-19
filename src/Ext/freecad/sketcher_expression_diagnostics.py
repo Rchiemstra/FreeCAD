@@ -8,6 +8,7 @@ of a broken expression. Only actual failures and their consequences are marked.
 import re
 
 import FreeCAD as App
+from freecad.expression_diagnostics_text import reason_text
 
 from freecad.expression_diagnostics import diagnose, _path_related
 
@@ -133,7 +134,7 @@ def constraint_errors(sketch):
             continue
         if not 0 <= index < sketch.ConstraintCount:
             continue
-        reason = f'{path} = {row["expression"]}\n{root["message"]}'
+        reason = f'{path} = {row["expression"]}\n{reason_text(root)}'
         if row["role"] == "affected":
             kinds = {
                 "unresolved_reference": translate("SketcherExpressionDiagnostics", "Unresolved reference"),

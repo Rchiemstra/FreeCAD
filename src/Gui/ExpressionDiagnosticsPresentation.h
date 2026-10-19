@@ -119,6 +119,9 @@ inline std::optional<QVariant> data(const PropertyItem& item, int column, int ro
     if (item.property("expressionDiagnosticsCapturing").toBool()) {
         return std::nullopt;
     }
+    if (role == expressionDiagnosticsPopulateRole + 1) {
+        return item.property("expressionDiagnosticsKeys");
+    }
     if (role == expressionDiagnosticsPopulateRole) {
         return populate(const_cast<PropertyItem&>(item));
     }

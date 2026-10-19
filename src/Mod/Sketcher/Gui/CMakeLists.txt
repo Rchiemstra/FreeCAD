@@ -108,6 +108,7 @@ SET(SketcherGui_SRCS
     TaskSketcherTool.h
     TaskSketcherMessages.cpp
     SketchExpressionDiagnostics.cpp
+    SketchConstraintPresentation.h
     SketchExpressionDiagnostics.h
     TaskSketcherMessages.h
     TaskSketcherSolverAdvanced.ui

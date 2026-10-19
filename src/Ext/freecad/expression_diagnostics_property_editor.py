@@ -9,6 +9,7 @@ request. Only strings and a QColor cross into the C++ property-item paint path.
 import re
 
 import FreeCAD as App
+from freecad.expression_diagnostics_text import reason_text
 import FreeCADGui as Gui
 from PySide import QtCore, QtGui, QtWidgets
 
@@ -165,7 +166,7 @@ class PropertyDiagnostics(QtCore.QObject):
                         or row["kind"] in ("stale_value", "not_evaluated")):
                     continue
                 reason = (row["property"] + " = " + row["expression"] + "\n"
-                          + row["message"])
+                          + reason_text(row))
                 # Also flag a collapsed compound property with a failing leaf.
                 path = row["property"]
                 paths = [path] + [path[:match.start()] for match in re.finditer(r"[.\[]", path)]

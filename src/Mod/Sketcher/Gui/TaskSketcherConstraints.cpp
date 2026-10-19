@@ -62,6 +62,7 @@
 #include "EditDatumDialog.h"
 #include "EditTextDialog.h"
 #include "TaskSketcherConstraints.h"
+#include "SketchConstraintPresentation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
 #include "ui_TaskSketcherConstraints.h"
@@ -117,6 +118,7 @@ public:
         this->setFlags(this->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
         setData(Qt::UserRole, ConstNbr);
 
+        presentation.pair = sketch->getDeltaPositionConstraintPair(ConstraintNbr);
         updateVirtualSpaceStatus();
     }
     ~ConstraintItem() override
@@ -124,11 +126,7 @@ public:
 
     std::pair<int, int> deltaPositionPair() const
     {
-        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()) {
-            return {-1, -1};
-        }
-
-        return sketch->getDeltaPositionConstraintPair(ConstraintNbr);
+        return presentation.pair;
     }
 
     bool isDeltaPositionConstraint() const
@@ -267,7 +265,23 @@ public:
         QListWidgetItem::setData(role, value);
     }
 
+    void capturePresentation()
+    {
+        presentation.pair = sketch->getDeltaPositionConstraintPair(ConstraintNbr);
+        presentation.boundExpression = sketch->Constraints[ConstraintNbr]->isDriving && hasExpression();
+        presentation.capture([this](int role) { return liveData(role); });
+    }
+
     QVariant data(int role) const override
+    {
+        if (role == Qt::EditRole && value.isValid()) {
+            return value;
+        }
+        return presentation.data(sketchView->getExpressionDiagnostics(), constraintNumbers(),
+                                 role, QListWidgetItem::data(role));
+    }
+
+    QVariant liveData(int role) const
     {
         if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize())
             return QVariant();
@@ -278,14 +292,6 @@ public:
         // the index operator returns null.
         if (!constraint) {
             return QVariant();
-        }
-
-        if (role == Qt::ForegroundRole || role == Qt::ToolTipRole) {
-            const auto diagnostic = constraintExpressionData(
-                sketchView->getExpressionDiagnostics(), constraintNumbers(), role);
-            if (diagnostic.isValid()) {
-                return diagnostic;
-            }
         }
 
         if (role == Qt::EditRole) {
@@ -666,6 +672,7 @@ public:
     const ViewProviderSketch* sketchView;
     int ConstraintNbr;
     QVariant value;
+    SketchConstraintPresentation presentation;
 };
 
 class ExpressionDelegate: public QStyledItemDelegate
@@ -702,12 +709,7 @@ protected:
         options.widget->style()->drawControl(QStyle::CE_ItemViewItem, &options, painter, option.widget);
 
         ConstraintItem* item = dynamic_cast<ConstraintItem*>(view->item(index.row()));
-        if (!item || item->sketch->Constraints.getSize() <= item->ConstraintNbr)
-            return;
-
-        // in case the constraint property is invalidated it returns a null pointer
-        const Sketcher::Constraint* constraint = item->sketch->Constraints[item->ConstraintNbr];
-        if (constraint && constraint->isDriving && item->hasExpression()) {
+        if (item && item->presentation.boundExpression) {
             // Paint pixmap
             int s = 2 * options.rect.height() / 4;
             int margin = s;
@@ -2086,6 +2088,11 @@ bool TaskSketcherConstraints::isConstraintFiltered(QListWidgetItem* item)
 void TaskSketcherConstraints::slotConstraintsChanged()
 {
     assert(sketchView);
+    auto admission = sketchView->getExpressionDiagnostics().readAdmission();
+    if (!admission) {
+        QTimer::singleShot(25, this, &TaskSketcherConstraints::slotConstraintsChanged);
+        return;
+    }
 
     constraintMap.clear();
     selectionBuffer.clear();
@@ -2109,6 +2116,7 @@ void TaskSketcherConstraints::slotConstraintsChanged()
         it->ConstraintNbr = i;
         it->value = QVariant();
         constraintMap[it->ConstraintNbr] = it;
+        it->capturePresentation();
         it->updateVirtualSpaceStatus();
     }
     for (const auto& pair : sketch->getDeltaPositionConstraintPairs()) {
@@ -2145,6 +2153,7 @@ void TaskSketcherConstraints::changeEvent(QEvent* e)
     TaskBox::changeEvent(e);
     if (e->type() == QEvent::LanguageChange) {
         ui->retranslateUi(proxy);
+        slotConstraintsChanged();
     }
 }
 

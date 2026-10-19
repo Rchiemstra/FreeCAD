@@ -15137,4 +15137,123 @@ valeurs faibles créent des reflets larges et flous. Notez que l'intensité des 
       <translation>Carte</translation>
     </message>
   </context>
+  <context>
+    <name>ExpressionDiagnostics</name>
+    <message>
+      <source>Expression diagnostics</source>
+      <translation>Diagnostic des expressions</translation>
+    </message>
+    <message>
+      <source>Object</source>
+      <translation>Objet</translation>
+    </message>
+    <message>
+      <source>Property</source>
+      <translation>Propriété</translation>
+    </message>
+    <message>
+      <source>Expression</source>
+      <translation>Expression</translation>
+    </message>
+    <message>
+      <source>Role</source>
+      <translation>Rôle</translation>
+    </message>
+    <message>
+      <source>Kind</source>
+      <translation>Type</translation>
+    </message>
+    <message>
+      <source>Reason</source>
+      <translation>Cause</translation>
+    </message>
+    <message>
+      <source>Dependency chain</source>
+      <translation>Chaîne de dépendances</translation>
+    </message>
+    <message>
+      <source>Root cause</source>
+      <translation>Cause première</translation>
+    </message>
+    <message>
+      <source>Affected</source>
+      <translation>Affecté</translation>
+    </message>
+    <message>
+      <source>Unknown</source>
+      <translation>Inconnu</translation>
+    </message>
+    <message>
+      <source>Unresolved reference</source>
+      <translation>Référence introuvable</translation>
+    </message>
+    <message>
+      <source>Unavailable external document</source>
+      <translation>Document externe indisponible</translation>
+    </message>
+    <message>
+      <source>Unit error</source>
+      <translation>Erreur d’unité</translation>
+    </message>
+    <message>
+      <source>Evaluation error</source>
+      <translation>Erreur d’évaluation</translation>
+    </message>
+    <message>
+      <source>Dependency cycle</source>
+      <translation>Cycle de dépendances</translation>
+    </message>
+    <message>
+      <source>Stored value needs recompute</source>
+      <translation>La valeur enregistrée doit être recalculée</translation>
+    </message>
+    <message>
+      <source>Not evaluated</source>
+      <translation>Non évalué</translation>
+    </message>
+    <message>
+      <source>Dependency</source>
+      <translation>Dépendance</translation>
+    </message>
+    <message>
+      <source>Depends on {object}.{property}.</source>
+      <translation>Dépend de {object}.{property}.</translation>
+    </message>
+    <message>
+      <source>Stored value differs from the expression evaluated with current inputs.</source>
+      <translation>La valeur enregistrée diffère de l’expression évaluée avec les entrées actuelles.</translation>
+    </message>
+    <message>
+      <source>Expression dependency cycle: {chain}</source>
+      <translation>Cycle de dépendances des expressions : {chain}</translation>
+    </message>
+    <message>
+      <source>Evaluation was skipped because accessing Python attributes may modify the document.</source>
+      <translation>L’évaluation a été ignorée car l’accès aux attributs Python peut modifier le document.</translation>
+    </message>
+    <message>
+      <source>{kind}. Details: {details}</source>
+      <translation>{kind}. Détails : {details}</translation>
+    </message>
+    <message>
+      <source>Waiting for document work to finish…</source>
+      <translation>En attente de la fin du travail sur les documents…</translation>
+    </message>
+    <message>
+      <source>Current stored values; no recompute performed.</source>
+      <translation>Valeurs actuellement enregistrées ; aucun recalcul effectué.</translation>
+    </message>
+    <message>
+      <source>No expression problems found.</source>
+      <translation>Aucun problème d’expression détecté.</translation>
+    </message>
+    <message>
+      <source>Expression diagnostics…</source>
+      <translation>Diagnostic des expressions…</translation>
+    </message>
+    <message>
+      <source>Inspect expression failures and downstream impact without recomputing</source>
+      <translation>Inspecter les erreurs d’expression et leurs conséquences sans recalculer</translation>
+    </message>
+  </context>
 </TS>

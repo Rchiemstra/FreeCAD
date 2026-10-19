@@ -16,9 +16,9 @@ Multiple roots may yield multiple findings for a downstream property. One shorte
 chain per root is retained; cycles have an actual closed witness chain.
 
 Choose **Tools → Expression diagnostics…** in any workbench. The modeless table is
-read-only; selecting a row selects its object. Close and invoke the command again
-for a fresh report. Rows continue to show the captured report if the document
-changes; selecting a row for a deleted object/document does nothing.
+read-only and refreshes after document changes. Selecting a row selects its object
+and exact property in the Data tab. Capture and selection wait for busy documents,
+including external sources. Closing the report’s document closes the report.
 
 The property editor's **Data** tab uses the same diagnostics to show broken
 expressions in orange, with the expression path, formula and reason in the
@@ -38,9 +38,10 @@ object deletion, undo/redo and document closure. Observer callbacks only queue
 invalidation, including when recompute runs on a worker. On this fork, observation
 waits for the existing live-presentation reservation; upstream's synchronous
 execution needs no additional admission. Diagnostic colour/tooltip lookups only read cached plain data:
-they neither invoke Python nor evaluate expressions. The Tools table remains an
-explicit snapshot. Sketcher edit-mode constraint colours and solver messages,
-and explanations for rejected new constraints, remain follow-up work for #26496.
+they neither invoke Python nor evaluate expressions. The Tools table refreshes
+its captured rows through the same observation admission. Sketcher edit-mode
+constraint colours, solver messages and rejected-datum explanations are described
+below.
 
 Diagnosis evaluates each expression against currently stored input values and
 compares its result with the stored destination. It never calls recompute, sets
@@ -114,21 +115,27 @@ solely because another binding on that parameter container failed. Generated
 feature-output dependencies retain the diagnostics API's conservative impact. C++ caches the result with solver information;
 painting, list roles, tooltips and selection do not evaluate expressions.
 
-Baseline reproduction on the lane's original code: create a closed rectangle
-with Width/Height bound to a VarSet, delete that VarSet, enter sketch edit mode,
-add a circle, then accept a radius constraint. The old UI has no broken-expression
-colour, list marker/reason, or solver-panel count. Accepting the radius reports
-only a raw missing-object/property-binding error. In this branch the radius stays
-(the count changes from 10 to 11), rather than disappearing as in the issue's
-reported version. The new notification identifies Width and Height and their
-missing VarSet, without changing solving or transaction behaviour.
+The clipboard regression copies only the sketch (excluding its VarSet) with
+`Std_Copy` and pastes into a second document with `Std_Paste`. It checks missing
+variables, constraint and solver indicators, and the rejected diameter's count
+and notification cause. Datum edits commit only after expression validation, so
+an unsuccessful new dimension rolls back. Repair through the Data-tab expression
+editor clears the indicators after recompute and re-entering edit mode.
 
-Regression coverage is in `SketcherTests.TestSketchExpressionDiagnostics` and
-`SketcherTests.TestSketchExpressionDiagnosticsGui`, also registered in the
-Sketcher application/GUI aggregate suites. Before the fix, all seven GUI cases
-fail (four failures, three missing-widget errors); the initial seven adapter tests fail
-because the adapter is absent.
+The Tools report reserves discovery and all open documents before following
+references. Busy documents defer capture and selection; queued document changes
+refresh the report, and closing its document closes the report. Selecting a row
+selects its canonical property in the Data tab, including nested paths. Sketcher
+list rows snapshot pairs, legacy display roles and expression icons during
+admitted population; paint and tooltip requests use these snapshots.
 
-This completes the Sketcher edit presentation and datum-failure explanation part
-of [#26496](https://github.com/FreeCAD/FreeCAD/issues/26496). The global Data-tab
-property-editor colour treatment for other features remains outside this change.
+Presentation text is shared by the report, Data tab and Sketcher in
+`freecad.expression_diagnostics_text`. Translation extraction includes
+`src/Ext/freecad` in the FreeCAD catalogue. The GUI regression loads the actual
+French catalogue and checks translated headers, classifications and reasons.
+Native exception details, names, paths and formulas remain technical data.
+
+Regression coverage is registered in `TestExpressionDiagnosticsGui`,
+`SketcherTests.TestSketchExpressionDiagnostics`, and
+`SketcherTests.TestSketchExpressionDiagnosticsGui`, including the aggregate
+Sketcher application/GUI suites.

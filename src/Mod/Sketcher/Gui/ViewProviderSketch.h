@@ -535,6 +535,10 @@ public:
     /** @name Properties */
     //@{
     App::PropertyBool Autoconstraints;
+    SketchExpressionDiagnostics& getExpressionDiagnostics()
+    {
+        return expressionDiagnostics;
+    }
     const SketchExpressionDiagnostics& getExpressionDiagnostics() const
     { return expressionDiagnostics; }
 

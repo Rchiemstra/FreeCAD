@@ -23,6 +23,7 @@ set(EXT_FILES
     deprecation.py
     expression_diagnostics.py
     expression_diagnostics_gui.py
+    expression_diagnostics_text.py
     expression_diagnostics_property_editor.py
     freecad_doc.py
     module_io.py
