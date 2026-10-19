@@ -22,6 +22,7 @@
 #include <Gui/ApplicationPy.h>
 #include <Base/Interpreter.h>
 #include <Gui/Camera.h>
+#include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Tree.h>
@@ -159,6 +160,18 @@ protected:
             callback();
         }
         Gui::ViewProviderDocumentObject::updateData(property);
+    }
+};
+
+class PendingRecomputeProbe final: public App::DocumentObject
+{
+public:
+    mutable unsigned int probes {0};
+
+    short mustExecute() const override
+    {
+        ++probes;
+        return 1;
     }
 };
 
@@ -596,6 +609,48 @@ TEST_F(CollaborationResponsivenessTest, admissionDefersLivePresentationUpdates)
     EXPECT_TRUE(_guiDocument->deferLivePresentationUpdates());
     App::endAtomicPresentationMutationTarget(*_document);
     EXPECT_FALSE(_guiDocument->deferLivePresentationUpdates());
+}
+
+TEST_F(CollaborationResponsivenessTest, idleLiveCatchUpDoesNotProbePendingRecompute)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    auto* pending = new PendingRecomputeProbe;
+    _document->addObject(pending, "PendingRecomputeProbe");
+    pending->purgeTouched();
+    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*_document));
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    int refreshCalls = 0;
+    provider->refresh = [&] { ++refreshCalls; };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+    pending->probes = 0;
+
+    // Idle dirty features can be presented without waiting for recompute.
+    EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
+    EXPECT_EQ(pending->probes, 0u);
+    EXPECT_EQ(refreshCalls, 1);
+}
+
+TEST_F(CollaborationResponsivenessTest, idleActionsRetainRecomputeAndXLinkChecks)
+{
+    Gui::Application::Instance->setActiveDocument(_guiDocument);
+    ASSERT_EQ(Gui::Application::Instance->activeDocument(), _guiDocument);
+    auto* command = Gui::Application::Instance->commandManager().getCommandByName("Std_Refresh");
+    auto* importCommand =
+        Gui::Application::Instance->commandManager().getCommandByName("Std_LinkImportAll");
+    ASSERT_NE(command, nullptr);
+    ASSERT_NE(importCommand, nullptr);
+    EXPECT_FALSE(command->isActive());
+    EXPECT_FALSE(importCommand->isActive());
+
+    auto* pending = new PendingRecomputeProbe;
+    _document->addObject(pending, "PendingRecomputeProbe");
+    pending->purgeTouched();
+    pending->probes = 0;
+    EXPECT_TRUE(command->isActive());
+    EXPECT_FALSE(importCommand->isActive());
+    EXPECT_GT(pending->probes, 0u);
 }
 
 TEST_F(CollaborationResponsivenessTest,

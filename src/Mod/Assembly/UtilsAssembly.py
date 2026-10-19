@@ -1538,25 +1538,27 @@ def jointRelationError(
     return None
 
 
-def violatedJointLabels(assembly):
+def violatedJointLabels(assembly, joints=None):
     """Labels of joints whose relation does not hold after a solve.
 
     MbD can drop a conflicting constraint as redundant and still
     report success. solve() then returns the conflicting-constraints code and
-    names these joints.
+    names these joints. Explicit joints validate a seeded drag island, including
+    parts disconnected from ground.
     """
     labels = []
     connected = {}
     # Joints already uses native getJoints() to exclude suppressed/deactivated,
     # invalid and self-referencing joints. Use the native connectivity traversal
     # (including rigid clusters) to match removeUnconnectedJoints() as well.
-    for joint in assembly.Joints:
-        parts = (getMovingPart(joint.Reference1), getMovingPart(joint.Reference2))
-        for part in parts:
-            if part not in connected:
-                connected[part] = assembly.isPartConnected(part)
-        if not all(connected[part] for part in parts):
-            continue
+    for joint in assembly.Joints if joints is None else joints:
+        if joints is None:
+            parts = (getMovingPart(joint.Reference1), getMovingPart(joint.Reference2))
+            for part in parts:
+                if part not in connected:
+                    connected[part] = assembly.isPartConnected(part)
+            if not all(connected[part] for part in parts):
+                continue
         reason = jointRelationError(joint)
         if not reason:
             continue

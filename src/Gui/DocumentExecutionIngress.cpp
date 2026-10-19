@@ -3,6 +3,8 @@
 #include "DocumentExecutionIngress.h"
 
 #include "Application.h"
+#include "AutoSaver.h"
+#include "RecoveryWriteExecutor.h"
 #include "Document.h"
 #include "MainWindow.h"
 #include "Utilities.h"
@@ -32,7 +34,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <utility>
 
 using namespace std::chrono_literals;
@@ -502,87 +503,12 @@ void scheduleSaveCommandCompletion(
         });
 }
 
-void scheduleRecoverySnapshotWrite(
+bool scheduleRecoverySnapshotWrite(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options,
     std::function<void(bool written, std::exception_ptr failure)> onFinished)
 {
-    // L8: for lane documents, capture the lane shared_ptr at schedule time so the
-    // worker thread never calls getDocument(name). This prevents:
-    //   (a) a data race with document close on the name lookup,
-    //   (b) a reused document name clearing another lane's recovery flag.
-    // endRecoverySnapshotOwnerWork() is always called on the capturing lane, not
-    // on whichever lane happens to own the name at that point later.
-    //
-    // For no-lane documents: the legacy path still looks up the document by name
-    // from the worker (same behaviour as before). No lane recovery flag exists
-    // in this case so there is no flag-identity bug.
-    const App::RecoverySnapshotSaveOptions optionsCopy = options;
-    App::DocumentExecutionLane* laneRaw = document.executionLane();
-    std::shared_ptr<App::DocumentExecutionLane> lane =
-        laneRaw ? laneRaw->shared_from_this() : nullptr;
-    const std::string documentName = lane ? std::string {} : document.getName();
-    if (lane) {
-        lane->beginRecoverySnapshotOwnerWork();
-    }
-
-    // Register on the GUI thread before dispatch so fresh commands cannot
-    // repeatedly overtake an already pending recovery write.
-    auto admission = std::make_shared<App::RecoveryAdmission>();
-    std::thread([lane = std::move(lane),
-                 admission = std::move(admission),
-                 documentName,
-                 optionsCopy,
-                 onFinished = std::move(onFinished)]() mutable {
-        std::optional<bool> result;
-        std::exception_ptr failure;
-        try {
-            if (lane) {
-                // L8 fast path: dispatch the actual write to the lane owner thread.
-                // dispatchToOwner holds a reference to the document through the
-                // lane; the document is only closed from the GUI thread so it
-                // remains valid for the duration of the dispatch.
-                result = lane->dispatchToOwner(
-                    [&lane, &optionsCopy, &admission]() -> bool {
-                        // A recovery write is not part of a foreign command's
-                        // read-only postcondition. Reserve before the save
-                        // boundary so rejection cannot poison that audit.
-                        admission->acquire();
-                        const auto releaseAdmission = qScopeGuard([&] { admission.reset(); });
-                        auto& document = lane->document();
-                        if (!document.canWriteRecoverySnapshot()) {
-                            return false;  // Recovery eligibility changed before the worker ran.
-                        }
-                        return App::writeRecoverySnapshotToTransientDir(document, optionsCopy);
-                    },
-                    /*releaseGilWhileWaiting=*/true,
-                    /*allowWhileCommandActive=*/false);
-            }
-            else {
-                // No-lane legacy path: look up document by name (as before).
-                if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
-                    admission->acquire();
-                    const auto releaseAdmission = qScopeGuard([&] { admission.reset(); });
-                    result = doc->canWriteRecoverySnapshot()
-                        && App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy);
-                }
-                else {
-                    result = false;
-                }
-            }
-        }
-        catch (...) {
-            failure = std::current_exception();
-        }
-        admission.reset();
-        if (lane) {
-            lane->endRecoverySnapshotOwnerWork();
-        }
-        const bool written = result.value_or(false);
-        scheduleGuiSingleShot(0, [onFinished = std::move(onFinished), written, failure]() mutable {
-            onFinished(written, failure);
-        });
-    }).detach();
+    return AutoSaver::instance()->recoveryWrites().schedule(document, options, std::move(onFinished));
 }
 
 bool submitDocumentSave(App::Document& document)
@@ -648,6 +574,9 @@ void reportDocumentSaveAdmitted(App::Document& document)
 
 bool submitDocumentClose(App::Document& document, const bool allowApplicationClose)
 {
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        AutoSaver::instance()->cancelRecoveryWrite(document);
+    }
     if (!App::DocumentWouldBlock::isGuiThread() || !document.executionLane()) {
         return App::GetApplication().closeDocument(&document);
     }

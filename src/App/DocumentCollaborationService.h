@@ -23,6 +23,7 @@
 namespace Gui
 {
 class Document;
+class RecoveryWriteExecutor;
 namespace Test
 {
 class RecoveryWaitTestAccess;
@@ -226,6 +227,7 @@ private:
 
     friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
+    friend class Gui::RecoveryWriteExecutor;
     friend class Application;
     friend class Internal::PreparedLabelReferenceUpdates;
     friend class Document;

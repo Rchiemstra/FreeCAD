@@ -1302,6 +1302,7 @@ SET(FreeCADGui_CPP_SRCS
     Application.cpp
     ApplicationPy.cpp
     AutoSaver.cpp
+    RecoveryWriteExecutor.cpp
     BitmapFactory.cpp
     CollaborationCompatibilityAdapter.cpp
     PersonalViewContext.cpp
@@ -1357,6 +1358,7 @@ SET(FreeCADGui_CPP_SRCS
 SET(FreeCADGui_SRCS
     Application.h
     AutoSaver.h
+    RecoveryWriteExecutor.h
     BitmapFactory.h
     CollaborationCompatibilityAdapter.h
     PersonalViewContext.h

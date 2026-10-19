@@ -62,14 +62,17 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
     // own lifecycle pin. LifecyclePin must be destroyed on its creating thread:
     // the scheduler delivers and releases this shared state on the GUI thread.
     // Reuse production's lane retention, recovery-work flag and admission guard.
-    // Its worker owns this callback (and thus Completion), with no references
+    // The executor owns this callback (and thus Completion), with no references
     // to our stack or options. Completion is delivered on the Qt GUI thread.
-    scheduleRecoverySnapshotWrite(document, options,
+    const bool accepted = scheduleRecoverySnapshotWrite(document, options,
         [completion](bool written, std::exception_ptr failure) {
             completion->result = written;
             completion->failure = failure;
             completion->finished.store(true, std::memory_order_release);
         });
+    if (!accepted) {
+        throw Base::RuntimeError("recovery snapshot executor did not admit the write");
+    }
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     // Nested event processing is deliberately confined to test support.
@@ -79,7 +82,7 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
         std::this_thread::sleep_for(1ms);
     }
     if (!completion->finished.load(std::memory_order_acquire)) {
-        // Safe detach: the scheduler keeps the lane and recovery-work flag
+        // The executor keeps the lane and recovery-work flag
         // until owner work ends; its queued callback retains Completion even
         // after this function throws. Timeout does not cancel the write.
         throw Base::RuntimeError("recovery snapshot write did not finish before timeout");

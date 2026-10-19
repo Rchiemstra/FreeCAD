@@ -3,8 +3,7 @@
 import FreeCAD
 from Test.GuiRecompute import recompute_document, close_document
 import unittest
-from .TechDrawTestUtilities import createPageWithSVGTemplate
-from PySide import QtCore
+from .TechDrawTestUtilities import createPageWithSVGTemplate, waitForHLR
 
 class DrawViewDimensionTest(unittest.TestCase):
     def setUp(self):
@@ -38,15 +37,8 @@ class DrawViewDimensionTest(unittest.TestCase):
 
         recompute_document(self.document)
 
-        #wait for threads to complete before checking result
-        loop = QtCore.QEventLoop()
-
-        timer = QtCore.QTimer()
-        timer.setSingleShot(True)
-        timer.timeout.connect(loop.quit)
-
-        timer.start(5000)   #5 second delay
-        loop.exec_()
+        waitForHLR(self.view)
+        waitForHLR(self.view1)
 
     def tearDown(self):
         print("DVDTest.tearDown()")
