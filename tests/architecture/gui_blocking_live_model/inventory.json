@@ -31004,7 +31004,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
-      "line": 58,
+      "line": 65,
       "category": "live-reference-callback",
       "subsystem": "Sketcher",
       "disposition": "migrate",
@@ -31012,7 +31012,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
-      "line": 114,
+      "line": 121,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
