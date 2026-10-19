@@ -280,6 +280,14 @@ public:
             return QVariant();
         }
 
+        if (role == Qt::ForegroundRole || role == Qt::ToolTipRole) {
+            const auto diagnostic = constraintExpressionData(
+                sketchView->getExpressionDiagnostics(), constraintNumbers(), role);
+            if (diagnostic.isValid()) {
+                return diagnostic;
+            }
+        }
+
         if (role == Qt::EditRole) {
             if (value.isValid())
                 return value;

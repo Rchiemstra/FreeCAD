@@ -4542,6 +4542,7 @@ inline QString intListHelper(const std::vector<int>& ints)
 
 void ViewProviderSketch::UpdateSolverInformation()
 {
+    expressionDiagnostics.refresh(getSketchObject());
     // Updates Solver Information with the Last solver execution at SketchObject level
     int dofs = getSketchObject()->getLastDoF();
     bool hasConflicts = getSketchObject()->getLastHasConflicts();

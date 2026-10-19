@@ -43,7 +43,8 @@ Detectable Python attribute paths and subobject expressions are conservatively r
 cannot otherwise access the expression parser's identifiers, resolved property
 subpaths, hidden-reference flags, or resolution errors. The binding only parses
 and resolves a temporary expression; it neither evaluates nor installs it. All
-classification, graph traversal, and presentation live in new Python files.
+classification and graph traversal live in Python. The global report is Python;
+Sketcher uses a cached C++ presentation with small hooks in its existing GUI files.
 There are no changes to recompute/execution code.
 
 Merge exposure (upstream commits since 2026-04-01, measured with
@@ -61,3 +62,48 @@ Merge exposure (upstream commits since 2026-04-01, measured with
 
 Follow-up: expose the same plain-data API in `tools/mcp/freecad-mcp` separately.
 Spreadsheet cell-level presentation is outside this change.
+
+
+## Sketcher edit mode (#26496)
+
+Broken constraint expressions use a separate colour in the 3D view and the
+constraint list. The list tooltip shows the expression and its failure reason,
+including upstream causes. Set the colour in Sketcher appearance preferences,
+or with `BaseApp/Preferences/View/BrokenExpressionConstrDimColor`
+(an RGBA unsigned parameter, default `0xD020D0FF`). Selection and preselection
+still use the normal highlight colours.
+
+The Sketch Edit solver panel shows a separate count of constraints with broken
+expressions, alongside the normal solver status. Click the count to select
+those constraints. Multiple upstream causes count a constraint once. Repairing
+an expression or undoing a deleted source clears the indicators on solver update.
+Failed datum edits include the names/numbers of the affected constraints and
+their expression causes in the existing notification system.
+
+`freecad.sketcher_expression_diagnostics.constraint_errors(sketch)` adapts
+`diagnose()` to zero-based constraint indices. It does not recompute or change
+the sketch. Only actual expression failures and their downstream consequences
+are marked; pending stale values and expressions which cannot safely be evaluated
+are not classified as broken. An independent stored VarSet input is not marked
+solely because another binding on that parameter container failed. Generated
+feature-output dependencies retain the diagnostics API's conservative impact. C++ caches the result with solver information;
+painting, list roles, tooltips and selection do not evaluate expressions.
+
+Baseline reproduction on the lane's original code: create a closed rectangle
+with Width/Height bound to a VarSet, delete that VarSet, enter sketch edit mode,
+add a circle, then accept a radius constraint. The old UI has no broken-expression
+colour, list marker/reason, or solver-panel count. Accepting the radius reports
+only a raw missing-object/property-binding error. In this branch the radius stays
+(the count changes from 10 to 11), rather than disappearing as in the issue's
+reported version. The new notification identifies Width and Height and their
+missing VarSet, without changing solving or transaction behaviour.
+
+Regression coverage is in `SketcherTests.TestSketchExpressionDiagnostics` and
+`SketcherTests.TestSketchExpressionDiagnosticsGui`, also registered in the
+Sketcher application/GUI aggregate suites. Before the fix, all seven GUI cases
+fail (four failures, three missing-widget errors); the initial seven adapter tests fail
+because the adapter is absent.
+
+This completes the Sketcher edit presentation and datum-failure explanation part
+of [#26496](https://github.com/FreeCAD/FreeCAD/issues/26496). The global Data-tab
+property-editor colour treatment for other features remains outside this change.

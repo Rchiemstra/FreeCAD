@@ -29,6 +29,7 @@ set(EXT_FILES
     partdesign.py
     project_utility.py
     sketcher.py
+    sketcher_expression_diagnostics.py
     UiTools.py
     utils.py
     utils_zip.py

@@ -764,6 +764,7 @@ void SketcherSettingsAppearance::saveSettings()
     ui->NonDrivingConstraintColor->onSave();
     ui->DatumColor->onSave();
     ui->ExprBasedConstrDimColor->onSave();
+    ui->BrokenExpressionConstrDimColor->onSave();
     ui->DeactivatedConstrDimColor->onSave();
 
     ui->CursorTextColor->onSave();
@@ -841,6 +842,7 @@ void SketcherSettingsAppearance::loadSettings()
     ui->NonDrivingConstraintColor->onRestore();
     ui->DatumColor->onRestore();
     ui->ExprBasedConstrDimColor->onRestore();
+    ui->BrokenExpressionConstrDimColor->onRestore();
     ui->DeactivatedConstrDimColor->onRestore();
 
     ui->CursorTextColor->onRestore();

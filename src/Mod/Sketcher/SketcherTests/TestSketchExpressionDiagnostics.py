@@ -53,3 +53,13 @@ class TestSketchExpressionDiagnostics(unittest.TestCase):
         self.assertEqual(set(errors), {8, 9})
         self.assertIn("MissingWidth", errors[8])
         self.assertIn("MissingHeight", errors[8])
+
+    def test_failure_in_feature_output_dependency_is_retained(self):
+        source = self.doc.addObject("App::FeaturePython", "Source")
+        source.addProperty("App::PropertyFloat", "Value")
+        source.addProperty("App::PropertyVector", "Output")
+        source.Output = App.Vector(20, 0, 0)
+        source.setExpression("Value", "Missing.Value")
+        self.sketch.setExpression("Constraints.Width", "Source.Output.x")
+        self.assertEqual(set(self.findings()), {8})
+        self.assertIn("Missing", self.findings()[8])

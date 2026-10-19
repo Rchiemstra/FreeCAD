@@ -337,7 +337,10 @@ void EditDatumDialog::accepted()
             success = true;
         }
         catch (const Base::Exception& e) {
-            Gui::NotifyUserError(sketch, QT_TRANSLATE_NOOP("Notifications", "Value Error"), e.what());
+            Gui::TranslatedUserError(
+                sketch, QCoreApplication::translate("Notifications", "Value Error"),
+                SketchExpressionDiagnostics::editFailure(
+                    sketch, QCoreApplication::translate("Notifications", e.what())));
 
             Gui::Command::abortCommand(transactionID);
 

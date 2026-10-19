@@ -49,7 +49,7 @@ class TestSketchExpressionDiagnosticsGui(SketcherGuiTestCase):
                          {"Constraint9", "Constraint10"})
 
     def test_scene_uses_configured_broken_expression_colour(self):
-        params = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Sketcher/View")
+        params = App.ParamGet("User parameter:BaseApp/Preferences/View")
         old = params.GetUnsigned("BrokenExpressionConstrDimColor", 0xD020D0FF)
         params.SetUnsigned("BrokenExpressionConstrDimColor", 0xA15020FF)
         try:

@@ -50,6 +50,7 @@
 #include "AutoConstraint.h"
 
 #include "ShortcutListener.h"
+#include "SketchExpressionDiagnostics.h"
 #include "Utils.h"
 
 #include <Gui/Inventor/SoToggleSwitch.h>
@@ -534,6 +535,9 @@ public:
     /** @name Properties */
     //@{
     App::PropertyBool Autoconstraints;
+    const SketchExpressionDiagnostics& getExpressionDiagnostics() const
+    { return expressionDiagnostics; }
+
     App::PropertyBool AvoidRedundant;
     App::PropertyPythonObject TempoVis;
     App::PropertyBool HideDependent;
@@ -1078,6 +1082,7 @@ private:
 
     std::unique_ptr<ShortcutListener> listener;
 
+    SketchExpressionDiagnostics expressionDiagnostics;
     std::unique_ptr<EditModeCoinManager> editCoinManager;
 
     std::unique_ptr<SnapManager> snapManager;
