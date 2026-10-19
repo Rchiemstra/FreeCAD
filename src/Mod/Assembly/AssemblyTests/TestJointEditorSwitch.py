@@ -206,7 +206,9 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.openJoint(self.joints[0], tree)
         self.changeType()
         self.openJoint(self.joints[1], tree)
-        self.assertEqual(self.doc.UndoCount, 1, "A including cleanup is one finished edit")
+        # UndoCount includes the active transaction: one finished A edit and
+        # B's pending edit (which has temporarily made B visible).
+        self.assertEqual(self.doc.UndoCount, 2, "One finished edit plus B's pending edit")
         self.assertEqual([j.Visibility for j in self.joints], [False, True])
         self.changeType()
         self.finish(accept)
@@ -261,7 +263,7 @@ class TestJointEditorSwitch(unittest.TestCase):
         self.assertTypes("Fixed", "Fixed")
         for joint, properties in zip(self.joints, self.jointProperties):
             self.assertEqual(self.properties(joint), properties)
-        self.assertEqual(pendingUndoCount, 0)
+        self.assertEqual(pendingUndoCount, 1, "Only A's edit is available, still pending")
         self.assertEqual(self.doc.UndoCount, 0)
 
     def test_tree_failed_accept_then_cancel_restores_first_joint(self):
