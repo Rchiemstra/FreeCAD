@@ -379,10 +379,10 @@ class ExpressionDiagnosticsDataTabTests(unittest.TestCase):
 
     def test_undo_redo_and_close_clear_diagnostics(self):
         from freecad.expression_diagnostics_property_editor import _cache
-        from Test.GuiRecompute import wait_for_mutation_ready, undo_document, redo_document
+        from Test.GuiRecompute import undo_document, redo_document
 
         self.assert_broken("Broken", "Absent")
-        wait_for_mutation_ready(self.doc)
+        self.doc.UndoMode = 1
         self.doc.openTransaction("Repair expression")
         self.obj.setExpression("Broken", "3")
         self.doc.commitTransaction()
