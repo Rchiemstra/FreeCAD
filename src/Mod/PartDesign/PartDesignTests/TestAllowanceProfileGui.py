@@ -154,7 +154,13 @@ class TestAllowanceProfileGui(unittest.TestCase):
     def testPocketDialogAcceptsPendingFittingTolerance(self):
         self.pocket_dialog_fitting_tolerance(accept_immediately=True)
 
-    def pocket_dialog_fitting_tolerance(self, accept_immediately):
+    def testPocketDialogRetriesBusyPreview(self):
+        self.pocket_dialog_fitting_tolerance(accept_immediately=False, busy_lane=True)
+
+    def testPocketDialogRetriesBusyAccept(self):
+        self.pocket_dialog_fitting_tolerance(accept_immediately=True, busy_lane=True)
+
+    def pocket_dialog_fitting_tolerance(self, accept_immediately, busy_lane=False):
         from PySide import QtCore, QtGui
         from Test.GuiRecompute import _left_commit, _pump_gui_until, _retry_while_lane_busy
 
@@ -191,7 +197,7 @@ class TestAllowanceProfileGui(unittest.TestCase):
         self.assertIn("10.4", field.toolTip())
         update_view = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
         self.assertIsNotNone(update_view)
-        update_view.setChecked(True)
+        update_view.setChecked(not busy_lane)
         editor = field.findChild(QtGui.QLineEdit)
         self.assertIsNotNone(editor)
         editor.setFocus()
@@ -199,10 +205,51 @@ class TestAllowanceProfileGui(unittest.TestCase):
         settle_recompute()
         editor.setText("0.4 mm")
         QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
+        if busy_lane:
+            # Hold the owner lane across both requests so the Busy path is
+            # deterministic, independent of machine speed and OCC timing.
+            import threading
+
+            entered, release = threading.Event(), threading.Event()
+            errors = []
+
+            def hold_lane():
+                entered.set()
+                if not release.wait(10):
+                    raise RuntimeError("test did not release execution lane")
+
+            def worker():
+                try:
+                    self.doc.commitCompatibilityMutation(
+                        hold_lane, structural=False, recompute=False
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            try:
+                _pump_gui_until(entered.is_set, 5)
+                update_view.setChecked(True)
+                self.assertIn("Touched", pocket.State)
+                if accept_immediately:
+                    Gui.Control.activeTaskDialog().accept()
+                    self.assertTrue(Gui.Control.activeDialog())
+            finally:
+                release.set()
+                _pump_gui_until(lambda: not thread.is_alive(), 10)
+                thread.join()
+            self.assertEqual(errors, [])
         if not accept_immediately:
             wait_for_preview(pocket)
             settle_recompute()
-        Gui.Control.activeTaskDialog().accept()
+        if not (busy_lane and accept_immediately):
+            Gui.Control.activeTaskDialog().accept()
+        # TaskDialogPy.accept() clicks OK and returns None. Completion may be
+        # deferred while a focus-out preview owns the execution lane.
+        _pump_gui_until(lambda: not Gui.Control.activeDialog(), 30,
+                        self.doc.getMutationReadiness)
+        self.assertFalse(self.doc.HasPendingTransaction)
         recompute_document(self.doc)
         self.assertFalse(Gui.Control.activeDialog())
         self.assertAlmostEqual(pocket.FittingTolerance.Value, 0.4)
