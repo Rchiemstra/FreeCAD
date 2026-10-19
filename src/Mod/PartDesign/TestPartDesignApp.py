@@ -67,3 +67,6 @@ from PartDesignTests.TestSuppressed import TestSuppressed
 
 # Topological naming problem
 from PartDesignTests.TestTopologicalNamingProblem import TestTopologicalNamingProblem
+
+from PartDesignTests.TestAllowanceProfile import TestAllowanceProfile
+from PartDesignTests.TestFittingTolerance import TestFittingTolerance

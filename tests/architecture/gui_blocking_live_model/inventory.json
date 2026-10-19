@@ -266,6 +266,8 @@
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
@@ -26885,6 +26887,22 @@
       "evidence": "void updateData(const App::Property*) override;"
     },
     {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "line": 36,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument is None or Gui.Control.activeDialog():"
+    },
+    {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "line": 45,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "and source.Document == App.ActiveDocument"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
       "line": 151,
       "category": "live-app-dereference",
@@ -27310,23 +27328,15 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 156,
+      "line": 159,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void TaskFeatureParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
     },
     {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 221,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(feature, \"purgeTouched()\");"
-    },
-    {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.h",
-      "line": 99,
+      "line": 101,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",

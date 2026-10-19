@@ -352,6 +352,8 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     # OpenSCAD's provider module is loaded by OpenSCADCommands.
