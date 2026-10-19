@@ -9,7 +9,7 @@ import re
 
 import FreeCAD as App
 
-from freecad.expression_diagnostics import diagnose
+from freecad.expression_diagnostics import diagnose, _path_related
 
 _FAILURES = {"unresolved_reference", "external_document", "unit_error",
              "evaluation_error", "dependency_cycle"}
@@ -22,6 +22,39 @@ def _stored_parameters(full_name):
     # A plain VarSet stores parameters; it has no generated outputs. Keep
     # execution-dependent feature outputs (including derived types) conservative.
     return obj is not None and obj.TypeId == "App::VarSet"
+
+
+def _binding_depends_on(sketch, path, root):
+    """Check actual bindings when the report's shortest chain is coarse.
+
+    An alternate, longer binding chain may still reach the root. Plain VarSet
+    inputs do not require execution; generated feature outputs remain exposed
+    to failures in the feature's bindings and structural inputs.
+    """
+    pending, seen = [(sketch, path)], set()
+    while pending:
+        obj, path = pending.pop()
+        key = (obj.FullName, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key[0] == root["object"] and (not path or _path_related(path, root["property"])):
+            return True
+        bindings = [(bound.lstrip("."), expression) for bound, expression in obj.ExpressionEngine
+                    if expression]
+        matching = [(bound, expression) for bound, expression in bindings
+                    if path and _path_related(path, bound)]
+        if not matching and obj.TypeId == "App::VarSet":
+            continue
+        for _, expression in matching or bindings:
+            for ref in obj.getExpressionReferences(expression):
+                if ref["object"] is not None:
+                    pending.append((ref["object"], ref["property"]))
+        if not matching:
+            for edge in obj.OutListProp:
+                if edge.FromProp != "ExpressionEngine" and edge.ToObj is not None:
+                    pending.append((edge.ToObj, ""))
+    return False
 
 
 def constraint_errors(sketch):
@@ -41,13 +74,13 @@ def constraint_errors(sketch):
         if root is None:
             continue
         intermediate = row["chain"][1:-1]
-        if (row["role"] == "affected" and intermediate
-                and _stored_parameters(root["object"])
-                and all(not step["property"] and _stored_parameters(step["object"])
-                        for step in intermediate)):
-            # Coarse scheduling exposes every consumer of a failed object.
-            # Another stored VarSet input is still valid; a property-to-property
-            # chain through a failing binding remains an actual constraint cause.
+        if (row["role"] == "affected"
+                and any(not step["property"] and _stored_parameters(step["object"])
+                        for step in intermediate)
+                and not _binding_depends_on(sketch, row["property"], root)):
+            # An object-only hop through a plain VarSet is coarse scheduling
+            # exposure, even when followed by more property bindings. Stored
+            # parameters propagate failures only through their actual bindings.
             continue
         path = row["property"]
         match = re.fullmatch(r"Constraints\[(\d+)\]", path)
