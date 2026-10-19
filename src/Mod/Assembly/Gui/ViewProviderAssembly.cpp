@@ -342,8 +342,11 @@ bool ViewProviderAssembly::setEdit(int mode)
 void ViewProviderAssembly::unsetEdit(int mode)
 {
     if (mode == ViewProvider::Default) {
+        // Reject tentative placements before edit reset can commit Move part.
+        if (partMoving) {
+            endMove(true);
+        }
         canStartDragging = false;
-        partMoving = false;
         docsToMove.clear();
 
         unsetDragger();
@@ -1066,10 +1069,19 @@ void ViewProviderAssembly::initMove(const SbVec2s& cursorPos, Gui::View3DInvento
 {
     try {
         tryInitMove(cursorPos, viewer);
+        return;
     }
     catch (const Base::Exception& e) {
         Base::Console().warning("{}\n", e.what());
     }
+    catch (const std::exception& e) {
+        Base::Console().warning("{}\n", e.what());
+    }
+    catch (...) {
+        Base::Console().warning("Assembly drag preparation failed\n");
+    }
+    // Preparation may throw after opening Move part and disabling selection.
+    endMove(true);
 }
 
 void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer)
@@ -1080,6 +1092,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
     }
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    assemblyPart->saveDragState();
     // When the user drag parts, we switch off all joints visibility and only show the movingjoint
     jointVisibilitiesBackup.clear();
     auto joints = assemblyPart->getJoints();
@@ -1165,7 +1178,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
 
         assemblyPart->setObjMasses(objectMasses);
         if (assemblyPart->preDrag(dragParts) != SolveResult::Success) {
-            endMove();
+            endMove(true);
         }
     }
     else {
@@ -1173,14 +1186,45 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
     }
 }
 
-void ViewProviderAssembly::endMove()
+void ViewProviderAssembly::endMove(bool abort)
 {
+    const bool wasMoving = partMoving;
     docsToMove.clear();
     partMoving = false;
     canStartDragging = false;
     forceSolveOnMoveForRigid = false;
 
     auto* assemblyPart = getObject<AssemblyObject>();
+    bool accept = false;
+    const auto reportCleanupFailure = [](const char* message) noexcept {
+        try {
+            Base::Console().error("{}\n", message);
+        }
+        catch (...) {
+        }
+    };
+    Base::ScopeGuard cleanup([&] {
+        // Transaction notifications must not prevent the journal's final cleanup.
+        try {
+            if (moveInCommand && wasMoving) {
+                if (accept) {
+                    getDocument()->commitCommand();
+                }
+                else {
+                    getDocument()->abortCommand();
+                }
+            }
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag transaction cleanup failed");
+        }
+        try {
+            assemblyPart->finishDrag();
+        }
+        catch (...) {
+            reportCleanupFailure("Assembly drag journal cleanup failed");
+        }
+    });
     auto joints = assemblyPart->getJoints();
     for (auto pair : jointVisibilitiesBackup) {
         bool visible = pair.first->Visibility.getValue();
@@ -1198,24 +1242,10 @@ void ViewProviderAssembly::endMove()
         view->getViewer()->setSelectionEnabled(true);
     }
 
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Mod/Assembly"
-    );
-    bool solveOnMove = hGrp->GetBool("SolveOnMove", true);
-    SolveResult dragResult = SolveResult::Success;
-    if (solveOnMove) {
-        dragResult = assemblyPart->postDrag();
-        assemblyPart->setObjMasses({});
-    }
+    const auto dragResult = assemblyPart->postDrag(abort);
+    assemblyPart->setObjMasses({});
 
-    if (moveInCommand) {
-        if (dragResult == SolveResult::Success) {
-            getDocument()->commitCommand();
-        }
-        else {
-            getDocument()->abortCommand();
-        }
-    }
+    accept = !abort && dragResult == SolveResult::Success;
 }
 
 void ViewProviderAssembly::initMoveDragger()

@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
+
 #include <FCConfig.h>
 
 #include <App/Application.h>
@@ -621,4 +623,319 @@ TEST_F(AssemblyObjectTest, dragCompletionValidatesOnce)  // NOLINT
     )), 1);
     EXPECT_EQ(getObject()->getLastSolverStatus(), 0);
     EXPECT_NEAR(lid->getPlacementProperty()->getValue().getPosition().z, 2, 1e-6);
+}
+
+TEST_F(AssemblyObjectTest, geometryExceptionRejectsSolvePreparation)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import Part\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_joint.JointType = 'Distance'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_lid.Shape = Part.Shape()\n"
+    );
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::SolverFailure);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -1);
+    EXPECT_EQ(getObject()->getLastDoF(), -1);
+}
+
+TEST_F(AssemblyObjectTest, geometryExceptionRejectsIslandDragPreparation)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import Part\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_base.setEditorMode('Placement', 0)\n"
+        "    _c1_joint.JointType = 'Distance'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_lid.Shape = Part.Shape()\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::SolverFailure);
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -1);
+    EXPECT_FALSE(hasSolverSystem());
+    getObject()->doDragStep();
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::SolverFailure);
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragRestoresPreparationReferencesAndFlags)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "import JointObject\n"
+        "with patch('JointObject.solveIfAllowed'):\n"
+        "    _c1_joint.JointType = 'Slider'\n"
+        "    _c1_joint.Detach1 = _c1_joint.Detach2 = True\n"
+        "    _c1_joint.Placement1 = _c1_joint.Placement2 = App.Placement()\n"
+        "    _j117_screw = _c1_a.Document.getObject('jointGroupTest').newObject('App::FeaturePython', 'Screw')\n"
+        "    JointObject.Joint(_j117_screw, JointObject.JointTypes.index('Screw'))\n"
+        "    _j117_screw.Detach1 = _j117_screw.Detach2 = True\n"
+        "    _j117_screw.Reference1 = (_c1_lid, ['Face1'])\n"
+        "    _j117_screw.Reference2 = (_c1_base, ['Face1'])\n"
+        "    _j117_screw.Distance = 10\n"
+        "_j117_refs = (_j117_screw.Reference1, _j117_screw.Reference2)\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    std::vector<std::pair<App::Property*, unsigned long>> flags;
+    std::vector<std::pair<App::DocumentObject*, unsigned long>> objectFlags;
+    for (auto* object : getDocument()->getObjects()) {
+        objectFlags.emplace_back(object, object->getStatus());
+        std::vector<App::Property*> properties;
+        object->getPropertyList(properties);
+        for (auto* property : properties) {
+            flags.emplace_back(property, property->getStatus());
+        }
+    }
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    getDocument()->openTransaction("Move part");
+    Base::Interpreter().runString(
+        "_j117_validator = patch('UtilsAssembly.violatedJointLabels', return_value=[])\n"
+        "_j117_validator.start()\n"
+    );
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    EXPECT_TRUE(getDocument()->hasPendingTransaction());
+    Base::Interpreter().runString("_j117_validator.stop()");
+    {
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Base::Interpreter().runStringObject(
+            "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs[::-1]"
+        ).isTrue()) << "preparation must actually swap the references";
+    }
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(0, 0, 12), Base::Rotation())
+    );
+    Base::Interpreter().runString(
+        "_j117_validator = patch('UtilsAssembly.violatedJointLabels', return_value=None)\n"
+        "_j117_validator.start()\n"
+    );
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::ValidationFailed);
+    Base::Interpreter().runString("_j117_validator.stop()");
+    {
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Base::Interpreter().runStringObject(
+            "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs"
+        ).isTrue()) << "native rejection must restore references before transaction abort";
+    }
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    getDocument()->abortTransaction();
+    EXPECT_FALSE(getDocument()->hasPendingTransaction());
+    getObject()->finishDrag();
+    Base::PyGILStateLocker lock;
+    EXPECT_TRUE(Base::Interpreter().runStringObject(
+        "(_j117_screw.Reference1, _j117_screw.Reference2) == _j117_refs"
+    ).isTrue());
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    for (const auto& [property, status] : flags) {
+        EXPECT_EQ(property->getStatus(), status) << property->getFullName();
+    }
+    for (const auto& [object, status] : objectFlags) {
+        EXPECT_EQ(object->getStatus(), status) << object->getNameInDocument();
+    }
+}
+
+TEST_F(AssemblyObjectTest, contradictoryUngroundedDragIslandIsRejected)  // NOLINT
+{
+    makeSolveFixture(true);
+    Base::Interpreter().runString("_c1_base.setEditorMode('Placement', 0)");
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    EXPECT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::RelationsViolated);
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::RelationsViolated);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getObject()->getLastSolverStatus(), -3);
+}
+
+TEST_F(AssemblyObjectTest, ungroundedDragCompletionValidatesSeededIsland)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString("_c1_base.setEditorMode('Placement', 0)");
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    // Leave a violated real relation at release without calling the solver step.
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(43, 17, 9), Base::Rotation())
+    );
+    EXPECT_EQ(getObject()->postDrag(), Assembly::SolveResult::RelationsViolated);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+}
+
+TEST_F(AssemblyObjectTest, rejectedSolveRestoresHiddenDependentFlags)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    Base::Interpreter().runString(
+        "_c1_lid.Placement.Base = App.Vector(30, 0, 0)\n"
+        "_j117_dependent = _c1_a.Document.addObject('App::FeaturePython', 'Dependent')\n"
+        "_j117_dependent.addProperty('App::PropertyFloat', 'X')\n"
+        "_j117_dependent.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+        "_j117_dependent.recompute()\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    auto* dependent = getDocument()->getObject("Dependent");
+    auto* value = dependent->getPropertyByName<App::PropertyFloat>("X");
+    ASSERT_NE(value, nullptr);
+    const auto before = value->getValue();
+    ASSERT_DOUBLE_EQ(before, 30);
+    const auto objectStatus = dependent->getStatus();
+    std::vector<std::pair<App::Property*, unsigned long>> flags;
+    std::vector<App::Property*> properties;
+    dependent->getPropertyList(properties);
+    for (auto* property : properties) {
+        flags.emplace_back(property, property->getStatus());
+    }
+    bool bindingChanged = false;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == dependent && &property == value) {
+                bindingChanged = true;
+            }
+        }
+    );
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    connection.disconnect();
+    EXPECT_TRUE(bindingChanged) << "the hidden binding must observe the tentative placement";
+    EXPECT_DOUBLE_EQ(value->getValue(), before);
+    EXPECT_EQ(dependent->getStatus(), objectStatus);
+    for (const auto& [property, status] : flags) {
+        EXPECT_EQ(property->getStatus(), status) << property->getName();
+    }
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragContainsRollbackObserverExceptions)  // NOLINT
+{
+    makeSolveFixture();
+    auto* lid = getDocument()->getObject("Lid");
+    auto* base = getDocument()->getObject("Base");
+    const auto lidPlacement = lid->getPlacementProperty()->getValue();
+    const auto basePlacement = base->getPlacementProperty()->getValue();
+    getObject()->saveDragState();
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(12, 3, 4), Base::Rotation())
+    );
+    base->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(7, 8, 9), Base::Rotation())
+    );
+    int notifications = 0;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if ((&object == lid || &object == base)
+                && &property == object.getPlacementProperty()) {
+                ++notifications;
+                throw std::runtime_error("rollback observer failure");
+            }
+        }
+    );
+    EXPECT_NO_THROW(getObject()->postDrag(true));
+    connection.disconnect();
+    EXPECT_EQ(notifications, 2) << "rollback must continue after each observer throws";
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(lidPlacement));
+    EXPECT_TRUE(base->getPlacementProperty()->getValue().isSame(basePlacement));
+    EXPECT_NO_THROW(getObject()->finishDrag());
+    // A fresh solve must remain possible after the attempt's guards are released.
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
+}
+
+TEST_F(AssemblyObjectTest, rejectedSolveContainsDestructorRollbackExceptions)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    auto* lid = getDocument()->getObject("Lid");
+    const Base::Placement original(Base::Vector3d(30, 0, 0), Base::Rotation());
+    lid->getPlacementProperty()->setValue(original);
+    bool notified = false;
+    auto connection = getDocument()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == lid && &property == lid->getPlacementProperty()
+                && lid->getPlacementProperty()->getValue().isSame(original)) {
+                notified = true;
+                throw std::runtime_error("destructor rollback observer failure");
+            }
+        }
+    );
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    connection.disconnect();
+    EXPECT_TRUE(notified);
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getObject()->solve(), Assembly::SolveResult::Success);
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragSkipsDeletedJournalObject)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "_j119_dependent = _c1_a.Document.addObject('App::FeaturePython', 'DeletedDependent')\n"
+        "_j119_dependent.addProperty('App::PropertyFloat', 'X')\n"
+        "_j119_dependent.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    const auto original = lid->getPlacementProperty()->getValue();
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    getDocument()->removeObject("DeletedDependent");
+    lid->getPlacementProperty()->setValue(
+        Base::Placement(Base::Vector3d(12, 3, 4), Base::Rotation())
+    );
+    EXPECT_EQ(getObject()->postDrag(true), Assembly::SolveResult::SolverFailure);
+    getObject()->finishDrag();
+    EXPECT_TRUE(lid->getPlacementProperty()->getValue().isSame(original));
+    EXPECT_EQ(getDocument()->getObject("DeletedDependent"), nullptr);
+}
+
+TEST_F(AssemblyObjectTest, rejectedDragDoesNotRestoreDeletedReferenceTarget)  // NOLINT
+{
+    makeSolveFixture();
+    Base::Interpreter().runString(
+        "_j119_target = _c1_a.Document.addObject('App::FeaturePython', 'DeletedTarget')\n"
+        "_c1_a.addProperty('App::PropertyXLinkSub', 'RollbackTarget')\n"
+        "_c1_a.RollbackTarget = (_j119_target, ['Face1'])\n"
+    );
+    auto* lid = getDocument()->getObject("Lid");
+    ASSERT_EQ(getObject()->preDrag({lid}), Assembly::SolveResult::Success);
+    getDocument()->removeObject("DeletedTarget");
+    auto* reference = getObject()->getPropertyByName<App::PropertyXLinkSub>("RollbackTarget");
+    ASSERT_NE(reference, nullptr);
+    reference->setValue(lid, {"Face1"});
+    EXPECT_EQ(getObject()->postDrag(true), Assembly::SolveResult::SolverFailure);
+    getObject()->finishDrag();
+    EXPECT_EQ(reference->getValue(), nullptr);
+    EXPECT_EQ(getDocument()->getObject("DeletedTarget"), nullptr);
+}
+
+TEST_F(AssemblyObjectTest, rejectedSolveRestoresHiddenDependentPropertyFilter)  // NOLINT
+{
+    makeSolveFixture();
+    ASSERT_EQ(pythonSolve(), 0);
+    ASSERT_TRUE(App::GetApplication().isFineGrainedRecomputeEnabled());
+    Base::Interpreter().runString(
+        "_c1_lid.Placement.Base = App.Vector(30, 0, 0)\n"
+        "_j119_binding = _c1_a.Document.addObject('App::FeaturePython', 'Binding')\n"
+        "_j119_binding.addProperty('App::PropertyFloat', 'X')\n"
+        "_j119_binding.addProperty('App::PropertyFloat', 'Y')\n"
+        "_j119_binding.setExpression('X', 'hiddenref(Lid.Placement.Base.x)')\n"
+        "_j119_x = _c1_a.Document.addObject('App::FeaturePython', 'ReadsX')\n"
+        "_j119_x.addProperty('App::PropertyFloat', 'Value')\n"
+        "_j119_x.setExpression('Value', 'Binding.X')\n"
+        "_j119_y = _c1_a.Document.addObject('App::FeaturePython', 'ReadsY')\n"
+        "_j119_y.addProperty('App::PropertyFloat', 'Value')\n"
+        "_j119_y.setExpression('Value', 'Binding.Y')\n"
+        "_j119_binding.recompute()\n"
+        "_j119_x.recompute()\n"
+        "_j119_y.recompute()\n"
+        "for o in _c1_a.Document.Objects: o.purgeTouched()\n"
+    );
+    auto* binding = getDocument()->getObject("Binding");
+    auto* readsX = getDocument()->getObject("ReadsX");
+    auto* readsY = getDocument()->getObject("ReadsY");
+    // A pre-existing dirty property must survive, while tentative X must not.
+    binding->enforceRecompute("Y");
+    EXPECT_EQ(pythonSolve("patch('UtilsAssembly.violatedJointLabels', return_value=None)"), -7);
+    ASSERT_DOUBLE_EQ(binding->getPropertyByName<App::PropertyFloat>("X")->getValue(), 30);
+    // Isolate the propagation filter from any direct expression notifications.
+    readsX->purgeTouched();
+    readsY->purgeTouched();
+    getDocument()->settleRecomputedFeature(*binding);
+    EXPECT_FALSE(readsX->isTouched()) << "rejected hidden-binding X must leave no dirty entry";
+    EXPECT_TRUE(readsY->isTouched()) << "the original dirty Y entry must be preserved";
 }
