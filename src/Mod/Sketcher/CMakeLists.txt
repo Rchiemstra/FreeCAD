@@ -49,6 +49,7 @@ if(BUILD_GUI)
           SketcherTests/TestExternalFacePreselection.py
           SketcherTests/TestVisualLayerListGui.py
           SketcherTests/TestSketchReferenceRepairGui.py
+          SketcherTests/TestSketchEditCleanGui.py
     )
 endif(BUILD_GUI)
 
