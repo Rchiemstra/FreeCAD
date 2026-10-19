@@ -344,6 +344,7 @@ void PropertyModel::buildUp(const PropertyModel::PropertyList& props)
     // Final step, signal item removal. This is separated from the above because
     // of the possibility of moving items between groups.
     removeChildren();
+    Gui::ExpressionDiagnosticsPresentation::populate(*rootItem);
 }
 
 void PropertyModel::resetGroups()
