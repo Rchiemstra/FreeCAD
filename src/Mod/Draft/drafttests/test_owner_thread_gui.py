@@ -477,6 +477,17 @@ class DraftOwnerThreadFactories(unittest.TestCase):
     def test_factories_on_main_thread(self):
         self._check_factories(False)
 
+
+class DraftDeferredArrayPresentation(unittest.TestCase):
+    # Kept out of DraftOwnerThreadFactories: the MCP live-GUI suite replays that
+    # class's exact test list.
+    def setUp(self):
+        self.workbench = Gui.activeWorkbench().name()
+        Gui.activateWorkbench("DraftWorkbench")
+
+    def tearDown(self):
+        Gui.activateWorkbench(self.workbench)
+
     def test_deferred_array_presentation_keeps_model_ready(self):
         import Draft
 
