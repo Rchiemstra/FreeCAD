@@ -2,6 +2,12 @@
 #pragma once
 
 #include <map>
+#include <memory>
+#include <tuple>
+#include <string>
+#include <QTimer>
+#include <fastsignals/connection.h>
+#include <App/MutationClassification.h>
 #include <vector>
 #include <QVariant>
 #include <QLabel>
@@ -17,13 +23,28 @@ class ViewProviderSketch;
 class SketchExpressionDiagnostics
 {
 public:
-    void refresh(Sketcher::SketchObject* sketch);
+    using Errors = std::map<int, QString>;
+
+    ~SketchExpressionDiagnostics();
+    void start(ViewProviderSketch* view);
+    void stop();
+    void requestUpdate();
+    std::unique_ptr<App::LivePresentationRefreshScope> readAdmission();
+    bool refresh(Sketcher::SketchObject* sketch);
     QString reason(int index) const;
-    const std::map<int, QString>& errors() const { return constraintErrors; }
+    const Errors& errors() const { return *constraintErrors; }
     static QString editFailure(Sketcher::SketchObject* sketch, const QString& error);
 
 private:
-    std::map<int, QString> constraintErrors;
+    void invalidate(bool constraintsOnly = false);
+    using ConstraintInput = std::tuple<std::string, std::string, double, bool, bool>;
+    std::vector<ConstraintInput> constraintInputs;
+    std::shared_ptr<const Errors> constraintErrors = std::make_shared<const Errors>();
+    ViewProviderSketch* view = nullptr;
+    QTimer timer;
+    std::vector<fastsignals::connection> connections;
+    bool dirty = true;
+    bool checkConstraints = false;
 };
 
 QVariant constraintExpressionData(const SketchExpressionDiagnostics& diagnostics,

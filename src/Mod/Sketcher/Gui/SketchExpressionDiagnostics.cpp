@@ -3,7 +3,12 @@
 #include <QBrush>
 #include <QCoreApplication>
 #include <QStringList>
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
+#include <Gui/Application.h>
+#include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Gui/Selection/Selection.h>
@@ -16,15 +21,132 @@
 
 using namespace SketcherGui;
 
-void SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
+SketchExpressionDiagnostics::~SketchExpressionDiagnostics()
 {
-    constraintErrors.clear();
+    stop();
+}
+
+void SketchExpressionDiagnostics::start(ViewProviderSketch* provider)
+{
+    stop();
+    view = provider;
+    dirty = true;
+    timer.setSingleShot(true);
+    timer.setInterval(25);
+    QObject::connect(&timer, &QTimer::timeout, &timer, [this]() {
+        // The provider owns this timer. Reserve reads before inspecting the edit
+        // object or entering any solver/Qt/Coin presentation code.
+        auto admission = readAdmission();
+        if (admission && view && view->isInEditMode()) {
+            view->slotSolverUpdate();
+        }
+    });
+    auto& app = App::GetApplication();
+    connections.push_back(app.signalChangedObject.connect(
+        [this, sketch = provider->getObject()](const App::DocumentObject& object,
+                                              const App::Property& property) {
+            // Notification arguments are borrowed only for this callback. No
+            // document traversal or evaluation occurs under the sender's lock.
+            const char* name = property.getName();
+            if (name && std::string_view(name) == "Visibility") {
+                return;
+            }
+            invalidate(&object == sketch && name && std::string_view(name) == "Constraints");
+        }));
+    connections.push_back(app.signalNewObject.connect(
+        [this](const App::DocumentObject&) { invalidate(); }));
+    connections.push_back(app.signalDeletedObject.connect(
+        [this](const App::DocumentObject&) { invalidate(); }));
+    // A failed expression can skip SketchObject::execute() and all solver
+    // notifications. Completion still invalidates the captured report.
+    connections.push_back(app.signalRecomputed.connect(
+        [this](const App::Document&) { invalidate(); }));
+    requestUpdate();
+}
+
+void SketchExpressionDiagnostics::stop()
+{
+    timer.stop();
+    QObject::disconnect(&timer, nullptr, &timer, nullptr);
+    for (auto& connection : connections) {
+        connection.disconnect();
+    }
+    connections.clear();
+    view = nullptr;
+}
+
+void SketchExpressionDiagnostics::invalidate(bool constraintsOnly)
+{
+    if (constraintsOnly) {
+        checkConstraints = true;
+    }
+    else {
+        dirty = true;
+    }
+    requestUpdate();
+}
+
+void SketchExpressionDiagnostics::requestUpdate()
+{
+    // Raw SketchObject solver signals can originate on the document owner.
+    // Queue against the timer's QObject lifetime, never retain live model args.
+    QMetaObject::invokeMethod(&timer, [this]() {
+        if (view && !timer.isActive()) {
+            timer.start();
+        }
+    }, Qt::QueuedConnection);
+}
+
+std::unique_ptr<App::LivePresentationRefreshScope> SketchExpressionDiagnostics::readAdmission()
+{
+    if (!App::DocumentWouldBlock::isGuiThread()) {
+        requestUpdate();
+        return {};
+    }
+    auto admission = std::make_unique<App::LivePresentationRefreshScope>();
+    if (!admission->acquired()) {
+        requestUpdate();
+        return {};
+    }
+    // diagnose() follows references into open external documents too. Match
+    // Gui::Document's idle read checks for every possible source while holding
+    // the process reservation against new mutation admission.
+    for (auto* document : App::GetApplication().getDocuments()) {
+        auto* guiDocument = Gui::Application::Instance->getDocument(document);
+        if (Gui::documentExecutionLaneBusy(*document)
+            || (guiDocument && guiDocument->deferLivePresentationUpdates())) {
+            requestUpdate();
+            return {};
+        }
+    }
+    return admission;
+}
+
+bool SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
+{
+    auto admission = readAdmission();
+    if (!admission) {
+        return false;
+    }
+    std::vector<ConstraintInput> inputs;
+    if (dirty || checkConstraints) {
+        for (const auto* constraint : sketch->Constraints.getValues()) {
+            inputs.emplace_back(constraint->Name, constraint->toString(), constraint->getValue(),
+                                constraint->isDriving, constraint->isActive);
+        }
+        dirty = dirty || inputs != constraintInputs;
+        checkConstraints = false;
+    }
+    if (!dirty) {
+        return true;
+    }
     Base::PyGILStateLocker lock;
     try {
         Py::Module module(PyImport_ImportModule("freecad.sketcher_expression_diagnostics"), true);
         Py::Tuple args(1);
         args.setItem(0, Py::Object(sketch->getPyObject(), true));
         Py::Dict result(Py::Callable(module.getAttr("constraint_errors")).apply(args));
+        Errors captured;
         PyObject* key = nullptr;
         PyObject* value = nullptr;
         Py_ssize_t position = 0;
@@ -34,38 +156,50 @@ void SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
             if (PyErr_Occurred()) {
                 throw Py::Exception();
             }
-            constraintErrors.emplace(static_cast<int>(index), QString::fromUtf8(text));
+            captured.emplace(static_cast<int>(index), QString::fromUtf8(text));
         }
+        // Publish only complete, pointer-free data. Busy/failed captures keep
+        // the previous immutable snapshot and remain invalidated for retry.
+        constraintErrors = std::make_shared<const Errors>(std::move(captured));
+        constraintInputs = std::move(inputs);
+        dirty = false;
+        return true;
     }
     catch (Py::Exception&) {
-        constraintErrors.clear();
         Base::PyException error;
         error.reportException();
+        requestUpdate();
+        return false;
     }
 }
 
 QString SketchExpressionDiagnostics::reason(int index) const
 {
-    auto found = constraintErrors.find(index);
-    return found == constraintErrors.end() ? QString() : found->second;
+    auto found = constraintErrors->find(index);
+    return found == constraintErrors->end() ? QString() : found->second;
 }
 
 QString SketchExpressionDiagnostics::editFailure(Sketcher::SketchObject* sketch, const QString& error)
 {
-    SketchExpressionDiagnostics diagnostics;
-    diagnostics.refresh(sketch);
+    App::LivePresentationRefreshScope admission;
+    if (!admission.acquired() || !Gui::Application::Instance) {
+        return error;
+    }
+    auto* guiDocument = Gui::Application::Instance->getDocument(sketch->getDocument());
+    auto* provider = guiDocument
+        ? freecad_cast<ViewProviderSketch*>(guiDocument->getViewProvider(sketch)) : nullptr;
+    if (!provider) {
+        return error;
+    }
+    const auto& diagnostics = provider->getExpressionDiagnostics();
     if (diagnostics.errors().empty()) {
         return error;
     }
     QString message = QCoreApplication::translate(
         "SketcherExpressionDiagnostics", "Constraint edit failed. The sketch has broken expressions:");
     for (const auto& [index, reason] : diagnostics.errors()) {
-        const auto* constraint = sketch->Constraints[index];
         QString name = QCoreApplication::translate("SketcherExpressionDiagnostics", "Constraint %1")
                            .arg(index + 1);
-        if (!constraint->Name.empty()) {
-            name += QStringLiteral(" (%1)").arg(QString::fromStdString(constraint->Name));
-        }
         message += QStringLiteral("\n%1: %2").arg(name, reason);
     }
     return message + QStringLiteral("\n\n") + error;
