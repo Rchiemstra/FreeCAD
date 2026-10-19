@@ -4081,7 +4081,7 @@
     },
     {
       "path": "src/Mod/Assembly/ComponentPattern.py",
-      "line": 185,
+      "line": 314,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4089,7 +4089,7 @@
     },
     {
       "path": "src/Mod/Assembly/ComponentPattern.py",
-      "line": 185,
+      "line": 314,
       "category": "sync-document-api",
       "subsystem": "Assembly",
       "disposition": "migrate",
