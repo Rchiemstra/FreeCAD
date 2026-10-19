@@ -452,6 +452,7 @@ class TestComponentPatternGui(unittest.TestCase):
         import FreeCADGui as Gui
         import CommandComponentPattern
 
+        self.doc.UndoMode = 1
         Gui.activateWorkbench("AssemblyWorkbench")
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.bolt)
@@ -494,13 +495,14 @@ class TestComponentPatternGui(unittest.TestCase):
         self.assertIsNone(CommandComponentPattern.activeTask)
         pattern = next(o for o in self.doc.Objects if getattr(o, "Type", "") == "ComponentPattern")
         self.assertEqual(len(pattern.JointCopies), 5)
+        pattern_name = pattern.Name
         generated = {o.Name for o in self.doc.Objects} - before
         self.assertTrue(generated)
         self.doc.undo()
         self.assertEqual({o.Name for o in self.doc.Objects}, before)
         self.doc.redo()
         self.assertEqual({o.Name for o in self.doc.Objects}, before | generated)
-        self.assertPolar(self.doc.getObject(pattern.Name), 6)
+        self.assertPolar(self.doc.getObject(pattern_name), 6)
         Gui.Selection.clearSelection()
 
     def test_command_async_failure_rolls_back_and_reports(self):
@@ -554,6 +556,7 @@ class TestComponentPatternGui(unittest.TestCase):
     def test_command(self):
         import FreeCADGui as Gui
 
+        self.doc.UndoMode = 1
         Gui.activateWorkbench("AssemblyWorkbench")
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.bolt)
