@@ -7,7 +7,13 @@ from pivy import coin
 from PySide import QtCore, QtGui
 
 from SketchReferenceRepair import RepairError, broken_references, picked_candidate
-from SketchReferenceRepairGui import RepairDialog, RepairObserver, RepairOperation, tr
+from SketchReferenceRepairGui import (
+    RepairCancellation,
+    RepairDialog,
+    RepairObserver,
+    RepairOperation,
+    tr,
+)
 
 
 def selected_reference():
@@ -59,6 +65,7 @@ class PickSession(QtGui.QDialog):
         self.gui_document = Gui.getDocument(self.document.Name)
         self.view = self.gui_document.activeView()
         self.viewport = self.view.graphicsView().viewport()
+        self.cancellation = RepairCancellation()
         self.closed = self.busy = False
         self.setWindowTitle(tr("Reassign broken reference"))
         layout = QtGui.QVBoxLayout(self)
@@ -99,9 +106,10 @@ class PickSession(QtGui.QDialog):
         self.material.transparency = 0.65
         self.material.setOverride(True)
         self.root.insertChild(self.material, 0)
-        self.observer = RepairObserver(sketch)
+        self.observer = RepairObserver(sketch, self.cancellation)
         self.observer.removed.connect(self.close)
         App.addDocumentObserver(self.observer)
+        Gui.addDocumentObserver(self)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.check_edit)
         self.timer.start(100)
@@ -109,6 +117,10 @@ class PickSession(QtGui.QDialog):
         self.application.installEventFilter(self)
         self.finished.connect(self.dispose)
         self.show()
+
+    def slotResetEdit(self, provider):
+        if provider.Object is self.sketch:
+            self.close()
 
     def check_edit(self):
         try:
@@ -128,7 +140,7 @@ class PickSession(QtGui.QDialog):
         kind = event.type()
         if kind in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease):
             if event.key() == QtCore.Qt.Key_Escape:
-                if kind == QtCore.QEvent.KeyPress and not self.busy:
+                if kind == QtCore.QEvent.KeyPress:
                     self.close()
                 return True
         if watched is not self.viewport:
@@ -186,9 +198,8 @@ class PickSession(QtGui.QDialog):
 
             self.busy = True
             self.fallback_button.setEnabled(False)
-            self.cancel_button.setEnabled(False)
             self.message.setText(tr("Repairing reference…"))
-            RepairOperation(sketch, choices, self.applied)
+            RepairOperation(sketch, choices, self.applied, self.cancellation)
             return
         self.message.setText(
             tr("No external edge or vertex here. Pick again or use ranked candidates.")
@@ -220,10 +231,12 @@ class PickSession(QtGui.QDialog):
     def dispose(self, *args):
         if self.closed:
             return
+        self.cancellation.cancel()
         self.closed = True
         self.timer.stop()
         self.application.removeEventFilter(self)
         App.removeDocumentObserver(self.observer)
+        Gui.removeDocumentObserver(self)
         if self.material is not None:
             if self.root.findChild(self.material) >= 0:
                 self.root.removeChild(self.material)
