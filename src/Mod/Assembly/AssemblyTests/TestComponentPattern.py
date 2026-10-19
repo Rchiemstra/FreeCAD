@@ -355,14 +355,20 @@ class TestComponentPattern(unittest.TestCase):
         self.doc.recompute()
         pattern = self.create()
         self.assertEqual(len(pattern.Copies), 1)
-        self.assertLess((pattern.Copies[0].Placement.Base - App.Vector(-20, 0, 0)).Length, 1e-6)
-        self.assertAlmostEqual(pattern.Copies[0].Shape.Volume, self.bolt.Shape.Volume, places=5)
+        self.assertLess(
+            (pattern.Copies[0].Placement.Base - App.Vector(-20, 0, 0)).Length, 1e-6
+        )
+        self.assertAlmostEqual(
+            pattern.Copies[0].Shape.Volume, self.bolt.Shape.Volume, places=5
+        )
         # Check the entire reflected geometry, including handedness.
         reflected = self.bolt.Shape.copy()
         matrix = App.Matrix()
         matrix.A11 = -1
         reflected.transformShape(matrix)
-        self.assertAlmostEqual(pattern.Copies[0].Shape.common(reflected).Volume, reflected.Volume, places=5)
+        self.assertAlmostEqual(
+            pattern.Copies[0].Shape.common(reflected).Volume, reflected.Volume, places=5
+        )
 
     def test_multitransform_source_composes_helpers(self):
         linear = self.body.newObject("PartDesign::LinearPattern", "LinearHelper")
@@ -386,24 +392,35 @@ class TestComponentPattern(unittest.TestCase):
         linear.Length = 10
         self.doc.recompute()
         self.assertEqual(len(pattern.Copies), 3)
-        self.assertLess((pattern.Copies[-1].Placement.Base - App.Vector(-20, 10, 0)).Length, 1e-6)
+        self.assertLess(
+            (pattern.Copies[-1].Placement.Base - App.Vector(-20, 10, 0)).Length, 1e-6
+        )
 
     def test_translated_errors_and_unsupported_source(self):
         import ComponentPattern
         from unittest.mock import patch
 
         before = len(self.doc.Objects)
-        with patch.object(ComponentPattern, "translate", side_effect=lambda context, text: "TR:" + text):
+        with patch.object(
+            ComponentPattern,
+            "translate",
+            side_effect=lambda context, text: "TR:" + text,
+        ):
             with self.assertRaisesRegex(ValueError, "TR:"):
-                ComponentPattern.createComponentPattern(self.assembly, self.bolt, self.hole)
+                ComponentPattern.createComponentPattern(
+                    self.assembly, self.bolt, self.hole
+                )
         self.assertEqual(len(self.doc.Objects), before)
 
     def test_invalid_explicit_parameters_leave_no_objects(self):
         from ComponentPattern import createComponentPattern
 
-        for kwargs in ({"count": 0}, {"axis": App.Vector()},
-                       {"patternType": "Linear", "length": 0},
-                       {"patternType": "Linear", "direction": App.Vector()}):
+        for kwargs in (
+            {"count": 0},
+            {"axis": App.Vector()},
+            {"patternType": "Linear", "length": 0},
+            {"patternType": "Linear", "direction": App.Vector()},
+        ):
             with self.subTest(parameters=kwargs):
                 before = len(self.doc.Objects)
                 with self.assertRaises(ValueError):
@@ -414,7 +431,9 @@ class TestComponentPattern(unittest.TestCase):
         import TestAssemblyWorkbench
 
         self.assertIs(TestAssemblyWorkbench.TestComponentPattern, TestComponentPattern)
-        self.assertIs(TestAssemblyWorkbench.TestComponentPatternGui, TestComponentPatternGui)
+        self.assertIs(
+            TestAssemblyWorkbench.TestComponentPatternGui, TestComponentPatternGui
+        )
 
     def test_invalid_seed_is_rejected_without_objects(self):
         from ComponentPattern import createComponentPattern
@@ -428,7 +447,17 @@ class TestComponentPattern(unittest.TestCase):
 @unittest.skipUnless(App.GuiUp, "requires GUI")
 class TestComponentPatternGui(unittest.TestCase):
     setUp = TestComponentPattern.setUp
-    tearDown = TestComponentPattern.tearDown
+
+    def tearDown(self):
+        import CommandComponentPattern
+
+        panel = getattr(self, "panel", None)
+        if panel and hasattr(panel, "recomputeHandle"):
+            self.waitForPanel(panel)
+        if CommandComponentPattern.activeTask is not None:
+            CommandComponentPattern.activeTask.reject()
+        TestComponentPattern.tearDown(self)
+
     assertPolar = TestComponentPattern.assertPolar
     flushGui = TestComponentPattern.flushGui
 
@@ -458,7 +487,8 @@ class TestComponentPatternGui(unittest.TestCase):
         Gui.Selection.addSelection(self.bolt)
         Gui.Selection.addSelection(self.source)
         Gui.runCommand("Assembly_ComponentPattern", 0)
-        return CommandComponentPattern.activeTask
+        self.panel = CommandComponentPattern.activeTask
+        return self.panel
 
     def test_command_undo_redo_and_no_synchronous_recompute(self):
         import FreeCADGui as Gui
@@ -469,7 +499,9 @@ class TestComponentPatternGui(unittest.TestCase):
         joint = self.seedJoint()
         self.doc.UndoMode = 1
         panel = self.openPanel()
-        panel.joints.item(panel.availableJoints.index(joint)).setCheckState(QtCore.Qt.Checked)
+        panel.joints.item(panel.availableJoints.index(joint)).setCheckState(
+            QtCore.Qt.Checked
+        )
         before = {o.Name for o in self.doc.Objects}
 
         class AsyncOnlyDocument:
@@ -480,20 +512,26 @@ class TestComponentPatternGui(unittest.TestCase):
 
         class AssemblyFacade:
             Document = AsyncOnlyDocument()
+
             def __getattr__(wrapper, name):
                 return getattr(self.assembly, name)
 
         real_create = CommandComponentPattern.createComponentPattern
+
         def create(assembly, *args, **kwargs):
             self.assertIs(kwargs.get("recompute"), False)
             return real_create(self.assembly, *args, **kwargs)
 
         panel.assembly = AssemblyFacade()
-        with patch.object(CommandComponentPattern, "createComponentPattern", side_effect=create):
-            self.assertTrue(panel.accept())
+        with patch.object(
+            CommandComponentPattern, "createComponentPattern", side_effect=create
+        ):
+            panel.accept()
             self.waitForPanel(panel)
         self.assertIsNone(CommandComponentPattern.activeTask)
-        pattern = next(o for o in self.doc.Objects if getattr(o, "Type", "") == "ComponentPattern")
+        pattern = next(
+            o for o in self.doc.Objects if getattr(o, "Type", "") == "ComponentPattern"
+        )
         self.assertEqual(len(pattern.JointCopies), 5)
         pattern_name = pattern.Name
         generated = {o.Name for o in self.doc.Objects} - before
@@ -512,13 +550,26 @@ class TestComponentPatternGui(unittest.TestCase):
         panel = self.openPanel()
         before = {o.Name for o in self.doc.Objects}
         real_create = CommandComponentPattern.createComponentPattern
+
         def invalid(*args, **kwargs):
             pattern = real_create(*args, **kwargs)
             pattern.UseSource = False
             pattern.Axis = App.Vector()
             return pattern
-        with patch.object(CommandComponentPattern, "createComponentPattern", side_effect=invalid):
-            self.assertTrue(panel.accept())
+
+        with patch.object(
+            CommandComponentPattern, "createComponentPattern", side_effect=invalid
+        ):
+            from PySide import QtWidgets
+
+            boxes = [
+                box
+                for box in panel.form.window().findChildren(QtWidgets.QDialogButtonBox)
+                if box.isVisible() and box.button(QtWidgets.QDialogButtonBox.Ok)
+            ]
+            self.assertEqual(len(boxes), 1)
+            boxes[0].button(QtWidgets.QDialogButtonBox.Ok).click()
+            self.assertTrue(panel._pending)
             self.waitForPanel(panel)
         self.assertIs(CommandComponentPattern.activeTask, panel)
         self.assertTrue(panel.error.text())
@@ -531,7 +582,11 @@ class TestComponentPatternGui(unittest.TestCase):
 
         panel = self.openPanel()
         panel.reject()
-        with patch.object(CommandComponentPattern, "translate", side_effect=lambda context, text: "TR:" + text):
+        with patch.object(
+            CommandComponentPattern,
+            "translate",
+            side_effect=lambda context, text: "TR:" + text,
+        ):
             panel = CommandComponentPattern.TaskComponentPattern(self.assembly)
         self.assertEqual(panel.kind.itemText(0), "TR:Polar")
         self.assertEqual(panel.kind.itemData(0), "Polar")
@@ -566,15 +621,8 @@ class TestComponentPatternGui(unittest.TestCase):
 
         panel = CommandComponentPattern.activeTask
         self.assertIsNotNone(panel)
-        self.assertTrue(panel.accept())
-        import time
-        from PySide import QtCore
-
-        deadline = time.monotonic() + 30
-        while not panel.recomputeHandle.done() and time.monotonic() < deadline:
-            QtCore.QCoreApplication.processEvents()
-            time.sleep(0.01)
-        self.assertTrue(panel.recomputeHandle.done(), panel.recomputeHandle.status())
+        self.assertFalse(panel.accept())
+        self.waitForPanel(panel)
         Gui.updateGui()
         patterns = [
             o for o in self.doc.Objects if getattr(o, "Type", "") == "ComponentPattern"
