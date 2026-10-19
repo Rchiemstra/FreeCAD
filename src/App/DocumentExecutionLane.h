@@ -161,10 +161,11 @@ public:
      *
      * Returns a future that carries the result (or captured exception). The
      * owner thread runs the callable as soon as it is free. Throws
-     * DocumentWouldBlock if the lane is shutting down.
+     * DocumentWouldBlock if the lane is shutting down, or if an active model
+     * command prevents dispatch and allowWhileCommandActive is false.
      */
     template<typename Fn>
-    [[nodiscard]] auto postToOwner(Fn&& fn)
+    [[nodiscard]] auto postToOwner(Fn&& fn, const bool allowWhileCommandActive = true)
         -> std::future<std::invoke_result_t<Fn>>
     {
         using Result = std::invoke_result_t<Fn>;
@@ -190,6 +191,9 @@ public:
             if (ownerDispatchRejectedLocked()) {
                 throw DocumentWouldBlock(
                     "document execution lane is closing or shutting down");
+            }
+            if (commandBlocksDispatchLocked(allowWhileCommandActive)) {
+                throw DocumentWouldBlock("document execution lane is busy executing model work");
             }
             _dispatchQueue.push_back(std::move(task));
             _workAvailable.notify_one();

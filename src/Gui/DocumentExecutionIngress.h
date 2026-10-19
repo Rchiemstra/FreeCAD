@@ -115,10 +115,12 @@ GuiExport bool submitDocumentSave(App::Document& document);
 /**
  * Write a recovery snapshot on the lane owner thread without blocking the GUI.
  *
- * Runs dispatchToOwner on a worker thread and delivers onFinished on the Qt GUI
- * thread (queued). Never pumps QApplication::processEvents on the GUI thread.
+ * Uses AutoSaver's bounded RecoveryWriteExecutor and existing owner lanes.
+ * Returns false if not admitted. Completion for admitted writes is observed
+ * on the GUI thread and dropped on close/shutdown.
+ * Never pumps QApplication::processEvents on the GUI thread.
  */
-GuiExport void scheduleRecoverySnapshotWrite(
+GuiExport bool scheduleRecoverySnapshotWrite(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options,
     std::function<void(bool written, std::exception_ptr failure)> onFinished);

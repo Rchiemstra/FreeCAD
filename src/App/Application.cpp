@@ -644,6 +644,14 @@ bool Application::closeDocument(const char* name)
         || pos->second->isTransactionLocked()) {
         return false;
     }
+    if (MainThreadSignalConfig::hasHooks()
+        && MainThreadSignalConfig::isMainThread()) {
+        // Lane Close is marshalled here, and direct GUI close also comes
+        // through here. Retire only completed recovery pins before checking
+        // the lifetime gate. Queued and running IO must still reject direct
+        // close; early ingress separately cancels queued recovery work.
+        signalBeforeCloseDocumentLifecycleAdmission(*pos->second);
+    }
     auto* collaborationService = &pos->second->collaborationService();
     // Any pathname construction that can allocate belongs before the
     // irrevocable Closing transition.
