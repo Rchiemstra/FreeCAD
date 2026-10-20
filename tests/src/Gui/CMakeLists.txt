@@ -16,6 +16,7 @@ add_executable(Gui_tests_run
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
         PersonalViewContext.cpp
+        PropertyEditorPaint.cpp
         PropertyEditorTransaction.cpp
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
