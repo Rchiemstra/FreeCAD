@@ -2198,11 +2198,15 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                             std::chrono::duration<double>(timeoutSecs));
                         Py_END_ALLOW_THREADS
                         if (fst == std::future_status::timeout) {
-                            PyErr_Format(
-                                PyExc_TimeoutError,
-                                "async GUI-thread mutation did not complete "
-                                "within %g seconds",
-                                timeoutSecs);
+                            // PyErr_Format has no %g; format the timeout as a float object.
+                            PyObject* seconds = PyFloat_FromDouble(timeoutSecs);
+                            if (seconds) {
+                                PyErr_Format(PyExc_TimeoutError,
+                                             "async GUI-thread mutation did not complete "
+                                             "within %S seconds",
+                                             seconds);
+                                Py_DECREF(seconds);
+                            }
                             return nullptr;
                         }
                     }
