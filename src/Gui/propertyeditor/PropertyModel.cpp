@@ -22,11 +22,13 @@
  ***************************************************************************/
 
 #include <limits>
+#include <utility>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Document.h>
 #include <App/DocumentCommand.h>
 #include <App/DocumentObject.h>
+#include <App/MutationClassification.h>
 #include <Base/Tools.h>
 #include <Base/Type.h>
 
@@ -46,6 +48,16 @@ PropertyModel::PropertyModel(QObject* parent)
     : QAbstractItemModel(parent)
 {
     rootItem = static_cast<PropertyItem*>(PropertyItem::create());
+    readRetryTimer.setSingleShot(true);
+    readRetryTimer.setInterval(50);
+    connect(&readRetryTimer, &QTimer::timeout, this, [this] {
+        const auto pending = std::exchange(deferredReads, {});
+        for (const auto& index : pending) {
+            if (index.isValid()) {
+                Q_EMIT dataChanged(index, index);
+            }
+        }
+    });
 }
 
 PropertyModel::~PropertyModel()
@@ -78,8 +90,38 @@ QVariant PropertyModel::data(const QModelIndex& index, int role) const
         return {};
     }
 
+    // Like tree/provider refresh, reserve before touching live properties.
+    // Committed display text does not cover every property or every Qt role:
+    // even DecorationRole can enter PropertyLinkBase::getLinks().
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired()) {
+        deferRead(index);
+        return {};
+    }
     auto item = static_cast<PropertyItem*>(index.internalPointer());
+    // Component rows delegate to their ancestors. An active lane can also be
+    // between mutation targets, so require it to be idle under the reservation.
+    for (auto* owner = item; owner; owner = owner->parent()) {
+        for (auto* prop : owner->getPropertyData()) {
+            auto* object = prop ? freecad_cast<App::DocumentObject*>(prop->getContainer()) : nullptr;
+            auto* document = object ? object->getDocument() : nullptr;
+            if (document && documentExecutionLaneBusy(*document)) {
+                deferRead(index);
+                return {};
+            }
+        }
+    }
     return item->data(index.column(), role);
+}
+
+void PropertyModel::deferRead(const QModelIndex& index) const
+{
+    // Persistent indexes survive moves and become invalid on removal/reset.
+    // Coalesce all roles and repaint requests rather than spinning per paint.
+    deferredReads.insert(QPersistentModelIndex(index));
+    if (!readRetryTimer.isActive()) {
+        readRetryTimer.start();
+    }
 }
 
 bool PropertyModel::setData(const QModelIndex& index, const QVariant& value, int role)

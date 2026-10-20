@@ -25,6 +25,9 @@
 #pragma once
 
 #include <QAbstractItemModel>
+#include <QPersistentModelIndex>
+#include <QSet>
+#include <QTimer>
 #include <QStringList>
 #include <map>
 #include <unordered_map>
@@ -79,6 +82,7 @@ public:
     QModelIndex propertyIndexFromPath(const QStringList&) const;
 
 private:
+    void deferRead(const QModelIndex& index) const;
     void resetGroups();
     void initGroups();
     void updateChildren(PropertyItem* item, int column, const QModelIndex& parent);
@@ -96,6 +100,8 @@ private:
 
 private:
     PropertyItem* rootItem;
+    mutable QTimer readRetryTimer;
+    mutable QSet<QPersistentModelIndex> deferredReads;
 
     std::unordered_map<App::Property*, QPointer<PropertyItem>> itemMap;
 
