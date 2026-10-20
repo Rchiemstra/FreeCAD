@@ -14,7 +14,7 @@
 # the same registry's host-published loopback endpoint, 127.0.0.1:5001. Docker
 # treats 127.0.0.0/8 as an insecure-local registry, avoiding per-daemon LAN-IP
 # insecure-registry config while still keeping pulls auth-free):
-#   127.0.0.1:5001/freecad-ci-deps:24.04
+#   127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295
 #       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
 #       (Qt6/OCCT/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
 #       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
@@ -22,8 +22,8 @@
 #       FreeCAD-track BUILD/test step (configure, debug-build, unit, integration,
 #       e2e, release-linux) and as the base for the MCP image. The early lint and
 #       Pixi lock checks use small public images instead.
-#   127.0.0.1:5001/freecad-ci-mcp:24.04
-#       FROM registry-freecad:5000/freecad-ci-deps:24.04 during kaniko builds + COPY (pyproject.toml
+#   127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
+#       FROM registry-freecad:5000/freecad-ci-deps:24.04-81547b6a5295 during kaniko builds + COPY (pyproject.toml
 #       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
 #       Qt6/OCCT/libpython3.12 as the deps image -> ABI-compatible with the
 #       build/debug FreeCAD tree, and FreeCADCmd's embedded python3.12 is the SAME
@@ -36,33 +36,19 @@
 #       runtime (only carries deps); the runtime editable install repoints the
 #       finder at the workspace source. Dockerfile: tools/mcp/freecad-mcp/
 #       Dockerfile.ci (build context = the mcp package dir).
-#   HOW IMAGES GET INTO 127.0.0.1:5001:
-#     PRIMARY: .woodpecker/build-images.yml -- a separate Woodpecker workflow with
-#       two kaniko steps (deps, then mcp) that build+push on the agent through
-#       the Docker-network alias `registry-freecad:5000`, gated to push/tag/manual/cron
-#       but NOT pull_request, so the ~15-min deps build does NOT run per-PR. This
-#       workflow auto-populates an empty registry on FreeCAD-start pushes, and
-#       can also run on a weekly cron for an apt security refresh. Rebuild on
-#       demand when install-apt-packages.sh (deps+mcp) or pyproject.toml (mcp)
-#       changes. kaniko needs no Docker daemon; it pushes to the insecure
-#       registry via `insecure: true` + `insecure-registry: registry-freecad:5000`.
-#     OPTIONAL (local, from your own machine): ci/build-images.sh -- same two
-#       Dockerfiles, hash-keyed (rolling :24.04 + immutable :24.04-<hash>). Only
-#       works if your Docker daemon can reach the registry endpoint in REGISTRY.
-#       From a LAN machine, REGISTRY=192.168.2.23:5001 still needs Docker
-#       insecure-registry config because that endpoint is HTTP.
-#   PREREQ on the AGENT: its Docker daemon must run on the same host that
-#       publishes the registry UI/API on 127.0.0.1:5001. Verify on the agent host
-#       with `curl http://127.0.0.1:5001/v2/`. If the agent is remote, use a TLS
-#       registry or add the LAN IP to that daemon's insecure-registries instead.
-#   FIRST RUN: build-images.yml runs alongside this workflow on tag/manual.
-#       The public-image `ci-images-ready` gate polls `registry-freecad:5000` from inside
-#       the Woodpecker job network and blocks the heavy image pulls until both
-#       current-commit tags exist (PRs wait for the rolling `:24.04` tags, since
-#       PRs do not rebuild images). Heavy image steps also set `pull: true`, so a
-#       stale local Docker cache cannot reuse an older `:24.04` image.
+#   Input keys are committed. After input changes OR upstream merges, run:
+#     sh ci/woodpecker/ci-images-key.sh update
+#   Commit both workflows with the inputs. For external apt/pip/base refreshes,
+#   update ci/images-refresh.txt. See ci/woodpecker/ci-images.md for migration,
+#   publication locking and eviction limits. Every event can rebuild missing keys.
+#   OPTIONAL local builder: ci/build-images.sh (requires crane and Docker).
+#   PREREQ: the agent Docker daemon runs on the same host that publishes
+#   127.0.0.1:5001. Verify there with curl http://127.0.0.1:5001/v2/.
+#   For a remote agent, use a TLS registry or configure its daemon with the LAN
+#   registry endpoint in insecure-registries, and change image pull references.
+#   :24.04 is repaired even on no-op builds for older PR configurations.
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
-#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:5001/freecad-ci-mcp:24.04.
+#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827.
 #
 # ---------------------------------------------------------------------------
 # ccache: persistent Docker named volume (no secrets).
@@ -124,7 +110,7 @@
 #     green lie under exit-code-only gating).
 #   * ccache is persistent: release reuses debug's cache in the same run, and
 #     later runs reuse the Docker named volume if Trusted Volumes is enabled.
-#   * 127.0.0.1:5001/freecad-ci-deps:24.04 & 127.0.0.1:5001/freecad-ci-mcp:24.04
+#   * 127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295 & 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
 #     are present in 127.0.0.1:5001 (the .woodpecker/build-images.yml workflow
 #     populates them on push/tag/manual/cron; see the CI-images section above)
 #     and pullable by the agent (the agent daemon can reach
@@ -222,34 +208,27 @@ steps:
     commands:
       - pixi lock --check
 
-  # Image gate. The local registry has a SHORT RETENTION POLICY, and
-  # build-images.yml deliberately does not run on pull_request -- so the images
-  # can simply be gone with nothing scheduled to republish them. This used to
-  # wait 60 minutes for tags that were never coming and then fail the pipeline.
-  #
-  # Now: check what is actually there, rebuild only what is missing, verify.
-  # When the images are present (the normal case) this costs one HTTP call and
-  # the two build steps are no-ops. Pipeline 417: check saw :24.04, kaniko
-  # no-op'd in 8s, then ~50 min of mcp-lint/units starved this gate and GC
-  # left tags:null. mcp-lint waits for ci-images-ready so verify is not queued
-  # behind those public-image jobs. Re-run this PR pipeline (check rebuilds
-  # missing tags) or manually run build-images.yml on FreeCAD-start.
+  # Validate committed input keys after the MCP checkout, before heavy pulls. Missing
+  # manifests are rebuilt here on every event, including pull requests.
   - name: ci-images-check
-    image: alpine:3.20
-    depends_on: []
+    image: gcr.io/go-containerregistry/crane:debug
+    depends_on: [all-submodules-check]
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
+      CI_IMAGES_WORKFLOW: consumer
     commands:
       - sh ci/woodpecker/ci-images-check.sh
 
   # kaniko cannot build two images in one container, so deps and mcp get their
-  # own steps. Each exits immediately unless ci-images-check flagged it missing.
+  # own steps. Each rechecks its keyed manifest before deciding to build.
   # The mcp image FROMs the deps image, hence the ordering.
   - name: ci-images-build-deps
     image: &freecad_kaniko_image gcr.io/kaniko-project/executor:debug
     depends_on: [ci-images-check]
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
+    volumes:
+      - /tmp/freecad-ci-publish:/tmp/freecad-ci-publish
     commands:
       - sh ci/woodpecker/ci-images-build.sh deps
 
@@ -258,6 +237,8 @@ steps:
     depends_on: [ci-images-build-deps]
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
+    volumes:
+      - /tmp/freecad-ci-publish:/tmp/freecad-ci-publish
     commands:
       - sh ci/woodpecker/ci-images-build.sh mcp
 
@@ -285,7 +266,7 @@ steps:
       - sh ci/woodpecker/freecad-nonblocking-tests.sh
 
   - name: freecad-configure-debug
-    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295
     pull: true
     depends_on: [freecad-lint, pixi-lock-check, ci-images-ready]
     environment: *freecad_ccache_env
@@ -307,6 +288,7 @@ steps:
     pull: true
     depends_on: [freecad-debug-build]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-unit-tests.sh
 
   - name: freecad-integration-tests
@@ -314,6 +296,7 @@ steps:
     pull: true
     depends_on: [freecad-unit-tests]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-integration-tests.sh
 
   - name: freecad-e2e
@@ -321,6 +304,7 @@ steps:
     pull: true
     depends_on: [freecad-integration-tests]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-e2e.sh
 
   - name: freecad-release-linux
@@ -353,6 +337,7 @@ steps:
     image: python:3.12
     depends_on: [freecad-mcp-lint]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-unit-tests.sh
 
   # Real-CLI check for the Git sidecar adapter: freecad-mcp-unit-tests.sh only
@@ -366,10 +351,11 @@ steps:
     image: python:3.12
     depends_on: [freecad-mcp-lint]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-sidecar-integration.sh
 
   # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
-  # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
+  # installed into the image's site-packages. freecad-ci-mcp:24.04-93468f8e9827 has NO built
   # FreeCAD, so FreeCADCmd is invoked by ABSOLUTE path from the workspace build
   # tree ($CI_WORKSPACE/build/debug/bin/FreeCADCmd) -- a relative path would
   # resolve under tools/mcp/freecad-mcp/ after the `cd`. Verifies the
@@ -377,10 +363,11 @@ steps:
   # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
-    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04
+    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
   # Live GUI stress scenarios: this branch's debug FreeCAD GUI under Xvfb,
@@ -391,6 +378,7 @@ steps:
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-live-gui.sh
 
   # core: four sequential shards (collab → sketch → part → rest). One ~2.5 h
@@ -411,6 +399,7 @@ steps:
       - event: [tag, manual]
       - event: pull_request
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
   # Sketch/part/rest depend only on the previous core shard. Woodpecker 3.16
@@ -418,6 +407,8 @@ steps:
   # `when.status` includes failure. Collab failure still skips these via
   # depends_on. Do not add e2e to this chain. If images-ready/debug-build never
   # produced FreeCADCmd, freecad-mcp-freecad-tests.sh skips with exit 0 (no 127).
+  # If the image gate failed, a missing keyed image fails at pull on an already
+  # red pipeline. See ci/woodpecker/ci-images.md.
   - name: freecad-mcp-core-sketch
     image: *freecad_ci_mcp_image
     pull: true
@@ -432,6 +423,7 @@ steps:
       - event: pull_request
         status: [success, failure]
     commands:
+      - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
   - name: freecad-mcp-core-part
@@ -448,6 +440,7 @@ steps:
       - event: pull_request
         status: [success, failure]
     commands:
+      - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
   - name: freecad-mcp-core-rest
@@ -464,6 +457,7 @@ steps:
       - event: pull_request
         status: [success, failure]
     commands:
+      - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
   - name: freecad-mcp-e2e
@@ -476,4 +470,5 @@ steps:
       - event: [tag, manual]
       - event: pull_request
     commands:
+      - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
