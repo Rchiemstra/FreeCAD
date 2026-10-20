@@ -96,6 +96,7 @@
 #include "TaskSketcherValidation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
+#include "SketchEditState.h"
 #include "ViewProviderSketchGeometryExtension.h"
 #include "Workbench.h"
 
@@ -4251,6 +4252,21 @@ bool ViewProviderSketch::setEdit(int ModNum)
     sketchBackup.clear();
     getObject()->dumpToStream(sketchBackup, 0);
     sketchBackup.seekg(0);
+    sketchEditState.capture(*getSketchObject());
+    connectExplicitTouch.disconnect();
+    connectExplicitTouch = getObject()->getDocument()->signalTouchedObject.connect(
+        [this](const App::DocumentObject& object) {
+            if (&object == getObject()) {
+                sketchEditState.noteExplicitTouch();
+            }
+        });
+    connectPersistentTouch.disconnect();
+    connectPersistentTouch = getObject()->getDocument()->signalChangedObject.connect(
+        [this](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == getObject()) {
+                sketchEditState.notePersistentChange(property);
+            }
+        });
 
     // When double-clicking on the item for this sketch the
     // object unsets and sets its edit mode without closing
@@ -4334,6 +4350,8 @@ bool ViewProviderSketch::setEdit(int ModNum)
 
     // visibility automation
     try {
+        Base::ObjectStatusLocker<App::Property::Status, App::Property> temporaryTempoVis(
+            App::Property::NoModify, &TempoVis);
         Gui::Command::addModule(Gui::Command::Gui, "Show");
         try {
             QString cmdstr =
@@ -4415,7 +4433,7 @@ bool ViewProviderSketch::setEdit(int ModNum)
     // property to be updated with the solver information, including solver extensions, and triggers
     // a draw(true) via ViewProvider::UpdateData.
     try {
-        getSketchObject()->solve(true);
+        getSketchObject()->solve(true, /*onlyPersistentChanges=*/true);
 
         // Enable solver initial solution update while dragging.
         getSketchObject()->setRecalculateInitialSolutionWhileMovingPoint(
@@ -4616,7 +4634,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
     auto gridnode = getGridNode();
     pcRoot->removeChild(gridnode);
 
-    if (isInEditMode()) {
+    const bool wasInEditMode = isInEditMode();
+    if (wasInEditMode) {
         if (sketchHandler) {
             deactivateHandler();
         }
@@ -4630,17 +4649,7 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             App::AutoTransaction trans(getDocument()->getDocument(), "Cancel sketch editing");
             // Restore the object as it was when edit is set.
             getObject()->restoreFromStream(sketchBackup);
-            getSketchObject()->purgeTouched();
-        }
-        else {
-            App::AutoTransaction trans(getDocument()->getDocument(), "Sketch recompute");
-            try {
-                // and update the sketch
-                // getSketchObject()->getDocument()->recompute();
-                Gui::Command::updateActive();
-            }
-            catch (...) {
-            }
+            sketchEditState.restorePlacement(*getSketchObject());
         }
     }
 
@@ -4657,6 +4666,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
 
     // visibility automation
     try {
+        Base::ObjectStatusLocker<App::Property::Status, App::Property> temporaryTempoVis(
+            App::Property::NoModify, &TempoVis);
         QString cmdstr =
             QStringLiteral("ActiveSketch = App.getDocument('%1').getObject('%2')\n"
                                 "tv = ActiveSketch.ViewObject.TempoVis\n"
@@ -4676,6 +4687,27 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             "unsetEdit: visibility automation failed with an error: {} \n",
             e.what());
     }
+
+    // TempoVis also mirrors temporary visibility into the fork's App object.
+    // Compare only after restoring it, so the snapshot contains persistent state.
+    if (wasInEditMode && editingCancelled) {
+        sketchEditState.restoreRecomputeState(*getSketchObject(), true);
+    }
+    else if (wasInEditMode) {
+        if (sketchEditState.unchanged(*getSketchObject())) {
+            sketchEditState.restoreRecomputeState(*getSketchObject());
+        }
+        else {
+            App::AutoTransaction trans(getDocument()->getDocument(), "Sketch recompute");
+            try {
+                Gui::Command::updateActive();
+            }
+            catch (...) {
+            }
+        }
+    }
+    connectExplicitTouch.disconnect();
+    connectPersistentTouch.disconnect();
 }
 
 void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int ModNum)
