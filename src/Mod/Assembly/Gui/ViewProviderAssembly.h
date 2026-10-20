@@ -26,6 +26,8 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <fastsignals/signal.h>
+#include <Inventor/nodes/SoGroup.h>
+#include <Inventor/nodes/SoSwitch.h>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
 
@@ -214,9 +216,11 @@ public:
 
     void UpdateSolverInformation();
 
-    void isolateComponents(std::set<App::DocumentObject*>& parts, IsolateMode mode);
+    void isolateComponents(
+        std::set<App::DocumentObject*>& parts, IsolateMode mode, bool selection = false
+    );
     void isolateJointReferences(App::DocumentObject* joint, IsolateMode mode = IsolateMode::Transparent);
-    void clearIsolate();
+    void clearIsolate(bool selection = false);
     bool explodeTemporarily(App::DocumentObject* explodedView);
     void clearTemporaryExplosion();
 
@@ -270,6 +274,7 @@ private:
     void slotAboutToOpenTransaction(const std::string& cmdName);
     void slotStartSave(const App::Document& doc, const std::string& filename);
     void slotDeletedObject(const App::DocumentObject& obj);
+    void slotChangedViewProvider(const Gui::ViewProvider& view, const App::Property& prop);
     void slotActivatedVP(const Gui::ViewProviderDocumentObject* vp, const char* name);
 
     void onWorkbenchActivated(const QString& name);
@@ -277,20 +282,30 @@ private:
 
     struct ComponentState
     {
-        bool visibility;
-        bool selectable;
-        // For Links
-        bool overrideMaterial;
-        App::Material shapeMaterial;
+        bool visibility {};
+        bool selectable {};
+        // Scene-only wrapper for user isolation; properties remain untouched.
+        Gui::CoinPtr<SoSwitch> visibilitySwitch;
+        int originalSwitchChild {};
+        Gui::CoinPtr<SoGroup> sceneParent;
+        Gui::CoinPtr<SoGroup> sceneOverride;
     };
 
     std::unordered_map<App::DocumentObject*, ComponentState> stateBackup;
+    bool selectionIsolation {false};
     App::DocumentObject* temporaryExplosion {nullptr};
     App::DocumentObject* isolatedJoint {nullptr};
     bool isolatedJointVisibilityBackup {false};
 
     void highlightJointElements(App::DocumentObject* joint);
     void clearJointElementHighlight();
+
+    bool revealIsolatedContents(
+        App::DocumentObject* current,
+        const std::set<App::DocumentObject*>& selected,
+        bool selectedParent,
+        std::set<App::DocumentObject*>& visited
+    );
 
     void applyIsolationRecursively(
         App::DocumentObject* current,
@@ -307,6 +322,7 @@ private:
     fastsignals::scoped_connection m_preTransactionConn;
     fastsignals::scoped_connection m_startSaveConn;
     fastsignals::scoped_connection m_deletedObjectConn;
+    fastsignals::scoped_connection m_viewChangedConn;
 };
 
 }  // namespace AssemblyGui

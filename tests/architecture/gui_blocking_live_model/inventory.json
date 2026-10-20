@@ -104,6 +104,7 @@
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
     "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandIsolate.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     "src/Mod/Assembly/JointObject.py",
     "src/Mod/Assembly/SoSwitchMarker.py",
@@ -4137,7 +4138,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 132,
+      "line": 135,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4145,7 +4146,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 133,
+      "line": 136,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4153,7 +4154,15 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 238,
+      "line": 138,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "m_viewChangedConn = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 249,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4161,7 +4170,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 246,
+      "line": 257,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4169,7 +4178,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 265,
+      "line": 276,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4177,7 +4186,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 302,
+      "line": 313,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4185,7 +4194,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 365,
+      "line": 377,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4193,7 +4202,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1375,
+      "line": 1387,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4201,7 +4210,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1457,
+      "line": 1469,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4209,7 +4218,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
-      "line": 1758,
+      "line": 1919,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4217,7 +4226,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.h",
-      "line": 121,
+      "line": 123,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4225,7 +4234,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.h",
-      "line": 272,
+      "line": 276,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4281,7 +4290,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 197,
+      "line": 203,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4289,7 +4298,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 213,
+      "line": 219,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4297,7 +4306,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 233,
+      "line": 239,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4305,7 +4314,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 316,
+      "line": 322,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
