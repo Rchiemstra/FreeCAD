@@ -2069,9 +2069,13 @@ void MainWindow::processMessages(const QList<QString>& msg)
 
 void MainWindow::delayedStartup()
 {
-    // automatically run unit tests in Gui
+    // Run internal startup scripts (tests or model diff).
     if (Gui::isInternalGuiTestRun()) {
         try {
+            if (App::Application::Config()["ScriptFileName"] == "FreeCADDiff") {
+                Base::Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADDiff"));
+                return;
+            }
             // Command-line GUI tests should not depend on the interactive QtUnitGui
             // dialog. In headless runs such as QT_QPA_PLATFORM=offscreen/minimal,
             // that dialog path can hang before the test body executes. Run the

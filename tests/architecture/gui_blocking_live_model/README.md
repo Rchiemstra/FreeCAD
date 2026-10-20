@@ -35,7 +35,8 @@ The scanner covers production GUI source only:
   BIM native-IFC command/observer/status modules and the ArchWindowPresets
   helper reached by Window commands, Draft's GUI startup helpers,
   and the reviewed direct GUI modules for Robot and other production
-  workbenches. The manifest also follows qualifying transitive GUI imports,
+  workbenches, including ModelDiff's GUI presentation/async helper ingress in
+  `modeldiff.py`. The manifest also follows qualifying transitive GUI imports,
   including CAM tool-library UI, BIM view providers, Assembly GUI helpers,
   OpenSCAD providers, and BasicShapes view providers. GUI-bearing Draft
   constructors/functions, CAM export helpers, FEM result presentation, and

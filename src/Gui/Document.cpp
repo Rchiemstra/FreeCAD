@@ -4223,7 +4223,7 @@ bool Document::canClose(bool checkModify, bool checkLink)
         return true;
     }
 
-    if (getDocument()->testStatus(App::Document::TempDoc)) {
+    if (skipsSaveOnClose() || getDocument()->testStatus(App::Document::TempDoc)) {
         return true;
     }
 
