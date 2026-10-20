@@ -1058,7 +1058,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 70,
+      "line": 71,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1066,7 +1066,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 76,
+      "line": 77,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1074,7 +1074,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 86,
+      "line": 87,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1082,7 +1082,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 97,
+      "line": 98,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1090,7 +1090,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 99,
+      "line": 100,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1098,7 +1098,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 102,
+      "line": 103,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1106,7 +1106,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 104,
+      "line": 105,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1114,7 +1114,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 105,
+      "line": 106,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1122,15 +1122,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 119,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "\"    QtCore.QTimer.singleShot(0, lambda part=App.activeDocument().%s: \""
-    },
-    {
-      "path": "src/Gui/CommandStructure.cpp",
-      "line": 165,
+      "line": 173,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1138,7 +1130,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 169,
+      "line": 177,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1146,7 +1138,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 180,
+      "line": 188,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1154,7 +1146,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 229,
+      "line": 237,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1162,7 +1154,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 255,
+      "line": 263,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
