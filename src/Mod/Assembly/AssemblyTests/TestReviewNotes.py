@@ -3957,6 +3957,18 @@ class TestReviewNotesGui(unittest.TestCase):
         base = App.Vector(note.BasePosition)
         text0 = App.Vector(note.TextPosition)
         world0 = base + text0
+        # Dock widths vary across the full workbench suite. Center the actual
+        # annotation so both the press and the complete drag fit this viewport.
+        eye_offset = cam.orientation.getValue().multVec(
+            SbVec3f(0, 0, cam.focalDistance.getValue())
+        )
+        cam.position.setValue(
+            world0.x + eye_offset[0],
+            world0.y + eye_offset[1],
+            world0.z + eye_offset[2],
+        )
+        view.redraw()
+        Gui.updateGui()
         try:
             px, py = view.getPointOnViewport(world0)
         except Exception:
