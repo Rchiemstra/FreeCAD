@@ -25,6 +25,9 @@ set(Assembly_Scripts
     CommandCreateBom.py
     CommandInsertLink.py
     CommandInsertNewPart.py
+    CommandExtractComponent.py
+    ExtractComponent.py
+    ExtractionShape.py
     CommandSolveAssembly.py
     CommandCreateJoint.py
     CommandCreateView.py
@@ -45,7 +48,7 @@ set(Assembly_Scripts
 )
 
 if(BUILD_GUI)
-    list (APPEND Assembly_Scripts InitGui.py)
+    list (APPEND Assembly_Scripts InitGui.py TestAssemblyGui.py)
 endif(BUILD_GUI)
 
 INSTALL(
@@ -64,6 +67,7 @@ SET(AssemblyScripts_SRCS
 SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestExtractComponent.py
     AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestCommandCreateView.py
     AssemblyTests/TestCommandInsertLink.py
