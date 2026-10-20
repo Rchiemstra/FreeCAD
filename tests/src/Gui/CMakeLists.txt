@@ -70,6 +70,11 @@ target_link_libraries(Gui_tests_run PRIVATE
     FreeCADGui
 )
 
+if(TARGET PartGui)
+    target_link_libraries(Gui_tests_run PRIVATE PartGui)
+    target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PART_CAPTURE_CACHE)
+endif()
+
 target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Collaboration integration tests use the production isolated-recompute
