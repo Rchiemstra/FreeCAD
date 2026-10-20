@@ -100,6 +100,9 @@ For the non-GUI tests see TestDraft.
 from drafttests.test_import_gui import DraftGuiImport as DraftTestGui01
 from drafttests.test_import_gui import DraftHatchImportIsolation as DraftTestGui01Hatch
 from drafttests.test_owner_thread_gui import DraftOwnerThreadFactories as DraftTestGuiOwner
+from drafttests.test_owner_thread_gui import (
+    DraftDeferredArrayPresentation as DraftTestGuiOwnerArrays,
+)
 from drafttests.test_import_tools import DraftImportTools as DraftTestGui02
 from drafttests.test_pivy import DraftPivy as DraftTestGui03
 from drafttests.test_dimension_gui import DraftGuiDimension as DraftTestGui04
@@ -110,6 +113,7 @@ from drafttests.test_lines_gui import DraftGuiLines as DraftTestGui06
 True if DraftTestGui01 else False
 True if DraftTestGui01Hatch else False
 True if DraftTestGuiOwner else False
+True if DraftTestGuiOwnerArrays else False
 True if DraftTestGui02 else False
 True if DraftTestGui03 else False
 True if DraftTestGui04 else False
