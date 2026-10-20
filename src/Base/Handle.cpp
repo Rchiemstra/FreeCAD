@@ -49,6 +49,18 @@ void Handled::ref() const
     _refCount.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool Handled::tryRef() const
+{
+    int count = _refCount.load(std::memory_order_relaxed);
+    while (count > 0) {
+        if (_refCount.compare_exchange_weak(
+                count, count + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Handled::unref() const
 {
     const int prev = _refCount.fetch_sub(1, std::memory_order_acq_rel);
