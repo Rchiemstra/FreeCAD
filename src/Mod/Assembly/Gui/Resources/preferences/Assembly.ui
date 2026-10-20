@@ -93,7 +93,17 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
      <property name="prefPath" stdset="0"><cstring>Mod/Assembly</cstring></property>
     </widget>
    </item>
-   <item row="4" column="0">
+   <item row="4" column="0" colspan="3">
+    <widget class="Gui::PrefCheckBox" name="checkBoxDetachStdPart">
+     <property name="text">
+      <string>Detach parts created with Std_Part into their own files</string>
+     </property>
+     <property name="checked"><bool>false</bool></property>
+     <property name="prefEntry" stdset="0"><cstring>DetachStdPart</cstring></property>
+     <property name="prefPath" stdset="0"><cstring>Mod/Assembly</cstring></property>
+    </widget>
+   </item>
+   <item row="5" column="0">
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>

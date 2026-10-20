@@ -440,7 +440,9 @@ const char* ViewProvider2DObject::getDefaultDisplayMode() const
 
 void ViewProvider2DObject::updatePlane()
 {
-    onChanged(&ShowPlane);
+    // Refresh the scene without reporting a change to the saved ShowPlane value.
+    plane->whichChild = (ShowPlane.getValue() && Visibility.getValue()) ? SO_SWITCH_ALL
+                                                                        : SO_SWITCH_NONE;
 
     Gui::coinRemoveAllChildren(plane);
 

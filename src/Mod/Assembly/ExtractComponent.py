@@ -234,6 +234,11 @@ def preflight(assembly, component, path):
     # leaving a second document changed after Undo in the assembly.
     for doc in App.listDocuments().values():
         if doc != source:
+            for obj in doc.Objects:
+                for prop in obj.PropertiesList:
+                    if obj.getTypeIdOfProperty(prop) == "App::PropertyPythonObject":
+                        if _containsOwned(getattr(obj, prop), owned):
+                            leftovers.append((obj.FullName, prop))
             refs_elsewhere = AssemblyApp._extractionReferences(
                 doc.Objects, [(obj, obj, obj, obj, obj == component) for obj in owned]
             )
@@ -312,14 +317,13 @@ def extract(assembly, component, path):
                 + " "
                 + ", ".join(invalid)
             )
-        # Serialize before replacing source objects. Export UUID metadata is
-        # included in the source transaction too. Publish with an
-        # exclusive hard link so a racing writer can never be overwritten.
-        os.unlink(staging)
-        destination.saveAs(staging)
-        os.link(staging, path)
+        # The save API publishes exclusively and adopts the final identity and
+        # canonical savepoint together. Assigning FileName after a staging save
+        # leaves the savepoint bound to a temporary path.
+        outcome = destination.saveAsWithOutcome(path, False)
+        if not outcome["success"]:
+            raise ExtractionError(outcome["message"])
         written = True
-        destination.FileName = path
         os.unlink(staging)
         staging = None
 

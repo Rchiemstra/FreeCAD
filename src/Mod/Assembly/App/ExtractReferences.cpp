@@ -84,6 +84,12 @@ Report replaceReferences(const std::vector<App::DocumentObject*>& owners,
     };
     std::vector<SketchAttachment> attachments;
     for (auto owner : owners) {
+        const auto& parents = owner->getInList();
+        const bool jointOwner =
+            owner->isDerivedFrom(Base::Type::fromName("App::FeaturePython")) &&
+            std::any_of(parents.begin(), parents.end(), [](auto parent) {
+                return parent->isDerivedFrom(Base::Type::fromName("Assembly::JointGroup"));
+            });
         std::vector<App::Property*> properties;
         owner->getPropertyList(properties);
         for (auto prop : properties) {
@@ -156,6 +162,7 @@ Report replaceReferences(const std::vector<App::DocumentObject*>& owners,
                             }
                         }
                     }
+                    const bool replaced = bool(next);
                     if (direct) {
                         report.referenced.push_back(oldObj);
                         unsupported |= !next && !copy;
@@ -163,6 +170,26 @@ Report replaceReferences(const std::vector<App::DocumentObject*>& owners,
                     if (next) {
                         report.referenced.push_back(oldObj);
                         copy = std::move(next);
+                    }
+                    // CopyOnLinkReplace validates property storage, not the
+                    // consumer's required target type. In preflight old/new
+                    // are identical, but extraction will replace the target
+                    // with an App::Link. Only consumers with an explicit link
+                    // or geometry adapter contract can accept that change.
+                    // For example ProfileBased requires a Part::Feature for
+                    // Profile, and Body history requires native features.
+                    // Ancestor-rooted paths only rewrite subnames: the
+                    // property's target object keeps its native type.
+                    const bool jointReference = jointOwner &&
+                        (propertyName == "Reference1" || propertyName == "Reference2" ||
+                         propertyName == "ObjectToGround");
+                    const bool acceptsReplacement = !direct || needsFeature || jointReference ||
+                        propertyName == "Group" ||
+                        oldObj->isDerivedFrom(Base::Type::fromName("App::Link")) ||
+                        (owner->isDerivedFrom(Base::Type::fromName("App::Link")) &&
+                         propertyName == "LinkedObject");
+                    if ((direct || replaced) && !acceptsReplacement) {
+                        unsupported = true;
                     }
                 }
             }

@@ -2,6 +2,7 @@
 """Component extraction integration tests, shared by headless and GUI CI."""
 
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,10 @@ from Test.GuiRecompute import close_document_by_name
 
 class TestExtractComponent(unittest.TestCase):
     def setUp(self):
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            Gui.activateWorkbench("AssemblyWorkbench")
         self.before = set(App.listDocuments())
         self.directory = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.directory.name, "Component.FCStd")
@@ -610,6 +615,84 @@ class TestExtractComponent(unittest.TestCase):
         finally:
             self.doc.abortTransaction()
 
+    def test_refuse_opaque_reference_in_other_document(self):
+        other = App.newDocument("OpaqueOtherDocument")
+        reader = other.addObject("App::FeaturePython", "OpaqueReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = {"nested": [self.sketch, {"component": self.part}]}
+        documents = set(App.listDocuments())
+        files = set(os.listdir(self.directory.name))
+        with patch(
+            "ExtractComponent.tempfile.mkstemp",
+            side_effect=AssertionError("preflight must refuse before creating a file"),
+        ) as staging:
+            error = self.assertRefused()
+            staging.assert_not_called()
+        self.assertIn((reader.FullName, "Payload"), error.leftover)
+        self.assertEqual(reader.Payload["nested"][0], self.sketch)
+        self.assertEqual(documents, set(App.listDocuments()))
+        self.assertEqual(files, set(os.listdir(self.directory.name)))
+
+    def test_refuse_external_pad_profile_before_writing(self):
+        component = self.assembly.newObject("App::Part", "ProfileComponent")
+        profile = component.newObject("Sketcher::SketchObject", "ExternalProfile")
+        profile.addGeometry(Part.Circle(App.Vector(), App.Vector(0, 0, 1), 2), False)
+        body = self.assembly.newObject("PartDesign::Body", "OtherBody")
+        pad = body.newObject("PartDesign::Pad", "OtherPad")
+        pad.Profile = profile
+        pad.Length = 4
+        self.doc.recompute()
+        shape = pad.Shape.copy()
+        files = set(os.listdir(self.directory.name))
+        backlinks = {obj.Name: set(x.Name for x in obj.InList) for obj in self.doc.Objects}
+        with patch(
+            "ExtractComponent.tempfile.mkstemp",
+            side_effect=AssertionError("preflight must refuse before creating a file"),
+        ) as staging:
+            error = self.assertRefused(component)
+            staging.assert_not_called()
+        self.assertIn((pad.Name, "Profile"), error.leftover)
+        self.assertEqual(pad.Profile[0], profile)
+        self.assertShape(shape, pad.Shape)
+        self.assertEqual(files, set(os.listdir(self.directory.name)))
+        self.assertEqual(
+            backlinks,
+            {obj.Name: set(x.Name for x in obj.InList) for obj in self.doc.Objects},
+        )
+
+    def test_destination_has_final_identity_and_savepoint(self):
+        result = self.runExtract()
+        self.assertEqual(result.document.FileName, self.path)
+        self.assertFalse(result.document.hasPendingFileChanges())
+        self.assertEqual(result.document.getFileChangeState()["canonical_path"], self.path)
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            self.flushGui()
+            self.assertFalse(
+                Gui.getDocument(result.document).Modified,
+                result.document.getFileChangeState(),
+            )
+        self.assertEqual(
+            sorted(os.listdir(self.directory.name)),
+            sorted([os.path.basename(self.source_path), os.path.basename(self.path)]),
+        )
+
+    def test_refuse_unadapted_native_feature_reference(self):
+        box = self.assembly.newObject("Part::Box", "Outside")
+        cut = self.assembly.newObject("Part::Cut", "OutsideCut")
+        cut.Base = self.pad
+        cut.Tool = box
+        self.doc.recompute()
+        with patch(
+            "ExtractComponent.tempfile.mkstemp",
+            side_effect=AssertionError("preflight must refuse before creating a file"),
+        ) as staging:
+            error = self.assertRefused()
+            staging.assert_not_called()
+        self.assertIn((cut.Name, "Base"), error.leftover)
+        self.assertEqual(cut.Base, self.pad)
+
     def test_refuse_shared_ownership(self):
         group = self.doc.addObject("App::FeaturePython", "AlsoOwnsBody")
         group.addProperty("App::PropertyLinkList", "Group")
@@ -653,32 +736,98 @@ class TestExtractComponent(unittest.TestCase):
         self.assertRefused(path=os.path.join(self.directory.name, "Part.txt"))
 
     def test_write_failure_does_not_change_source(self):
+        import ExtractComponent
+
         names = [obj.Name for obj in self.doc.Objects]
-        with patch("ExtractComponent.os.link", side_effect=OSError("write denied")):
-            with self.assertRaises(OSError):
+        mkstemp = ExtractComponent.tempfile.mkstemp
+
+        def racing_writer(*args, **kwargs):
+            with open(self.path, "wb") as stream:
+                stream.write(b"concurrent writer")
+            return mkstemp(*args, **kwargs)
+
+        with patch("ExtractComponent.tempfile.mkstemp", side_effect=racing_writer):
+            with self.assertRaises((ExtractionError, OSError)):
                 self.runExtract()
         self.assertEqual(names, [obj.Name for obj in self.doc.Objects])
-        self.assertFalse(os.path.exists(self.path))
+        with open(self.path, "rb") as stream:
+            self.assertEqual(stream.read(), b"concurrent writer")
         self.assertEqual(set(App.listDocuments()) - self.before, {self.doc.Name})
 
     def test_replacement_failure_rolls_back_and_removes_file(self):
         import AssemblyApp
+        from ExtractComponent import _owned
 
         original = AssemblyApp._extractionReferences
+        sketch, binder, subbinder, attachment = self.makeExternalGeometry()
+        reader = self.doc.addObject("App::FeaturePython", "Reader")
+        reader.addProperty("App::PropertyLength", "Value")
+        reader.setExpression("Value", "Pad.Length")
+        other_link = self.assembly.newObject("App::Link", "OtherLink")
+        other_link.LinkedObject = self.part
+        self.doc.recompute()
+        self.doc.clearUndos()
         names = [obj.Name for obj in self.doc.Objects]
+        owned_names = tuple(obj.Name for obj in _owned(self.part))
+        geometry = {
+            obj.Name: obj.Shape.copy()
+            for obj in (self.part, self.pad, sketch, binder, subbinder)
+        }
+        placement = attachment.Placement
+        external = sketch.ExternalGeometry
+        constraints = sketch.ConstraintCount
+        expressions = reader.ExpressionEngine
+        files = {path.name: path.read_bytes() for path in Path(self.directory.name).iterdir()}
+        file_state = self.doc.getFileChangeState()
+        mutated = []
 
         def fail(owners, pairs, apply=False):
+            report = original(owners, pairs, apply)
             if apply:
+                self.assertNotEqual(other_link.LinkedObject, self.part)
+                self.assertNotEqual(sketch.ExternalGeometry, external)
+                self.assertTrue(report["redirected"])
+                # Fail after native reference mutation AND actual deletions.
+                for name in owned_names:
+                    # Removing a Body also removes its origin automatically.
+                    if self.doc.getObject(name) is not None:
+                        self.doc.removeObject(name)
+                self.assertIsNone(self.doc.getObject("LocalPart"))
+                self.assertIsNone(self.doc.getObject("Pad"))
+                mutated.append(True)
                 raise RuntimeError("replacement rejected")
-            return original(owners, pairs)
+            return report
 
         with patch.object(AssemblyApp, "_extractionReferences", side_effect=fail):
             with self.assertRaisesRegex(RuntimeError, "replacement rejected"):
                 self.runExtract()
-        self.assertEqual(names, [obj.Name for obj in self.doc.Objects])
+        self.assertEqual(mutated, [True])
+        self.assertEqual(set(names), {obj.Name for obj in self.doc.Objects})
+        self.assertEqual(other_link.LinkedObject, self.doc.LocalPart)
+        self.assertEqual(sketch.ExternalGeometry, external)
+        self.assertEqual(sketch.ConstraintCount, constraints)
+        self.assertEqual(reader.ExpressionEngine, expressions)
+        self.assertEqual(self.doc.Pad.Profile[0], self.doc.Profile)
+        self.assertEqual(self.doc.Body.Tip, self.doc.Pad)
+        self.assertIn(self.doc.LocalPart, self.assembly.Group)
+        self.assertIn(self.doc.Body, self.doc.LocalPart.Group)
+        self.assertIn(self.doc.Profile, self.doc.Body.Group)
+        self.doc.recompute()
+        for name, shape in geometry.items():
+            self.assertShape(shape, self.doc.getObject(name).Shape)
+        self.assertTrue(attachment.Placement.isSame(placement, 1e-7))
+        self.assertFalse(self.doc.HasPendingTransaction)
+        self.assertEqual(self.doc.getBookedTransactionID(), 0)
+        self.assertEqual(self.doc.RedoCount, 0)
+        self.assertEqual(self.doc.getFileChangeState(), file_state)
+        self.assertEqual(
+            files,
+            {path.name: path.read_bytes() for path in Path(self.directory.name).iterdir()},
+        )
         self.assertFalse(os.path.exists(self.path))
         self.assertEqual(self.doc.UndoCount, 0)
         self.assertEqual(set(App.listDocuments()) - self.before, {self.doc.Name})
+        self.assertEqual(App.ActiveDocument, self.doc)
 
     def test_read_only_preflight(self):
         names = [obj.Name for obj in self.doc.Objects]
@@ -704,7 +853,6 @@ class TestExtractComponentGui(TestExtractComponent):
         super().setUp()
         import FreeCADGui as Gui
 
-        Gui.activateWorkbench("AssemblyWorkbench")
         Gui.activeDocument().setEdit(self.assembly.Name)
 
     def test_appearance(self):
@@ -809,29 +957,80 @@ class TestExtractComponentGui(TestExtractComponent):
         self.assertFalse(os.path.exists(self.path))
 
     def test_dialog_unsaved_save_then_extract(self):
-        import FreeCADGui as Gui
         import CommandExtractComponent as command
-        from PySide import QtWidgets
+        from PySide import QtCore, QtWidgets
 
         self.doc.FileName = ""
         self.source_path = os.path.join(self.directory.name, "SavedAssembly.FCStd")
 
-        def save():
-            self.doc.saveAs(self.source_path)
-            return True
+        from Test.GuiRecompute import _pump_gui_until
+
+        # Also drive the native GUI Save As dialog on the pre-fix path. Its
+        # real asynchronous save succeeds, but that path loses the continuation.
+        native_dialog = QtCore.QTimer()
+
+        def accept_native_save():
+            for widget in QtWidgets.QApplication.topLevelWidgets():
+                if isinstance(widget, QtWidgets.QFileDialog) and widget.isVisible():
+                    widget.selectFile(self.source_path)
+                    widget.accept()
+
+        native_dialog.timeout.connect(accept_native_save)
+        native_dialog.start(10)
+        self.addCleanup(native_dialog.stop)
 
         with patch.object(
             QtWidgets.QMessageBox, "warning", return_value=QtWidgets.QMessageBox.Save
-        ), patch.object(
-            QtWidgets.QFileDialog, "getSaveFileName", return_value=(self.path, "")
-        ), patch.object(Gui, "getDocument") as gui_document:
-            gui_document.return_value.saveAs.side_effect = save
-            result = command.extractWithDialog(self.assembly, self.part)
-            gui_document.return_value.saveAs.assert_called_once_with()
-        self.assertIsNotNone(result)
+        ) as warning, patch.object(
+            QtWidgets.QFileDialog, "getSaveFileName",
+            side_effect=[(self.source_path, ""), (self.path, "")],
+        ):
+            # The real save command runs on the lane; no mocked saveAs return.
+            self.assertIsNone(command.extractWithDialog(self.assembly, self.part))
+            self.assertIsNotNone(self.doc.getObject("LocalPart"))
+            self.assertFalse(os.path.exists(self.path))
+            _pump_gui_until(lambda: os.path.isfile(self.source_path), 20.0)
+            _pump_gui_until(lambda: self.doc.getObject("LocalPart") is None, 20.0)
+            self.assertEqual(warning.call_count, 1)
         self.assertTrue(os.path.isfile(self.source_path))
         self.assertTrue(os.path.isfile(self.path))
-        self.assertIn(result.link, self.assembly.Group)
+        link = next(obj for obj in self.assembly.Group if obj.TypeId == "App::Link")
+        self.assertEqual(link.LinkedObject.Document.FileName, self.path)
+
+    def test_dialog_unsaved_save_cancel(self):
+        import CommandExtractComponent as command
+        from PySide import QtWidgets
+
+        self.doc.FileName = ""
+        with patch.object(
+            QtWidgets.QMessageBox, "warning", return_value=QtWidgets.QMessageBox.Save
+        ), patch.object(
+            QtWidgets.QFileDialog, "getSaveFileName", return_value=("", "")
+        ) as dialog:
+            self.assertIsNone(command.extractWithDialog(self.assembly, self.part))
+            self.assertEqual(dialog.call_count, 1)
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_dialog_unsaved_save_failure(self):
+        import CommandExtractComponent as command
+        from PySide import QtWidgets
+        from Test.GuiRecompute import _pump_gui_until
+
+        self.doc.FileName = ""
+        parent_file = os.path.join(self.directory.name, "not-a-directory")
+        Path(parent_file).write_text("file")
+        missing = os.path.join(parent_file, "Assembly.FCStd")
+        with patch.object(
+            QtWidgets.QMessageBox, "warning", return_value=QtWidgets.QMessageBox.Save
+        ) as warning, patch.object(
+            QtWidgets.QFileDialog, "getSaveFileName", return_value=(missing, "")
+        ) as dialog:
+            command.extractWithDialog(self.assembly, self.part)
+            _pump_gui_until(lambda: warning.call_count == 2, 20.0)
+            self.assertEqual(dialog.call_count, 1)
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        self.assertFalse(os.path.exists(self.path))
 
     def test_dialog_reports_refusal_before_changes(self):
         import CommandExtractComponent as command
@@ -868,26 +1067,99 @@ class TestExtractComponentGui(TestExtractComponent):
         finally:
             pref.SetBool("PartInNewFile", old)
 
+    def test_detach_preference_roundtrip_and_default(self):
+        import AssemblyPreferences
+
+        pref = AssemblyPreferences.preferences()
+        old = pref.GetBool("DetachStdPart", False)
+        try:
+            pref.RemBool("DetachStdPart")
+            page = AssemblyPreferences.PreferencesPage()
+            page.loadSettings()
+            self.assertFalse(page.form.checkBoxDetachStdPart.isChecked())
+            page.form.checkBoxDetachStdPart.setChecked(True)
+            page.saveSettings()
+            self.assertTrue(pref.GetBool("DetachStdPart", False))
+            page.loadSettings()
+            self.assertTrue(page.form.checkBoxDetachStdPart.isChecked())
+        finally:
+            pref.SetBool("DetachStdPart", old)
+
     def test_std_part_offer(self):
         import FreeCADGui as Gui
+        import AssemblyPreferences
         import CommandExtractComponent as command
-        from PySide import QtCore, QtWidgets
+        from PySide import QtCore, QtGui, QtWidgets
+        from Test.GuiRecompute import recompute_document
 
-        with patch.object(
-            QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Yes
-        ), patch.object(command, "extractWithDialog") as dialog:
-            Gui.runCommand("Std_Part")
-            QtCore.QCoreApplication.processEvents()
-            self.assertEqual(dialog.call_count, 1)
-            assembly, part = dialog.call_args[0]
-            self.assertEqual(assembly, self.assembly)
-            self.assertIn(part, self.assembly.Group)
+        pref = AssemblyPreferences.preferences()
+        old = pref.GetBool("DetachStdPart", False)
+        actions = Gui.getMainWindow().findChildren(QtGui.QAction, "Std_Part")
+        self.assertTrue(actions)
+        try:
+            for enabled, gui, count in ((False, True, 0), (True, False, 0), (True, True, 1)):
+                with self.subTest(enabled=enabled, gui=gui):
+                    pref.SetBool("DetachStdPart", enabled)
+                    Gui.activeDocument().activeView().setActiveObject("part", None)
+                    recompute_document(self.doc)
+                    with patch.object(
+                        QtWidgets.QMessageBox, "question",
+                        side_effect=AssertionError("Std_Part must not ask a modal question"),
+                    ) as question, patch.object(command, "extractWithDialog") as dialog:
+                        if gui:
+                            actions[0].trigger()
+                        else:
+                            Gui.runCommand("Std_Part")
+                        QtCore.QCoreApplication.processEvents()
+                        question.assert_not_called()
+                        self.assertEqual(dialog.call_count, count)
+                        if count:
+                            assembly, part = dialog.call_args[0]
+                            self.assertEqual(assembly, self.assembly)
+                            self.assertIn(part, self.assembly.Group)
+        finally:
+            pref.SetBool("DetachStdPart", old)
+
+    def test_std_part_offer_cancel_keeps_local(self):
+        import FreeCADGui as Gui
+        import AssemblyPreferences
+        from PySide import QtCore, QtGui, QtWidgets
+        from Test.GuiRecompute import recompute_document
+
+        pref = AssemblyPreferences.preferences()
+        old = pref.GetBool("DetachStdPart", False)
+        before = set(self.assembly.Group)
+        try:
+            pref.SetBool("DetachStdPart", True)
+            Gui.activeDocument().activeView().setActiveObject("part", None)
+            recompute_document(self.doc)
+            with patch.object(
+                QtWidgets.QFileDialog, "getSaveFileName", return_value=("", "")
+            ) as dialog, patch.object(
+                QtWidgets.QMessageBox, "question",
+                side_effect=AssertionError("Std_Part must not ask a modal question"),
+            ):
+                Gui.getMainWindow().findChild(QtGui.QAction, "Std_Part").trigger()
+                QtCore.QCoreApplication.processEvents()
+                self.assertEqual(dialog.call_count, 1)
+            added = set(self.assembly.Group) - before
+            self.assertEqual(len(added), 1)
+            self.assertEqual(next(iter(added)).TypeId, "App::Part")
+            self.assertFalse(os.path.exists(self.path))
+        finally:
+            pref.SetBool("DetachStdPart", old)
 
     def test_std_part_offer_only_directly_in_assembly(self):
+        import AssemblyPreferences
         import CommandExtractComponent as command
-        from PySide import QtWidgets
 
+        pref = AssemblyPreferences.preferences()
+        old = pref.GetBool("DetachStdPart", False)
         child = self.part.newObject("App::Part", "NestedPart")
-        with patch.object(QtWidgets.QMessageBox, "question") as question:
-            command.offer(child)
-            question.assert_not_called()
+        try:
+            pref.SetBool("DetachStdPart", True)
+            with patch.object(command, "extractWithDialog") as dialog:
+                command.offer(child)
+                dialog.assert_not_called()
+        finally:
+            pref.SetBool("DetachStdPart", old)

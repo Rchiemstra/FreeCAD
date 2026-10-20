@@ -13,6 +13,52 @@ from ExtractComponent import ExtractionError, _parent, extract, preflight
 translate = App.Qt.translate
 
 
+def _saveAssemblyThenExtract(assembly, component):
+    """Keep the GUI responsive and resume only after the lane's save completes."""
+    doc = assembly.Document
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        Gui.getMainWindow(),
+        translate("Assembly", "Save Document"),
+        doc.Label + ".FCStd",
+        translate("Assembly", "FreeCAD document (*.FCStd)"),
+    )
+    if not path:
+        return
+    if not path.lower().endswith(".fcstd"):
+        path += ".FCStd"
+    try:
+        handle = doc.saveAsync(path)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(
+            Gui.getMainWindow(), translate("Assembly", "Cannot save assembly"), str(exc)
+        )
+        return
+    timer = QtCore.QTimer(Gui.getMainWindow())
+
+    def completed():
+        if not handle.done():
+            return
+        timer.stop()
+        timer.deleteLater()
+        status = handle.status()
+        if status["state"] != "Completed":
+            QtWidgets.QMessageBox.warning(
+                Gui.getMainWindow(),
+                translate("Assembly", "Cannot save assembly"),
+                status["diagnostic"],
+            )
+            return
+        # The user may close the document while the save is pending.
+        try:
+            _parent(assembly, component)
+        except (ExtractionError, AttributeError, ReferenceError, RuntimeError):
+            return
+        extractWithDialog(assembly, component)
+
+    timer.timeout.connect(completed)
+    timer.start(20)
+
+
 def selectedComponent():
     assembly = UtilsAssembly.activeAssembly()
     selection = Gui.Selection.getSelectionEx("*", 0)
@@ -65,8 +111,9 @@ def extractWithDialog(assembly, component):
             ),
             QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Cancel,
         )
-        if answer != QtWidgets.QMessageBox.Save or not Gui.getDocument(doc).saveAs():
-            return
+        if answer == QtWidgets.QMessageBox.Save:
+            _saveAssemblyThenExtract(assembly, component)
+        return
     filename = component.Label.replace("/", "_").replace("\\", "_")
     path, _ = QtWidgets.QFileDialog.getSaveFileName(
         Gui.getMainWindow(),
@@ -101,7 +148,11 @@ def extractWithDialog(assembly, component):
 
 
 def offer(component):
-    """Small Std_Part hook, run after its creation transaction has committed."""
+    """GUI-triggered Std_Part continuation, after its transaction has committed."""
+    import AssemblyPreferences
+
+    if not AssemblyPreferences.preferences().GetBool("DetachStdPart", False):
+        return
     assembly = UtilsAssembly.activeAssembly()
     try:
         parent = _parent(assembly, component)
@@ -109,22 +160,7 @@ def offer(component):
             return
     except (ExtractionError, AttributeError, ReferenceError):
         return
-    import AssemblyPreferences
-
-    default = (
-        QtWidgets.QMessageBox.Yes
-        if AssemblyPreferences.preferences().GetBool("PartInNewFile", True)
-        else QtWidgets.QMessageBox.No
-    )
-    answer = QtWidgets.QMessageBox.question(
-        Gui.getMainWindow(),
-        translate("Assembly", "Extract to file"),
-        translate("Assembly", "Extract the new part to its own file?"),
-        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-        default,
-    )
-    if answer == QtWidgets.QMessageBox.Yes:
-        extractWithDialog(assembly, component)
+    extractWithDialog(assembly, component)
 
 
 class CommandExtractComponent:
