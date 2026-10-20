@@ -341,8 +341,22 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         """Return (view, viewport widget, DPR, Qt point) for a world-space point."""
         import FreeCADGui as Gui
         from PySide import QtCore
+        from pivy.coin import SbVec3f
 
         view = Gui.ActiveDocument.ActiveView
+        # Earlier camera tests may leave a different default zoom. Frame this
+        # test's actual mouse target, independently of that saved GUI state.
+        camera = view.getCameraNode()
+        camera.height.setValue(100.0)
+        eye_offset = camera.orientation.getValue().multVec(
+            SbVec3f(0, 0, camera.focalDistance.getValue())
+        )
+        camera.position.setValue(
+            world.x + eye_offset[0],
+            world.y + eye_offset[1],
+            world.z + eye_offset[2],
+        )
+        self._flush()
         graphics_view = view.graphicsView()
         gl = graphics_view.viewport()
         self.assertIsNotNone(gl, "No 3D viewport for mouse synthesis")
@@ -355,6 +369,10 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         point = QtCore.QPoint(
             int(round(float(px) / scale)),
             int(round((float(height) - float(py) - 1.0) / scale)),
+        )
+        self.assertTrue(
+            gl.rect().contains(point),
+            "Mouse target {} outside viewport {}".format(point, gl.rect()),
         )
         return view, gl, scale, point
 
@@ -418,6 +436,10 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         point = QtCore.QPoint(
             int(round(center.x() + (float(image_x) - 0.5 * width) / scale)),
             int(round(center.y() + (float(image_y) - 0.5 * height) / scale)),
+        )
+        self.assertTrue(
+            gl.rect().contains(point),
+            "Raster mouse target {} outside viewport {}".format(point, gl.rect()),
         )
         return view, gl, scale, point
 
