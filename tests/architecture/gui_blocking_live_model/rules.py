@@ -168,8 +168,11 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Tux/PersistentToolbarsGui.py",
     # Assembly's Python GUI commands and workbench helpers.
     "src/Mod/Assembly/AssemblyPreferences.py",
+    "src/Mod/Assembly/Assembly/api.py",
     "src/Mod/Assembly/UtilsAssembly.py",
     "src/Mod/Assembly/CommandCreateAssembly.py",
+    "src/Mod/Assembly/CommandComponentPattern.py",
+    "src/Mod/Assembly/ComponentPattern.py",
     "src/Mod/Assembly/CommandCreateBom.py",
     "src/Mod/Assembly/CommandCreateJoint.py",
     "src/Mod/Assembly/CommandCreateSimulation.py",
