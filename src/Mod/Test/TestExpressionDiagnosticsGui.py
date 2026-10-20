@@ -12,6 +12,56 @@ import tempfile
 
 
 class ExpressionDiagnosticsGuiTests(unittest.TestCase):
+    def test_close_cross_document_expression_with_diagnostics_shown(self):
+        from freecad.expression_diagnostics_gui import DiagnosticsDialog
+        from freecad.expression_diagnostics_property_editor import _cache
+        from Test.GuiRecompute import _pump_gui_until
+
+        source = App.newDocument("DiagnosticsCloseSource")
+        consumer = App.newDocument("DiagnosticsCloseConsumer")
+        names = (consumer.Name, source.Name)
+        dialog = None
+        try:
+            value = source.addObject("Part::Box", "Box")
+            value.Length = 25
+            obj = consumer.addObject("Part::Box", "Box")
+            recompute_document(source)
+            recompute_document(consumer)
+            with tempfile.TemporaryDirectory() as tmp:
+                for doc in (source, consumer):
+                    save_document_as(doc, os.path.join(tmp, doc.Name + ".FCStd"))
+                obj.setExpression("Length", source.Name + "#Box.Length")
+                recompute_document(consumer)
+                self.assertEqual(obj.Length.Value, 25)
+
+                Gui.Selection.clearSelection()
+                Gui.Selection.addSelection(obj)
+                dialog = DiagnosticsDialog(consumer)
+                dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+                dialog.show()
+                _pump_gui_until(lambda: all(name in _cache.reports for name in names)
+                                and not _cache.pending, 10)
+                self.assertTrue(dialog.isVisible())
+
+                # Match live GUI ingress: close the consumer, then its saved
+                # source while queued diagnostics invalidations are delivered.
+                close_document(consumer)
+                close_document(source)
+                _pump_gui_until(lambda: all(name not in _cache.reports for name in names)
+                                and dialog.stopped, 10)
+                self.assertFalse(dialog.isVisible())
+                self.assertTrue(all(name not in App.listDocuments() for name in names))
+        finally:
+            if dialog is not None:
+                dialog.close()
+                dialog.deleteLater()
+                QtCore.QCoreApplication.sendPostedEvents(dialog, QtCore.QEvent.DeferredDelete)
+            Gui.Selection.clearSelection()
+            for name in names:
+                doc = App.listDocuments().get(name)
+                if doc is not None:
+                    close_document(doc)
+
     def test_command_and_selection(self):
         from freecad import expression_diagnostics_gui as gui
 
