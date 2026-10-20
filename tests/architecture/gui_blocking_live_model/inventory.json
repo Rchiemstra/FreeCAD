@@ -90,8 +90,11 @@
     "src/Mod/Tux/NavigationIndicatorGui.py",
     "src/Mod/Tux/PersistentToolbarsGui.py",
     "src/Mod/Assembly/AssemblyPreferences.py",
+    "src/Mod/Assembly/Assembly/api.py",
     "src/Mod/Assembly/UtilsAssembly.py",
     "src/Mod/Assembly/CommandCreateAssembly.py",
+    "src/Mod/Assembly/CommandComponentPattern.py",
+    "src/Mod/Assembly/ComponentPattern.py",
     "src/Mod/Assembly/CommandCreateBom.py",
     "src/Mod/Assembly/CommandCreateJoint.py",
     "src/Mod/Assembly/CommandCreateSimulation.py",
@@ -3614,6 +3617,86 @@
       "evidence": "while not self.response_received.wait(0.1):"
     },
     {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 23,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 23,
+      "category": "sync-document-api",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 81,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 81,
+      "category": "sync-document-api",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 98,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 98,
+      "category": "sync-document-api",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 122,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 122,
+      "category": "sync-document-api",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/api.py",
+      "line": 132,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandComponentPattern.py",
+      "line": 19,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
+    },
+    {
       "path": "src/Mod/Assembly/CommandCreateAssembly.py",
       "line": 68,
       "category": "live-app-dereference",
@@ -3998,6 +4081,22 @@
       "evidence": "assembly.recompute(True)"
     },
     {
+      "path": "src/Mod/Assembly/ComponentPattern.py",
+      "line": 314,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/ComponentPattern.py",
+      "line": 314,
+      "category": "sync-document-api",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
       "line": 1013,
       "category": "live-app-dereference",
@@ -4191,7 +4290,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 201,
+      "line": 203,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4199,7 +4298,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 217,
+      "line": 219,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4207,7 +4306,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 237,
+      "line": 239,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4215,7 +4314,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 320,
+      "line": 322,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",

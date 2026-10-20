@@ -73,6 +73,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSnapshot
         import CommandCreateBom
         import CommandIsolate
+        import CommandComponentPattern
         import CommandReviewNote
         import AssemblyPreferences as Preferences
 
@@ -88,6 +89,7 @@ class AssemblyWorkbench(Workbench):
             "Assembly_CreateAssembly",
             "Assembly_Insert",
             "Part_LinkArrays",
+            "Assembly_ComponentPattern",
             "Assembly_SolveAssembly",
             "Assembly_CreateView",
             "Assembly_CreateSnapshot",

@@ -35,6 +35,8 @@ set(Assembly_Scripts
     CommandReviewNote.py
     TestAssemblyWorkbench.py
     JointObject.py
+    ComponentPattern.py
+    CommandComponentPattern.py
     AssemblyPreferences.py
     Preferences.py
     AssemblyImport.py
@@ -64,6 +66,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestIsolateSelectionGui.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestCommandCreateView.py
     AssemblyTests/TestCommandInsertLink.py
     AssemblyTests/TestCrossBodyDatumStaleness.py
