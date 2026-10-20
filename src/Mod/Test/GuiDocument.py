@@ -58,6 +58,32 @@ class TestGuiDocument(unittest.TestCase):
         if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
             close_document(self.doc)
 
+    def testSaveAsRelabelRunsOnGuiThread(self):
+        notifications = []
+        document = self.doc
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Observer:
+            def slotRelabelDocument(self, doc):
+                if doc == document:
+                    notifications.append(QtCore.QThread.currentThread() == gui_thread)
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                self.doc.saveAs(os.path.join(directory, "Relabeled.FCStd"))
+                self.assertEqual(self.doc.Label, "Relabeled")
+                self.assertEqual(notifications, [True])
+                self.doc.Label = "Renamed after Save As"
+                self.assertEqual(notifications, [True, True])
+                # A pending Qt dataChanged must never outlive the tree item.
+                close_document(self.doc)
+                self.doc = None
+                QtWidgets.QApplication.processEvents()
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
     def _findAutoSaver(self):
         app = QtWidgets.QApplication.instance()
         self.assertIsNotNone(app)
