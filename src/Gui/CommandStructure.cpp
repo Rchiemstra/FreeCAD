@@ -111,6 +111,16 @@ void StdCmdPart::activated(int iMsg)
 
     commitCommand();
 
+    doCommand(
+        Gui::Command::Gui,
+        "if activeAsm:\n"
+        "    from PySide import QtCore\n"
+        "    import CommandExtractComponent\n"
+        "    QtCore.QTimer.singleShot(0, lambda part=App.activeDocument().%s: "
+        "CommandExtractComponent.offer(part))",
+        PartName.c_str()
+    );
+
     updateActive();
 }
 

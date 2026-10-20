@@ -43,6 +43,7 @@ class PreferencesPage:
     def saveSettings(self):
         pref = preferences()
         pref.SetBool("LeaveEditWithEscape", self.form.checkBoxEnableEscape.isChecked())
+        pref.SetBool("PartInNewFile", self.form.checkBoxPartInNewFile.isChecked())
         pref.SetBool("LogSolverDebug", self.form.checkBoxSolverDebug.isChecked())
         pref.SetInt("GroundFirstPart", self.form.groundFirstPart.currentIndex())
 
@@ -50,6 +51,7 @@ class PreferencesPage:
         pref = preferences()
         self.form.checkBoxEnableEscape.setChecked(pref.GetBool("LeaveEditWithEscape", True))
         self.form.checkBoxSolverDebug.setChecked(pref.GetBool("LogSolverDebug", False))
+        self.form.checkBoxPartInNewFile.setChecked(pref.GetBool("PartInNewFile", True))
         self.form.groundFirstPart.clear()
         self.form.groundFirstPart.addItem(translate("Assembly", "Ask"))
         self.form.groundFirstPart.addItem(translate("Assembly", "Always"))
