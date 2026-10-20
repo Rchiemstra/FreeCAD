@@ -3025,6 +3025,9 @@ void processProgramOptions(const boost::program_options::variables_map& vm, std:
         }
         mConfig["RunMode"] = "Internal";
         mConfig["ScriptFileName"] = "FreeCADDiff";
+        // A difftool must own its window and lifetime, even with a persisted
+        // SingleInstance setting or an explicit --single-instance option.
+        mConfig.erase("SingleInstance");
     }
 }
 
