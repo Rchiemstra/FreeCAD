@@ -6,6 +6,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import threading
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -644,3 +645,202 @@ class ModelDiffTests(unittest.TestCase):
         )
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("cannot be combined", process.stdout + process.stderr)
+
+    def test_moved_mesh_link_keeps_instance_placement(self):
+        import Mesh
+
+        mesh = self.doc.addObject("Mesh::Feature", "Mesh")
+        mesh.Mesh = Mesh.Mesh(
+            [(App.Vector(), App.Vector(10, 0, 0), App.Vector(0, 10, 0))]
+        )
+        link = self.doc.addObject("App::Link", "Instance")
+        link.setLink(mesh)
+        mesh.Placement.Base.x = 7
+        part = self.doc.addObject("App::Part", "Container")
+        part.addObject(link)
+        part.Placement = App.Placement(
+            App.Vector(100, 15, 0), App.Rotation(App.Vector(0, 0, 1), 90)
+        )
+        for transform in (False, True):
+            with self.subTest(link_transform=transform):
+                link.LinkTransform = transform
+                link.LinkPlacement.Base.x = 20
+                self.save()
+                link.LinkPlacement.Base.x = 25
+                self.save(True)
+                result = self.compare()
+                pieces = {
+                    v.role: v.geometry for v in result.visuals if v.name == "Instance"
+                }
+                self.assertEqual(set(pieces), {"Added", "Removed"})
+                offset = 7 if transform else 0
+                self.assertAlmostEqual(pieces["Removed"].BoundBox.XMin, 90)
+                self.assertAlmostEqual(pieces["Removed"].BoundBox.YMin, 35 + offset)
+                self.assertAlmostEqual(pieces["Added"].BoundBox.XMin, 90)
+                self.assertAlmostEqual(pieces["Added"].BoundBox.YMin, 40 + offset)
+
+    def test_large_body_extracts_only_displayed_results(self):
+        body = self.doc.addObject("PartDesign::Body", "Body")
+        for index in range(80):
+            feature = body.newObject("PartDesign::Feature", f"History{index:03d}")
+            feature.Shape = Part.makeBox(10 + index, 10, 10)
+        self.save()
+        for feature in body.Group:
+            if feature.TypeId == "PartDesign::Feature":
+                feature.Shape = Part.makeBox(20 + int(feature.Name[-3:]), 10, 10)
+        self.save(True)
+        with patch.object(Diff, "_geometry", wraps=Diff._geometry) as extract:
+            result = self.compare()
+        self.assertLessEqual(extract.call_count, 2)
+        self.assertEqual({v.name for v in result.visuals}, {"Body"})
+        history = [c for c in result.objects if c.name.startswith("History")]
+        self.assertEqual(len(history), 80)
+        self.assertTrue(all(c.measures is None for c in history))
+
+    def test_compare_object_pair_on_demand(self):
+        self.box("OldBox")
+        self.box("Unrelated")
+        self.save()
+        self.doc.removeObject("OldBox")
+        new = self.box("NewBox")
+        new.Length = 20
+        self.save(True)
+        with patch.object(Diff, "_geometry", wraps=Diff._geometry) as extract:
+            result = Diff.compare_objects(self.local, self.remote, "OldBox", "NewBox")
+        self.assertEqual(extract.call_count, 2)
+        self.assertEqual(len(result.objects), 1)
+        self.assertEqual({v.role for v in result.visuals}, {"Added", "Unchanged"})
+        shown = Diff.show_result(result)
+        self.assertEqual(len(shown.Changed.Group), 2)
+
+    def test_cli_invalid_inputs_name_path(self):
+        self.box()
+        self.save()
+        bad = Path(self.tmp.name) / "not a FreeCAD document.FCStd"
+        bad.write_text("not a zip archive")
+        not_fcstd = Path(self.tmp.name) / "other archive.FCStd"
+        with zipfile.ZipFile(not_fcstd, "w") as archive:
+            archive.writestr("other.xml", "<other/>")
+        unreadable = Path(self.tmp.name) / "unreadable.FCStd"
+        shutil.copyfile(self.local, unreadable)
+        unreadable.chmod(0)
+        Path(self.tmp.name).chmod(0o755)
+        try:
+            paths = [self.remote, str(bad), str(not_fcstd)]
+            # Windows chmod cannot deny reads; ACL setup is outside this test.
+            if os.name == "posix":
+                paths.append(str(unreadable))
+            for path in paths:
+                with self.subTest(path=path):
+                    binary = str(Path(App.ConfigGet("BinPath")) / self.cli_binary)
+                    environment = {**os.environ, "QTWEBENGINE_DISABLE_SANDBOX": "1"}
+                    options = {}
+                    if (
+                        path == str(unreadable)
+                        and getattr(os, "geteuid", lambda: -1)() == 0
+                    ):
+                        # Root can read mode-000 files. Exercise real permission
+                        # denial in the test container using an unprivileged child.
+                        user_home = Path(self.tmp.name) / "unprivileged"
+                        user_home.mkdir(mode=0o777)
+                        user_home.chmod(0o777)
+                        environment.update(
+                            HOME=str(user_home), QT_QPA_PLATFORM="offscreen"
+                        )
+                        options["user"] = 65534
+                    process = subprocess.run(
+                        [binary, "--diff", self.local, path],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        env=environment,
+                        **options,
+                    )
+                    self.assertNotEqual(
+                        process.returncode, 0, process.stdout + process.stderr
+                    )
+                    self.assertIn(path, process.stdout + process.stderr)
+                    if path == str(unreadable):
+                        self.assertEqual(
+                            process.returncode, 1, process.stdout + process.stderr
+                        )
+                        self.assertIn(
+                            "Permission denied", process.stdout + process.stderr
+                        )
+        finally:
+            unreadable.chmod(0o600)
+
+    cli_binary = "FreeCADCmd"
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and shutil.which("python3"), "requires POSIX and Python"
+    )
+    def test_detached_geometry_load_releases_gil(self):
+        import Mesh
+
+        # Hold the native geometry reader at a deterministic I/O boundary.
+        # An independent writer releases it, even if it monopolizes the GIL.
+        # Python/Qt callbacks must keep running while detached results decode.
+        for suffix in ("brep", "stl"):
+            with self.subTest(format=suffix):
+                source = Path(self.tmp.name) / ("geometry." + suffix)
+                writer = None
+                if suffix == "brep":
+                    Part.makeBox(1, 1, 1).exportBrep(str(source))
+                    filename = Path(self.tmp.name) / "delayed.brep"
+                    os.mkfifo(filename)
+                    writer = subprocess.Popen(
+                        [
+                            shutil.which("python3"),
+                            "-c",
+                            (
+                                "import sys,time; time.sleep(0.5); "
+                                "data=open(sys.argv[1],'rb').read(); "
+                                "f=open(sys.argv[2],'wb'); f.write(data); f.close()"
+                            ),
+                            str(source),
+                            str(filename),
+                        ]
+                    )
+                else:
+                    # Mesh's native loader requires a regular file. A 25 MB
+                    # standard binary STL exercises the same detached loader
+                    # used by result decoding without a nonportable I/O shim.
+                    filename = source
+                    facet = struct.pack("<12fH", 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0)
+                    source.write_bytes(
+                        bytes(80) + struct.pack("<I", 500000) + facet * 500000
+                    )
+                stop = threading.Event()
+                ticks = []
+
+                def heartbeat(stop=stop, ticks=ticks):
+                    while not stop.wait(0.005):
+                        ticks.append(1)
+
+                thread = threading.Thread(target=heartbeat)
+                thread.start()
+                try:
+                    if suffix == "brep":
+                        loaded = Part.Shape()
+                        loaded.read(str(filename))
+                    else:
+                        loaded = Mesh.Mesh(str(filename))
+                finally:
+                    stop.set()
+                    thread.join(timeout=2)
+                    if writer is not None:
+                        try:
+                            writer.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            writer.kill()
+                            writer.wait(timeout=5)
+                            raise
+                if suffix == "brep":
+                    self.assertAlmostEqual(loaded.Volume, 1)
+                else:
+                    self.assertEqual(loaded.CountFacets, 500000)
+                self.assertGreaterEqual(
+                    len(ticks), 3, "native decoding starved GUI Python callbacks"
+                )

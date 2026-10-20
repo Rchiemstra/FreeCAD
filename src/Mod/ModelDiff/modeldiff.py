@@ -7,6 +7,7 @@ No source model is recomputed or saved.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -193,8 +194,21 @@ def _properties(parent, archive, *, document=False):
 
 
 def _read_archive(path):
+    try:
+        return _read_archive_data(path)
+    except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+        raise OSError(
+            translate("ModelDiff", "Cannot read FreeCAD input {0}: {1}").format(
+                path, exc
+            )
+        ) from exc
+
+
+def _read_archive_data(path):
     with zipfile.ZipFile(path) as archive:
         root = ET.fromstring(archive.read("Document.xml"))
+        if root.tag != "Document" or root.find("Objects") is None:
+            raise ValueError("Document.xml is not a FreeCAD document")
         properties = _properties(root.find("Properties"), archive, document=True)
         objects = {
             obj.get("name"): {"TypeId": ((obj.get("type"),), obj.get("type"))}
@@ -379,6 +393,11 @@ def _geometry(obj):
     mesh = getattr(obj, "Mesh", None)
     if mesh is not None:
         geometry = mesh.copy()
+        # Mesh on a Link is the target's property, without the instance transform.
+        # Resolve the full chain, including LinkTransform and target placement.
+        target, transform = obj.getLinkedObject(matrix=App.Matrix())
+        if target != obj:
+            geometry.Placement = App.Placement(transform)
         is_mesh = True
     else:
         import Part
@@ -389,9 +408,12 @@ def _geometry(obj):
         # Analysis results do not need persistent topological element naming.
         geometry = geometry.copy(noElementMap=True)
         is_mesh = False
-    if hasattr(obj, "getGlobalPlacement") and hasattr(obj, "Placement"):
-        parent = obj.getGlobalPlacement().multiply(obj.Placement.inverse())
-        geometry.Placement = parent.multiply(geometry.Placement)
+    # Links are DocumentObjects rather than GeoFeatures, so their own Python
+    # wrapper has no getGlobalPlacement(). Use the containing coordinate system
+    # for every geometry kind instead of depending on that wrapper's methods.
+    parent = obj.getParentGeoFeatureGroup()
+    if parent is not None:
+        geometry.Placement = parent.getGlobalPlacement().multiply(geometry.Placement)
     return geometry, is_mesh
 
 
@@ -442,19 +464,115 @@ def _visuals(result, name, label, old, new, kind):
         add(new[0], "Added", new[1])
 
 
-def compare_files(local, remote):
+def compare_object_pair(before, after, change=None):
+    """Compare one chosen pair of document objects; return detached geometry.
+
+    Call on the document owner in headless code. GUI callers use
+    compare_objects_async() with saved paths and internal object names instead.
+    Hidden history can be chosen explicitly here. No source object is modified.
+    """
+    if App.GuiUp:
+        raise RuntimeError(
+            "Live model comparison requires the document owner; use compare_objects_async()"
+        )
+    if before is None and after is None:
+        raise ValueError("Choose at least one object")
+    if change is None and (before is None or after is None):
+        obj = after or before
+        change = ObjectChange(
+            obj.Name, obj.Label, "Added" if before is None else "Removed"
+        )
+    return _compare_pair(before, after, change, True, True)
+
+
+def _compare_pair(before, after, change, old_visible, new_visible):
+    name, label = (after or before).Name, (after or before).Label
+    result = DiffResult("", "")
+    if change is not None:
+        result.objects.append(change)
+    old = _geometry(before) if old_visible else None
+    new = _geometry(after) if new_visible else None
+    same_geometry = False
+    # Geometry inherited through Links or container placements can change
+    # even when the object's own stored properties did not change.
+    if old is not None and new is not None:
+        if old[1] != new[1]:
+            geometry_changed = True
+        elif old[1]:
+            geometry_changed = old[0].Topology != new[0].Topology
+        else:
+            geometry_changed = (
+                old[0].exportBrepToString() != new[0].exportBrepToString()
+            )
+        same_geometry = not geometry_changed
+        if geometry_changed and change is None:
+            change = ObjectChange(
+                name,
+                after.Label,
+                "Changed",
+                {
+                    "Geometry": (
+                        translate("ModelDiff", "LOCAL geometry"),
+                        translate("ModelDiff", "REMOTE geometry"),
+                    )
+                },
+            )
+            result.objects.append(change)
+    if change is not None and ((old and not old[1]) or (new and not new[1])):
+        change.measures = (
+            old[0].Volume if old and not old[1] else 0,
+            new[0].Volume if new and not new[1] else 0,
+            old[0].Area if old and not old[1] else 0,
+            new[0].Area if new and not new[1] else 0,
+        )
+        if "Shape" in change.properties:
+            change.properties["Shape"] = (
+                translate("ModelDiff", "LOCAL shape"),
+                translate("ModelDiff", "REMOTE shape"),
+            )
+    label = (after or before).Label
+    if change is None or (same_geometry and old is not None and new is not None):
+        geometry = new or old
+        if geometry is not None:
+            group = change.kind if change is not None else "Unchanged"
+            result.visuals.append(Visual(name, label, group, "Unchanged", *geometry))
+    else:
+        _visuals(result, name, label, old, new, change.kind)
+    return result
+
+
+def compare_objects(local, remote, local_name, remote_name=None):
+    """Compare/show just one saved object pair, even if hidden or renamed.
+
+    Pass the result to show_result(). Only this pair's geometry is extracted.
+    GUI code uses compare_objects_async() and show_result() in its callback.
+    """
+    return compare_files(local, remote, _pair=(local_name, remote_name or local_name))
+
+
+def compare_files(local, remote, *, _pair=None):
     """Compare two saved FCStd files and return a detached DiffResult.
 
     Objects pair by internal name. All saved properties are compared, while
     Boolean operations are limited to displayed results. Units are mm, mm², mm³.
     Missing external files do not prevent reading cached properties/geometry.
     """
+    if App.GuiUp:
+        raise RuntimeError("Use compare_files_async() on the GUI thread")
     local, remote = os.path.abspath(os.fspath(local)), os.path.abspath(
         os.fspath(remote)
     )
     lp, lo, lv = _read_archive(local)
     rp, ro, rv = _read_archive(remote)
-    result = DiffResult(local, remote, _changes(lp, rp))
+    if _pair is not None:
+        old_name, new_name = _pair
+        if old_name not in lo:
+            raise ValueError(f"{local}: no object {old_name}")
+        if new_name not in ro:
+            raise ValueError(f"{remote}: no object {new_name}")
+        pair_name = new_name
+        lo, ro = {pair_name: lo[old_name]}, {pair_name: ro[new_name]}
+    result = DiffResult(local, remote, _changes(lp, rp) if _pair is None else {})
     for name in sorted(lo.keys() | ro.keys()):
         kind = "Added" if name not in lo else "Removed" if name not in ro else "Changed"
         properties = _changes(lo.get(name, {}), ro.get(name, {}))
@@ -471,77 +589,41 @@ def compare_files(local, remote):
                 ).format(path)
             )
         roots = {}
-        for path in paths:
+        for original, path in zip((local, remote), paths):
             if path not in roots:
-                roots[path] = _restore(path)
+                try:
+                    roots[path] = _restore(path)
+                except Exception as exc:
+                    raise OSError(
+                        f"Cannot restore FreeCAD input {original}: {exc}"
+                    ) from exc
         left, right = (roots[path] for path in paths)
         visible_left, visible_right = _visible_objects(left, lv), _visible_objects(
             right, rv
         )
         by_name = {change.name: change for change in result.objects}
-        for name in sorted(lo.keys() | ro.keys()):
+        names = sorted(lo.keys() | ro.keys()) if _pair is None else [pair_name]
+        for name in names:
+            if _pair is None and name not in visible_left | visible_right:
+                continue  # Hidden history is compared from saved properties only.
+            before = left.getObject(name if _pair is None else _pair[0])
+            after = right.getObject(name if _pair is None else _pair[1])
             change = by_name.get(name)
-            if change is None and name not in visible_left | visible_right:
-                continue
-            before, after = left.getObject(name), right.getObject(name)
-            old, new = _geometry(before), _geometry(after)
-            same_geometry = False
-            # Geometry inherited through Links or container placements can change
-            # even when the object's own stored properties did not change.
-            if old is not None and new is not None:
-                if old[1] != new[1]:
-                    geometry_changed = True
-                elif old[1]:
-                    geometry_changed = old[0].Topology != new[0].Topology
-                else:
-                    geometry_changed = (
-                        old[0].exportBrepToString() != new[0].exportBrepToString()
-                    )
-                same_geometry = not geometry_changed
-                if geometry_changed and change is None:
-                    change = ObjectChange(
-                        name,
-                        after.Label,
-                        "Changed",
-                        {
-                            "Geometry": (
-                                translate("ModelDiff", "LOCAL geometry"),
-                                translate("ModelDiff", "REMOTE geometry"),
-                            )
-                        },
-                    )
-                    result.objects.append(change)
-            if change is not None and ((old and not old[1]) or (new and not new[1])):
-                change.measures = (
-                    old[0].Volume if old and not old[1] else 0,
-                    new[0].Volume if new and not new[1] else 0,
-                    old[0].Area if old and not old[1] else 0,
-                    new[0].Area if new and not new[1] else 0,
-                )
-                if "Shape" in change.properties:
-                    change.properties["Shape"] = (
-                        translate("ModelDiff", "LOCAL shape"),
-                        translate("ModelDiff", "REMOTE shape"),
-                    )
-            old = old if name in visible_left else None
-            new = new if name in visible_right else None
-            label = (after or before).Label
-            if change is None or (
-                same_geometry and old is not None and new is not None
-            ):
-                geometry = new or old
-                if geometry is not None:
-                    group = change.kind if change is not None else "Unchanged"
-                    result.visuals.append(
-                        Visual(name, label, group, "Unchanged", *geometry)
-                    )
-            else:
-                _visuals(result, name, label, old, new, change.kind)
+            # The same public per-object engine supplies the whole-file 3D view.
+            piece = compare_object_pair(
+                before if _pair is not None or name in visible_left else None,
+                after if _pair is not None or name in visible_right else None,
+                change,
+            )
+            if change is None:
+                result.objects.extend(piece.objects)
+            result.visuals.extend(piece.visuals)
+            result.warnings.extend(piece.warnings)
         result.objects.sort(key=lambda change: change.name)
         return result
 
 
-def show_result(result):
+def _show_steps(result):
     """Create an unsaved document with detached, grouped diff geometry.
 
     Also usable in FreeCADCmd; colour and camera settings are applied only when
@@ -549,6 +631,11 @@ def show_result(result):
     """
     doc = App.newDocument("ModelDifference", translate("ModelDiff", "Model difference"))
     try:
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            Gui.getDocument(doc.Name).SkipSaveOnClose = True
+        yield doc
         groups = {}
         for name, label in (
             ("Added", translate("ModelDiff", "Added")),
@@ -596,27 +683,280 @@ def show_result(result):
                 if hasattr(view, "PointColor"):
                     view.PointColor = colors[visual.role]
                 view.Transparency = 85 if visual.role == "Unchanged" else 15
+            yield doc
         if App.GuiUp:
             import FreeCADGui as Gui
 
-            Gui.activeDocument().activeView().viewAxonometric()
-            Gui.activeDocument().activeView().fitAll()
+            Gui.getDocument(doc.Name).activeView().viewAxonometric()
+            Gui.getDocument(doc.Name).activeView().fitAll()
         return doc
     except Exception:
-        App.closeDocument(doc.Name)
+        if App.GuiUp:
+            doc.closeAsync()
+        else:
+            App.closeDocument(doc.Name)
         raise
+
+
+def show_result(result):
+    """Show detached geometry in a disposable document; explicit Save As works."""
+    steps = _show_steps(result)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as finished:
+            return finished.value
 
 
 def run_cli(local, remote):
     """Shared implementation of FreeCAD[Cmd] --diff LOCAL REMOTE."""
+    if App.GuiUp:
+        return _start_comparison(local, remote, show=True, cli=True)
     result = compare_files(local, remote)
     App.Console.PrintMessage(result.report())
-    if App.GuiUp:
-        import FreeCADGui as Gui
-        from PySide import QtWidgets
-
-        report = Gui.getMainWindow().findChild(QtWidgets.QDockWidget, "Report view")
-        if report is not None:
-            report.show()
-        return show_result(result)
     return result
+
+
+def _write_result(result, directory):
+    """Private process protocol: plain metadata plus detached geometry files."""
+    from dataclasses import asdict
+
+    payload = {
+        key: getattr(result, key)
+        for key in ("local", "remote", "properties", "warnings")
+    }
+    payload["objects"] = [asdict(change) for change in result.objects]
+    payload["visuals"] = []
+    for index, visual in enumerate(result.visuals):
+        filename = str(index) + (".bms" if visual.mesh else ".brep")
+        path = os.path.join(directory, filename)
+        if visual.mesh:
+            visual.geometry.write(path)
+        else:
+            visual.geometry.exportBrep(path)
+        payload["visuals"].append(
+            {
+                "name": visual.name,
+                "label": visual.label,
+                "group": visual.group,
+                "role": visual.role,
+                "mesh": visual.mesh,
+                "file": filename,
+                # BMS stores the kernel, without MeshObject's transform.
+                "placement": (
+                    visual.geometry.Placement.toMatrix().A if visual.mesh else None
+                ),
+            }
+        )
+    with open(os.path.join(directory, "result.json"), "w", encoding="utf-8") as stream:
+        json.dump(payload, stream)
+
+
+def _load_result(directory):
+    # Runs on a decoder thread. Only immutable files/detached geometry cross the
+    # process boundary; no live Document/DocumentObject is ever passed here.
+    with open(os.path.join(directory, "result.json"), encoding="utf-8") as stream:
+        payload = json.load(stream)
+    result = DiffResult(
+        payload["local"],
+        payload["remote"],
+        {key: tuple(value) for key, value in payload["properties"].items()},
+    )
+    for change in payload["objects"]:
+        change["properties"] = {
+            key: tuple(value) for key, value in change["properties"].items()
+        }
+        if change["measures"] is not None:
+            change["measures"] = tuple(change["measures"])
+        result.objects.append(ObjectChange(**change))
+    result.warnings = payload["warnings"]
+    for visual in payload["visuals"]:
+        path = os.path.join(directory, visual.pop("file"))
+        placement = visual.pop("placement")
+        if visual["mesh"]:
+            import Mesh
+
+            geometry = Mesh.Mesh(path)
+            geometry.Placement = App.Placement(App.Matrix(*placement))
+        else:
+            import Part
+
+            geometry = Part.Shape()
+            geometry.read(path)
+        result.visuals.append(Visual(geometry=geometry, **visual))
+    return result
+
+
+_jobs = set()
+
+
+def compare_files_async(local, remote):
+    """GUI API: return a job with finished signal, done, result and error.
+
+    Load and compare in a private headless process; decode detached results off
+    the GUI thread. This never reads, waits for, or closes a live GUI input.
+    Keep the event loop running, then pass job.result to show_result().
+    """
+    return _start_comparison(local, remote)
+
+
+def compare_objects_async(local, remote, local_name, remote_name=None):
+    """As compare_objects(), with asynchronous GUI-safe loading/comparison."""
+    return _start_comparison(
+        local, remote, pair=(local_name, remote_name or local_name)
+    )
+
+
+def _start_comparison(local, remote, *, pair=None, show=False, cli=False):
+    import threading
+    import time
+
+    import FreeCADGui as Gui
+    from PySide import QtCore, QtWidgets
+
+    class ComparisonJob(QtCore.QObject):
+        finished = QtCore.Signal()
+        decoded = QtCore.Signal(object, object)
+
+        def __init__(self):
+            super().__init__(Gui.getMainWindow())
+            self.done, self.result, self.error, self.document = False, None, None, None
+            self.cancelled, self.decoding = False, False
+            self.directory = tempfile.TemporaryDirectory(
+                prefix="freecad-modeldiff-job-"
+            )
+            self.process = QtCore.QProcess(self)
+            self.process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
+            self.log = bytearray()
+            environment = QtCore.QProcessEnvironment.systemEnvironment()
+            environment.insert("FREECAD_MODELDIFF_JOB", self.directory.name)
+            self.process.setProcessEnvironment(environment)
+            self.process.readyReadStandardOutput.connect(self.read_output)
+            self.process.finished.connect(self.process_finished)
+            self.process.errorOccurred.connect(self.process_error)
+            self.decoded.connect(self.complete_decode)
+            QtWidgets.QApplication.instance().aboutToQuit.connect(self.cancel)
+            with open(
+                os.path.join(self.directory.name, "request.json"), "w", encoding="utf-8"
+            ) as stream:
+                json.dump(
+                    {
+                        "local": os.path.abspath(local),
+                        "remote": os.path.abspath(remote),
+                        "pair": pair,
+                    },
+                    stream,
+                )
+            self.process.start(
+                os.path.join(App.ConfigGet("BinPath"), "FreeCADCmd"),
+                [
+                    "-u",
+                    os.path.join(self.directory.name, "user.cfg"),
+                    "-s",
+                    os.path.join(self.directory.name, "system.cfg"),
+                    os.path.join(os.path.dirname(__file__), "modeldiff_worker.py"),
+                ],
+            )
+            Gui.getMainWindow().statusBar().showMessage(
+                translate("ModelDiff", "Comparing saved models…")
+            )
+
+        def read_output(self):
+            self.log.extend(bytes(self.process.readAllStandardOutput()))
+            del self.log[:-65536]
+
+        def process_error(self, error):
+            if error == QtCore.QProcess.FailedToStart:
+                self.finish(RuntimeError(self.process.errorString()))
+
+        def process_finished(self, code, status):
+            self.read_output()
+            if self.cancelled:
+                self.finish(RuntimeError("Model comparison cancelled"))
+                return
+            error_path = os.path.join(self.directory.name, "error.txt")
+            if os.path.isfile(error_path):
+                with open(error_path, encoding="utf-8") as stream:
+                    self.finish(OSError(stream.read()))
+            elif code or status != QtCore.QProcess.NormalExit:
+                self.finish(RuntimeError(self.log.decode("utf-8", errors="replace")))
+            else:
+                self.decoding = True
+
+                def decode():
+                    try:
+                        self.decoded.emit(_load_result(self.directory.name), None)
+                    except Exception as exc:  # noqa: BLE001 - Qt error boundary
+                        self.decoded.emit(None, exc)
+
+                threading.Thread(target=decode, daemon=True).start()
+
+        def complete_decode(self, result, error):
+            self.decoding = False
+            if self.cancelled:
+                self.finish(RuntimeError("Model comparison cancelled"))
+                return
+            if error is not None:
+                self.finish(error)
+                return
+            self.result = result
+            if show:
+                App.Console.PrintMessage(result.report())
+                report = Gui.getMainWindow().findChild(
+                    QtWidgets.QDockWidget, "Report view"
+                )
+                if report is not None:
+                    report.show()
+                self.steps = _show_steps(result)
+                self.advance()
+            else:
+                self.finish()
+
+        def advance(self):
+            # Presentation only: create our own document from detached geometry,
+            # yielding between objects, without nested processEvents()/wait().
+            if self.cancelled:
+                if self.document is not None:
+                    self.document.closeAsync()
+                self.finish(RuntimeError("Model comparison cancelled"))
+                return
+            deadline = time.monotonic() + 0.004
+            try:
+                while time.monotonic() < deadline:
+                    self.document = next(self.steps)
+            except StopIteration:
+                self.finish()
+            except Exception as exc:  # noqa: BLE001 - Qt error boundary
+                self.finish(exc)
+            else:
+                QtCore.QTimer.singleShot(0, self.advance)
+
+        def finish(self, error=None):
+            if self.done:
+                return
+            self.error, self.done = error, True
+            self.directory.cleanup()
+            Gui.getMainWindow().statusBar().clearMessage()
+            if error is not None and not self.cancelled:
+                App.Console.PrintError(str(error) + "\n")
+            self.finished.emit()
+            _jobs.discard(self)
+            self.setParent(None)
+            if cli and error is not None and not self.cancelled:
+                QtCore.QCoreApplication.exit(1)
+
+        def cancel(self):
+            if self.done:
+                return
+            self.cancelled = True
+            if self.process.state() != QtCore.QProcess.NotRunning:
+                self.process.kill()
+            elif not self.decoding:
+                if hasattr(self, "steps"):
+                    self.advance()
+                else:
+                    self.finish(RuntimeError("Model comparison cancelled"))
+
+    job = ComparisonJob()
+    _jobs.add(job)
+    return job

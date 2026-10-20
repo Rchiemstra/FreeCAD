@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-set(ModelDiff_SOURCES Init.py modeldiff.py TestModelDiff.py README.md)
+set(ModelDiff_SOURCES Init.py modeldiff.py modeldiff_worker.py TestModelDiff.py README.md)
 if(BUILD_GUI)
     list(APPEND ModelDiff_SOURCES InitGui.py TestModelDiffGui.py)
 endif()
