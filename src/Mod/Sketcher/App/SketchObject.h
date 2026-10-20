@@ -344,11 +344,13 @@ public:
     /** Solves the sketch and (optionally) updates the geometry.
      * Does not trigger a recompute of any dependent features; when that is necessary, call
      * execute() instead. A change in DoF does not require updating dependents, for instance.
+     * onlyPersistentChanges suppresses dirty tracking for identical serialized geometry
+     * during edit initialization, while still refreshing runtime solver extensions.
      * @return SketchSolveStatus::Success if no error, or else any of these in this order of
      *         priority: Overconstrained, ConflictingConstraints, MalformedConstraints,
      *         SolverError, RedundantConstraints.
      */
-    SketchSolveStatus solve(bool updateGeoAfterSolving = true);
+    SketchSolveStatus solve(bool updateGeoAfterSolving = true, bool onlyPersistentChanges = false);
     /// set the datum of a Distance or Angle constraint and solve
     SketchSolveStatus setDatum(int ConstrId, double Datum);
     /// get the datum of a Distance or Angle constraint
