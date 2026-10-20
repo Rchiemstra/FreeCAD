@@ -9,6 +9,7 @@ from SketcherTests.TestExternalFacePreselection import TestExternalFacePreselect
 from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
 from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
 from SketcherTests.TestSketchExpressionDiagnosticsGui import TestSketchExpressionDiagnosticsGui, TestExpressionClipboardWorkflow
+from SketcherTests.TestViewSectionGui import TestViewSectionGui
 
 from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
 
@@ -26,6 +27,7 @@ from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepair
     and TestVisualLayerListGui
     and TestSketchExpressionDiagnosticsGui
     and TestExpressionClipboardWorkflow
+    and TestViewSectionGui
     and TestSketchReferenceRepairGui
     else False
 )

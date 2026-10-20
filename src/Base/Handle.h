@@ -171,6 +171,8 @@ public:
     virtual ~Handled();
 
     void ref() const;
+    /// Retain a live object; the caller must independently protect its storage.
+    bool tryRef() const;
     void unref() const;
     int unrefNoDelete() const;
 

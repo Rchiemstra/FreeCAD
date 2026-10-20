@@ -44,6 +44,18 @@ REPOSITORY_ROOT = Path(os.environ.get("FREECAD_SOURCE_ROOT", _ARCH_DIR.parents[1
 # ---------------------------------------------------------------------------
 
 SYNC_API_SITES: dict[str, tuple[int, str]] = {
+    "src/Mod/Assembly/Assembly/api.py||doc.recompute()": (
+        1,
+        "existing opt-in synchronous Assembly App constructor, newly included in the transitive GUI inventory",
+    ),
+    "src/Mod/Assembly/Assembly/api.py||assembly.Document.recompute()": (
+        3,
+        "existing synchronous scripted joint constructors, newly included in the transitive GUI inventory",
+    ),
+    "src/Mod/Assembly/ComponentPattern.py||assembly.Document.recompute()": (
+        1,
+        "opt-in synchronous App constructor result; the GUI command passes recompute=False and uses recomputeAsync",
+    ),
     "src/Gui/DocumentRecovery.cpp||App::GetApplication().closeDocument(docs[i]->getName());": (
         1,
         "intentional sync close in crash-recovery code; no document-lock or completion callback available",
