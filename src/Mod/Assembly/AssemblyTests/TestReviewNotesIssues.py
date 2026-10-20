@@ -42,6 +42,7 @@ import tempfile
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Part
 
 import CommandReviewNote
@@ -83,7 +84,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         _msg("  Temporary document '{}'".format(self.doc.Name))
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
     def _make_note(self, text_lines, sub="Face6", pick=None):
         if pick is None:
@@ -165,7 +166,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            App.closeDocument(self.doc.Name)
+            close_document_by_name(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -176,7 +177,7 @@ class TestReviewNotesIssues(unittest.TestCase):
             )
         finally:
             if App.ActiveDocument:
-                App.closeDocument(App.ActiveDocument.Name)
+                close_document_by_name(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -282,7 +283,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
 
         doc_name = self.__class__.__name__
         if App.ActiveDocument and App.ActiveDocument.Name != doc_name:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
         if not App.ActiveDocument or App.ActiveDocument.Name != doc_name:
             App.newDocument(doc_name)
         App.setActiveDocument(doc_name)
@@ -316,7 +317,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         except Exception:
             pass
         if App.ActiveDocument:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
 
     def _flush(self):
         import FreeCADGui as Gui
