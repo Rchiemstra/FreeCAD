@@ -41,6 +41,7 @@
     "src/Mod/Measure/InitGui.py",
     "src/Mod/Mesh/InitGui.py",
     "src/Mod/MeshPart/InitGui.py",
+    "src/Mod/ModelDiff/InitGui.py",
     "src/Mod/OpenSCAD/InitGui.py",
     "src/Mod/Part/InitGui.py",
     "src/Mod/PartDesign/InitGui.py",
@@ -2161,7 +2162,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2084,
+      "line": 2088,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2169,7 +2170,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2085,
+      "line": 2089,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2177,7 +2178,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2139,
+      "line": 2143,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2185,7 +2186,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2142,
+      "line": 2146,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2193,7 +2194,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2196,
+      "line": 2200,
       "category": "thread-waits",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2201,7 +2202,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2276,
+      "line": 2280,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2209,7 +2210,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2551,
+      "line": 2555,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2217,7 +2218,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2680,
+      "line": 2684,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2225,7 +2226,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2743,
+      "line": 2747,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2233,7 +2234,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2748,
+      "line": 2752,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
