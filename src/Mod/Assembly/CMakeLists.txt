@@ -35,6 +35,8 @@ set(Assembly_Scripts
     TestAssemblyWorkbench.py
     TestAssemblyGui.py
     JointObject.py
+    ComponentPattern.py
+    CommandComponentPattern.py
     AssemblyPreferences.py
     Preferences.py
     AssemblyImport.py
@@ -63,6 +65,7 @@ SET(AssemblyScripts_SRCS
 SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestJointEditorSwitch.py
     AssemblyTests/TestCommandCreateView.py
     AssemblyTests/TestCommandInsertLink.py

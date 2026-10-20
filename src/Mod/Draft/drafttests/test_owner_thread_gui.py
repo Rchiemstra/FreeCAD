@@ -476,3 +476,88 @@ class DraftOwnerThreadFactories(unittest.TestCase):
 
     def test_factories_on_main_thread(self):
         self._check_factories(False)
+
+
+class DraftDeferredArrayPresentation(unittest.TestCase):
+    # Kept out of DraftOwnerThreadFactories: the MCP live-GUI suite replays that
+    # class's exact test list.
+    def setUp(self):
+        self.workbench = Gui.activeWorkbench().name()
+        Gui.activateWorkbench("DraftWorkbench")
+
+    def tearDown(self):
+        Gui.activateWorkbench(self.workbench)
+
+    def test_deferred_array_presentation_keeps_model_ready(self):
+        import Draft
+
+        for kind in ("circular", "twisted", "point"):
+            with self.subTest(array=kind):
+                doc = App.newDocument("DraftLateArrayPresentation_" + kind)
+                pending = []
+                errors = []
+                created = []
+                try:
+                    def create():
+                        self.assertFalse(gui_utils.on_gui_thread())
+                        base = doc.addObject("Part::Feature", "Base")
+                        base.Shape = Part.makeBox(2, 3, 4)
+                        if kind == "circular":
+                            array = Draft.make_circular_array(base, use_link=False)
+                        elif kind == "twisted":
+                            path = doc.addObject("Part::Feature", "Path")
+                            path.Shape = Part.makeLine(App.Vector(), App.Vector(100, 0, 0))
+                            array = Draft.make_path_twisted_array(base, path, use_link=False)
+                        else:
+                            points = doc.addObject("Part::Feature", "Points")
+                            points.Shape = Part.makeCompound(
+                                [Part.Vertex(App.Vector()), Part.Vertex(App.Vector(10, 0, 0))]
+                            )
+                            array = Draft.make_point_array(base, points, use_link=False)
+                        created.append((base, array))
+
+                    def worker():
+                        try:
+                            result = doc.commitCompatibilityMutation(
+                                create, structural=True, recompute=False
+                            )
+                            self.assertTrue(result["committed"], result)
+                        except BaseException as exc:
+                            errors.append(exc)
+
+                    # Force the late Qt turn that otherwise only occasionally
+                    # falls after recompute_document's last readiness check.
+                    with patch.object(
+                        gui_utils, "run_gui_setup",
+                        side_effect=lambda obj, callback: pending.append((obj, callback)),
+                    ):
+                        thread = threading.Thread(target=worker)
+                        thread.start()
+                        _pump_gui_until(lambda: not thread.is_alive(), 60)
+                        thread.join()
+                    if errors:
+                        raise errors[0]
+                    self.assertEqual(len(pending), 1)
+                    base, array = created[0]
+                    recompute_document(doc)
+                    self.assertFalse(doc.mustExecute())
+                    base.ViewObject.DiffuseColor = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)] * 3
+                    expected_colors = gui_utils.get_diffuse_color(base) * array.Count
+
+                    obj, callback = pending.pop()
+                    gui_utils.run_gui_setup(obj, callback)
+                    _pump_gui_until(
+                        lambda: type(array.ViewObject.Proxy).__name__ == "ViewProviderDraftArray",
+                        10,
+                    )
+                    self.assertFalse(doc.mustExecute(), doc.getMutationReadiness())
+                    self.assertEqual(len(array.PlacementList), array.Count)
+                    self.assertGreater(array.Count, 0)
+                    self.assertEqual(array.ViewObject.DiffuseColor, expected_colors)
+                    self.assertFalse(base.ViewObject.Visibility)
+                finally:
+                    # A failing pre-fix presentation callback leaves real model
+                    # work behind; settle it before closing the fixture.
+                    recompute_document(doc)
+                    close_document(doc)
+                    Gui.updateGui()

@@ -70,3 +70,16 @@ TEST(Reference, TestRefHandle)
     data->unref();
     EXPECT_EQ(data.getRefCount(), 1);
 }
+
+TEST(Reference, TryRefDoesNotResurrect)
+{
+    Data data;
+    EXPECT_FALSE(data.tryRef());
+    data.ref();
+    ASSERT_TRUE(data.tryRef());
+    EXPECT_EQ(data.getRefCount(), 2);
+    data.unrefNoDelete();
+    data.unrefNoDelete();
+    EXPECT_FALSE(data.tryRef());
+    EXPECT_EQ(data.getRefCount(), 0);
+}
