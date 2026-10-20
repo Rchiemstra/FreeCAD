@@ -1898,7 +1898,7 @@
     },
     {
       "path": "src/Gui/DocumentPresentationCapture.cpp",
-      "line": 125,
+      "line": 135,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -26465,6 +26465,22 @@
       "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
     },
     {
+      "path": "src/Mod/Part/Gui/DocumentPresentationCapture.cpp",
+      "line": 96,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": ", objectDeleteConnection(App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Part/Gui/DocumentPresentationCapture.cpp",
+      "line": 98,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": ", shapeChangeConnection(App::GetApplication().signalChangedObject.connect("
+    },
+    {
       "path": "src/Mod/Part/Gui/DocumentRecomputeIngress.h",
       "line": 96,
       "category": "live-app-dereference",
@@ -26882,7 +26898,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
-      "line": 983,
+      "line": 984,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",

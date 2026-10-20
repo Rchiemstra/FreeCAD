@@ -409,13 +409,22 @@ void ViewProvider2DObject::updateData(const App::Property* property)
     }
 }
 
+namespace
+{
+
+void updatePlaneSwitch(SoSwitch* plane, bool showPlane, bool visible)
+{
+    plane->whichChild = (showPlane && visible) ? SO_SWITCH_ALL : SO_SWITCH_NONE;
+}
+
+}  // namespace
+
 void ViewProvider2DObject::onChanged(const App::Property* property)
 {
     ViewProviderPart::onChanged(property);
 
     if (property == &ShowPlane || property == &Visibility) {
-        plane->whichChild = (ShowPlane.getValue() && Visibility.getValue()) ? SO_SWITCH_ALL
-                                                                            : SO_SWITCH_NONE;
+        updatePlaneSwitch(plane, ShowPlane.getValue(), Visibility.getValue());
     }
 }
 
@@ -440,9 +449,7 @@ const char* ViewProvider2DObject::getDefaultDisplayMode() const
 
 void ViewProvider2DObject::updatePlane()
 {
-    // Refresh the scene without reporting a change to the saved ShowPlane value.
-    plane->whichChild = (ShowPlane.getValue() && Visibility.getValue()) ? SO_SWITCH_ALL
-                                                                        : SO_SWITCH_NONE;
+    updatePlaneSwitch(plane, ShowPlane.getValue(), Visibility.getValue());
 
     Gui::coinRemoveAllChildren(plane);
 
