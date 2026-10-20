@@ -23,6 +23,7 @@
 
 #include <limits>
 #include <utility>
+#include <QScopedValueRollback>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Document.h>
@@ -54,9 +55,31 @@ PropertyModel::PropertyModel(QObject* parent)
         const auto pending = std::exchange(deferredReads, {});
         for (const auto& index : pending) {
             if (index.isValid()) {
+                auto* item = static_cast<PropertyItem*>(index.internalPointer());
+                PropertyReadGuard read(item);
+                if (!read.readable()) {
+                    deferredReads.insert(index);
+                    continue;
+                }
+                QScopedValueRollback<bool> retry(retryingRead, true);
                 Q_EMIT dataChanged(index, index);
             }
         }
+        if (!deferredReads.isEmpty()) {
+            readRetryTimer.start(std::min(readRetryTimer.interval() * 2, 1000));
+        }
+        else {
+            readRetryTimer.setInterval(50);
+        }
+    });
+    connect(this, &QAbstractItemModel::modelReset, this, [this] {
+        safeValues.clear();
+        deferredReads.clear();
+        readRetryTimer.stop();
+        readRetryTimer.setInterval(50);
+    });
+    connect(this, &QAbstractItemModel::rowsRemoved, this, [this] {
+        safeValues.clear();
     });
 }
 
@@ -90,28 +113,20 @@ QVariant PropertyModel::data(const QModelIndex& index, int role) const
         return {};
     }
 
-    // Like tree/provider refresh, reserve before touching live properties.
-    // Committed display text does not cover every property or every Qt role:
-    // even DecorationRole can enter PropertyLinkBase::getLinks().
-    App::LivePresentationRefreshScope refresh;
-    if (!refresh.acquired()) {
+    auto* item = static_cast<PropertyItem*>(index.internalPointer());
+    // These roles use only row metadata, or have no value implementation.
+    if (!PropertyItem::dataRequiresOwnerRead(index.column(), role)) {
+        return item->data(index.column(), role);
+    }
+    PropertyReadGuard read(item);
+    const QPersistentModelIndex key(index);
+    if (!read.readable()) {
         deferRead(index);
-        return {};
+        return safeValues.value(key).value(role);
     }
-    auto item = static_cast<PropertyItem*>(index.internalPointer());
-    // Component rows delegate to their ancestors. An active lane can also be
-    // between mutation targets, so require it to be idle under the reservation.
-    for (auto* owner = item; owner; owner = owner->parent()) {
-        for (auto* prop : owner->getPropertyData()) {
-            auto* object = prop ? freecad_cast<App::DocumentObject*>(prop->getContainer()) : nullptr;
-            auto* document = object ? object->getDocument() : nullptr;
-            if (document && documentExecutionLaneBusy(*document)) {
-                deferRead(index);
-                return {};
-            }
-        }
-    }
-    return item->data(index.column(), role);
+    const auto value = item->data(index.column(), role);
+    safeValues[key].insert(role, value);
+    return value;
 }
 
 void PropertyModel::deferRead(const QModelIndex& index) const

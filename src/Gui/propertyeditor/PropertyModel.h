@@ -81,6 +81,9 @@ public:
     QStringList propertyPathFromIndex(const QModelIndex&) const;
     QModelIndex propertyIndexFromPath(const QStringList&) const;
 
+    // Qt refreshes editors on dataChanged even for display-only roles.
+    bool isReadRetry() const { return retryingRead; }
+
 private:
     void deferRead(const QModelIndex& index) const;
     void resetGroups();
@@ -102,6 +105,8 @@ private:
     PropertyItem* rootItem;
     mutable QTimer readRetryTimer;
     mutable QSet<QPersistentModelIndex> deferredReads;
+    mutable QHash<QPersistentModelIndex, QHash<int, QVariant>> safeValues;
+    bool retryingRead = false;
 
     std::unordered_map<App::Property*, QPointer<PropertyItem>> itemMap;
 
