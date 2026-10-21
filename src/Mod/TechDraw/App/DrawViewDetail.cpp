@@ -231,14 +231,8 @@ void DrawViewDetail::detailExec(TopoDS_Shape& shape, DrawViewPart* dvp, DrawView
         makeDetailShape(shape, dvp, dvs);
         onMakeDetailFinished();
         waitingForDetail(false);
+        return;
     }
-
-    //note that &m_detailWatcher in the third parameter is not strictly required, but using the
-    //4 parameter signature instead of the 3 parameter signature prevents clazy warning:
-    //https://github.com/KDE/clazy/blob/1.11/docs/checks/README-connect-3arg-lambda.md
-    connectDetailWatcher =
-        QObject::connect(&m_detailWatcher, &QFutureWatcherBase::finished, &m_detailWatcher,
-                         [this] { this->onMakeDetailFinished(); });
 
     // We create a lambda closure to hold a copy of shape.
     // This is important because this variable might be local to the calling
@@ -246,8 +240,8 @@ void DrawViewDetail::detailExec(TopoDS_Shape& shape, DrawViewPart* dvp, DrawView
     // TODO: What about dvp and dvs? Do they live past makeDetailShape?
     auto lambda = [this, shape, dvp, dvs]{this->makeDetailShape(shape, dvp, dvs);};
     m_detailFuture = QtConcurrent::run(std::move(lambda));
-    m_detailWatcher.setFuture(m_detailFuture);
-    waitingForDetail(true);
+    connectDetailWatcher = watchGeometryFuture(m_detailWatcher, m_detailFuture, m_waitingForDetail,
+                                                [this] { onMakeDetailFinished(); });
 }
 
 //this runs in a separate thread since it can sometimes take a long time
@@ -459,8 +453,8 @@ void DrawViewDetail::onMakeDetailFinished(void)
     waitingForDetail(false);
     QObject::disconnect(connectDetailWatcher);
 
-    m_tempGeometryObject = buildGeometryObject(getShapeForGeometryBuild(), m_viewAxis);
-    if (!DU::isGuiUp()) {
+    buildGeometryObject(getShapeForGeometryBuild(), m_viewAxis);
+    if (CoarseView.getValue() || !DU::isGuiUp()) {
         onHlrFinished();
     }
 }
