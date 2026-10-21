@@ -42,6 +42,10 @@ public:
     {
         codePage = cp;
     }
+    void setReadSemanticPmi(bool enabled)
+    {
+        readSemanticPmi = enabled;
+    }
     void read(
         Handle(TDocStd_Document) hDoc,
         const Message_ProgressRange& theProgress = Message_ProgressRange()
@@ -50,6 +54,7 @@ public:
 private:
     Base::FileInfo file;
     Resource_FormatType codePage {};
+    bool readSemanticPmi = false;
 };
 
 }  // namespace Import

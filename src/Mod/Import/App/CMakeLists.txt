@@ -25,6 +25,8 @@ SET(Import_SRCS
     ReaderIges.h
     ReaderStep.cpp
     ReaderStep.h
+    StepPmiImport.cpp
+    StepPmiImport.h
     StepShape.pyi
     StepShape.h
     StepShape.cpp

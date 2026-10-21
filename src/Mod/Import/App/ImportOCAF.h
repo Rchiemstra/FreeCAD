@@ -36,6 +36,8 @@
 #include <XCAFDoc_ColorTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 
+#include "StepPmiImport.h"
+
 #include <App/Part.h>
 #include <Mod/Import/ImportGlobal.h>
 
@@ -63,6 +65,10 @@ public:
     virtual ~ImportOCAF();
     void loadShapes();
     void setMerge(bool);
+    void setShapeObserver(ShapeImportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
 
 private:
     void loadShapes(
@@ -81,6 +87,7 @@ private:
         bool
     );
     void createShape(
+        const TDF_Label& sourceLabel,
         const TopoDS_Shape& label,
         const TopLoc_Location&,
         const std::string&,
@@ -93,6 +100,7 @@ private:
     static void tryPlacementFromMatrix(App::GeoFeature*, const Base::Matrix4D&);
 
 private:
+    ShapeImportObserver shapeObserver;
     Handle(TDocStd_Document) pDoc;
     App::Document* doc;
     Handle(XCAFDoc_ShapeTool) aShapeTool;

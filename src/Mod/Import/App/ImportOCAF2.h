@@ -84,6 +84,14 @@ public:
 
     static ImportOCAFOptions customImportOptions();
     void setImportOptions(ImportOCAFOptions opts);
+    void setShapeObserver(ShapeImportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
+    bool supportsPmiAssociation() const
+    {
+        return !options.merge && options.mode == SingleDoc;
+    }
     void setMerge(bool enable)
     {
         options.merge = enable;
@@ -212,6 +220,7 @@ private:
     Handle(XCAFDoc_ColorTool) aColorTool;
     std::string default_name;
 
+    ShapeImportObserver shapeObserver;
     ImportOCAFOptions options;
     std::string filePath;
 

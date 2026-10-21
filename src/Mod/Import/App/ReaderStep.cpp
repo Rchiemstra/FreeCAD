@@ -52,6 +52,9 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     aReader.SetNameMode(true);
     aReader.SetLayerMode(true);
     aReader.SetSHUOMode(true);
+    if (readSemanticPmi) {
+        aReader.SetGDTMode(true);
+    }
 #if OCC_VERSION_HEX < 0x070800
     if (aReader.ReadFile(name8bit.c_str()) != IFSelect_RetDone) {
 #else

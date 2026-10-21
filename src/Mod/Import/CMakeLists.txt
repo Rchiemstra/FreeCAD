@@ -50,6 +50,14 @@ SET(DXF_Plate
 set(Import_Scripts
     Init.py
     stepZ.py
+    StepPmi.py
+    TestStepPmi.py
+)
+
+set(Import_PmiFixtures
+    TestData/StepPmi/semantic.step
+    TestData/StepPmi/generate.tcl
+    TestData/StepPmi/README.txt
 )
 
 if(BUILD_GUI)
@@ -58,8 +66,16 @@ if(BUILD_GUI)
 endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
-    SOURCES ${Import_Scripts} ${DXF_Plate}
+    SOURCES ${Import_Scripts} ${DXF_Plate} ${Import_PmiFixtures}
 )
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_PmiFixtures}
+)
+
+install(FILES ${Import_PmiFixtures} DESTINATION Mod/Import/TestData/StepPmi)
 
 fc_target_copy_resource(ImportScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
