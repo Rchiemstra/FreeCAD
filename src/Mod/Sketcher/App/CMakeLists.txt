@@ -56,6 +56,8 @@ SOURCE_GROUP("Properties" FILES ${Properties_SRCS})
 
 
 SET(Features_SRCS
+    BSplineOffset.cpp
+    BSplineOffset.h
     SketchObjectSF.cpp
     SketchObjectSF.h
     SketchGeometry.cpp
