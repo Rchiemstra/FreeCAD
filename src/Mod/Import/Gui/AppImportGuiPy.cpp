@@ -65,6 +65,7 @@
 #include <Mod/Import/App/ReaderGltf.h>
 #include <Mod/Import/App/ReaderIges.h>
 #include <Mod/Import/App/ReaderStep.h>
+#include <Mod/Import/App/StepPmiImport.h>
 #include <Mod/Import/App/WriterGltf.h>
 #include <Mod/Import/App/WriterIges.h>
 #include <Mod/Import/App/WriterStep.h>
@@ -93,12 +94,12 @@ public:
         add_keyword_method(
             "open",
             &Module::insert,
-            "open(string) -- Open the file and create a new document."
+            "open(string, ..., semanticPMI=bool) -- Open a file; overrides ImportSemanticPMI."
         );
         add_keyword_method(
             "insert",
             &Module::insert,
-            "insert(string,string) -- Insert the file into the given document."
+            "insert(string,string, ..., semanticPMI=bool) -- Insert a file; overrides ImportSemanticPMI."
         );
         add_varargs_method("preScanDxf", &Module::preScanDxf, "preScanDxf(filepath) -> dict");
         add_varargs_method(
@@ -189,8 +190,9 @@ private:
         PyObject* importHidden = Py_None;
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
+        PyObject* semanticPMI = Py_None;
         int mode = -1;
-        static const std::array<const char*, 8> kwd_list {
+        static const std::array<const char*, 9> kwd_list {
             "name",
             "docName",
             "options",
@@ -198,12 +200,13 @@ private:
             "merge",
             "useLinkGroup",
             "mode",
+            "semanticPMI",
             nullptr
         };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!O!i",
+                "et|sO!O!O!O!iO!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -216,7 +219,9 @@ private:
                 &merge,
                 &PyBool_Type,
                 &useLinkGroup,
-                &mode
+                &mode,
+                &PyBool_Type,
+                &semanticPMI
             )) {
             throw Py::Exception();
         }
@@ -226,6 +231,9 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
+            const bool readPmi = Import::StepPmiImport::enabled(
+                file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+            Import::StepPmiImport pmi;
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -318,6 +326,7 @@ private:
                         pi = new Part::ProgressIndicator();
                     }
                     Import::ReaderStep reader(file);
+                    reader.setReadSemanticPmi(readPmi, &pmi);
 #if OCC_VERSION_HEX >= 0x070800
                     reader.setCodePage(cp);
 #endif
@@ -373,7 +382,13 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
+            if (readPmi) {
+                ocaf.setShapeObserver(pmi.observer());
+            }
             auto ret = ocaf.loadShapes();
+            if (readPmi) {
+                pmi.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
+            }
             hApp->Close(hDoc);
 
             if (ret) {

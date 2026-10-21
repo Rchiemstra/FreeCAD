@@ -161,11 +161,9 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
-            const bool readPmi = file.hasExtension({"stp", "step"})
-                && (semanticPMI == Py_None
-                    ? App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Mod/Import")
-                          ->GetBool("ImportSemanticPMI", false)
-                    : Base::asBoolean(semanticPMI));
+            StepPmiImport pmi;
+            const bool readPmi = StepPmiImport::enabled(
+                file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -182,7 +180,7 @@ private:
             if (file.hasExtension({"stp", "step"})) {
                 try {
                     Import::ReaderStep reader(file);
-                    reader.setReadSemanticPmi(readPmi);
+                    reader.setReadSemanticPmi(readPmi, &pmi);
                     reader.read(hDoc);
                 }
                 catch (OSD_Exception& e) {
@@ -228,20 +226,12 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
-            StepPmiImport pmi;
             if (readPmi) {
                 ocaf.setShapeObserver(pmi.observer());
             }
             ocaf.loadShapes();
-            try {
-                if (readPmi) {
-                    StepPmiImport::materialize(
-                        pcDoc, pmi.extract(hDoc, pcDoc, ocaf.supportsPmiAssociation()));
-                }
-            }
-            catch (...) {
-                hApp->Close(hDoc);
-                throw;
+            if (readPmi) {
+                pmi.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
             }
 
             hApp->Close(hDoc);

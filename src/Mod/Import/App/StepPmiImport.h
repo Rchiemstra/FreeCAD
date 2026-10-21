@@ -12,6 +12,13 @@
 #include <TopoDS_Shape.hxx>
 #include <Mod/Import/ImportGlobal.h>
 
+class StepData_StepModel;
+
+namespace Base
+{
+class FileInfo;
+}
+
 namespace App
 {
 class Document;
@@ -62,6 +69,11 @@ struct StepPmiRecord
 class ImportExport StepPmiImport
 {
 public:
+    // override: -1 uses the default-off preference, 0/1 explicitly disables/enables.
+    static bool enabled(const Base::FileInfo& file, int override = -1);
+    void finish(const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
+                App::Document* target, bool supportedAssociation) const;
+    void captureReadWarnings(const Handle(StepData_StepModel)& model) noexcept;
     ShapeImportObserver observer();
     std::vector<StepPmiRecord> extract(
         const Handle(TDocStd_Document) & document,
@@ -80,6 +92,9 @@ private:
         bool occurrence;
     };
     std::vector<Association> associations;
+    std::vector<std::string> sourceWarnings;
+    bool sourceWarningsFailed = false;
+    static std::vector<std::string> readWarnings(const Handle(StepData_StepModel)& model);
     StepPmiReference resolve(
         const TDF_Label& label,
         const std::string& role,

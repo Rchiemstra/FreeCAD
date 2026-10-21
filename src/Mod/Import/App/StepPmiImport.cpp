@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <CXX/Objects.hxx>
 #include <TDF_Tool.hxx>
@@ -18,6 +19,9 @@
 #include <XCAFDimTolObjects_DimensionObject.hxx>
 #include <XCAFDimTolObjects_GeomToleranceObject.hxx>
 
+#include <App/Application.h>
+#include <Base/Console.h>
+#include <Base/FileInfo.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Mod/Part/App/PartFeature.h>
@@ -300,6 +304,47 @@ Py::Dict toPython(const StepPmiRecord& record)
 }
 }  // namespace
 
+bool StepPmiImport::enabled(const Base::FileInfo& file, int override)
+{
+    return file.hasExtension({"stp", "step"})
+        && (override < 0
+                ? App::GetApplication().GetParameterGroupByPath(
+                      "User parameter:BaseApp/Preferences/Mod/Import")
+                      ->GetBool("ImportSemanticPMI", false)
+                : override != 0);
+}
+
+void StepPmiImport::finish(
+    const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
+    App::Document* target, bool supportedAssociation) const
+{
+    // Geometry already exists. Roll back only objects added by materialisation,
+    // including a helper that raises after creating part of the PMI group.
+    std::set<std::string> existing;
+    for (auto object : target->getObjects()) {
+        existing.insert(object->getNameInDocument());
+    }
+    try {
+        materialize(target, extract(source, target, supportedAssociation));
+        return;
+    }
+    catch (...) {
+        // PyCXX exceptions leave the Python error indicator set.
+        PyErr_Clear();
+    }
+    std::vector<std::string> added;
+    for (auto object : target->getObjects()) {
+        if (!existing.count(object->getNameInDocument())) {
+            added.emplace_back(object->getNameInDocument());
+        }
+    }
+    for (auto it = added.rbegin(); it != added.rend(); ++it) {
+        target->removeObject(it->c_str());
+    }
+    Base::Console().warning("STEP PMI: could not import semantic PMI from '{}'; geometry kept.\n",
+                            file.filePath());
+}
+
 ShapeImportObserver StepPmiImport::observer()
 {
     return [this](const TDF_Label& label, const TopoDS_Shape& shape, App::DocumentObject* object) {
@@ -424,6 +469,9 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
     bool supportedAssociation
 ) const
 {
+    if (sourceWarningsFailed) {
+        throw std::runtime_error("Could not extract STEP PMI reader diagnostics");
+    }
     std::vector<StepPmiRecord> records;
     const auto tool = XCAFDoc_DocumentTool::DimTolTool(document->Main());
     auto references = [&](const TDF_Label& label, StepPmiRecord& record) {
@@ -615,6 +663,9 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
         }
         references(label, record);
         records.push_back(std::move(record));
+    }
+    for (auto& record : records) {
+        record.warnings.insert(record.warnings.end(), sourceWarnings.begin(), sourceWarnings.end());
     }
     return records;
 }

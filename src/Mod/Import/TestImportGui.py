@@ -28,6 +28,7 @@ import FreeCAD as App
 import ImportGui
 from pivy import coin
 from Test.GuiRecompute import close_document, recompute_document
+from TestStepPmiGui import StepPmiGuiTest
 
 
 class ExportImportTest(unittest.TestCase):

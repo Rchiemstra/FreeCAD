@@ -10,12 +10,13 @@ import FreeCAD as App
 import Import
 import Part
 import StepPmi
+from TestStepPmiExtended import StepPmiExtendedTests
 
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "TestData", "StepPmi", "semantic.step")
 
 
-class TestStepPmi(unittest.TestCase):
+class TestStepPmi(StepPmiExtendedTests, unittest.TestCase):
     def setUp(self):
         self.existing = set(App.listDocuments())
         self.directory = tempfile.TemporaryDirectory(prefix="freecad-step-pmi-")

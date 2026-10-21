@@ -30,6 +30,7 @@
 
 
 #include "ReaderStep.h"
+#include "StepPmiImport.h"
 #include <Base/Exception.h>
 #include <Mod/Part/App/encodeFilename.h>
 
@@ -66,5 +67,8 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
         throw Base::FileException("Cannot read STEP file", file);
     }
 
+    if (readSemanticPmi && pmiImport) {
+        pmiImport->captureReadWarnings(aReader.Reader().StepModel());
+    }
     aReader.Transfer(hDoc, theProgress);
 }

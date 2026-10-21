@@ -52,17 +52,20 @@ set(Import_Scripts
     stepZ.py
     StepPmi.py
     TestStepPmi.py
+    TestStepPmiExtended.py
 )
 
 set(Import_PmiFixtures
     TestData/StepPmi/semantic.step
+    TestData/StepPmi/independent-inch.step
+    TestData/StepPmi/unmapped-modifier.step
     TestData/StepPmi/generate.tcl
     TestData/StepPmi/README.txt
 )
 
 if(BUILD_GUI)
     list (APPEND Import_Scripts InitGui.py)
-    list (APPEND Import_Scripts TestImportGui.py)
+    list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py)
 endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
