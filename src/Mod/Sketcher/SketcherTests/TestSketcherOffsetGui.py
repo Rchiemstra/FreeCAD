@@ -22,6 +22,18 @@ def _line(start, end):
     return Part.LineSegment(FreeCAD.Vector(*start, 0), FreeCAD.Vector(*end, 0))
 
 
+class _OffsetComputationObserver(QtCore.QObject):
+    def __init__(self):
+        super().__init__()
+        self.counts = []
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QtCore.QEvent.DynamicPropertyChange
+                and bytes(event.propertyName()) == b"computationCount"):
+            self.counts.append(obj.property("computationCount"))
+        return False
+
+
 class TestSketcherOffsetGui(SketcherGuiTestCase):
     def setUp(self):
         if not GUI_AVAILABLE:
@@ -384,3 +396,234 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
             "Expected chain link to offset more than the single selected edge",
         )
         self.assert_solves_without_conflicts()
+
+    # The B-spline route uses actual Qt controls, with no Python implementation of the fit.
+    def spline_control(self, widget_type, suffix):
+        controls = FreeCADGui.getMainWindow().findChildren(widget_type, "BSplineOffset" + suffix)
+        return next((control for control in controls if control.isVisible()), None)
+
+    @staticmethod
+    def spline_signature(curve):
+        return (
+            tuple((p.x, p.y, p.z) for p in curve.getPoles()),
+            tuple(curve.getWeights()),
+            tuple(curve.getKnots()),
+            tuple(curve.getMultiplicities()),
+            curve.Degree,
+            curve.isPeriodic(),
+        )
+
+    def offset_snapshot(self):
+        return (
+            tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry),
+            tuple(str(c) for c in self.sketch.Constraints),
+            tuple(self.sketch.getConstruction(i) for i in range(self.sketch.GeometryCount)),
+            self.doc.UndoCount,
+            self.doc.RedoCount,
+            tuple(self.doc.UndoNames),
+            tuple(self.doc.RedoNames),
+        )
+
+    def start_spline_offset(self, *, reversed_source=False, rational=False, closed=False):
+        curve = Part.BSplineCurve()
+        if rational:
+            curve.buildFromPolesMultsKnots(
+                [FreeCAD.Vector(10, 0, 0), FreeCAD.Vector(10, 10, 0), FreeCAD.Vector(0, 10, 0)],
+                [3, 3], [0.0, 1.0], False, 2, [1.0, 2.0 ** -0.5, 1.0],
+            )
+        else:
+            curve.buildFromPolesMultsKnots(
+                [FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(3, 4, 0),
+                 FreeCAD.Vector(7, 4, 0), FreeCAD.Vector(0 if closed else 10, 0, 0)],
+                [4, 4], [0.0, 1.0], False, 3,
+            )
+        if reversed_source:
+            curve.reverse()
+        self.sketch.addGeometry(curve, False)
+        self.recompute_gui_document()
+        self.start_editing()
+        self.select_offset_edges(["Edge1"])
+        self.assertIsNotNone(self.spline_control(QtGui.QWidget, "Panel"),
+                             "A single B-spline must dispatch to the numeric handler")
+        self.assertEqual(self.spline_control(QtGui.QDoubleSpinBox, "Tolerance").value(), 0.01)
+        return self.sketch.Geometry[0]
+
+    def select_offset_edges(self, edges):
+        FreeCADGui.Selection.clearSelection()
+        for edge in edges:
+            FreeCADGui.Selection.addSelection(self.doc.Name, self.sketch.Name, edge)
+        FreeCADGui.runCommand("Sketcher_Offset")
+        self.pump(100)
+
+    def spline_button(self, suffix):
+        self.spline_control(QtGui.QPushButton, suffix).click()
+        self.pump(80)
+
+    def assert_spline_distance(self, source, distance, tolerance=0.01):
+        status = self.spline_control(QtGui.QLabel, "Status")
+        self.assertEqual(self.sketch.GeometryCount, 2, status.text() if status else "Offset result missing")
+        output = self.sketch.Geometry[1]
+        self.assertIsInstance(output, Part.BSplineCurve)
+        self.assertFalse(self.sketch.getConstruction(1))
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+        self.assertEqual(self.spline_signature(source), self.spline_signature(self.sketch.Geometry[0]))
+        source_shape = source.toShape()
+        for i in range(201):
+            u = source.FirstParameter + (source.LastParameter - source.FirstParameter) * i / 200.0
+            normal = source.tangent(u)[0].cross(FreeCAD.Vector(0, 0, 1))
+            expected = source.value(u) + normal * distance
+            actual = output.value(u)
+            self.assertLessEqual((actual - expected).Length, tolerance)
+            physical_distance = Part.Vertex(actual).distToShape(source_shape)[0]
+            self.assertAlmostEqual(physical_distance, abs(distance), delta=tolerance)
+        self.assert_solves_without_conflicts()
+
+    def check_spline_offset(self, distance=1.0, reverse=False, reversed_source=False, rational=False):
+        source = self.start_spline_offset(reversed_source=reversed_source, rational=rational)
+        before = self.offset_snapshot()
+        self.spline_control(QtGui.QDoubleSpinBox, "Distance").setValue(distance)
+        self.spline_control(QtGui.QCheckBox, "Reverse").setChecked(reverse)
+        self.assertEqual(before, self.offset_snapshot())
+        panel = self.spline_control(QtGui.QWidget, "Panel")
+        observer = _OffsetComputationObserver()
+        panel.installEventFilter(observer)
+        self.spline_button("Update")
+        status = self.spline_control(QtGui.QLabel, "Status").text()
+        self.assertIn("Achieved maximum error:", status)
+        self.assertLessEqual(float(status.split(":", 1)[1].split()[0]), 0.01)
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.assertEqual(before, self.offset_snapshot(), "Preview must leave the document and undo untouched")
+        self.spline_button("Update")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.spline_button("Apply")
+        self.assertEqual(observer.counts, [1], "Apply must reuse the validated preview")
+        self.assert_spline_distance(source, -distance if reverse else distance)
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 1)
+        self.assertEqual(len(self.sketch.Constraints), 0)
+        self.assertEqual(self.spline_signature(source), self.spline_signature(self.sketch.Geometry[0]))
+        self.redo_gui_document()
+        self.assert_spline_distance(source, -distance if reverse else distance)
+
+    def test_bspline_offset_positive_preview_apply_undo_redo(self):
+        self.check_spline_offset()
+
+    def test_bspline_offset_negative_preview_apply_undo_redo(self):
+        self.check_spline_offset(distance=-1.0)
+
+    def test_bspline_offset_reverse_side_preview_apply_undo_redo(self):
+        self.check_spline_offset(reverse=True)
+
+    def test_bspline_offset_negative_reverse_side_preview_apply_undo_redo(self):
+        self.check_spline_offset(distance=-1.0, reverse=True)
+
+    def test_bspline_offset_reversed_source_preview_apply_undo_redo(self):
+        self.check_spline_offset(reversed_source=True)
+
+    def test_bspline_offset_rational_preview_apply_undo_redo(self):
+        self.check_spline_offset(rational=True)
+
+    def test_bspline_offset_cancel_preview_preserves_document_and_history(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        viewport = FreeCADGui.ActiveDocument.ActiveView.graphicsView().viewport()
+        self.move(viewport, viewport.rect().center())
+        self.assertEqual(self.spline_control(QtGui.QWidget, "Panel").property("computationCount"), 0)
+        self.assertEqual(before, self.offset_snapshot())
+        retained_apply = self.spline_control(QtGui.QPushButton, "Apply")
+        self.spline_button("Update")
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        # The task box keeps its hidden widget. Its old callbacks must be disconnected.
+        retained_apply.click()
+        self.pump(80)
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_invalid_options_preserve_document_and_history(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        for distance, tolerance in [(0.0, 0.01), (1.0, 0.0), (1.0, 0.6)]:
+            with self.subTest(distance=distance, tolerance=tolerance):
+                self.spline_control(QtGui.QDoubleSpinBox, "Distance").setValue(distance)
+                self.spline_control(QtGui.QDoubleSpinBox, "Tolerance").setValue(tolerance)
+                self.spline_button("Update")
+                message = self.spline_control(QtGui.QLabel, "Status").text()
+                self.assertIn("tolerance >= 1e-7 mm", message)
+                self.assertNotIn("Achieved maximum error:", message)
+                self.spline_button("Apply")
+                self.assertEqual(message, self.spline_control(QtGui.QLabel, "Status").text())
+                self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_closed_curve_shows_helper_message_without_mutation(self):
+        self.start_spline_offset(closed=True)
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIn("open", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_mixed_edges_rejected_before_filtering(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.sketch.addGeometry(_line((0, -5), (10, -5)))
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        self.select_offset_edges(["Edge1", "Edge2"])
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(self.offset_mode_combobox(), "Mixed edges must not start the analytic handler")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_changed_inputs_invalidate_preview(self):
+        source = self.start_spline_offset()
+        self.spline_button("Update")
+        self.spline_control(QtGui.QDoubleSpinBox, "Distance").setValue(-1.5)
+        self.spline_control(QtGui.QDoubleSpinBox, "Tolerance").setValue(0.005)
+        self.assertNotIn("Achieved", self.spline_control(QtGui.QLabel, "Status").text())
+        self.spline_button("Apply")
+        self.assert_spline_distance(source, -1.5, tolerance=0.005)
+
+    def test_bspline_offset_changed_source_invalidates_preview(self):
+        self.start_spline_offset()
+        self.spline_button("Update")
+        self.sketch.moveGeometry(0, 1, FreeCAD.Vector(-1, 0, 0), False)
+        self.recompute_gui_document()
+        source = self.sketch.Geometry[0]
+        observer = _OffsetComputationObserver()
+        self.spline_control(QtGui.QWidget, "Panel").installEventFilter(observer)
+        self.spline_button("Apply")
+        self.assertEqual(observer.counts, [2], "Apply must detect a changed source")
+        self.assert_spline_distance(source, 1.0)
+
+    def test_bspline_offset_rejection_after_success_preserves_redo(self):
+        self.start_spline_offset()
+        self.spline_button("Apply")
+        self.assertEqual(self.sketch.GeometryCount, 2)
+        self.undo_gui_document()
+        self.select_offset_edges(["Edge1"])
+        before = self.offset_snapshot()
+        self.assertGreater(before[4], 0)
+        self.spline_control(QtGui.QDoubleSpinBox, "Distance").setValue(0.0)
+        self.spline_button("Apply")
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.redo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 2)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+
+    def test_bspline_offset_failed_solve_aborts_whole_transaction(self):
+        self.start_spline_offset()
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 1.0))
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 2.0))
+        self.recompute_gui_document()
+        self.assertNotEqual(self.sketch.solve(), 0)
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIn("solve", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
