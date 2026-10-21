@@ -15,9 +15,12 @@ from .api import (
     makeJointReference,
     referenceFromSelection,
 )
+from .MotionInterference import SweepCancellation, sweepJoint
 
 __all__ = [
     "AssemblyApp",
+    "SweepCancellation",
+    "sweepJoint",
     "scanSelectedPair",
     "newInterferenceScanCancellation",
     "cancelInterferenceScan",

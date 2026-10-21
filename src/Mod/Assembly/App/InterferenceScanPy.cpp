@@ -2,6 +2,7 @@
 
 #include "InterferenceScanPy.h"
 #include "InterferenceScan.h"
+#include "AssemblyObject.h"
 
 #include <App/DocumentObjectPy.h>
 #include <Base/Exception.h>
@@ -297,6 +298,30 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords)
         throw Py::RuntimeError(error.GetMessageString());
     }
     catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+}
+
+Py::Object withMotionSweepStatePy(const Py::Tuple& args)
+{
+    PyObject* hostPy = nullptr;
+    PyObject* callback = nullptr;
+    if (!PyArg_ParseTuple(args.ptr(), "O!O", &App::DocumentObjectPy::Type, &hostPy, &callback)) {
+        throw Py::Exception();
+    }
+    auto* host = dynamic_cast<AssemblyObject*>(
+        static_cast<App::DocumentObjectPy*>(hostPy)->getDocumentObjectPtr());
+    if (!host || !host->isAttachedToDocument() || !PyCallable_Check(callback)) {
+        throw Py::ValueError("An attached assembly and synchronous callable are required");
+    }
+    try {
+        auto* result = host->withMotionSweepState(callback);
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::asObject(result);
+    }
+    catch (const Base::Exception& error) {
         throw Py::RuntimeError(error.what());
     }
 }

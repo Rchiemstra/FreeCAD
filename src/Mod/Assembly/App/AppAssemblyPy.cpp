@@ -49,10 +49,16 @@ public:
             "Create a thread-safe cooperative scan cancellation token.");
         add_varargs_method("cancelInterferenceScan", &Module::cancelScan,
             "Cancel scans using the supplied token; cancellation is cooperative.");
+        add_varargs_method("_withMotionSweepState", &Module::withMotionSweepState,
+            "Internal synchronous document-thread scope for the motion controller.");
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+    Py::Object withMotionSweepState(const Py::Tuple& args)
+    {
+        return withMotionSweepStatePy(args);
+    }
     Py::Object scanSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
     {
         return scanSelectedPairPy(args, keywords);

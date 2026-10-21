@@ -159,6 +159,8 @@ public:
     being in an active transaction (joint creation).*/
     SolveResult solve(bool enableRedo = false);
     int generateSimulation(App::DocumentObject* sim);
+    /** Run a synchronous Python sweep body with solver/placement state isolated. */
+    PyObject* withMotionSweepState(PyObject* callback);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
     SolveResult preDrag(std::vector<App::DocumentObject*> dragParts);

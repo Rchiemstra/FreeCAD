@@ -1066,6 +1066,44 @@ void AssemblyObject::cacheSolveStatus()
     }
 }
 
+PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
+{
+    // Python cannot snapshot the solver's frame store, placement journal or
+    // authoritative file-change tracking. Keep this scope on the document thread.
+    auto* doc = getDocument();
+    if (solveInProgress || placementAttemptInProgress || dragActive || dragStartAttempt
+        || doc->hasPendingTransaction() || doc->transacting()
+        || App::GetApplication().getGlobalTransaction() != 0) {
+        throw Base::RuntimeError("Finish the active solve, drag, simulation or transaction before sweeping");
+    }
+    auto solver = mbdAssembly;
+    auto parts = objectPartMap;
+    auto representatives = rigidRepByPart;
+    auto members = rigidMembersByRep;
+    auto masses = objMasses;
+    auto savedMotions = motions;
+    const bool pending = solvePending;
+    PlacementAttempt placements(*this);
+    Base::ScopeGuard restore([&] {
+        // Rollback setters can call Python observers. Run them with a clear
+        // error indicator, then propagate the sweep body's original exception.
+        PyObject *type = nullptr, *value = nullptr, *traceback = nullptr;
+        PyErr_Fetch(&type, &value, &traceback);
+        solvePending = pending;
+        placements.restore();
+        mbdAssembly.swap(solver);
+        objectPartMap.swap(parts);
+        rigidRepByPart.swap(representatives);
+        rigidMembersByRep.swap(members);
+        objMasses.swap(masses);
+        motions.swap(savedMotions);
+        // finish() may touch the assembly for a pre-existing pending solve.
+        placements.restoreFlags();
+        PyErr_Restore(type, value, traceback);
+    });
+    return PyObject_CallNoArgs(callback);
+}
+
 int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 {
     mbdAssembly = makeMbdAssembly();
