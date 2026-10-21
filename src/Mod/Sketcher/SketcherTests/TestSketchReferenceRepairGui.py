@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
+from contextlib import nullcontext
 import threading
 import time
 from unittest.mock import patch
@@ -219,3 +220,457 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
             self.assertTrue(tick)
         finally:
             dialog.close()
+
+    def make_pick_fixture(self, vertex=False, switch_workbench=True, replacement=None):
+        import Sketcher
+        from SketcherTests.TestSketchReferenceRepair import signature
+
+        Gui.activateWorkbench(
+            "SketcherWorkbench" if switch_workbench else "PartWorkbench"
+        )
+        import SketcherGui  # noqa: F401 - native editor, without Python workbench initialization
+
+        self.doc = App.newDocument("ReassignInView")
+        self.doc.UndoMode = 1
+        source = self.doc.addObject("PartDesign::Feature", "Source")
+        sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
+        start, end = App.Vector(0, 10, 0), App.Vector(10, 10, 0)
+        wanted = Part.Vertex(start) if vertex else Part.makeLine(start, end)
+        other = Part.makeLine(App.Vector(30, 10, 0), App.Vector(40, 10, 0))
+        source.Shape = Part.makeCompound([other, other.copy(), wanted])
+        self.recompute_gui_document()
+        sketch.addExternal(source.Name, "Vertex5" if vertex else "Edge3")
+        sketch.addGeometry(Part.LineSegment(start, App.Vector(0, 15, 0)))
+        sketch.addConstraint(Sketcher.Constraint("Coincident", 0, 1, -3, 1))
+        dim = sketch.addConstraint(Sketcher.Constraint("Distance", 0, 5.0))
+        sketch.renameConstraint(dim, "Height")
+        sketch.setExpression("Constraints.Height", "2 + 3")
+        refdim = (
+            sketch.addConstraint(Sketcher.Constraint("DistanceX", -3, 1, -3, 2, 10.0))
+            if not vertex
+            else None
+        )
+        if refdim is not None:
+            sketch.setDriving(refdim, False)
+            sketch.renameConstraint(refdim, "ExternalWidth")
+            sketch.setVirtualSpace(refdim, True)
+            sketch.setActive(refdim, False)
+        self.recompute_gui_document()
+        source.Shape = Part.makeCompound([other])
+        self.recompute_gui_document()
+        source.Shape = Part.makeCompound([
+            wanted.copy(noElementMap=True) if replacement is None else replacement, other
+        ])
+        self.recompute_gui_document()
+        source.Visibility = True
+        Gui.getMainWindow().show()
+        if not switch_workbench:
+            sketch.ViewObject.EditingWorkbench = ""
+        Gui.activeDocument().setEdit(sketch.Name)
+        view = Gui.activeDocument().activeView()
+        view.viewTop()
+        view.fitAll()
+        self.pump(200)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch, "Vertex3" if vertex else "ExternalEdge1")
+        return sketch, source, view, signature(sketch)
+
+    def test_context_entry_pick_constraints_and_single_undo(self):
+        import SketchReferenceReassignGui as pick_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+
+        sketch, source, view, before = self.make_pick_fixture()
+        undo_count = self.doc.UndoCount
+        provider_root = sketch.ViewObject.RootNode
+        provider_children = provider_root.getNumChildren()
+        self.assertTrue(pick_gui.command.IsActive())
+        viewport = view.graphicsView().viewport()
+        point = self.viewport_to_qpoint(
+            view, viewport, view.getPointOnScreen(App.Vector(5, 10, 0))
+        )
+        seen = []
+
+        def choose():
+            menu = QtGui.QApplication.activePopupWidget()
+            if isinstance(menu, QtGui.QMenu):
+                for action in menu.actions():
+                    if action.objectName() == "Sketcher_ReassignBrokenReference":
+                        seen.append((action.text(), action.isEnabled()))
+                        action.trigger()
+                        menu.close()
+                        return
+                menu.close()
+
+        QtCore.QTimer.singleShot(100, choose)
+        self.right_click(viewport, point)
+        self.assertTrue(seen, "Broken geometry context menu has no reassign action")
+        self.assertTrue(seen[0][1], "Reassign action is disabled during sketch editing")
+        session = pick_gui.command.session
+        self.assertIsNotNone(session)
+        try:
+            self.assertFalse(session.closed)
+            self.assertEqual(str(session.root.getName()), "Sketch_EditRoot")
+            self.assertEqual(provider_root.getNumChildren(), provider_children)
+            self.assertAlmostEqual(
+                session.material.transparency.getValues()[0], 0.65, places=5
+            )
+            self.assertEqual(self.doc.UndoCount, undo_count)
+            self.assertIs(Gui.activeDocument().getInEdit().Object, sketch)
+            # Use the actual viewport event and ray pick, including overlapping cached geometry.
+            self.click(viewport, point)
+            self.assertTrue(
+                self.wait_until(lambda: session.closed, 10000),
+                "Viewport repair did not complete",
+            )
+            self.assertFalse(broken_references(sketch))
+            self.assertEqual(signature(sketch), before)
+            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+            self.assertIsNone(session.material)
+            self.assertTrue(source.Visibility)
+            self.undo_gui_document()
+            self.recompute_gui_document()
+            self.assertEqual(len(broken_references(sketch)), 1)
+            self.assertEqual(signature(sketch), before)
+        finally:
+            if not session.closed:
+                session.close()
+
+    def test_pick_escape_restores_scene_and_selection_without_undo(self):
+        import SketchReferenceReassignGui as pick_gui
+        from SketchReferenceRepair import broken_references
+
+        sketch, source, view, _before = self.make_pick_fixture(vertex=True)
+        self.assertTrue(pick_gui.command.IsActive())
+        undo_count = self.doc.UndoCount
+        original = list(Gui.Selection.getSelectionEx()[0].SubElementNames)
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        root = session.root
+        try:
+            self.assertTrue(session.isVisible())
+            self.key_click(view.graphicsView().viewport(), QtCore.Qt.Key_Escape)
+            self.assertTrue(session.closed)
+            self.assertIsNone(session.material)
+            self.assertFalse(
+                any(
+                    str(root.getChild(i).getName()) == "ReferenceRepairTransparency"
+                    for i in range(root.getNumChildren())
+                )
+            )
+            self.assertEqual(self.doc.UndoCount, undo_count)
+            self.assertEqual(len(broken_references(sketch)), 1)
+            self.assertEqual(
+                list(Gui.Selection.getSelectionEx()[0].SubElementNames), original
+            )
+            self.assertTrue(source.Visibility)
+            self.assertIs(Gui.activeDocument().getInEdit().Object, sketch)
+        finally:
+            if not session.closed:
+                session.close()
+
+    def test_ranked_fallback_targets_clicked_reference(self):
+        import SketchReferenceReassignGui as pick_gui
+
+        sketch, _source, _view, _before = self.make_pick_fixture()
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        session.fallback()
+        dialog = pick_gui.command.dialog
+        try:
+            self.assertTrue(session.closed)
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(dialog.refs[dialog.references.currentRow()].geo_id, -3)
+            self.assertTrue(self.wait_until(lambda: dialog.options.count() > 0, 5000))
+        finally:
+            dialog.close()
+
+    def test_pick_closes_when_edit_ends(self):
+        import SketchReferenceReassignGui as pick_gui
+
+        self.make_pick_fixture()
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        Gui.activeDocument().resetEdit()
+        self.assertTrue(self.wait_until(lambda: session.closed, 2000))
+        self.assertIsNone(session.material)
+
+    def test_vertex_pick_and_incompatible_pick_is_read_only(self):
+        import SketchReferenceReassignGui as pick_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+
+        sketch, _source, view, before = self.make_pick_fixture(vertex=True)
+        undo_count = self.doc.UndoCount
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        viewport = view.graphicsView().viewport()
+        try:
+            invalid = self.viewport_to_qpoint(
+                view, viewport, view.getPointOnScreen(App.Vector(35, 10, 0))
+            )
+            self.click(viewport, invalid)
+            self.assertFalse(session.closed)
+            self.assertFalse(session.busy)
+            self.assertEqual(self.doc.UndoCount, undo_count)
+            self.assertEqual(signature(sketch), before)
+            point = self.viewport_to_qpoint(
+                view, viewport, view.getPointOnScreen(App.Vector(0, 10, 0))
+            )
+            self.click(viewport, point)
+            self.assertTrue(
+                self.wait_until(lambda: session.closed, 10000),
+                "Viewport repair did not complete",
+            )
+            self.assertFalse(broken_references(sketch))
+            self.assertEqual(signature(sketch), before)
+            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+        finally:
+            if not session.closed:
+                session.close()
+
+    def test_context_entry_only_for_a_single_broken_external(self):
+        import SketchReferenceReassignGui as pick_gui
+        import SketchReferenceRepairGui as repair_gui
+
+        sketch, _source, _view, _before = self.make_pick_fixture()
+        self.assertTrue(repair_gui.menu_manipulator.modifyContextMenu("Sketch"))
+        self.assertEqual(repair_gui.menu_manipulator.modifyContextMenu("View"), [])
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch, "Edge1")
+        self.assertFalse(pick_gui.command.IsActive())
+        self.assertEqual(repair_gui.menu_manipulator.modifyContextMenu("Sketch"), [])
+        Gui.Selection.addSelection(sketch, "ExternalEdge1")
+        self.assertFalse(pick_gui.command.IsActive())
+        Gui.activeDocument().resetEdit()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch, "ExternalEdge1")
+        self.assertFalse(pick_gui.command.IsActive())
+
+    def test_viewport_validation_yields_to_gui(self):
+        import SketchReferenceReassignGui as pick_gui
+
+        self.make_pick_fixture()
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        entered, release = threading.Event(), threading.Event()
+        original = pick_gui.picked_candidate
+        threads = []
+
+        def stalled(*args):
+            threads.append(QtCore.QThread.currentThread())
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test validation timed out")
+            return original(*args)
+
+        try:
+            with patch.object(pick_gui, "picked_candidate", stalled):
+                QtCore.QTimer.singleShot(100, release.set)
+                point = session.view.getPointOnScreen(App.Vector(5, 10, 0))
+                started = time.monotonic()
+                session.pick(tuple(point))
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertFalse(release.is_set(), "validation blocked the GUI")
+                self.assertTrue(self.wait_until(entered.is_set, 5000))
+                self.assertTrue(self.wait_until(lambda: session.closed, 10000))
+            self.assertTrue(threads)
+            self.assertTrue(
+                all(t != QtCore.QCoreApplication.instance().thread() for t in threads)
+            )
+        finally:
+            release.set()
+            if not session.closed:
+                session.close()
+
+    def test_context_entry_with_workbench_switch_disabled(self):
+        # Run this method by itself in a fresh FreeCAD process too: importing
+        # the Python repair command before opening the menu would hide a native
+        # initialization regression.
+        _sketch, _source, view, _before = self.make_pick_fixture(switch_workbench=False)
+        self.assertEqual(Gui.activeWorkbench().name(), "PartWorkbench")
+        import os
+        import sys
+
+        if os.environ.get("FREECAD_REPAIR_FRESH_CONTEXT") == "1":
+            self.assertNotIn("SketchReferenceRepairGui", sys.modules)
+        viewport = view.graphicsView().viewport()
+        point = self.viewport_to_qpoint(
+            view, viewport, view.getPointOnScreen(App.Vector(5, 10, 0))
+        )
+        seen = []
+
+        def inspect():
+            menu = QtGui.QApplication.activePopupWidget()
+            if isinstance(menu, QtGui.QMenu):
+                seen.extend(action.objectName() for action in menu.actions())
+                menu.close()
+
+        QtCore.QTimer.singleShot(100, inspect)
+        self.right_click(viewport, point)
+        self.assertIn("Sketcher_ReassignBrokenReference", seen)
+
+
+    def assert_pending_pick_cancelled(self, action, phase="validation"):
+        import SketchReferenceReassignGui as pick_gui
+        import SketchReferenceRepairGui as repair_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+        from Test.GuiRecompute import close_document
+
+        sketch, source, view, before = self.make_pick_fixture()
+        undo_count, redo_count = self.doc.UndoCount, self.doc.RedoCount
+        deleted_history = []
+
+        class HistoryObserver:
+            def slotDeletedDocument(observer, document):
+                if document is target_document:
+                    deleted_history.append((document.UndoCount, document.RedoCount))
+
+        target_document = self.doc
+        history_observer = HistoryObserver()
+        App.addDocumentObserver(history_observer)
+        original_selection = [
+            (item.ObjectName, tuple(item.SubElementNames))
+            for item in Gui.Selection.getSelectionEx()
+        ]
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        root = session.root
+        root.ref()  # Inspect cleanup even after resetEdit/document destruction.
+        entered, release = threading.Event(), threading.Event()
+        module, name = {
+            "validation": (pick_gui, "picked_candidate"),
+            "submission": (repair_gui, "prepare_repair"),
+            "mutation": (repair_gui, "apply_prepared"),
+            "commit": (repair_gui, "check_repair"),
+        }[phase]
+        original = getattr(module, name)
+
+        def stalled(*args):
+            # For commit, pause after the model/postcondition work, immediately
+            # before returning to the native transaction commit.
+            result = original(*args) if phase != "mutation" else None
+            entered.set()
+            if not release.wait(15):
+                raise RuntimeError("test pending repair timed out")
+            return original(*args) if phase == "mutation" else result
+
+        prepares = []
+        original_prepare = repair_gui.prepare_repair
+
+        def record_prepare(*args):
+            prepares.append(True)
+            return original_prepare(*args)
+
+        try:
+            with patch.object(module, name, stalled):
+                with (
+                    patch.object(repair_gui, "prepare_repair", record_prepare)
+                    if phase == "validation" else nullcontext()
+                ):
+                    point = view.getPointOnScreen(App.Vector(5, 10, 0))
+                    session.pick(tuple(point))
+                    self.assertTrue(self.wait_until(entered.is_set, 5000))
+                    if action == "escape":
+                        self.key_click(view.graphicsView().viewport(), QtCore.Qt.Key_Escape)
+                    elif action == "button":
+                        session.cancel_button.click()
+                    elif action == "edit":
+                        Gui.activeDocument().resetEdit()
+                    elif action == "document":
+                        close_document(self.doc)
+                        self.doc = None
+                    else:
+                        session.close()
+                    lifecycle_selection = [
+                        (item.ObjectName, tuple(item.SubElementNames))
+                        for item in Gui.Selection.getSelectionEx()
+                    ]
+                    closed = self.wait_until(lambda: session.closed, 2000)
+                    release.set()
+                    self.assertTrue(self.wait_until(lambda: not repair_gui._operations, 10000))
+            self.assertTrue(closed, "pending picker could not be cancelled")
+            self.assertIsNone(session.material)
+            self.assertFalse(any(
+                str(root.getChild(i).getName()) == "ReferenceRepairTransparency"
+                for i in range(root.getNumChildren())
+            ))
+            if phase == "validation":
+                self.assertFalse(prepares, "cancelled validation submitted a repair")
+            self.assertEqual([
+                (item.ObjectName, tuple(item.SubElementNames))
+                for item in Gui.Selection.getSelectionEx()
+            ], lifecycle_selection)
+            if action == "document":
+                self.assertEqual(deleted_history, [(undo_count, redo_count)])
+                self.assertEqual(Gui.Selection.getSelection(), [])
+            else:
+                self.assertEqual((self.doc.UndoCount, self.doc.RedoCount), (undo_count, redo_count))
+                self.assertFalse(self.doc.HasPendingTransaction)
+                self.assertEqual(signature(sketch), before)
+                self.assertEqual(len(broken_references(sketch)), 1)
+                self.assertTrue(source.Visibility)
+                if action != "edit":
+                    self.assertEqual([
+                        (item.ObjectName, tuple(item.SubElementNames))
+                        for item in Gui.Selection.getSelectionEx()
+                    ], original_selection)
+        finally:
+            App.removeDocumentObserver(history_observer)
+            release.set()
+            if not session.closed:
+                session.close()
+            root.unref()
+
+    def test_pending_pick_cancel_button_restores_scene_selection_and_undo(self):
+        self.assert_pending_pick_cancelled("button")
+
+    def test_pending_pick_escape_restores_scene_selection_and_undo(self):
+        self.assert_pending_pick_cancelled("escape")
+
+    def test_pending_pick_close_fences_submission(self):
+        self.assert_pending_pick_cancelled("close", "submission")
+
+    def test_pending_pick_close_fences_mutation(self):
+        self.assert_pending_pick_cancelled("close", "mutation")
+
+    def test_pending_pick_close_fences_commit(self):
+        self.assert_pending_pick_cancelled("close", "commit")
+
+    def test_pending_pick_edit_end_restores_scene_without_undo(self):
+        self.assert_pending_pick_cancelled("edit")
+
+    def test_pending_pick_document_close_restores_scene_and_selection(self):
+        self.assert_pending_pick_cancelled("document")
+
+
+    def test_viewport_pick_moved_resized_edge_preserves_settings_and_undo(self):
+        import SketchReferenceReassignGui as pick_gui
+        from SketchReferenceRepair import broken_references
+        from SketcherTests.TestSketchReferenceRepair import signature
+
+        replacement = Part.makeLine(App.Vector(12, 20, 0), App.Vector(35, 20, 0))
+        sketch, _source, view, before = self.make_pick_fixture(replacement=replacement)
+        undo_count = self.doc.UndoCount
+        Gui.runCommand("Sketcher_ReassignBrokenReference")
+        session = pick_gui.command.session
+        try:
+            viewport = view.graphicsView().viewport()
+            point = self.viewport_to_qpoint(
+                view, viewport, view.getPointOnScreen(App.Vector(20, 20, 0))
+            )
+            self.click(viewport, point)
+            self.assertTrue(self.wait_until(lambda: not session.busy, 10000))
+            self.assertTrue(session.closed, session.message.text() if not session.closed else "")
+            self.assertFalse(broken_references(sketch))
+            self.assertEqual(signature(sketch)[:3], before[:3])
+            self.assertLess((sketch.getPoint(0, 1) - App.Vector(12, 20, 0)).Length, 1e-7)
+            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+            self.undo_gui_document()
+            self.recompute_gui_document()
+            self.assertEqual(signature(sketch), before)
+            self.assertEqual(len(broken_references(sketch)), 1)
+        finally:
+            if not session.closed:
+                session.close()
