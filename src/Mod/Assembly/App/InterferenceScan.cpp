@@ -2805,7 +2805,8 @@ void recordPairCounts(
         pairResult.excluded = false;
     }
 
-    if (pairResult.detection.kind != Part::InterferenceKind::Clear || !pairResult.faceHits.empty()
+    if (pairResult.distanceMeasured || pairResult.detection.kind != Part::InterferenceKind::Clear
+        || !pairResult.faceHits.empty()
         || hasExcludable
         || pairResult.detection.kind == Part::InterferenceKind::InvalidInput
         || pairResult.detection.kind == Part::InterferenceKind::Inconclusive
@@ -2874,6 +2875,8 @@ bool evaluateLeafPairWithClearanceRules(
         pairResult.leafIndexA = indexA;
         pairResult.leafIndexB = indexB;
         pairResult.detection = solid;
+        pairResult.solidDetection = solid;
+        pairResult.distanceMeasured = options.measureSelectedPairDistances;
         if (solid.kind == Part::InterferenceKind::Penetration
             && !appendPenetrationRepresentativeFaceHit(
                 pairResult,
@@ -2943,6 +2946,8 @@ bool evaluateLeafPairWithClearanceRules(
     pairResult.leafIndexA = indexA;
     pairResult.leafIndexB = indexB;
     pairResult.detection = solid;
+    pairResult.solidDetection = solid;
+    pairResult.distanceMeasured = options.measureSelectedPairDistances;
 
     const std::size_t cap = options.maxFacePairCandidates > 0 ? options.maxFacePairCandidates
                                                               : candidates.size();
@@ -3355,7 +3360,7 @@ InterferenceScanResult runInterferenceScanBetweenLeafSets(
             }
             Base::BoundBox3d boxB = result.leaves[idx].worldBoundBox;
             enlargeBoundBox(boxB, margin);
-            if (boxesOverlap(boxA, boxB)) {
+            if (options.measureSelectedPairDistances || boxesOverlap(boxA, boxB)) {
                 candidates.emplace_back(i, idx);
             }
         }
