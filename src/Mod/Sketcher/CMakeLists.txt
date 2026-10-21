@@ -35,6 +35,7 @@ if(BUILD_GUI)
     list (APPEND Sketcher_Scripts
           InitGui.py
           SketchReferenceRepairGui.py
+          SketchReferenceReassignGui.py
           TestSketcherGui.py
     )
     list (APPEND Sketcher_TestScripts
@@ -50,6 +51,7 @@ if(BUILD_GUI)
           SketcherTests/TestVisualLayerListGui.py
           SketcherTests/TestViewSectionGui.py
           SketcherTests/TestSketchReferenceRepairGui.py
+          SketcherTests/TestSketchEditCleanGui.py
     )
 endif(BUILD_GUI)
 

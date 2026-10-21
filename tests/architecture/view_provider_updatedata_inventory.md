@@ -113,13 +113,13 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiFuse` | 270 | adapted |
 | `src/Mod/Part/Gui/ViewProviderCompound.cpp` | `ViewProviderCompound` | 136 | adapted |
 | `src/Mod/Part/Gui/ViewProviderCurveNet.cpp` | `ViewProviderCurveNet` | 100 | adapted |
-| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | 983 | adapted |
+| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | 987 | adapted |
 | `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderChamfer` | 368 | adapted |
 | `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderFillet` | 247 | adapted |
 | `src/Mod/Part/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 57 | unsupported |
 | `src/Mod/Part/Gui/ViewProviderReference.cpp` | `ViewProviderPartReference` | 228 | unsupported |
 | `src/Mod/Part/Gui/ViewProviderRuledSurface.cpp` | `ViewProviderRuledSurface` | 60 | adapted |
-| `src/Mod/PartDesign/Gui/ViewProvider.cpp` | `ViewProvider` | 108 | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProvider.cpp` | `ViewProvider` | 109 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderBody.cpp` | `ViewProviderBody` | 341 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | 428 | unsupported |
 | `src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp` | `ViewProviderDatumCoordinateSystem` | 199 | unsupported |
@@ -132,7 +132,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Robot/Gui/ViewProviderRobotObject.cpp` | `ViewProviderRobotObject` | 170 | unsupported |
 | `src/Mod/Robot/Gui/ViewProviderTrajectory.cpp` | `ViewProviderTrajectory` | 126 | unsupported |
 | `src/Mod/Sketcher/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 59 | unsupported |
-| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3914 | unsupported |
+| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3915 | unsupported |
 | `src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp` | `ViewProviderSheet` | 189 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 52 | unsupported |
 | `src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp` | `ViewProviderBalloon` | 114 | unsupported |

@@ -16,6 +16,7 @@ add_executable(Gui_tests_run
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
         PersonalViewContext.cpp
+        PropertyEditorPaint.cpp
         PropertyEditorTransaction.cpp
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
@@ -69,6 +70,11 @@ target_link_libraries(Gui_tests_run PRIVATE
     FreeCADApp
     FreeCADGui
 )
+
+if(TARGET PartGui)
+    target_link_libraries(Gui_tests_run PRIVATE PartGui)
+    target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PART_CAPTURE_CACHE)
+endif()
 
 target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 

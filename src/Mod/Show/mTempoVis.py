@@ -497,9 +497,9 @@ class TempoVis(object):
             self.modify(ClipPlane(doc, 0))
 
         self.modify(ClipPlane(doc, toggle, pla, 0.001))
-        sketch.ViewObject.SectionView = (
-            enable if enable is not None else not sketch.ViewObject.SectionView
-        )
+        section_view = enable if enable is not None else not sketch.ViewObject.SectionView
+        if sketch.ViewObject.SectionView != section_view:
+            sketch.ViewObject.SectionView = section_view
 
     def activateWorkbench(self, wb_name):
         from .SceneDetails.Workbench import Workbench

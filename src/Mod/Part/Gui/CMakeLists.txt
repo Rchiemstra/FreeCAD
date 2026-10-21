@@ -192,6 +192,7 @@ SET(PartGui_SRCS
     ViewProviderPresentationAdapter.cpp
     ViewProviderPresentationAdapter.h
     DocumentPresentationCapture.cpp
+    DocumentPresentationCapture.h
     ViewProviderReference.cpp
     ViewProviderReference.h
     ViewProviderBox.cpp
@@ -295,6 +296,11 @@ SET(PartGuiIcon_SVG
 )
 
 add_library(PartGui SHARED ${PartGui_SRCS} ${PartGuiIcon_SVG})
+
+if(ENABLE_DEVELOPER_TESTS)
+    set_property(SOURCE DocumentPresentationCapture.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS FREECAD_TEST_PART_CAPTURE_CACHE)
+endif()
 
 if(FREECAD_USE_PCH)
     target_precompile_headers(PartGui PRIVATE
