@@ -22,11 +22,14 @@
  ***************************************************************************/
 
 #include <limits>
+#include <utility>
+#include <QScopedValueRollback>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Document.h>
 #include <App/DocumentCommand.h>
 #include <App/DocumentObject.h>
+#include <App/MutationClassification.h>
 #include <Base/Tools.h>
 #include <Base/Type.h>
 #include <Gui/ExpressionDiagnosticsPresentation.h>
@@ -47,6 +50,38 @@ PropertyModel::PropertyModel(QObject* parent)
     : QAbstractItemModel(parent)
 {
     rootItem = static_cast<PropertyItem*>(PropertyItem::create());
+    readRetryTimer.setSingleShot(true);
+    readRetryTimer.setInterval(50);
+    connect(&readRetryTimer, &QTimer::timeout, this, [this] {
+        const auto pending = std::exchange(deferredReads, {});
+        for (const auto& index : pending) {
+            if (index.isValid()) {
+                auto* item = static_cast<PropertyItem*>(index.internalPointer());
+                PropertyReadGuard read(item);
+                if (!read.readable()) {
+                    deferredReads.insert(index);
+                    continue;
+                }
+                QScopedValueRollback<bool> retry(retryingRead, true);
+                Q_EMIT dataChanged(index, index);
+            }
+        }
+        if (!deferredReads.isEmpty()) {
+            readRetryTimer.start(std::min(readRetryTimer.interval() * 2, 1000));
+        }
+        else {
+            readRetryTimer.setInterval(50);
+        }
+    });
+    connect(this, &QAbstractItemModel::modelReset, this, [this] {
+        safeValues.clear();
+        deferredReads.clear();
+        readRetryTimer.stop();
+        readRetryTimer.setInterval(50);
+    });
+    connect(this, &QAbstractItemModel::rowsRemoved, this, [this] {
+        safeValues.clear();
+    });
 }
 
 PropertyModel::~PropertyModel()
@@ -79,8 +114,30 @@ QVariant PropertyModel::data(const QModelIndex& index, int role) const
         return {};
     }
 
-    auto item = static_cast<PropertyItem*>(index.internalPointer());
-    return item->data(index.column(), role);
+    auto* item = static_cast<PropertyItem*>(index.internalPointer());
+    // These roles use only row metadata, or have no value implementation.
+    if (!PropertyItem::dataRequiresOwnerRead(index.column(), role)) {
+        return item->data(index.column(), role);
+    }
+    PropertyReadGuard read(item);
+    const QPersistentModelIndex key(index);
+    if (!read.readable()) {
+        deferRead(index);
+        return safeValues.value(key).value(role);
+    }
+    const auto value = item->data(index.column(), role);
+    safeValues[key].insert(role, value);
+    return value;
+}
+
+void PropertyModel::deferRead(const QModelIndex& index) const
+{
+    // Persistent indexes survive moves and become invalid on removal/reset.
+    // Coalesce all roles and repaint requests rather than spinning per paint.
+    deferredReads.insert(QPersistentModelIndex(index));
+    if (!readRetryTimer.isActive()) {
+        readRetryTimer.start();
+    }
 }
 
 bool PropertyModel::setData(const QModelIndex& index, const QVariant& value, int role)

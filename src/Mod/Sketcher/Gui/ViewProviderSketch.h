@@ -52,6 +52,7 @@
 #include "ShortcutListener.h"
 #include "SketchExpressionDiagnostics.h"
 #include "Utils.h"
+#include "SketchEditState.h"
 
 #include <Gui/Inventor/SoToggleSwitch.h>
 #include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
@@ -1108,6 +1109,9 @@ private:
 
     bool blockContextMenu;
     std::stringstream sketchBackup;
+    SketchEditState sketchEditState;
+    fastsignals::scoped_connection connectExplicitTouch;
+    fastsignals::scoped_connection connectPersistentTouch;
 };
 
 }  // namespace SketcherGui

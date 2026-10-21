@@ -27,6 +27,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <QSet>
 #include <vector>
 #include <QApplication>
 #include <QComboBox>
@@ -82,6 +83,57 @@ constexpr const int lowPrec = 2;
 constexpr const int highPrec = 16;
 }  // namespace
 
+
+PropertyReadGuard::PropertyReadGuard(const PropertyItem* item)
+{
+    if (!reservation.acquired()) {
+        return;
+    }
+    QSet<App::Document*> documents;
+    // Component rows can read their ancestors' properties.
+    for (auto* owner = item; owner; owner = owner->parent()) {
+        for (auto* prop : owner->getPropertyData()) {
+            auto* object = prop ? freecad_cast<App::DocumentObject*>(prop->getContainer()) : nullptr;
+            auto* document = object ? object->getDocument() : nullptr;
+            if (document && !documents.contains(document)) {
+                documents.insert(document);
+                if (Gui::documentExecutionLaneBusy(*document)) {
+                    return;
+                }
+            }
+        }
+    }
+    ownersReadable = true;
+}
+
+PropertyReadGuard::PropertyReadGuard(const App::DocumentObjectT& object)
+{
+    if (reservation.acquired()) {
+        auto* document = object.getDocument();
+        ownersReadable = !document || !Gui::documentExecutionLaneBusy(*document);
+    }
+}
+
+void Gui::PropertyEditor::deferPropertyRead(
+    QObject* context, const char* key, std::function<bool()> retry)
+{
+    const auto name = QString::fromLatin1(key);
+    if (context->findChild<QTimer*>(name, Qt::FindDirectChildrenOnly)) {
+        return;
+    }
+    auto* timer = new QTimer(context);
+    timer->setObjectName(name);
+    timer->setSingleShot(true);
+    QObject::connect(timer, &QTimer::timeout, context, [timer, retry = std::move(retry)] {
+        if (retry()) {
+            timer->deleteLater();
+        }
+        else {
+            timer->start(std::min(timer->interval() * 2, 1000));
+        }
+    });
+    timer->start(50);
+}
 
 PropertyItemFactory& PropertyItemFactory::instance()
 {
@@ -830,6 +882,15 @@ QVariant PropertyItem::dataValue(int role) const
     }
 
     return {};
+}
+
+bool PropertyItem::dataRequiresOwnerRead(int column, int role)
+{
+    if (column == NameColumn) {
+        return role == Qt::ToolTipRole || role == Qt::ForegroundRole || role == Qt::BackgroundRole;
+    }
+    return role == Qt::DisplayRole || role == Qt::EditRole || role == Qt::DecorationRole
+        || role == Qt::ToolTipRole || role == Qt::ForegroundRole;
 }
 
 QVariant PropertyItem::data(int column, int role) const
@@ -4795,6 +4856,18 @@ LinkLabel::~LinkLabel() = default;
 
 void LinkLabel::updatePropertyLink()
 {
+    PropertyReadGuard read(objProp);
+    if (!read.readable()) {
+        deferPropertyRead(this, "propertyLinkRead", [this] {
+            PropertyReadGuard read(objProp);
+            if (!read.readable()) {
+                return false;
+            }
+            updatePropertyLink();
+            return true;
+        });
+        return;
+    }
     QString text;
     auto owner = objProp.getObject();
     auto prop = freecad_cast<App::PropertyLinkBase*>(objProp.getProperty());
@@ -4902,6 +4975,14 @@ QVariant PropertyLinkItem::data(int column, int role) const
         return *cached;
     }
 
+    // Name display is local metadata; value formatting and link status are live reads.
+    if (!dataRequiresOwnerRead(column, role)) {
+        return PropertyItem::data(column, role);
+    }
+    PropertyReadGuard read(this);
+    if (!read.readable()) {
+        return {};
+    }
     if (!propertyItems.empty() && column == 1
         && (role == Qt::ForegroundRole || role == Qt::ToolTipRole)) {
         if (auto propLink = dynamic_cast<const App::PropertyLinkBase*>(propertyItems[0])) {
@@ -4924,6 +5005,10 @@ QVariant PropertyLinkItem::data(int column, int role) const
 
 QVariant PropertyLinkItem::value(const App::Property* prop) const
 {
+    PropertyReadGuard read(this);
+    if (!read.readable()) {
+        return {};
+    }
     auto propLink = freecad_cast<App::PropertyLinkBase*>(prop);
     if (!propLink) {
         return {};

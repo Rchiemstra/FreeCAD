@@ -30,7 +30,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -856,25 +855,33 @@ TEST_F(GenericIsolatedRecomputeTest,
     payload->dumpToStream(first, 1);
     const std::string firstArchive = first.str();
 
-    // Cross a real ZIP stamp boundary. tm_sec >> 1 gives two-second
-    // resolution, so 2.1s guarantees a different stamp, and the ASSERT_NE
-    // below proves the boundary was actually crossed rather than assuming it.
-    std::this_thread::sleep_for(2100ms);
-
-    std::ostringstream second(std::ios::out | std::ios::binary);
-    payload->dumpToStream(second, 1);
-    const std::string secondArchive = second.str();
+    // Persistence dumps can have deterministic timestamps. Forge a two-second
+    // difference in both copies of this single entry's DOS modification time
+    // instead of depending on the wall clock or the writer's timestamp policy.
+    ASSERT_EQ(firstArchive.substr(0, 4), std::string("PK\x03\x04", 4));
+    const auto directory = firstArchive.find(std::string("PK\x01\x02", 4));
+    ASSERT_NE(directory, std::string::npos);
+    ASSERT_GE(firstArchive.size() - directory, 46U);
+    std::string secondArchive = firstArchive;
+    secondArchive[10] ^= 1;  // local file header: low bit is two seconds
+    secondArchive[directory + 12] ^= 1;  // central directory: same timestamp
 
     ASSERT_NE(firstArchive, secondArchive)
         << "raw archives did not differ; the test never exercised the boundary";
-    EXPECT_EQ(App::Internal::canonicalRecomputeArchiveContents(firstArchive),
-              App::Internal::canonicalRecomputeArchiveContents(secondArchive));
+    const auto canonicalFirst =
+        App::Internal::canonicalRecomputeArchiveContents(firstArchive);
+    const auto canonicalSecond =
+        App::Internal::canonicalRecomputeArchiveContents(secondArchive);
+    EXPECT_EQ(canonicalFirst, canonicalSecond);
+    EXPECT_NE(secondArchive, canonicalSecond)
+        << "the forged timestamp must actually be normalized";
 
     // A payload change of identical length is still a change.
     payload->setValue("payload-B");
     std::ostringstream changed(std::ios::out | std::ios::binary);
     payload->dumpToStream(changed, 1);
-    EXPECT_NE(App::Internal::canonicalRecomputeArchiveContents(firstArchive),
+    ASSERT_EQ(firstArchive.size(), changed.str().size());
+    EXPECT_NE(canonicalFirst,
               App::Internal::canonicalRecomputeArchiveContents(changed.str()));
 
     // Unwalkable input falls back to raw bytes rather than collapsing to
