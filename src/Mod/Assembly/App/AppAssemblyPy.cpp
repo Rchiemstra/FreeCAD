@@ -51,10 +51,22 @@ public:
             "Cancel scans using the supplied token; cancellation is cooperative.");
         add_varargs_method("_withMotionSweepState", &Module::withMotionSweepState,
             "Internal synchronous document-thread scope for the motion controller.");
+        add_keyword_method("_prepareSelectedPairScan", &Module::prepareSelectedPair,
+            "Internal: snapshot selected geometry on the document thread.");
+        add_varargs_method("_runPreparedInterferenceScan", &Module::runPrepared,
+            "Internal: run an owned immutable snapshot on a worker, once.");
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+    Py::Object prepareSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
+    {
+        return scanSelectedPairPy(args, keywords, true);
+    }
+    Py::Object runPrepared(const Py::Tuple& args)
+    {
+        return runPreparedInterferenceScanPy(args);
+    }
     Py::Object withMotionSweepState(const Py::Tuple& args)
     {
         return withMotionSweepStatePy(args);

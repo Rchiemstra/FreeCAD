@@ -22,6 +22,9 @@
 # **************************************************************************/
 
 
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]
+
+
 class AssemblyCommandGroup:
     def __init__(self, cmdlist, menu, tooltip=None):
         self.cmdlist = cmdlist
@@ -69,6 +72,7 @@ class AssemblyWorkbench(Workbench):
         import CommandSolveAssembly
         import CommandExportASMT
         import CommandCreateView
+        import CommandMotionInterference
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
@@ -101,6 +105,7 @@ class AssemblyWorkbench(Workbench):
             "Assembly_ExportASMT",
             "Assembly_CheckInterference",
             "Assembly_CheckSelectedComponents",
+            "Assembly_MotionInterference",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -309,6 +314,7 @@ class AssemblyWorkbench(Workbench):
                 self.commands = [
                     "Assembly_CheckInterference",
                     "Assembly_CheckSelectedComponents",
+                    "Assembly_MotionInterference",
                 ]
                 self.title = translate("Assembly", "Interference")
 

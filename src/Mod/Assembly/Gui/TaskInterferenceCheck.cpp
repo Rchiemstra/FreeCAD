@@ -1783,6 +1783,7 @@ void TaskInterferenceCheck::detachPreviewFromViewer()
 
 void TaskInterferenceCheck::discardResults()
 {
+    motionPreview = false;
     lastResult = {};
     hasAcceptedScanResult = false;
     clearPreview();
@@ -2781,6 +2782,7 @@ void TaskInterferenceCheck::rebuildTable()
         }
 
         const bool solidReportable = solidInvalidOrInconclusive
+            || (motionPreview && pair.detection.kind == Part::InterferenceKind::Clear)
             || (solidPenetration && (!pair.excluded || showExcluded))
             || (pair.faceHits.empty()
                 && (pair.detection.kind == Part::InterferenceKind::ClearanceViolation
@@ -3016,6 +3018,38 @@ void TaskInterferenceCheck::onIncludeHiddenToggled(bool)
 {
     refreshScanScope();
     markStale("Include-hidden changed");
+}
+
+void TaskInterferenceCheck::presentMotionResult(
+    const InterferenceScanResult& result, std::size_t pairIndex,
+    bool wholeSolid, const QString& context
+)
+{
+    lastResult = result;
+    motionPreview = true;
+    auto pair = lastResult.pairs.at(pairIndex);
+    if (wholeSolid) {
+        pair.detection = pair.solidDetection;
+        pair.faceHits.clear();
+    }
+    lastResult.pairs = {pair};
+    hasAcceptedScanResult = true;
+    showClearFaceChecks->setChecked(true);
+    showExcludedCheck->setChecked(true);
+    rebuildTable();
+    statusLabel->setText(context);
+    resultsTable->setCurrentCell(0, 0);
+    updatePreviewForCurrentRow();
+    // The sweep panel owns this temporary presentation. Do not allow static
+    // checker commands to mutate its document while replay is active.
+    setEnabled(false);
+}
+
+void TaskInterferenceCheck::clearMotionResult()
+{
+    motionPreview = false;
+    setEnabled(true);
+    markStale("Motion preview closed");
 }
 
 void TaskInterferenceCheck::onRowChanged()

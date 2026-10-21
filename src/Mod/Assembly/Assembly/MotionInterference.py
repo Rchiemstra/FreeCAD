@@ -177,7 +177,8 @@ def _driver(doc, joint, start, end, count, unit, created):
 
 
 def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
-               clearance=None, cancel=None, progress=None, maxFacePairCandidates=10000):
+               clearance=None, cancel=None, progress=None, maxFacePairCandidates=10000,
+               _scan=None):
     """Scan two occurrences through one bounded joint sweep, synchronously.
 
     Numeric endpoints/step are signed, unwrapped degrees for revolutes or mm for
@@ -206,9 +207,11 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
         cancel = SweepCancellation()
     if not isinstance(cancel, SweepCancellation):
         raise TypeError("cancel must be a SweepCancellation")
+    scan_pair = AssemblyApp.scanSelectedPair if _scan is None else _scan
     # Validate selected occurrence handles before any motion or temporary writes.
-    AssemblyApp.scanSelectedPair(assembly, first, second, cancel=cancel._token,
-                                 maxFacePairCandidates=maxFacePairCandidates)
+    AssemblyApp._prepareSelectedPairScan(
+        assembly, first, second, cancel=cancel._token,
+        maxFacePairCandidates=maxFacePairCandidates)
     result = dict(unit=unit, interval=(start, end), clearance=requirement, samples=[],
                   firstContact=None, firstClearanceViolation=None, minimumClearance=None,
                   completeness="incomplete", reason="Sweep did not finish",
@@ -278,7 +281,7 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                 elif abs(coordinate - start) > tolerance:
                     raise RuntimeError(f"Simulation solved start {coordinate:g} {unit}; "
                                        f"requested {start:g} {unit}")
-                scan = AssemblyApp.scanSelectedPair(
+                scan = scan_pair(
                     assembly, first, second, measureDistances=True,
                     maxFacePairCandidates=maxFacePairCandidates, cancel=cancel._token)
                 if scan["cancelled"] or cancel.cancelled:

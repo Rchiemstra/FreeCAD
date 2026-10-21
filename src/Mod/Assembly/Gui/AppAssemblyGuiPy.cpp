@@ -23,6 +23,7 @@
 
 
 #include <Base/Interpreter.h>
+#include "MotionInterferenceGuiPy.h"
 
 #ifdef ASSEMBLY_ENABLE_TEST_HOOKS
 # include "ViewProviderReviewNoteTestHarness.h"
@@ -66,10 +67,22 @@ public:
             "reviewNoteTestApplyExceptionsCaughtCount() -> int — test harness only"
         );
 #endif
+        add_varargs_method("_showMotionInterferenceResult", &Module::showMotionResult,
+            "Internal: replay an owned sweep snapshot through the interference checker.");
+        add_varargs_method("_clearMotionInterferenceResult", &Module::clearMotionResult,
+            "Internal: remove the sweep witness preview.");
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+    Py::Object showMotionResult(const Py::Tuple& args)
+    {
+        return showMotionInterferenceResultPy(args);
+    }
+    Py::Object clearMotionResult(const Py::Tuple& args)
+    {
+        return clearMotionInterferenceResultPy(args);
+    }
 #ifdef ASSEMBLY_ENABLE_TEST_HOOKS
     Py::Object resetReviewNoteTestHooks(const Py::Tuple& args)
     {

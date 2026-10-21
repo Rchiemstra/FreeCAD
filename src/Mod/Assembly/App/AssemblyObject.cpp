@@ -33,6 +33,7 @@
 #include <ranges>
 
 
+#include <App/AutoTransaction.h>
 #include <App/Application.h>
 #include <App/Datums.h>
 #include <App/Document.h>
@@ -1072,10 +1073,16 @@ PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
     // authoritative file-change tracking. Keep this scope on the document thread.
     auto* doc = getDocument();
     if (solveInProgress || placementAttemptInProgress || dragActive || dragStartAttempt
-        || doc->hasPendingTransaction() || doc->transacting()
+        || doc->hasPendingTransaction() || doc->isTransactionLocked() || doc->transacting()
         || App::GetApplication().getGlobalTransaction() != 0) {
         throw Base::RuntimeError("Finish the active solve, drag, simulation or transaction before sweeping");
     }
+    // A GUI sweep/replay pumps events while a geometry worker runs. Prevent
+    // document close and undo from destroying the state this scope must restore.
+    App::TransactionLocker lifetime(doc);
+    const bool wasClosable = doc->isClosable();
+    doc->setClosable(false);
+    Base::ScopeGuard restoreClosable([&] { doc->setClosable(wasClosable); });
     auto solver = mbdAssembly;
     auto parts = objectPartMap;
     auto representatives = rigidRepByPart;

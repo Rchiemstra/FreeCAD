@@ -43,6 +43,8 @@ SOURCE_GROUP("Python" FILES ${Python_SRCS})
 SET(AssemblyGui_SRCS_Module
     AppAssemblyGui.cpp
     AppAssemblyGuiPy.cpp
+    MotionInterferenceGuiPy.cpp
+    MotionInterferenceGuiPy.h
     PreCompiled.h
     Commands.cpp
     Commands.h

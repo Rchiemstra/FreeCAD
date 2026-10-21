@@ -20,6 +20,21 @@ namespace Assembly
 namespace
 {
 constexpr auto snapshotName = "Assembly.InterferenceScanResult";
+constexpr auto preparedName = "Assembly.PreparedInterferenceScan";
+
+// No document pointers: only the document thread prepares this snapshot.
+struct PreparedScan
+{
+    std::vector<InterferenceLeaf> first;
+    std::vector<InterferenceLeaf> second;
+    InterferenceScanOptions options;
+    std::vector<std::pair<std::string, std::string>> exclusions;
+    std::string firstOccurrence;
+    std::string secondOccurrence;
+    Py::Object token;  // Own the cancellation flag through worker completion.
+    std::atomic<bool> started {false};
+};
+
 constexpr auto cancellationName = "Assembly.InterferenceScanCancellation";
 
 const char* kindName(Part::InterferenceKind kind)
@@ -227,7 +242,7 @@ Py::Object cancelInterferenceScanPy(const Py::Tuple& args)
     return Py::None();
 }
 
-Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords)
+Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, bool prepareOnly)
 {
     PyObject* hostPy = nullptr;
     PyObject* firstPy = nullptr;
@@ -271,14 +286,57 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords)
                 exclusions.emplace_back(rule.firstIdentity, rule.secondIdentity);
             }
         }
+        auto preparedScan = std::make_unique<PreparedScan>();
+        preparedScan->first = std::move(a);
+        preparedScan->second = std::move(b);
+        preparedScan->options = std::move(options);
+        preparedScan->exclusions = std::move(exclusions);
+        preparedScan->firstOccurrence = scope.first.occurrencePrefix;
+        preparedScan->secondOccurrence = scope.second.occurrencePrefix;
+        preparedScan->token = Py::Object(token);
+        auto capsule = Py::asObject(PyCapsule_New(preparedScan.get(), preparedName, [](PyObject* obj) {
+            delete static_cast<PreparedScan*>(PyCapsule_GetPointer(obj, preparedName));
+        }));
+        preparedScan.release();
+        if (prepareOnly) {
+            return capsule;
+        }
+        Py::Tuple runArgs(1);
+        runArgs[0] = capsule;
+        return runPreparedInterferenceScanPy(runArgs);
+    }
+    catch (const Base::Exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+    catch (const Standard_Failure& error) {
+        throw Py::RuntimeError(error.GetMessageString());
+    }
+    catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+}
+
+Py::Object runPreparedInterferenceScanPy(const Py::Tuple& args)
+{
+    PyObject* capsule = nullptr;
+    if (!PyArg_ParseTuple(args.ptr(), "O", &capsule)) {
+        throw Py::Exception();
+    }
+    auto* scan = static_cast<PreparedScan*>(PyCapsule_GetPointer(capsule, preparedName));
+    if (!scan) {
+        throw Py::Exception();
+    }
+    if (scan->started.exchange(true)) {
+        throw Py::ValueError("A prepared scan can only be run once");
+    }
+    try {
         auto result = std::make_unique<InterferenceScanResult>();
         {
-            // Only immutable geometry/rules cross this boundary. Document preparation
-            // and Python conversion remain on the caller's document thread.
             Base::PyGILStateRelease unlock;
-            *result = runInterferenceScanBetweenLeafSets(a, b, options, exclusions);
+            *result = runInterferenceScanBetweenLeafSets(
+                scan->first, scan->second, scan->options, scan->exclusions);
         }
-        if (a.empty() || b.empty()) {
+        if (scan->first.empty() || scan->second.empty()) {
             result->complete = false;
             result->counts.invalidInputs += 1;
             InterferenceComponentIssue issue;
@@ -286,9 +344,9 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords)
             result->componentIssues.push_back(issue);
         }
         auto out = resultToPy(std::move(result));
-        out["firstOccurrence"] = Py::String(scope.first.occurrencePrefix);
-        out["secondOccurrence"] = Py::String(scope.second.occurrencePrefix);
-        out["clearance"] = Py::Float(options.clearance);
+        out["firstOccurrence"] = Py::String(scan->firstOccurrence);
+        out["secondOccurrence"] = Py::String(scan->secondOccurrence);
+        out["clearance"] = Py::Float(scan->options.clearance);
         return out;
     }
     catch (const Base::Exception& error) {
