@@ -24,6 +24,7 @@
 
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
+#include "ExtractReferences.h"
 
 
 namespace Assembly
@@ -34,7 +35,17 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyApp")
     {
+        add_varargs_method("_extractionReferences", &Module::references,
+                           "Internal property reference preflight and replacement.");
         initialize("This module is the Assembly module.");  // register with Python
+    }
+    Py::Object references(const Py::Tuple& args)
+    {
+        auto result = extractionReferences(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
     }
 };
 

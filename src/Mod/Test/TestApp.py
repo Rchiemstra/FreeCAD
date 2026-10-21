@@ -105,9 +105,22 @@ def _drain_gui_after_tests() -> None:
         time.sleep(0.01)
 
 
+class _TextTestResult(unittest.TextTestResult):
+    def stopTest(self, test):
+        super().stopTest(test)
+        if getattr(FreeCAD, "GuiUp", False):
+            from PySide import QtCore
+
+            # CLI tests run inside one Qt callback. Finish queued presentation
+            # work and widget destruction before creating the next document.
+            for _ in range(2):
+                QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+
+
 def TestText(s):
     s = unittest.defaultTestLoader.loadTestsFromName(s)
-    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2, resultclass=_TextTestResult)
     retval = r.run(s)
     _drain_gui_after_tests()
     # Flushing to make sure the stream is written to the console
@@ -125,7 +138,7 @@ def RunConfiguredTextTest():
     suite = unittest.TestSuite()
     for tc in test_cases:
         suite.addTest(tryLoadingTest(tc))
-    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2, resultclass=_TextTestResult)
     result = r.run(suite)
     _drain_gui_after_tests()
     sys.stdout.flush()
@@ -137,7 +150,7 @@ def Test(s):
 
 
 def testAll():
-    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2, resultclass=_TextTestResult)
     return r.run(All())
 
 

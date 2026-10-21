@@ -32,6 +32,7 @@ Covers:
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import JointObject
 
 
@@ -56,7 +57,7 @@ class TestOverlayIconsAndOrigin(unittest.TestCase):
         _msg("  Temporary document '{}'".format(self.doc.Name))
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
     def _force_origin_into_group(self):
         origin = self.assembly.Origin

@@ -22,6 +22,9 @@
 # **************************************************************************/
 
 
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]
+
+
 class AssemblyCommandGroup:
     def __init__(self, cmdlist, menu, tooltip=None):
         self.cmdlist = cmdlist
@@ -64,6 +67,7 @@ class AssemblyWorkbench(Workbench):
         from PySide.QtCore import QT_TRANSLATE_NOOP
         import CommandCreateAssembly
         import CommandInsertLink
+        import CommandExtractComponent
         import CommandInsertNewPart
         import CommandCreateJoint
         import CommandSolveAssembly
@@ -87,6 +91,7 @@ class AssemblyWorkbench(Workbench):
         cmdList = [
             "Assembly_CreateAssembly",
             "Assembly_Insert",
+            "Assembly_ExtractComponent",
             "Part_LinkArrays",
             "Assembly_ComponentPattern",
             "Assembly_SolveAssembly",
@@ -173,6 +178,12 @@ class AssemblyWorkbench(Workbench):
         assembly = UtilsAssembly.activeAssembly()
         if assembly is None:
             return
+
+        if recipient == "Tree":
+            import CommandExtractComponent
+
+            if CommandExtractComponent.selectedComponent() is not None:
+                self.appendContextMenu("", ["Assembly_ExtractComponent"])
 
         for sel in selection:
             for sub_name in sel.SubElementNames:

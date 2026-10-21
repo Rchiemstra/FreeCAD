@@ -172,6 +172,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/UtilsAssembly.py",
     "src/Mod/Assembly/CommandCreateAssembly.py",
     "src/Mod/Assembly/CommandComponentPattern.py",
+    "src/Mod/Assembly/CommandExtractComponent.py",
     "src/Mod/Assembly/ComponentPattern.py",
     "src/Mod/Assembly/CommandCreateBom.py",
     "src/Mod/Assembly/CommandCreateJoint.py",
@@ -401,6 +402,8 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
 # out of the presentation inventory. Each exclusion is individually reviewed
 # as a model/IO/solver helper; GUI-bearing modules are promoted into scope.
 REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
+    "src/Mod/Assembly/ExtractionShape.py": "Headless shape-expression forwarding proxy; no GUI handlers",
+    "src/Mod/Assembly/ExtractComponent.py": "Headless component extraction model/IO API; GUI command is inventoried",
     "src/Mod/BIM/importers/exportIFCHelper.py": "BIM IFC helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Op/SurfaceSupport.py": "CAM geometry helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Tool/shape/models/base.py": "CAM shape model helper; GUI caller is inventoried",

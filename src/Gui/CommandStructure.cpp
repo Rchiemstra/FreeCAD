@@ -22,6 +22,7 @@
 
 #include <QApplication>
 
+#include <Base/Interpreter.h>
 #include <App/GroupExtension.h>
 #include <App/Document.h>
 
@@ -110,6 +111,23 @@ void StdCmdPart::activated(int iMsg)
     );
 
     commitCommand();
+
+    if (triggerSource() != TriggerNone) {
+        // This GUI continuation must not be recorded into a macro.
+        const auto script = QStringLiteral(
+            "if activeAsm:\n"
+            "    from PySide import QtCore\n"
+            "    import CommandExtractComponent\n"
+            "    QtCore.QTimer.singleShot(0, lambda part=App.activeDocument().%1: "
+            "CommandExtractComponent.offer(part))"
+        ).arg(QString::fromStdString(PartName));
+        Base::PyGILStateLocker lock;
+        auto* result = runPythonCommand(script.toUtf8().constData(), PythonCommandMode::File);
+        if (!result) {
+            Base::PyException::throwException();
+        }
+        Py_DECREF(result);
+    }
 
     updateActive();
 }

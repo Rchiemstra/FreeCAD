@@ -94,6 +94,7 @@
     "src/Mod/Assembly/UtilsAssembly.py",
     "src/Mod/Assembly/CommandCreateAssembly.py",
     "src/Mod/Assembly/CommandComponentPattern.py",
+    "src/Mod/Assembly/CommandExtractComponent.py",
     "src/Mod/Assembly/ComponentPattern.py",
     "src/Mod/Assembly/CommandCreateBom.py",
     "src/Mod/Assembly/CommandCreateJoint.py",
@@ -1058,7 +1059,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 70,
+      "line": 71,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1066,7 +1067,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 76,
+      "line": 77,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1074,7 +1075,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 86,
+      "line": 87,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1082,7 +1083,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 97,
+      "line": 98,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1090,7 +1091,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 99,
+      "line": 100,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1098,7 +1099,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 102,
+      "line": 103,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1106,7 +1107,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 104,
+      "line": 105,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1114,7 +1115,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 105,
+      "line": 106,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1122,7 +1123,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 155,
+      "line": 173,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1130,7 +1131,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 159,
+      "line": 177,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1138,7 +1139,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 170,
+      "line": 188,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1146,7 +1147,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 219,
+      "line": 237,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1154,7 +1155,7 @@
     },
     {
       "path": "src/Gui/CommandStructure.cpp",
-      "line": 245,
+      "line": 263,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -4066,7 +4067,7 @@
     },
     {
       "path": "src/Mod/Assembly/CommandReviewNote.py",
-      "line": 1900,
+      "line": 1910,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4274,7 +4275,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 41,
+      "line": 44,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4282,7 +4283,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 197,
+      "line": 208,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4290,7 +4291,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 213,
+      "line": 224,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4298,7 +4299,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 233,
+      "line": 244,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4306,7 +4307,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 316,
+      "line": 327,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",

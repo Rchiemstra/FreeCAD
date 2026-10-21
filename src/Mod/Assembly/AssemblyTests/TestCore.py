@@ -22,6 +22,7 @@
 # ***************************************************************************/
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Assembly
 import Part
 import os
@@ -88,7 +89,7 @@ class AssemblyTestBase(unittest.TestCase):
         This method is called after each test() method. Add cleanup instructions here.
         Such cleanup instructions will likely undo those in the setUp() method.
         """
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
 
 class TestCore(AssemblyTestBase):
@@ -642,6 +643,26 @@ class TestCore(AssemblyTestBase):
         self.doc.recompute()
         self.assertFalse(self.doc.mustExecute())
         created = []
+        from PySide import QtCore
+
+        observed = []
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Inspector(QtCore.QObject):
+            inspect = QtCore.Signal(object)
+
+            def __init__(self):
+                super().__init__()
+                self.inspect.connect(self.check, QtCore.Qt.BlockingQueuedConnection)
+
+            @QtCore.Slot(object)
+            def check(self, joint):
+                # The owner is paused inside the mutation, before publication.
+                # Read the native provider on the GUI thread, where absence is
+                # meaningful, rather than guiViewObject's off-thread fallback.
+                observed.append((QtCore.QThread.currentThread() == gui_thread, joint.ViewObject))
+
+        inspector = Inspector()
 
         def create_joint():
             joint = Assembly.createJoint(
@@ -653,14 +674,23 @@ class TestCore(AssemblyTestBase):
                 presolve=False,
                 recompute=False,
             )
-            self.assertIsNone(joint.ViewObject)
+            inspector.inspect.emit(joint)
             created.append(joint)
             return True
 
-        result = self.doc.commitCompatibilityMutation(
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = self.doc.commitCompatibilityMutationAsync(
             create_joint, structural=True, recompute=False
         )
+        # Waiting off the GUI thread lets native publication replay on it.
+        with ThreadPoolExecutor(max_workers=1) as waiter:
+            completion = waiter.submit(handle["wait"], 15.0)
+            _pump_gui_until(completion.done, 20.0)
+            result = completion.result()
         self.assertTrue(result.get("committed"), result)
+        self.assertEqual(observed, [(True, None)])
         joint = created[0]
         self.assertIsNotNone(joint.ViewObject)
         self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)

@@ -25,6 +25,7 @@ import TestApp
 
 from AssemblyTests.TestComponentPattern import TestComponentPattern, TestComponentPatternGui
 
+from AssemblyTests.TestExtractComponent import TestExtractComponent, TestExtractComponentGui
 from AssemblyTests.TestCore import TestCore
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
 from AssemblyTests.TestCommandCreateView import TestCommandCreateView
@@ -55,3 +56,6 @@ True if TestReviewNotesGuiIssues else False
 
 True if TestComponentPattern else False
 True if TestComponentPatternGui else False
+
+True if TestExtractComponent else False
+True if TestExtractComponentGui else False

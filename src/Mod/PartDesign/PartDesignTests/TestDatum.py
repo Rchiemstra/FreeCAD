@@ -234,7 +234,8 @@ class TestDeactivatedPlacement(unittest.TestCase):
         cyl.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(App.Vector(0, 1, 0), 90))
         self.Doc.recompute()
 
-        bbox = cyl.Shape.BoundBox
+        # GUI tessellation changes cached mesh bounds; check the actual geometry.
+        bbox = cyl.Shape.optimalBoundingBox(False)
         self.assertAlmostEqual(bbox.XMin, 0.0, places=3)
         self.assertAlmostEqual(bbox.XMax, 1.0, places=3)
         self.assertAlmostEqual(bbox.YMin, -2.0, places=3)
@@ -287,7 +288,8 @@ class TestDeactivatedPlacement(unittest.TestCase):
         cyl.Placement = App.Placement(cyl.Placement.Base, App.Rotation(App.Vector(0, 1, 0), 90))
         self.Doc.recompute()
 
-        bbox = cyl.Shape.BoundBox
+        # GUI tessellation changes cached mesh bounds; check the actual geometry.
+        bbox = cyl.Shape.optimalBoundingBox(False)
         self.assertAlmostEqual(bbox.XMax - bbox.XMin, 1.0, places=3)
         self.assertAlmostEqual(bbox.YMax - bbox.YMin, 4.0, places=3)
 
