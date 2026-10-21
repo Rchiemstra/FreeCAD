@@ -23,7 +23,7 @@ perpendicularity zone 0.05 mm, datum A in position 1; two opposed box faces.
 Both FreeCAD converters must resolve exact faces. Merge/multi-document imports
 must retain readable records and explicitly report unsupported association.
 
-XCAF normalisation and lower-deviation magnitude convention are documented by
+XCAF normalisation and loss of lower-deviation signs are documented by
 OCCT 7.6.3 STEPCAFControl_Reader::setDimObjectToXCAF / convertAngleValue:
 https://github.com/Open-Cascade-SAS/OCCT/blob/V7_6_3/src/STEPCAFControl/STEPCAFControl_Reader.cxx
 
@@ -59,8 +59,8 @@ semantic change .FREE_STATE. -> .UNMAPPED_TEST_MODIFIER. at entity #132.
 This deliberately invalid enumeration is a reader robustness fixture, not a
 standards-conforming modifier. OCCT substitutes a known enum but records the
 original tokens in Interface_ReportEntity / StepData_UndefinedEntity. FreeCAD
-keeps those original codes in file-level Warnings (with STEP entity number) and
-RawMetadata; they persist after save/reopen. These warnings apply to the file,
+keeps those original codes in the STEP PMI group's Warnings (with STEP entity
+number) and RawMetadata; they persist after save/reopen. These warnings apply to the file,
 without claiming to identify an exact XCAF record for a malformed STEP entity.
 OCCT 7.6 can emit advisory complex-member ordering messages even for its own
 writer's complex instances; the independent valid fixture has no read failures.
@@ -72,3 +72,34 @@ ImportGui.open/insert(..., semanticPMI=True/False) explicitly override it.
 The STEP PMI group exposes readable properties and selectable shape references;
 no presentation rendering, STEP export or editing solver is provided.
 SourceId is an import-local XCAF label entry, not a stable STEP entity number.
+
+Option off leaves OCCT's own default GDT mode unchanged (default-on in OCCT 7.6).
+It does not construct or attach FreeCAD PMI extraction/association state.
+
+Rework regression fixtures are hand-authored variants of independent-inch.step:
+* positive-deviations.step: +0.01/+0.02 inch deviations;
+* negative-deviations.step: -0.02/-0.01 inch deviations; OCCT 7.6 drops the
+  negative upper value and returns [nominal, abs(lower)] as a range. Report
+  uninterpreted magnitudes, not signed deviations or absolute range bounds;
+* absolute-range.step: lower/upper absolute bounds 0.9/1.1 inch;
+* conflicting-signs.step: two pairs with identical normalised magnitudes but
+  different lower signs; recovery must fail closed, not select by entity order;
+* unmatched-signs.step: generic inch measures that OCCT 7.6 leaves unscaled;
+  the normalised source magnitudes differ, so recovery must be refused;
+* placed-instances.step: one shared block definition, three assembly occurrences
+  translated by 0/4/8 inches; definition-level PMI cannot select an occurrence;
+* shared-compartment.step: both datums are elements of the first compartment,
+  so their positions must both remain 1.
+The signed source bounds are copied from OCCT's STEP model while the reader is
+alive and normalised with STEPConstruct_UnitContext. Recovery requires exact
+unit/lower-magnitude/upper-magnitude equality, with all matching source pairs
+agreeing on signs. This is a conservative correspondence check, not label-order
+matching. Missing, conflicting or non-exact matches retain unsigned magnitudes
+with DeviationStatus, a record warning and a summary explicitly saying signs
+unknown; HasDeviations is false and no signed deviation properties are created.
+Absolute bounds are read as absolute bounds and never negated.
+When OCCT loses a negative upper deviation, the two-value array cannot verify
+both source magnitudes. A negative-upper source candidate with the same lower
+magnitude vetoes interpreting that array as bounds (never establishes signs).
+Reversed ranges are also rejected. UninterpretedMagnitudes and a warning retain
+the available data without claiming a nominal value, range or deviation signs.

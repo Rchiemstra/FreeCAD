@@ -53,6 +53,7 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     aReader.SetNameMode(true);
     aReader.SetLayerMode(true);
     aReader.SetSHUOMode(true);
+    // Off leaves OCCT's own default GDT mode unchanged (default-on in OCCT 7.6).
     if (readSemanticPmi) {
         aReader.SetGDTMode(true);
     }
