@@ -103,6 +103,8 @@
     "src/Mod/Assembly/CommandExportASMT.py",
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
+    "src/Mod/Assembly/CommandMotionInterference.py",
+    "src/Mod/Assembly/Assembly/MotionInterference.py",
     "src/Mod/Assembly/CommandReviewNote.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     "src/Mod/Assembly/JointObject.py",
@@ -3616,6 +3618,22 @@
       "evidence": "while not self.response_received.wait(0.1):"
     },
     {
+      "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
+      "line": 256,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
+      "line": 265,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents()"
+    },
+    {
       "path": "src/Mod/Assembly/Assembly/api.py",
       "line": 23,
       "category": "direct-recompute",
@@ -4016,6 +4034,14 @@
       "evidence": "doc.recompute()"
     },
     {
+      "path": "src/Mod/Assembly/CommandMotionInterference.py",
+      "line": 241,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "QtWidgets.QApplication.processEvents()"
+    },
+    {
       "path": "src/Mod/Assembly/CommandReviewNote.py",
       "line": 193,
       "category": "live-app-dereference",
@@ -4121,7 +4147,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
-      "line": 2062,
+      "line": 2063,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4129,7 +4155,7 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
-      "line": 2080,
+      "line": 2081,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4273,7 +4299,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 41,
+      "line": 44,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4281,7 +4307,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 197,
+      "line": 202,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4289,7 +4315,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 213,
+      "line": 218,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4297,7 +4323,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 233,
+      "line": 238,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4305,7 +4331,7 @@
     },
     {
       "path": "src/Mod/Assembly/InitGui.py",
-      "line": 316,
+      "line": 322,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",

@@ -181,6 +181,9 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/CommandExportASMT.py",
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
+    "src/Mod/Assembly/CommandMotionInterference.py",
+    # Motion sweep controller; services Qt events between sampled poses.
+    "src/Mod/Assembly/Assembly/MotionInterference.py",
     "src/Mod/Assembly/CommandReviewNote.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     # Joint task and view-provider handlers imported by Assembly commands.
