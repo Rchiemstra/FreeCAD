@@ -9,11 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include <Geom_BezierCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
-#include <GeomConvert_BSplineCurveToBezierCurve.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
 
@@ -135,18 +133,55 @@ struct Span
     std::vector<Pole> poles;
 };
 
-Span bezier(const Handle(Geom_BSplineCurve) & curve, double first, double last)
+Span bezier(const Handle(Geom_BSplineCurve) & curve, double first, double last, const gp_Pnt& origin)
 {
-    GeomConvert_BSplineCurveToBezierCurve conversion(curve, first, last, 0.0);
-    if (conversion.NbArcs() != 1) {
+    // Evaluate the polar form directly from ORIGINAL homogeneous poles and knots.
+    // Each Bezier pole is blossom(first, ..., first, last, ..., last). Interval
+    // de Boor includes every subtraction, division and multiply in knot insertion;
+    // no rounded OCCT conversion pole is ever treated as exact. The resulting
+    // envelopes feed regularity, crossing AND correspondence-error bounds.
+    std::vector<double> knots;
+    for (int i = 1; i <= curve->NbKnots(); ++i) {
+        knots.insert(knots.end(), curve->Multiplicity(i), curve->Knot(i));
+    }
+    const int degree = curve->Degree();
+    int k = degree;
+    while (k < curve->NbPoles()
+           && !(knots[k] <= first && last <= knots[k + 1] && knots[k] < knots[k + 1])) {
+        ++k;
+    }
+    if (k == curve->NbPoles()) {
         throw Failure {Status::VerificationFailed, "Could not isolate a spline knot span."};
     }
-    auto arc = conversion.Arc(1);
+    std::vector<Pole> original;
+    for (int i = k - degree; i <= k; ++i) {
+        auto p = curve->Pole(i + 1);
+        Interval w(curve->Weight(i + 1));
+        // A shared reference point for source AND fit avoids large translation
+        // terms in rational derivative bounds. Subtraction is also enclosed;
+        // all positions and comparisons remain in the same translated frame.
+        original.push_back(
+            {(Interval(p.X()) - Interval(origin.X())) * w,
+             (Interval(p.Y()) - Interval(origin.Y())) * w,
+             (Interval(p.Z()) - Interval(origin.Z())) * w,
+             w}
+        );
+    }
     Span span {first, last, {}};
-    for (int i = 1; i <= arc->NbPoles(); ++i) {
-        auto p = arc->Pole(i);
-        Interval w(arc->Weight(i));
-        span.poles.push_back({Interval(p.X()) * w, Interval(p.Y()) * w, Interval(p.Z()) * w, w});
+    for (int pole = 0; pole <= degree; ++pole) {
+        auto work = original;
+        for (int r = 1; r <= degree; ++r) {
+            const Interval parameter(r <= degree - pole ? first : last);
+            for (int j = degree; j >= r; --j) {
+                const int i = k - degree + j;
+                const Interval alpha = (parameter - Interval(knots[i]))
+                    / (Interval(knots[i + degree - r + 1]) - Interval(knots[i]));
+                for (size_t c = 0; c < 4; ++c) {
+                    work[j][c] = (Interval(1.0) - alpha) * work[j - 1][c] + alpha * work[j][c];
+                }
+            }
+        }
+        span.poles.push_back(work[degree]);
     }
     return span;
 }
@@ -487,6 +522,22 @@ std::vector<double> knots(const Handle(Geom_BSplineCurve) & curve)
 
 }  // namespace
 
+BSplineOffsetStatus checkBSplineOffsetInput(
+    const Part::GeomBSplineCurve& source,
+    const BSplineOffsetOptions& options
+)
+{
+    if (!validOptions(options)) {
+        return Status::InvalidOptions;
+    }
+    const auto curve = Handle(Geom_BSplineCurve)::DownCast(source.handle());
+    if (curve->NbPoles() > options.maxInputPoles || curve->NbKnots() - 1 > options.maxSegments
+        || curve->Degree() > 14) {
+        return Status::ComplexityExceeded;
+    }
+    return Status::Success;
+}
+
 BSplineOffsetResult makeBSplineOffset(
     const Part::GeomBSplineCurve& source,
     const BSplineOffsetOptions& options
@@ -494,23 +545,12 @@ BSplineOffsetResult makeBSplineOffset(
 {
     BSplineOffsetResult result;
     try {
-        if (!validOptions(options)) {
-            throw Failure {
-                Status::InvalidOptions,
-                "Use finite distance, tolerance >= 1e-7 mm and < half the distance, a nonzero "
-                "normal and supported complexity limits."
-            };
+        result.status = checkBSplineOffsetInput(source, options);
+        if (result.status != Status::Success) {
+            throw Failure {result.status, "Invalid offset options or input complexity limits exceeded."};
         }
         auto original = Handle(Geom_BSplineCurve)::DownCast(source.handle());
         result.complexity.inputPoles = original->NbPoles();
-        // Inspect size before copying, decomposition, evaluation or kernel fitting.
-        if (original->NbPoles() > options.maxInputPoles
-            || original->NbKnots() - 1 > options.maxSegments || original->Degree() > 14) {
-            throw Failure {
-                Status::ComplexityExceeded,
-                "Input spline exceeds pole, span or degree limits."
-            };
-        }
         if (original->IsPeriodic() || original->IsClosed() || !original->IsCN(2)) {
             throw Failure {Status::UnsupportedCurve, "Select one open, nonperiodic, C2 B-spline."};
         }
@@ -534,10 +574,14 @@ BSplineOffsetResult makeBSplineOffset(
             result.complexity,
             {Interval(direction.X()), Interval(direction.Y()), Interval(direction.Z())}
         };
-        auto sourceKnots = knots(copy);
+        auto sourceKnots = knots(original);
         std::vector<Validator::Region> regions;
         for (size_t i = 1; i < sourceKnots.size(); ++i) {
-            validator.regularSpans(bezier(copy, sourceKnots[i - 1], sourceKnots[i]), regions, true);
+            validator.regularSpans(
+                bezier(original, sourceKnots[i - 1], sourceKnots[i], origin),
+                regions,
+                true
+            );
         }
         validator.simple(regions, true);
         Handle(Geom_OffsetCurve) exact = new Geom_OffsetCurve(copy, options.distance, direction);
@@ -566,11 +610,15 @@ BSplineOffsetResult makeBSplineOffset(
         auto outputKnots = knots(output);
         regions.clear();
         for (size_t i = 1; i < outputKnots.size(); ++i) {
-            validator.regularSpans(bezier(output, outputKnots[i - 1], outputKnots[i]), regions, false);
+            validator.regularSpans(
+                bezier(output, outputKnots[i - 1], outputKnots[i], origin),
+                regions,
+                false
+            );
         }
         validator.simple(regions, false);
-        if (output->FirstParameter() != copy->FirstParameter()
-            || output->LastParameter() != copy->LastParameter()) {
+        if (output->FirstParameter() != original->FirstParameter()
+            || output->LastParameter() != original->LastParameter()) {
             throw Failure {
                 Status::VerificationFailed,
                 "Kernel fit did not preserve the parameter interval."
@@ -585,7 +633,13 @@ BSplineOffsetResult makeBSplineOffset(
             const double first = sourceKnots[i - 1], last = sourceKnots[i];
             independentError = std::max(
                 independentError,
-                validator.error(bezier(copy, first, last), bezier(output, first, last), exact, output, allowance)
+                validator.error(
+                    bezier(original, first, last, origin),
+                    bezier(output, first, last, origin),
+                    exact,
+                    output,
+                    allowance
+                )
             );
         }
         result.achievedMaxError = up(approximation.MaxError() + independentError);

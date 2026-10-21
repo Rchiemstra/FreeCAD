@@ -61,6 +61,12 @@ struct BSplineOffsetResult
     BSplineOffsetComplexity complexity;
 };
 
+// Constant-time option and size checks, before copying or extracting poles.
+SketcherExport BSplineOffsetStatus checkBSplineOffsetInput(
+    const Part::GeomBSplineCurve& source,
+    const BSplineOffsetOptions& options = {}
+);
+
 // Accepts one planar, C2, open, nonperiodic spline, including positive rational
 // weights. Never modifies source. No partial geometry is returned on failure.
 // Tolerance must be >= 1e-7 mm and < |distance| / 2. Limits are finite policies,

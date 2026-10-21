@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -163,6 +164,37 @@ TEST(BSplineOffset, NonDyadicParameterSpans)
         3
     );
     checkOffset(source, {});
+}
+
+TEST(BSplineOffset, OriginalPoleIntervalsCoverRationalKnotConversion)
+{
+    // Non-dyadic knots, unequal rational weights, and translated poles exercise
+    // interval knot insertion and its propagation into the reported error bound.
+    Part::GeomBSplineCurve source(
+        {V(10000, -20000, 0),
+         V(10002, -19999, 0),
+         V(10004, -19998, 0),
+         V(10006, -19998, 0),
+         V(10008, -19999, 0),
+         V(10010, -20000, 0)},
+        {1.0, 1.3, 0.9, 1.1, 0.8, 1.0},
+        {0.13, 0.37, 1.07, 2.61},
+        {4, 1, 1, 4},
+        3
+    );
+    checkOffset(source, {});
+}
+
+TEST(BSplineOffset, CheapChecksRejectBeforeFitting)
+{
+    BSplineOffsetOptions options;
+    options.maxInputPoles = 3;
+    EXPECT_EQ(
+        Sketcher::checkBSplineOffsetInput(cubic(), options),
+        BSplineOffsetStatus::ComplexityExceeded
+    );
+    options.distance = 0;
+    EXPECT_EQ(Sketcher::checkBSplineOffsetInput(cubic(), options), BSplineOffsetStatus::InvalidOptions);
 }
 
 TEST(BSplineOffset, ReversedSourceReversesSide)
