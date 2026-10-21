@@ -25,6 +25,8 @@
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 
+#include "InterferenceScanPy.h"
+
 
 namespace Assembly
 {
@@ -34,7 +36,34 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyApp")
     {
+        add_keyword_method("scanSelectedPair", &Module::scanSelectedPair,
+            "scanSelectedPair(host, first, second, measureDistances=False, "
+            "maxFacePairCandidates=10000, cancel=None) -> dict\n"
+            "Snapshot and scan two component occurrences using the interference checker.\n"
+            "Call on the document thread. Endpoints are objects or (object, subname).\n"
+            "Distances/points are in mm/world coordinates. Results retain witness geometry;\n"
+            "solidDetection preserves the whole-solid result before face-rule aggregation.\n"
+            "measureDistances evaluates distant clear pairs too. complete describes only\n"
+            "this static selected scope. cancel is a newInterferenceScanCancellation token.");
+        add_varargs_method("newInterferenceScanCancellation", &Module::newCancellation,
+            "Create a thread-safe cooperative scan cancellation token.");
+        add_varargs_method("cancelInterferenceScan", &Module::cancelScan,
+            "Cancel scans using the supplied token; cancellation is cooperative.");
         initialize("This module is the Assembly module.");  // register with Python
+    }
+
+private:
+    Py::Object scanSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
+    {
+        return scanSelectedPairPy(args, keywords);
+    }
+    Py::Object newCancellation(const Py::Tuple& args)
+    {
+        return newInterferenceScanCancellationPy(args);
+    }
+    Py::Object cancelScan(const Py::Tuple& args)
+    {
+        return cancelInterferenceScanPy(args);
     }
 };
 

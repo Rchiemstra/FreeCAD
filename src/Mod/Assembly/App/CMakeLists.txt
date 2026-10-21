@@ -66,6 +66,8 @@ SET(Assembly_SRCS
     ReviewNote.h
     InterferenceScan.cpp
     InterferenceScan.h
+    InterferenceScanPy.cpp
+    InterferenceScanPy.h
     InterferenceScanSession.cpp
     InterferenceScanSession.h
 
