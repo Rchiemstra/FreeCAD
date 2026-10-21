@@ -4322,7 +4322,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1251,
+      "line": 1264,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4330,7 +4330,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1420,
+      "line": 1433,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4338,7 +4338,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1778,
+      "line": 1791,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4346,7 +4346,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2009,
+      "line": 2022,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4354,7 +4354,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2038,
+      "line": 2051,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4362,7 +4362,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2046,
+      "line": 2059,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4370,7 +4370,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2056,
+      "line": 2069,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4378,7 +4378,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2058,
+      "line": 2071,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4386,7 +4386,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2070,
+      "line": 2083,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4394,7 +4394,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2557,
+      "line": 2570,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4402,7 +4402,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2610,
+      "line": 2623,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4410,7 +4410,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2634,
+      "line": 2647,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
