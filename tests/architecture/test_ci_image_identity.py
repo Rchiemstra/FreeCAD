@@ -127,6 +127,17 @@ class KeyTests(ShellFixture):
             gate = next(step for step in steps if step["name"] == "ci-images-check")
             self.assertIn(prerequisite, gate["depends_on"])
 
+    def test_busybox_images_run_steps_without_bin_sh(self):
+        # crane:debug ships /busybox/sh only; the default entrypoint is /bin/sh.
+        for workflow in ("ci.yml", "build-images.yml"):
+            steps = yaml.safe_load((ROOT / ".woodpecker" / workflow).read_text())["steps"]
+            for step in steps:
+                if "go-containerregistry/crane:debug" in str(step.get("image")):
+                    entry = step.get("entrypoint") or []
+                    self.assertEqual(entry[:1], ["/busybox/sh"], f"{workflow}: {step['name']}")
+                    self.assertIn("CI_SCRIPT", entry[-1])
+                    self.assertNotIn("$", entry[-1])
+
     def test_keyed_shards_preserve_failure_continuation(self):
         workflow = yaml.safe_load((ROOT / ".woodpecker/ci.yml").read_text())
         steps = {step["name"]: step for step in workflow["steps"]}

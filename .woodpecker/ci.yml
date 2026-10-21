@@ -212,6 +212,9 @@ steps:
   # manifests are rebuilt here on every event, including pull requests.
   - name: ci-images-check
     image: gcr.io/go-containerregistry/crane:debug
+    # This image has busybox under /busybox and no /bin/sh, so Woodpecker's default
+    # entrypoint cannot start; decode the step script with busybox instead.
+    entrypoint: ['/busybox/sh', '-c', 'printenv CI_SCRIPT | base64 -d | /busybox/sh -e']
     depends_on: [all-submodules-check]
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
