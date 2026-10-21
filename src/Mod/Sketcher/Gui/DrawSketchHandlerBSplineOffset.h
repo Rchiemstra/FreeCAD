@@ -6,9 +6,9 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include <QCheckBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -19,7 +19,12 @@
 #include <App/Document.h>
 #include <Base/Exception.h>
 #include <Gui/BitmapFactory.h>
+#include <Gui/Notifications.h>
+#include <Gui/QuantitySpinBox.h>
+#include <Gui/Selection/Selection.h>
+#include <Gui/Selection/SelectionObject.h>
 #include <Mod/Sketcher/App/BSplineOffset.h>
+#include <Mod/Sketcher/App/Sketch.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 
 #include "DrawSketchHandler.h"
@@ -31,9 +36,41 @@ namespace SketcherGui
 class DrawSketchHandlerBSplineOffset: public DrawSketchHandler
 {
 public:
-    explicit DrawSketchHandlerBSplineOffset(int sourceId)
-        : sourceId(sourceId)
-    {}
+    explicit DrawSketchHandlerBSplineOffset(Sketcher::SketchObject& sketch, int sourceId)
+        : sourceTag(sketch.getGeometry(sourceId)->getTag())
+        , savedSelection(Gui::Selection().getSelectionEx())
+    {
+        const auto* curve = sketch.getGeometry<Part::GeomBSplineCurve>(sourceId);
+        // Reject excessive input before copying, even at activation. Keep this
+        // baseline across preview updates so source edits never silently retarget.
+        if (Sketcher::checkBSplineOffsetInput(*curve) == Sketcher::BSplineOffsetStatus::Success) {
+            sourceCopy.reset(static_cast<Part::GeomBSplineCurve*>(curve->clone()));
+        }
+    }
+
+    void quit() override
+    {
+        // purgeHandler destroys this handler and then clears the selection.
+        const auto selection = savedSelection;
+        DrawSketchHandler::quit();
+        restoreSelection(selection);
+    }
+
+    void deactivate() override
+    {
+        // The base implementation solves/recomputes the document even on Cancel.
+        // This snapshot tool has no pending document changes to flush.
+        abortCommand();
+        Gui::ToolHandler::deactivate();
+        clearEdit();
+        clearEditMarkers();
+        clearLineExtensionAutoConstraintHintDrawing();
+        resetParallelPerpendicularHint();
+        resetPositionText();
+        setAngleSnapping(false);
+        exiting = true;
+        signalToolChanged();
+    }
 
     void mouseMove(SnapManager::SnapHandle) override
     {}
@@ -49,9 +86,16 @@ public:
     }
 
 private:
+    void preActivated() override
+    {
+        // Numeric-only input needs neither the origin marker nor disabled
+        // constraint picking. Leave both alone, matching our mutation-free exit.
+        signalToolChanged();
+    }
+
     std::string getToolName() const override
     {
-        return "DSH_BSplineOffset";
+        return exiting ? "DSH_None" : "DSH_BSplineOffset";
     }
 
     bool isWidgetVisible() const override
@@ -83,21 +127,37 @@ private:
         description->setWordWrap(true);
         layout->addWidget(description);
         auto form = new QFormLayout();
-        auto distance = new QDoubleSpinBox(panel.get());
+        auto distance = new Gui::QuantitySpinBox(panel.get());
         distance->setObjectName(QStringLiteral("BSplineOffsetDistance"));
         distance->setDecimals(7);
         distance->setRange(-1e9, 1e9);
-        distance->setSuffix(QObject::tr(" mm"));
+        distance->setUnit(Base::Unit::Length);
         distance->setValue(1.0);
         form->addRow(QObject::tr("Signed distance"), distance);
-        auto tolerance = new QDoubleSpinBox(panel.get());
+        auto tolerance = new Gui::QuantitySpinBox(panel.get());
         tolerance->setObjectName(QStringLiteral("BSplineOffsetTolerance"));
         tolerance->setDecimals(7);
         tolerance->setRange(0.0, 1e9);
-        tolerance->setSuffix(QObject::tr(" mm"));
+        tolerance->setUnit(Base::Unit::Length);
         tolerance->setValue(0.01);
         form->addRow(QObject::tr("Tolerance"), tolerance);
         layout->addLayout(form);
+        const Sketcher::BSplineOffsetOptions limits;
+        auto limitText = new QLabel(
+            QObject::tr("Limits: %1 input poles, %2 output poles, %3 spans, output degree %4 "
+                        "(input degree 14), %5 validation spans, refinement depth %6. "
+                        "Tolerance must be at least %7 and less than half the distance.")
+                .arg(limits.maxInputPoles)
+                .arg(limits.maxOutputPoles)
+                .arg(limits.maxSegments)
+                .arg(limits.maxDegree)
+                .arg(limits.maxValidationSpans)
+                .arg(limits.maxRefinementDepth)
+                .arg(lengthText(1e-7)),
+            panel.get()
+        );
+        limitText->setWordWrap(true);
+        layout->addWidget(limitText);
         auto reverse = new QCheckBox(QObject::tr("Reverse side"), panel.get());
         reverse->setObjectName(QStringLiteral("BSplineOffsetReverse"));
         layout->addWidget(reverse);
@@ -119,8 +179,7 @@ private:
         return panel;
     }
 
-    template<class T>
-    T* control(const char* name) const
+    template<class T> T* control(const char* name) const
     {
         return toolwidget->findChild<T*>(QString::fromLatin1(name));
     }
@@ -135,14 +194,13 @@ private:
         }
         auto invalidate = [this]() {
             preview = {};
-            sourceCopy.reset();
             clearEdit();
             setStatus(QObject::tr("Inputs changed. Press Update preview."));
         };
         for (const char* name : {"BSplineOffsetDistance", "BSplineOffsetTolerance"}) {
             QObject::connect(
-                control<QDoubleSpinBox>(name),
-                qOverload<double>(&QDoubleSpinBox::valueChanged),
+                control<Gui::QuantitySpinBox>(name),
+                qOverload<double>(&Gui::QuantitySpinBox::valueChanged),
                 connections.get(),
                 invalidate
             );
@@ -178,13 +236,69 @@ private:
         control<QLabel>("BSplineOffsetStatus")->setText(message);
     }
 
+    static void restoreSelection(const std::vector<Gui::SelectionObject>& selection)
+    {
+        Gui::Selection().clearSelection();
+        for (const auto& item : selection) {
+            Gui::Selection().addSelection(item);
+        }
+    }
+
     const Part::GeomBSplineCurve* source()
     {
-        auto sketch = getSketchObject();
-        if (sourceId < 0 || sourceId >= sketch->Geometry.getSize()) {
-            return nullptr;
+        for (const auto* geometry : getSketchObject()->Geometry.getValues()) {
+            if (geometry->getTag() == sourceTag) {
+                return dynamic_cast<const Part::GeomBSplineCurve*>(geometry);
+            }
         }
-        return dynamic_cast<const Part::GeomBSplineCurve*>(sketch->getGeometry(sourceId));
+        return nullptr;
+    }
+
+    static QString lengthText(double value)
+    {
+        Base::Quantity quantity(value, Base::Unit::Length);
+        quantity.setFormat(Base::QuantityFormat(Base::QuantityFormat::Scientific, 7));
+        return QString::fromStdString(quantity.getSafeUserString());
+    }
+
+    static QString statusMessage(Sketcher::BSplineOffsetStatus status)
+    {
+        using Status = Sketcher::BSplineOffsetStatus;
+        switch (status) {
+            case Status::Success:
+                return QObject::tr(
+                    "Independent approximate B-spline offset verified within tolerance."
+                );
+            case Status::InvalidOptions:
+                return QObject::tr(
+                           "Use finite distance and tolerance at least %1 and less than half "
+                           "the absolute distance."
+                )
+                    .arg(lengthText(1e-7));
+            case Status::UnsupportedCurve:
+                return QObject::tr("Select one finite, planar, open, nonperiodic C2 B-spline with "
+                                   "positive weights.");
+            case Status::ComplexityExceeded:
+                return QObject::tr("The spline exceeds the displayed complexity limits; simplify "
+                                   "it or relax tolerance.");
+            case Status::ZeroTangent:
+                return QObject::tr("A zero tangent or unresolved regularity prevents this offset.");
+            case Status::SingularOffset:
+                return QObject::tr("A singular offset cannot be excluded; reduce the distance.");
+            case Status::SelfIntersection:
+                return QObject::tr(
+                    "Offset crossing or near-contact cannot be excluded; reduce the distance."
+                );
+            case Status::VerificationFailed:
+                return QObject::tr(
+                    "The offset error could not be bounded within tolerance; relax tolerance."
+                );
+            case Status::ApproximationFailed:
+                return QObject::tr(
+                    "Unable to fit the offset within tolerance and complexity limits."
+                );
+        }
+        return QObject::tr("Unable to compute the B-spline offset.");
     }
 
     static bool sameSource(const Part::GeomBSplineCurve& a, const Part::GeomBSplineCurve& b)
@@ -210,21 +324,48 @@ private:
         try {
             const auto* current = source();
             if (!current) {
-                throw std::runtime_error(
-                    QObject::tr("The selected B-spline is no longer available.").toStdString()
+                Gui::NotifyUserError(
+                    getSketchObject(),
+                    QT_TRANSLATE_NOOP("Notifications", "B-spline offset cancelled"),
+                    QT_TRANSLATE_NOOP("Notifications", "The selected B-spline was removed or changed.")
                 );
+                quit();
+                return false;
             }
             Sketcher::BSplineOffsetOptions options;
-            options.distance = control<QDoubleSpinBox>("BSplineOffsetDistance")->value();
-            options.tolerance = control<QDoubleSpinBox>("BSplineOffsetTolerance")->value();
+            options.distance = control<Gui::QuantitySpinBox>("BSplineOffsetDistance")->rawValue();
+            options.tolerance = control<Gui::QuantitySpinBox>("BSplineOffsetTolerance")->rawValue();
             if (control<QCheckBox>("BSplineOffsetReverse")->isChecked()) {
                 options.distance = -options.distance;
             }
-            if (!preview.curve || !sourceCopy || !sameSource(*current, *sourceCopy)
-                || options.distance != previewDistance || options.tolerance != previewTolerance) {
+            const auto check = Sketcher::checkBSplineOffsetInput(*current, options);
+            if (!control<Gui::QuantitySpinBox>("BSplineOffsetDistance")->hasValidInput()
+                || !control<Gui::QuantitySpinBox>("BSplineOffsetTolerance")->hasValidInput()) {
+                fail(statusMessage(Sketcher::BSplineOffsetStatus::InvalidOptions));
+                return false;
+            }
+            if (check != Sketcher::BSplineOffsetStatus::Success) {
+                fail(statusMessage(check));
+                return false;
+            }
+            if (sourceCopy && !sameSource(*current, *sourceCopy)) {
+                Gui::NotifyUserError(
+                    getSketchObject(),
+                    QT_TRANSLATE_NOOP("Notifications", "B-spline offset cancelled"),
+                    QT_TRANSLATE_NOOP("Notifications", "The selected B-spline was removed or changed.")
+                );
+                quit();
+                return false;
+            }
+            if (!sourceCopy) {
+                // Oversized input was rejected at activation without a copy.
+                fail(statusMessage(Sketcher::BSplineOffsetStatus::ComplexityExceeded));
+                return false;
+            }
+            if (!preview.curve || options.distance != previewDistance
+                || options.tolerance != previewTolerance) {
                 clearEdit();
                 preview = {};
-                sourceCopy.reset(static_cast<Part::GeomBSplineCurve*>(current->copy()));
                 toolwidget->setProperty(
                     "computationCount",
                     toolwidget->property("computationCount").toInt() + 1
@@ -234,13 +375,13 @@ private:
                 previewTolerance = options.tolerance;
             }
             if (!preview.curve) {
-                setStatus(QObject::tr(preview.message.c_str()));
+                fail(statusMessage(preview.status));
                 return false;
             }
             drawEdit(std::vector<Part::Geometry*> {preview.curve.get()});
-            setStatus(QObject::tr("Achieved maximum error: %1 mm (tolerance: %2 mm)")
-                          .arg(preview.achievedMaxError, 0, 'g', 7)
-                          .arg(options.tolerance, 0, 'g', 7));
+            setStatus(QObject::tr("Achieved maximum error: %1 (tolerance: %2)")
+                          .arg(lengthText(preview.achievedMaxError))
+                          .arg(lengthText(options.tolerance)));
             return true;
         }
         catch (const Standard_Failure& e) {
@@ -261,9 +402,9 @@ private:
     void fail(const QString& message)
     {
         preview = {};
-        sourceCopy.reset();
         clearEdit();
         setStatus(message);
+        restoreSelection(savedSelection);
     }
 
     void apply()
@@ -274,40 +415,59 @@ private:
         }
         bool transactionOpen = false;
         try {
+            auto sketch = getSketchObject();
+            const int resultId = sketch->Geometry.getSize();
+            auto block = std::make_unique<Sketcher::Constraint>();
+            block->Type = Sketcher::Block;
+            block->First = resultId;
+            // Detached solver owns clones, including all external references.
+            // Validate both solves and source/result stability before any transaction.
+            auto geometry = sketch->getCompleteGeometry();
+            geometry.insert(geometry.begin() + resultId, preview.curve.get());
+            auto constraints = sketch->Constraints.getValues();
+            constraints.push_back(block.get());
+            Sketcher::Sketch validation;
+            const int dof
+                = validation.setUpSketch(geometry, constraints, sketch->getExternalGeometryCount());
+            if (dof < 0 || validation.hasConflicts() || validation.hasRedundancies()
+                || validation.hasMalformedConstraints()
+                || validation.solve() != GCS::SolveStatus::Success
+                || validation.solve() != GCS::SolveStatus::Success) {
+                throw std::runtime_error(
+                    QObject::tr("Unable to solve and block the offset curve.").toStdString()
+                );
+            }
+            // Exercise shape generation here as well, without a document recompute.
+            validation.toShape();
+            auto solved = validation.extractGeometry();
+            std::vector<std::unique_ptr<Part::Geometry>> owned;
+            for (auto* curve : solved) {
+                owned.emplace_back(curve);
+            }
+            for (int i = 0; i <= resultId; ++i) {
+                const auto* before = dynamic_cast<const Part::GeomBSplineCurve*>(geometry[i]);
+                const auto* after = dynamic_cast<const Part::GeomBSplineCurve*>(solved.at(i));
+                if (before && (!after || !sameSource(*before, *after))) {
+                    throw std::runtime_error(
+                        QObject::tr("Solving would change a B-spline; solve the sketch first.")
+                            .toStdString()
+                    );
+                }
+            }
             openCommand(QT_TRANSLATE_NOOP("Command", "Approximate B-spline offset"));
             if (currentTransactionID == App::NullTransaction) {
                 throw std::runtime_error(
-                    QObject::tr("Unable to open the offset transaction.").toStdString());
+                    QObject::tr("Unable to open the offset transaction.").toStdString()
+                );
             }
             transactionOpen = true;
-            auto sketch = getSketchObject();
+            // These are the only document mutations. Core clears redo on the
+            // first mutation; an exceptional allocation/add failure must abort,
+            // but cannot restore redo without changing App::Document.
             const int id = sketch->addGeometry(preview.curve.get(), false);
-            if (id < 0) {
-                throw std::runtime_error(QObject::tr("Unable to add the offset curve.").toStdString());
-            }
-            auto block = std::make_unique<Sketcher::Constraint>();
-            block->Type = Sketcher::Block;
-            block->First = id;
-            if (sketch->addConstraint(std::move(block)) < 0
-                || sketch->solve() != Sketcher::SketchSolveStatus::Success
-                || sketch->solve() != Sketcher::SketchSolveStatus::Success) {
+            if (id != resultId || sketch->addConstraint(std::move(block)) < 0) {
                 throw std::runtime_error(
-                    QObject::tr("Unable to block and solve the offset curve.").toStdString()
-                );
-            }
-            if (!source() || !sameSource(*source(), *sourceCopy)) {
-                throw std::runtime_error(
-                    QObject::tr("The source changed while applying the offset.").toStdString()
-                );
-            }
-            bool recomputeError = false;
-            sketch->getDocument()->recompute({sketch}, false, &recomputeError);
-            if (recomputeError || sketch->isError() || !source()
-                || !sameSource(*source(), *sourceCopy)
-                || !sameSource(*sketch->getGeometry<Part::GeomBSplineCurve>(id), *preview.curve)) {
-                throw std::runtime_error(
-                    QObject::tr("Unable to recompute the offset without changing the source.")
-                        .toStdString()
+                    QObject::tr("Unable to add and block the offset curve.").toStdString()
                 );
             }
             commitCommand();
@@ -341,10 +501,13 @@ private:
             fail(QObject::tr("Unable to apply the B-spline offset."));
             return;
         }
-        quit();
+        // No document solve/recompute is needed: the detached validation is complete.
+        DrawSketchHandler::quit();
     }
 
-    const int sourceId;
+    bool exiting = false;
+    const boost::uuids::uuid sourceTag;
+    const std::vector<Gui::SelectionObject> savedSelection;
     std::unique_ptr<QObject> connections;
     std::unique_ptr<Part::GeomBSplineCurve> sourceCopy;
     Sketcher::BSplineOffsetResult preview;
