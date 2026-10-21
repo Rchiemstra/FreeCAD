@@ -111,12 +111,64 @@ class ModelDiffGuiTests(unittest.TestCase):
                 self.assertTrue(job.result.identical)
                 job = Diff.compare_objects_async(self.local, self.remote, "Box")
                 _pump_gui_until(lambda: job.done, 60)
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            self.assertTrue(job.done)
             self.assertIsNone(job.error)
             self.assertTrue(job.result.identical)
             self.assertEqual({visual.name for visual in job.result.visuals}, {"Box"})
             self.assertGreaterEqual(len(ticks), 2)
         finally:
             timer.stop()
+
+    def test_async_job_is_destroyed_on_gui_thread(self):
+        import threading
+
+        from PySide import QtCore
+        from Test.GuiRecompute import _pump_gui_until
+
+        self.box()
+        self.save()
+        self.save(True)
+        decoded, release = threading.Event(), threading.Event()
+        threads, destroyed = [], []
+        original_thread = threading.Thread
+        gui_thread = threading.get_ident()
+
+        def decoder_thread(*, target, daemon):
+            def decode():
+                try:
+                    target()
+                finally:
+                    decoded.set()
+                    # Retain the decoder's job reference after emitting its
+                    # queued signal, until the GUI caller has dropped theirs.
+                    release.wait(60)
+
+            thread = original_thread(target=decode, daemon=daemon)
+            threads.append(thread)
+            return thread
+
+        def job_destroyed():
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            return bool(destroyed)
+
+        try:
+            with patch("threading.Thread", new=decoder_thread):
+                job = Diff.compare_files_async(self.local, self.remote)
+                job.destroyed.connect(
+                    lambda: destroyed.append(threading.get_ident()),
+                    QtCore.Qt.DirectConnection,
+                )
+                _pump_gui_until(lambda: job.done and decoded.is_set(), 60)
+                self.assertIsNone(job.error, str(job.error))
+                del job
+                release.set()
+                _pump_gui_until(job_destroyed, 10)
+            self.assertEqual(destroyed, [gui_thread])
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(timeout=10)
 
     def test_colours_groups_and_faint_common(self):
         self.assertIn("TestModelDiffGui", App.__unit_test__)

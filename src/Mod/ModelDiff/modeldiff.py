@@ -941,7 +941,10 @@ def _start_comparison(local, remote, *, pair=None, show=False, cli=False):
                 App.Console.PrintError(str(error) + "\n")
             self.finished.emit()
             _jobs.discard(self)
-            self.setParent(None)
+            # The decoder may release its last reference after finish() returns.
+            # Keep the main window as owner so that release never destroys Qt
+            # objects there; destruction is scheduled on the owning GUI thread.
+            self.deleteLater()
             if cli and error is not None and not self.cancelled:
                 QtCore.QCoreApplication.exit(1)
 
