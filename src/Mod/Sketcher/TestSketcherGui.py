@@ -11,6 +11,7 @@ from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
 from SketcherTests.TestViewSectionGui import TestViewSectionGui
 
 from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
+from SketcherTests.TestSketchEditCleanGui import TestSketchEditCleanGui
 
 # Use the module so that code checkers don't complain (flake8)
 (
@@ -26,5 +27,6 @@ from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepair
     and TestVisualLayerListGui
     and TestViewSectionGui
     and TestSketchReferenceRepairGui
+    and TestSketchEditCleanGui
     else False
 )
