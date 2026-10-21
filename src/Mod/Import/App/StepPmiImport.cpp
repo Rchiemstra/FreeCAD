@@ -2,6 +2,7 @@
 #include "StepPmiImport.h"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -267,6 +268,7 @@ Py::Dict toPython(const StepPmiRecord& record)
     data["hasValue"] = Py::Boolean(record.hasValue);
     data["hasBounds"] = Py::Boolean(record.hasBounds);
     data["hasDeviations"] = Py::Boolean(record.hasDeviations);
+    data["deviationStatus"] = Py::String(record.deviationStatus);
     data["lower"] = Py::Float(record.lower);
     data["upper"] = Py::Float(record.upper);
     data["datumPosition"] = Py::Long(record.datumPosition);
@@ -314,67 +316,82 @@ bool StepPmiImport::enabled(const Base::FileInfo& file, int override)
                 : override != 0);
 }
 
-void StepPmiImport::finish(
-    const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
-    App::Document* target, bool supportedAssociation) const
+void StepPmiImport::warn(const Base::FileInfo& file) noexcept
 {
-    // Geometry already exists. Roll back only objects added by materialisation,
-    // including a helper that raises after creating part of the PMI group.
-    std::set<std::string> existing;
-    for (auto object : target->getObjects()) {
-        existing.insert(object->getNameInDocument());
-    }
     try {
-        materialize(target, extract(source, target, supportedAssociation));
-        return;
+        PyErr_Clear();
+        Base::Console().warning("STEP PMI: could not import semantic PMI from '{}'; geometry kept.\n",
+                                file.filePath());
     }
     catch (...) {
-        // PyCXX exceptions leave the Python error indicator set.
-        PyErr_Clear();
+        // Diagnostics must never turn a successful geometry import into a failure.
     }
-    std::vector<std::string> added;
-    for (auto object : target->getObjects()) {
-        if (!existing.count(object->getNameInDocument())) {
-            added.emplace_back(object->getNameInDocument());
+}
+
+std::unique_ptr<StepPmiImport> StepPmiImport::create(const Base::FileInfo& file, int override) noexcept
+{
+    try {
+        if (enabled(file, override)) {
+            return std::make_unique<StepPmiImport>();
         }
     }
-    for (auto it = added.rbegin(); it != added.rend(); ++it) {
-        target->removeObject(it->c_str());
+    catch (...) {
+        warn(file);
     }
-    Base::Console().warning("STEP PMI: could not import semantic PMI from '{}'; geometry kept.\n",
-                            file.filePath());
+    return nullptr;
+}
+
+void StepPmiImport::finish(
+    const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
+    App::Document* target, bool supportedAssociation) const noexcept
+{
+    try {
+        if (failed) {
+            throw std::runtime_error("Could not collect STEP PMI associations");
+        }
+        // StepPmi.create owns its explicit object list and rolls it back itself.
+        // A document snapshot cannot distinguish PMI from objects added by observers.
+        materialize(target, extract(source, target, supportedAssociation));
+    }
+    catch (...) {
+        warn(file);
+    }
 }
 
 ShapeImportObserver StepPmiImport::observer()
 {
     return [this](const TDF_Label& label, const TopoDS_Shape& shape, App::DocumentObject* object) {
-        if (label.IsNull() || shape.IsNull() || !object) {
-            return;
-        }
-        // The legacy traversal also visits auxiliary labels (views/clips). Exclude those.
-        const auto shapeTable = XCAFDoc_DocumentTool::ShapesLabel(label);
-        auto parent = label;
-        while (!parent.IsNull() && parent != shapeTable) {
-            parent = parent.Father();
-        }
-        if (parent.IsNull()) {
-            return;
-        }
-        const auto id = entry(label);
-        for (const auto& existing : associations) {
-            if (existing.label == id && existing.document == object->getDocument()
-                && existing.objectName == object->getNameInDocument()
-                && existing.shape.IsSame(shape)) {
+        try {
+            if (failed || label.IsNull() || shape.IsNull() || !object) {
                 return;
             }
+            // The legacy traversal also visits auxiliary labels (views/clips). Exclude those.
+            const auto shapeTable = XCAFDoc_DocumentTool::ShapesLabel(label);
+            auto parent = label;
+            while (!parent.IsNull() && parent != shapeTable) {
+                parent = parent.Father();
+            }
+            if (parent.IsNull()) {
+                return;
+            }
+            const auto id = entry(label);
+            auto& shapes = associationIndex[{id, object->getDocument(), object->getNameInDocument()}];
+            if (shapes.Contains(shape)) {
+                return;
+            }
+            shapes.Add(shape);
+            associations.push_back(
+                {id,
+                 shape,
+                 object->getDocument(),
+                 object->getNameInDocument(),
+                 XCAFDoc_ShapeTool::IsReference(label), {}, {}}
+            );
         }
-        associations.push_back(
-            {id,
-             shape,
-             object->getDocument(),
-             object->getNameInDocument(),
-             XCAFDoc_ShapeTool::IsReference(label)}
-        );
+        catch (...) {
+            // Bookkeeping runs inside geometry conversion. Defer its failure to finish().
+            failed = true;
+        }
     };
 }
 
@@ -409,8 +426,11 @@ StepPmiReference StepPmiImport::resolve(
         if (!object) {
             continue;
         }
-        TopTools_IndexedMapOfShape originalMap;
-        TopExp::MapShapes(candidate.shape, type, originalMap);
+        auto original = candidate.originalMaps.try_emplace(type);
+        auto& originalMap = original.first->second;
+        if (original.second) {
+            TopExp::MapShapes(candidate.shape, type, originalMap);
+        }
         if (candidate.occurrence) {
             // A definition-level label does not select a placed assembly occurrence.
             // Partner checks here only reject ambiguity; they never establish a reference.
@@ -438,12 +458,15 @@ StepPmiReference StepPmiImport::resolve(
             matches.emplace(candidate.objectName, "");
             continue;
         }
-        TopTools_IndexedMapOfShape actualMap;
         const int index = originalMap.FindIndex(shape);
         if (!index || type >= TopAbs_SHAPE) {
             continue;
         }
-        TopExp::MapShapes(actual, type, actualMap);
+        auto mapped = candidate.actualMaps.try_emplace(type);
+        auto& actualMap = mapped.first->second;
+        if (mapped.second) {
+            TopExp::MapShapes(actual, type, actualMap);
+        }
         const auto delta = actual.Location() * candidate.shape.Location().Inverted();
         if (index <= actualMap.Extent() && actualMap(index).IsSame(shape.Moved(delta))) {
             matches.emplace(candidate.objectName, std::string(names[type]) + std::to_string(index));
@@ -526,11 +549,35 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
                 if (record.hasBounds) {
                     record.lower = object->GetLowerBound();
                     record.upper = object->GetUpperBound();
+                    if (record.lower > record.upper
+                        || lostUpperBounds.count({record.unit, std::abs(record.upper)})) {
+                        // A negative upper deviation can make OCCT return two values,
+                        // not three. Its missing magnitude prevents a verified match.
+                        record.hasBounds = false;
+                        record.hasValue = false;
+                        record.value = 0;
+                        record.deviationStatus = "uninterpreted magnitudes; source semantics unavailable";
+                        record.warnings.emplace_back("OCCT range may have lost a negative upper "
+                            "deviation, or has reversed bounds; raw magnitudes preserved without "
+                            "asserting a nominal value, absolute bounds or signed deviations");
+                        record.lower = record.upper = 0;
+                    }
                 }
                 else if (record.hasDeviations) {
-                    // XCAF stores the lower tolerance as a magnitude.
-                    record.lower = -object->GetLowerTolValue();
-                    record.upper = object->GetUpperTolValue();
+                    record.lower = std::abs(object->GetLowerTolValue());
+                    record.upper = std::abs(object->GetUpperTolValue());
+                    const auto found = signedBounds.find({record.unit, record.lower, record.upper});
+                    if (found != signedBounds.end() && !found->second.conflicting) {
+                        record.lower = found->second.lower;
+                        record.upper = found->second.upper;
+                        record.deviationStatus = "signed source values (exact magnitude match)";
+                    }
+                    else {
+                        record.hasDeviations = false;
+                        record.deviationStatus = "magnitudes only; signs unknown";
+                        record.warnings.emplace_back("Deviation signs unavailable: no unambiguous exact "
+                                                     "source magnitude match; stored magnitudes only");
+                    }
                 }
             }
             modifiers(object->GetModifiers(), dimensionModifNames, record);
@@ -664,15 +711,12 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
         references(label, record);
         records.push_back(std::move(record));
     }
-    for (auto& record : records) {
-        record.warnings.insert(record.warnings.end(), sourceWarnings.begin(), sourceWarnings.end());
-    }
     return records;
 }
 
-void StepPmiImport::materialize(App::Document* target, const std::vector<StepPmiRecord>& records)
+void StepPmiImport::materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const
 {
-    if (records.empty()) {
+    if (records.empty() && sourceWarnings.empty()) {
         return;
     }
     Py::List data;
@@ -680,9 +724,10 @@ void StepPmiImport::materialize(App::Document* target, const std::vector<StepPmi
         data.append(toPython(record));
     }
     Py::Module module(PyImport_ImportModule("StepPmi"), true);
-    Py::Tuple args(2);
+    Py::Tuple args(3);
     args.setItem(0, Py::asObject(target->getPyObject()));
     args.setItem(1, data);
+    args.setItem(2, strings(sourceWarnings));
     Py::Callable(module.getAttr("create")).apply(args);
 }
 }  // namespace Import

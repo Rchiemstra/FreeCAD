@@ -231,9 +231,8 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
-            const bool readPmi = Import::StepPmiImport::enabled(
+            auto pmi = Import::StepPmiImport::create(
                 file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
-            Import::StepPmiImport pmi;
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -326,7 +325,9 @@ private:
                         pi = new Part::ProgressIndicator();
                     }
                     Import::ReaderStep reader(file);
-                    reader.setReadSemanticPmi(readPmi, &pmi);
+                    if (pmi) {
+                        reader.setReadSemanticPmi(true, pmi.get());
+                    }
 #if OCC_VERSION_HEX >= 0x070800
                     reader.setCodePage(cp);
 #endif
@@ -382,12 +383,12 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
-            if (readPmi) {
-                ocaf.setShapeObserver(pmi.observer());
+            if (pmi) {
+                pmi->attach(ocaf);
             }
             auto ret = ocaf.loadShapes();
-            if (readPmi) {
-                pmi.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
+            if (pmi) {
+                pmi->finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
             }
             hApp->Close(hDoc);
 

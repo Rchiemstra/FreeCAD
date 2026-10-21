@@ -59,6 +59,13 @@ set(Import_PmiFixtures
     TestData/StepPmi/semantic.step
     TestData/StepPmi/independent-inch.step
     TestData/StepPmi/unmapped-modifier.step
+    TestData/StepPmi/positive-deviations.step
+    TestData/StepPmi/negative-deviations.step
+    TestData/StepPmi/absolute-range.step
+    TestData/StepPmi/conflicting-signs.step
+    TestData/StepPmi/unmatched-signs.step
+    TestData/StepPmi/placed-instances.step
+    TestData/StepPmi/shared-compartment.step
     TestData/StepPmi/generate.tcl
     TestData/StepPmi/README.txt
 )

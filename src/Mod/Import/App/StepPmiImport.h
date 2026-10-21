@@ -3,6 +3,9 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <set>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,6 +13,7 @@
 #include <TDF_Label.hxx>
 #include <TDocStd_Document.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <Mod/Import/ImportGlobal.h>
 
 class StepData_StepModel;
@@ -53,6 +57,7 @@ struct StepPmiRecord
     bool hasValue = false;
     bool hasBounds = false;
     bool hasDeviations = false;
+    std::string deviationStatus;
     double lower = 0;
     double upper = 0;
     int datumPosition = 0;
@@ -71,8 +76,19 @@ class ImportExport StepPmiImport
 public:
     // override: -1 uses the default-off preference, 0/1 explicitly disables/enables.
     static bool enabled(const Base::FileInfo& file, int override = -1);
+    static std::unique_ptr<StepPmiImport> create(const Base::FileInfo& file, int override) noexcept;
+    template<class Converter>
+    void attach(Converter& converter) noexcept
+    {
+        try {
+            converter.setShapeObserver(observer());
+        }
+        catch (...) {
+            failed = true;
+        }
+    }
     void finish(const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
-                App::Document* target, bool supportedAssociation) const;
+                App::Document* target, bool supportedAssociation) const noexcept;
     void captureReadWarnings(const Handle(StepData_StepModel)& model) noexcept;
     ShapeImportObserver observer();
     std::vector<StepPmiRecord> extract(
@@ -80,7 +96,7 @@ public:
         App::Document* target,
         bool supportedAssociation
     ) const;
-    static void materialize(App::Document* target, const std::vector<StepPmiRecord>& records);
+    void materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const;
 
 private:
     struct Association
@@ -90,8 +106,24 @@ private:
         App::Document* document;
         std::string objectName;
         bool occurrence;
+        mutable std::map<int, TopTools_IndexedMapOfShape> originalMaps;
+        mutable std::map<int, TopTools_IndexedMapOfShape> actualMaps;
     };
     std::vector<Association> associations;
+    using AssociationKey = std::tuple<std::string, App::Document*, std::string>;
+    std::map<AssociationKey, TopTools_IndexedMapOfShape> associationIndex;
+    struct SignedBounds
+    {
+        double lower;
+        double upper;
+        bool conflicting = false;
+    };
+    using BoundsKey = std::tuple<std::string, double, double>;
+    std::map<BoundsKey, SignedBounds> signedBounds;
+    std::set<std::pair<std::string, double>> lostUpperBounds;
+    void captureSignedBounds(const Handle(StepData_StepModel)& model);
+    bool failed = false;
+    static void warn(const Base::FileInfo& file) noexcept;
     std::vector<std::string> sourceWarnings;
     bool sourceWarningsFailed = false;
     static std::vector<std::string> readWarnings(const Handle(StepData_StepModel)& model);

@@ -2,6 +2,7 @@
 #include "StepPmiImport.h"
 
 #include <Interface_Check.hxx>
+#include <Interface_EntityIterator.hxx>
 #include <Interface_ReportEntity.hxx>
 #include <Interface_UndefinedContent.hxx>
 #include <StepData_StepModel.hxx>
@@ -39,6 +40,7 @@ void StepPmiImport::captureReadWarnings(const Handle(StepData_StepModel)& model)
     // owned strings while it is alive; even its model handle cannot retain them.
     try {
         sourceWarnings = readWarnings(model);
+        captureSignedBounds(model);
     }
     catch (...) {
         // Defer failure until extraction, after geometry conversion has finished.
@@ -55,8 +57,8 @@ std::vector<std::string> StepPmiImport::readWarnings(
     }
     // XCAF cannot retain unknown STEP enumeration literals. Use OCCT's owned
     // error content, not a second STEP text parser, to keep those codes visible.
-    for (int i = 1; i <= sourceModel->NbEntities(); ++i) {
-        const auto report = sourceModel->ReportEntity(i);
+    for (auto reports = sourceModel->Reports(); reports.More(); reports.Next()) {
+        const auto report = Handle(Interface_ReportEntity)::DownCast(reports.Value());
         if (report.IsNull() || !report->Check()->HasFailed()) {
             continue;
         }
@@ -70,7 +72,7 @@ std::vector<std::string> StepPmiImport::readWarnings(
             enumLiterals(entity, codes);
             if (!codes.empty()) {
                 warnings.push_back("File-level unmapped STEP modifier data in #"
-                    + std::to_string(sourceModel->IdentLabel(sourceModel->Value(i))) + ": "
+                    + std::to_string(sourceModel->IdentLabel(report->Concerned())) + ": "
                     + codes + "; OCCT could not decode " + type
                     + ". Imported modifiers may be incomplete.");
             }

@@ -512,7 +512,9 @@ App::DocumentObject* ImportOCAF2::loadShapes()
     if (!options.useLinkGroup) {
         ImportLegacy legacy(*this);
         legacy.setMerge(options.merge);
-        legacy.setShapeObserver(shapeObserver);
+        if (shapeObserver) {
+            legacy.setShapeObserver(std::move(shapeObserver));
+        }
         legacy.loadShapes();
         return nullptr;
     }

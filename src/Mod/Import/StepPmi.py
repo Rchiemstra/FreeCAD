@@ -3,6 +3,7 @@
 
 Import.open/insert(..., semanticPMI=True) overrides the default-off preference
 BaseApp/Preferences/Mod/Import/ImportSemanticPMI. False explicitly disables it.
+Off leaves OCCT's own default GDT mode unchanged (default-on in OCCT 7.6).
 These objects need neither a proxy class nor the original STEP file to restore.
 Values are normalised by OCCT (mm, or degrees for angular dimensions).
 RawMetadata schema 1 stores unpresented fields and reference roles/source labels;
@@ -35,6 +36,11 @@ def _summary(record, datums):
         result += f" {record['value']:g} {unit}"
     if record["hasDeviations"]:
         result += f", {record['lower']:+g}/{record['upper']:+g} {unit}"
+    if record.get("deviationStatus") == "magnitudes only; signs unknown":
+        result += f", deviation magnitudes {record['lower']:g}/{record['upper']:g} {unit} (signs unknown)"
+    if record.get("deviationStatus") == "uninterpreted magnitudes; source semantics unavailable":
+        magnitudes = "/".join(f"{abs(value):g}" for value in record["values"])
+        result += f", uninterpreted magnitudes {magnitudes} {unit} (source semantics unavailable)"
     if record["hasBounds"]:
         result += f", bounds {record['lower']:g} to {record['upper']:g} {unit}"
     if datums:
@@ -44,9 +50,9 @@ def _summary(record, datums):
     return result.strip()
 
 
-def create(document, records):
+def create(document, records, warnings=()):
     """Materialise owned extraction records using ordinary native properties only."""
-    if not records:
+    if not records and not warnings:
         return None
     created = []
     try:
@@ -54,6 +60,10 @@ def create(document, records):
         created.append(group.Name)
         group.Label = "STEP PMI"
         _property(group, "Integer", "MetadataVersion", 1, "Raw metadata schema version")
+        _property(group, "StringList", "Warnings", list(warnings), "File-level STEP reader warnings")
+        _property(group, "String", "RawMetadata", json.dumps(
+            {"schemaVersion": 1, "warnings": list(warnings)}, ensure_ascii=False, sort_keys=True
+        ), "File-level reader metadata; independent of the STEP source file")
         objects = {}
         counts = {}
         for record in records:
@@ -78,6 +88,17 @@ def create(document, records):
             _property(obj, "Bool", "HasValue", record["hasValue"], "A numeric value is present")
             if record["hasValue"]:
                 _property(obj, "Float", "Value", record["value"], "Nominal value in Units")
+            _property(obj, "String", "DeviationStatus", record.get("deviationStatus", ""),
+                      "Whether deviation signs were verified against the STEP source")
+            if record.get("deviationStatus") == "magnitudes only; signs unknown":
+                _property(obj, "Float", "LowerDeviationMagnitude", record["lower"],
+                          "Unsigned lower deviation magnitude")
+                _property(obj, "Float", "UpperDeviationMagnitude", record["upper"],
+                          "Unsigned upper deviation magnitude")
+            if record.get("deviationStatus") == "uninterpreted magnitudes; source semantics unavailable":
+                _property(obj, "FloatList", "UninterpretedMagnitudes",
+                          [abs(value) for value in record["values"]],
+                          "OCCT magnitudes; cannot distinguish a range from lost tolerance data")
             _property(obj, "Bool", "HasDeviations", record["hasDeviations"], "Signed deviations are present")
             if record["hasDeviations"]:
                 _property(obj, "Float", "LowerDeviation", record["lower"], "Signed lower deviation in Units")
@@ -128,5 +149,9 @@ def create(document, records):
         return group
     except Exception:
         for name in reversed(created):
-            document.removeObject(name)
+            try:
+                document.removeObject(name)
+            except Exception:
+                # Continue attempting every owned object even if a removal observer fails.
+                pass
         raise
