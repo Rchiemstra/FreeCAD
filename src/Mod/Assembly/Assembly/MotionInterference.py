@@ -11,6 +11,7 @@ import threading
 
 import FreeCAD as App
 import AssemblyApp
+from PySide import QtCore
 
 from .api import _require_assembly
 
@@ -218,51 +219,75 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                   message="no finding at the sampled poses")
     tolerance = 1e-6
 
+    def write(callback):
+        # Permission is limited to synchronous controller-owned writes. Event
+        # delivery, scans and user progress callbacks run with admission closed.
+        return AssemblyApp._withMotionSweepMutation(assembly, callback)
+
     def run():
         created = []
         original_clearance = assembly.InterferenceClearance.Value
         previous_contact_clear = previous_requirement_clear = None
+
+        def remove_drivers():
+            for name in reversed(created):
+                assembly.Document.removeObject(name)
+            created.clear()
+
+        def generate(low, high, segments):
+            try:
+                sim = _driver(assembly.Document, joint, low, high, segments, unit, created)
+                code = assembly.generateSimulation(sim)
+                if code != 0:
+                    raise RuntimeError(f"Simulation generation failed ({code})")
+                frames = assembly.numberOfFrames()
+                if frames < 2:
+                    raise RuntimeError("Simulation did not cover the requested end endpoint")
+                if frames > segments + 3:
+                    raise RuntimeError("Simulation returned an unexpected frame count")
+                return frames
+            finally:
+                remove_drivers()
+
+        def poses(low, high, segments):
+            # Keep the native solver call short. All solving and document access
+            # stays on this thread; no complete trajectory precedes the first scan.
+            for offset in range(0, segments, 8):
+                QtCore.QCoreApplication.processEvents()
+                if cancel.cancelled:
+                    return
+                size = min(8, segments - offset)
+                first = low + (high - low) * offset / segments
+                last = low + (high - low) * (offset + size) / segments
+                frames = write(lambda: generate(first, last, size))
+                # Frame 0 is unsolved INPUT, frame 1 is the solved start.
+                for frame in range(1, frames):
+                    QtCore.QCoreApplication.processEvents()
+                    if cancel.cancelled:
+                        return
+                    write(lambda: assembly.updateForFrame(frame))
+                    yield frame
+
         try:
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled before simulation")
                 return
-            assembly.InterferenceClearance = requirement
+            write(lambda: setattr(assembly, "InterferenceClearance", requirement))
             if unit == "deg":
                 current = _coordinate(joint, unit)
                 delta = math.remainder(start - current, 360)
                 if abs(delta) > 45:
-                    # The native rotational driver has two direction-cosine
-                    # branches. Initialize near the requested branch through
-                    # the existing simulation path, rather than allowing a
-                    # large initial-condition jump to choose its opposite.
-                    # Only the solved seed endpoint is applied to the document;
-                    # these initialization frames are outside sweep coverage.
-                    seed = _driver(assembly.Document, joint, current, current + delta,
-                                   math.ceil(abs(delta) / 30), unit, created)
-                    code = assembly.generateSimulation(seed)
-                    if code != 0 or assembly.numberOfFrames() < 2:
-                        raise RuntimeError("Simulation could not initialize the angular start")
-                    assembly.updateForFrame(assembly.numberOfFrames() - 1)
-                    if abs(math.remainder(_coordinate(joint, unit) - start, 360)) > tolerance:
+                    # Initialize the rotational driver's direction-cosine branch
+                    # in small steps. These seed poses are outside sweep coverage.
+                    for _ in poses(current, current + delta, math.ceil(abs(delta) / 30)):
+                        pass
+                    if not cancel.cancelled and abs(
+                            math.remainder(_coordinate(joint, unit) - start, 360)) > tolerance:
                         raise RuntimeError("Simulation could not solve the angular start branch")
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled during initialization")
                 return
-            sim = _driver(assembly.Document, joint, start, end, count, unit, created)
-            code = assembly.generateSimulation(sim)
-            if code != 0:
-                raise RuntimeError(f"Simulation generation failed ({code})")
-            frames = assembly.numberOfFrames()
-            if frames > count + 3:
-                raise RuntimeError("Simulation returned an unexpected frame count")
-            # Ondsel System::runKINEMATIC outputs INPUT before solving initial
-            # conditions. Frame 0 is the document's unsolved input, not a sample;
-            # frame 1 is the actual solved start, even for nonzero endpoints.
-            for frame in range(1, frames):
-                if cancel.cancelled:
-                    result.update(completeness="cancelled", reason="Cancelled during sweep")
-                    return
-                assembly.updateForFrame(frame)
+            for frame in poses(start, end, count):
                 coordinate = _coordinate(joint, unit)
                 previous = result["samples"][-1] if result["samples"] else None
                 if unit == "deg":
@@ -270,8 +295,6 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                     coordinate += 360 * round((anchor - coordinate) / 360)
                 if not math.isfinite(coordinate):
                     raise RuntimeError("Solver returned a nonfinite joint coordinate")
-                if coordinate < min(start, end) - tolerance or coordinate > max(start, end) + tolerance:
-                    raise RuntimeError("Solved pose is outside the permitted interval")
                 if previous:
                     delta = coordinate - previous["coordinate"]
                     if abs(delta) <= tolerance:
@@ -281,6 +304,8 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                 elif abs(coordinate - start) > tolerance:
                     raise RuntimeError(f"Simulation solved start {coordinate:g} {unit}; "
                                        f"requested {start:g} {unit}")
+                if coordinate < min(start, end) - tolerance or coordinate > max(start, end) + tolerance:
+                    raise RuntimeError("Solved pose is outside the permitted interval")
                 scan = scan_pair(
                     assembly, first, second, measureDistances=True,
                     maxFacePairCandidates=maxFacePairCandidates, cancel=cancel._token)
@@ -337,11 +362,13 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
             else:
                 result.update(completeness="complete", reason="")
         finally:
-            try:
-                for name in reversed(created):
-                    assembly.Document.removeObject(name)
-            finally:
-                assembly.InterferenceClearance = original_clearance
+            def cleanup():
+                try:
+                    remove_drivers()
+                finally:
+                    assembly.InterferenceClearance = original_clearance
+
+            write(cleanup)
 
     try:
         AssemblyApp._withMotionSweepState(assembly, run)

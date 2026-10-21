@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+import os
+import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 import FreeCAD as App
+import Part
 
 if App.GuiUp:
     import FreeCADGui as Gui
@@ -228,10 +232,16 @@ class TestMotionInterferenceGui(unittest.TestCase):
             self.panel.cancelButton.click()
             release.set()
 
+        scan = self.panel._scan
+
+        def start_scan(*args, **kwargs):
+            QtCore.QTimer.singleShot(100, heartbeat)
+            return scan(*args, **kwargs)
+
         before = self.fixture.state()
         with patch.object(AssemblyApp, "_prepareSelectedPairScan", side_effect=capture), \
-                patch.object(AssemblyApp, "_runPreparedInterferenceScan", side_effect=worker):
-            QtCore.QTimer.singleShot(100, heartbeat)
+                patch.object(AssemblyApp, "_runPreparedInterferenceScan", side_effect=worker), \
+                patch.object(self.panel, "_scan", side_effect=start_scan):
             result = self.run_panel()
         self.assertTrue(heartbeats)
         self.assertTrue(prepared_on)
@@ -332,3 +342,173 @@ class TestMotionInterferenceGui(unittest.TestCase):
         self.assertAlmostEqual(result["firstContact"]["coordinate"], 5)
         self.assertIn("sampled 5.0 mm", self.panel.resultText.text())
         self.fixture.assert_restored(before)
+
+    def prepare_history(self):
+        self.doc.recompute()
+        self.doc.UndoMode = 1
+        self.doc.openTransaction("Placement before sweep")
+        self.arm.Placement.Base.z = 2
+        self.doc.commitTransaction()
+        self.doc.openTransaction("Redo before sweep")
+        self.arm.Label = "Edited arm"
+        self.doc.commitTransaction()
+        self.doc.undo()
+        self.assertGreater(self.doc.UndoCount, 0)
+        self.assertGreater(self.doc.RedoCount, 0)
+
+    def assert_mutations_refused(self):
+        self.assertGreater(self.doc.UndoCount, 0)
+        self.assertGreater(self.doc.RedoCount, 0)
+        operations = [self.doc.undo, self.doc.redo,
+                      lambda: self.doc.openTransaction("Reentrant transaction"),
+                      self.doc.commitTransaction, self.doc.abortTransaction,
+                      self.doc.save, self.arm.touch,
+                      lambda: setattr(self.arm, "Shape", Part.makeBox(2, 2, 2)),
+                      lambda: self.doc.removeObject(self.arm.Name)]
+        for operation in operations:
+            with self.assertRaisesRegex(RuntimeError, "temporary motion", msg=str(operation)):
+                operation()
+
+    def assert_shape_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "temporary motion"):
+            self.arm.Shape = Part.makeBox(2, 2, 2)
+
+    def check_scan_wait(self, check, history=False):
+        errors, attempted = [], []
+        release = threading.Event()
+        run = AssemblyApp._runPreparedInterferenceScan
+
+        def worker(snapshot):
+            release.wait(5)
+            return run(snapshot)
+
+        def inspect():
+            attempted.append(True)
+            try:
+                self.assertFalse(self.panel._owned, "Mutation must arrive during the scan wait")
+                check()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                self.panel.cancel()
+                release.set()
+
+        scan = self.panel._scan
+
+        def start_scan(*args, **kwargs):
+            QtCore.QTimer.singleShot(0, inspect)
+            return scan(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.doc.saveAs(os.path.join(directory, "Clean.FCStd"))
+            if history:
+                self.prepare_history()
+            before = self.fixture.state()
+            with patch.object(AssemblyApp, "_runPreparedInterferenceScan", side_effect=worker), \
+                    patch.object(self.panel, "_scan", side_effect=start_scan):
+                self.run_panel()
+            self.assertTrue(attempted)
+            if errors:
+                raise errors[0]
+            self.fixture.assert_restored(before)
+            if not history:
+                self.assertEqual(self.doc.getFileChangeState()["state"], "clean")
+
+    def test_native_mutations_refused_during_scan_wait(self):
+        self.check_scan_wait(self.assert_mutations_refused, history=True)
+
+    def test_shape_edit_refused_during_scan_wait(self):
+        self.check_scan_wait(self.assert_shape_refused)
+
+    def test_shape_edit_refused_during_replay(self):
+        self.prepare_history()
+        self.run_panel()
+        with tempfile.TemporaryDirectory() as directory:
+            self.doc.saveAs(os.path.join(directory, "CleanReplay.FCStd"))
+            before = self.fixture.state()
+            self.replay(self.assert_shape_refused)
+            self.fixture.assert_restored(before)
+            self.assertEqual(self.doc.getFileChangeState()["state"], "clean")
+
+    def test_native_mutations_refused_during_replay(self):
+        self.prepare_history()
+        self.run_panel()
+        before = self.fixture.state()
+        self.replay(self.assert_mutations_refused)
+        self.fixture.assert_restored(before)
+
+    def slider_panel(self, end):
+        self.panel.reject()
+        Gui.Control.closeDialog()
+        self.fixture.tearDown()
+        self.fixture.setUp()
+        for name in ("doc", "assembly", "arm", "obstacle", "joint"):
+            setattr(self, name, getattr(self.fixture, name))
+        self.panel = MotionInterferenceTask(self.assembly)
+        Gui.Control.showDialog(self.panel)
+        self.panel.firstPicker.setCurrentIndex(self.panel.components.index(self.arm))
+        self.panel.secondPicker.setCurrentIndex(self.panel.components.index(self.obstacle))
+        self.panel.startField.setText("0")
+        self.panel.endField.setText(str(end))
+        self.panel.stepField.setText("1")
+
+    def test_large_slider_cancel_latency_and_restoration(self):
+        self.slider_panel(1000)
+        before = self.fixture.state()
+        delivered = []
+        started = time.monotonic()
+
+        def cancel():
+            delivered.append(time.monotonic() - started)
+            self.panel.cancel()
+
+        QtCore.QTimer.singleShot(100, cancel)
+        result = self.run_panel()
+        elapsed = time.monotonic() - started
+        self.assertEqual(result["completeness"], "cancelled", result["reason"])
+        self.assertTrue(delivered)
+        self.assertLess(delivered[0], 3, f"Cancel timer delivered at {delivered[0]:.3f}s")
+        self.assertLess(elapsed, 3, f"Cancelled sweep returned at {elapsed:.3f}s")
+        self.fixture.assert_restored(before)
+
+    def marker_state(self):
+        proxy = self.joint.ViewObject.Proxy
+        return [(tuple(marker.transform.translation.getValue()),
+                 tuple(marker.transform.rotation.getValue().getValue()))
+                for marker in (proxy.switch_JCS1, proxy.switch_JCS2)]
+
+    def test_markers_restored_after_success_cancel_error_and_replay(self):
+        self.slider_panel(3)
+        before = self.marker_state()
+        result = self.run_panel()
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(self.marker_state(), before)
+        # Replay a nonzero pose even when no sampled contact was found.
+        event = self.panel.events[-1][0]
+        self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
+
+        def inspect():
+            self.assertAlmostEqual(self.marker_state()[1][0][2], event["coordinate"])
+            self.assertNotEqual(self.marker_state(), before)
+
+        self.replay(inspect)
+        self.assertEqual(self.marker_state(), before)
+        original = self.panel._progress
+
+        def cancel(sample):
+            original(sample)
+            if sample["coordinate"] >= 1:
+                self.panel.cancel()
+
+        with patch.object(self.panel, "_progress", side_effect=cancel):
+            self.assertEqual(self.run_panel()["completeness"], "cancelled")
+        self.assertEqual(self.marker_state(), before)
+
+        def fail(sample):
+            if sample["coordinate"] >= 1:
+                raise RuntimeError("Original marker failure")
+
+        with patch.object(self.panel, "_progress", side_effect=fail):
+            result = self.run_panel()
+        self.assertIn("Original marker failure", result["reason"])
+        self.assertEqual(self.marker_state(), before)

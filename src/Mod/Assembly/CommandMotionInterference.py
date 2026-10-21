@@ -347,14 +347,20 @@ class MotionInterferenceTask:
         event, raw, sentence = self.events[self.eventPicker.currentIndex()]
         preview = None
 
+        def apply_pose():
+            for name, placement in event["placements"].items():
+                obj = self.document.getObject(name)
+                if obj is not None and obj.Placement.toMatrix().A != placement.toMatrix().A:
+                    obj.Placement = placement
+            for joint in self.assembly.Joints:
+                if hasattr(joint.Proxy, "redrawJointPlacements"):
+                    joint.Proxy.redrawJointPlacements(joint)
+
         def replay():
             nonlocal preview
             self._owned = True
             try:
-                for name, placement in event["placements"].items():
-                    obj = self.document.getObject(name)
-                    if obj is not None and obj.Placement.toMatrix().A != placement.toMatrix().A:
-                        obj.Placement = placement
+                AssemblyApp._withMotionSweepMutation(self.assembly, apply_pose)
                 pairs = event["scan"]["pairs"]
                 if "value" in event:
                     index = min(range(len(pairs)), key=lambda i:

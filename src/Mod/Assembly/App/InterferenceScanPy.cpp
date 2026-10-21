@@ -5,6 +5,7 @@
 #include "AssemblyObject.h"
 
 #include <App/DocumentObjectPy.h>
+#include <App/ScopedDocumentMutation.h>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
@@ -360,7 +361,7 @@ Py::Object runPreparedInterferenceScanPy(const Py::Tuple& args)
     }
 }
 
-Py::Object withMotionSweepStatePy(const Py::Tuple& args)
+Py::Object withMotionSweepStatePy(const Py::Tuple& args, bool mutation)
 {
     PyObject* hostPy = nullptr;
     PyObject* callback = nullptr;
@@ -373,7 +374,11 @@ Py::Object withMotionSweepStatePy(const Py::Tuple& args)
         throw Py::ValueError("An attached assembly and synchronous callable are required");
     }
     try {
-        auto* result = host->withMotionSweepState(callback);
+        std::unique_ptr<App::ScopedDocumentMutation::Allow> controlled;
+        if (mutation) {
+            controlled = std::make_unique<App::ScopedDocumentMutation::Allow>(*host->getDocument());
+        }
+        auto* result = mutation ? PyObject_CallNoArgs(callback) : host->withMotionSweepState(callback);
         if (!result) {
             throw Py::Exception();
         }

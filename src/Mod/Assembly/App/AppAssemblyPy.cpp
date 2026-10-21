@@ -51,6 +51,8 @@ public:
             "Cancel scans using the supplied token; cancellation is cooperative.");
         add_varargs_method("_withMotionSweepState", &Module::withMotionSweepState,
             "Internal synchronous document-thread scope for the motion controller.");
+        add_varargs_method("_withMotionSweepMutation", &Module::withMotionSweepMutation,
+            "Internal: controlled synchronous motion writes; must not deliver events.");
         add_keyword_method("_prepareSelectedPairScan", &Module::prepareSelectedPair,
             "Internal: snapshot selected geometry on the document thread.");
         add_varargs_method("_runPreparedInterferenceScan", &Module::runPrepared,
@@ -70,6 +72,10 @@ private:
     Py::Object withMotionSweepState(const Py::Tuple& args)
     {
         return withMotionSweepStatePy(args);
+    }
+    Py::Object withMotionSweepMutation(const Py::Tuple& args)
+    {
+        return withMotionSweepStatePy(args, true);
     }
     Py::Object scanSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
     {

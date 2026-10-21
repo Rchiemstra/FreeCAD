@@ -6,6 +6,8 @@ import io
 import math
 import os
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -405,8 +407,35 @@ class TestMotionSweep(unittest.TestCase):
         member.Shape = Part.makeBox(1, 1, 1, App.Vector(10, 0, 0))
         self.make_joint("Fixed", self.arm, member)
         self.doc.recompute()
-        result = self.sweep(interval=(0, 2))
+        before = self.state()
+        observed = []
+
+        def progress(sample):
+            observed.append(member.Placement.Base.z)
+            self.assertAlmostEqual(member.Placement.Base.z, sample["coordinate"])
+            self.assertAlmostEqual(member.Placement.Base.z, self.arm.Placement.Base.z)
+
+        result = self.sweep(interval=(0, 2), progress=progress)
         self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(len(observed), 3)
+        self.assertAlmostEqual(observed[-1] - observed[0], 2)
+        self.assert_restored(before)
+
+    def test_cancel_during_generation_is_prompt_and_restores(self):
+        token = Assembly.SweepCancellation()
+        timer = threading.Timer(0.1, token.cancel)
+        before = self.state()
+        started = time.monotonic()
+        timer.start()
+        try:
+            result = self.sweep(interval=(0, 1000), cancel=token)
+        finally:
+            timer.cancel()
+            timer.join()
+        elapsed = time.monotonic() - started
+        self.assertEqual(result["completeness"], "cancelled", result["reason"])
+        self.assertLess(elapsed, 3, f"Cancellation took {elapsed:.3f}s")
+        self.assert_restored(before)
 
     def test_cancel_before_and_during_sweep(self):
         for before_start in (True, False):

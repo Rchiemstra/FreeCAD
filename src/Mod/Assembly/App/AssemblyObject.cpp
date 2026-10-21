@@ -36,6 +36,7 @@
 #include <App/AutoTransaction.h>
 #include <App/Application.h>
 #include <App/Datums.h>
+#include <App/ScopedDocumentMutation.h>
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/GroupExtension.h>
@@ -1078,7 +1079,8 @@ PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
         throw Base::RuntimeError("Finish the active solve, drag, simulation or transaction before sweeping");
     }
     // A GUI sweep/replay pumps events while a geometry worker runs. Prevent
-    // document close and undo from destroying the state this scope must restore.
+    // document close from destroying the state this scope must restore. Mutation
+    // admission below also protects saved solver maps containing raw pointers.
     App::TransactionLocker lifetime(doc);
     const bool wasClosable = doc->isClosable();
     doc->setClosable(false);
@@ -1091,7 +1093,9 @@ PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
     auto savedMotions = motions;
     const bool pending = solvePending;
     PlacementAttempt placements(*this);
+    App::ScopedDocumentMutation admission(*doc);
     Base::ScopeGuard restore([&] {
+        App::ScopedDocumentMutation::Allow controlled(*doc);
         // Rollback setters can call Python observers. Run them with a clear
         // error indicator, then propagate the sweep body's original exception.
         PyObject *type = nullptr, *value = nullptr, *traceback = nullptr;
@@ -1106,6 +1110,7 @@ PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
         motions.swap(savedMotions);
         // finish() may touch the assembly for a pre-existing pending solve.
         placements.restoreFlags();
+        redrawJointPlacements(getJoints());
         PyErr_Restore(type, value, traceback);
     });
     return PyObject_CallNoArgs(callback);
