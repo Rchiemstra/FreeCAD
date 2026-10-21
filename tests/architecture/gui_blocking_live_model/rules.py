@@ -365,6 +365,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Sketcher/SketchReferenceRepairGui.py",
+    "src/Mod/Sketcher/SketchReferenceReassignGui.py",
     "src/Mod/Sketcher/SketchReferenceRepair.py",
     "src/Mod/Start/StartMigrator.py",
     # AddonManager has no Gui/ directory; InitGui loads these GUI controllers.

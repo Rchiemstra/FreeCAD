@@ -390,7 +390,9 @@ void CmdSketcherLeaveSketch::activated(int iMsg)
 
     // See also TaskDlgEditSketch::reject
     doCommand(Gui, "Gui.activeDocument().resetEdit()");
-    PartGui::submitActiveDocumentRecomputeOrReport(nullptr);
+    if (auto* document = getActiveDocument(); document && document->mustExecute()) {
+        PartGui::submitDocumentRecomputeOrReport(*document);
+    }
 }
 
 bool CmdSketcherLeaveSketch::isActive()
@@ -1447,7 +1449,7 @@ void CmdSketcherViewSection::activated(int iMsg)
     QLatin1String revert = vp->getViewOrientationFactor() < 0 ? QLatin1String("True") : QLatin1String("False");
 
     cmdStr = cmdStr.arg(doc->getDocument()->getName(), vp->getSketchObject()->getNameInDocument(), revert);
-    doCommand(Doc, cmdStr.toLatin1());
+    doCommand(Doc, cmdStr.toUtf8());
 }
 
 bool CmdSketcherViewSection::isActive()
