@@ -1104,6 +1104,19 @@ class Joint:
         if not sameDir:
             moving_part_global_jcs = UtilsAssembly.flipPlacement(moving_part_global_jcs)
 
+        if joint.JointType in ("Slider", "Cylindrical"):
+            # Align the constrained axes without removing the free axial translation.
+            relative_jcs = fixed_part_global_jcs.inverse() * moving_part_global_jcs
+            target = App.Placement(App.Vector(0, 0, relative_jcs.Base.z), App.Rotation())
+            if joint.JointType == "Cylindrical":
+                # Remove only the tilt, keeping the free rotation about the joint axis.
+                z_axis = App.Vector(0, 0, 1)
+                target.Rotation = (
+                    App.Rotation(relative_jcs.Rotation.multVec(z_axis), z_axis)
+                    * relative_jcs.Rotation
+                )
+            fixed_part_global_jcs = fixed_part_global_jcs * target
+
         transform_plc = fixed_part_global_jcs * moving_part_global_jcs.inverse()
 
         for part in parts_to_move:
