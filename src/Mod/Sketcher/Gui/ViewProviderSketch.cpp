@@ -3937,40 +3937,8 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
 
 void ViewProviderSketch::slotSolverUpdate()
 {
-    if (!isInEditMode()) {
-        return;
-    }
-
-    // Solver updates can fire from the document owner lane. Coin / Qt work
-    // must run on the GUI thread after the document lock is released.
-    if (!App::DocumentWouldBlock::isGuiThread()) {
-        App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
-        if (!document || !getObject()->isAttachedToDocument()) {
-            return;
-        }
-        const std::string documentName = document->getName();
-        const std::string objectName = getObject()->getNameInDocument();
-        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
-            if (!Gui::Application::Instance) {
-                return;
-            }
-            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
-            if (!doc) {
-                return;
-            }
-            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
-            if (!guiDoc || guiDoc->isAboutToClose()) {
-                return;
-            }
-            App::DocumentObject* object = doc->getObject(objectName.c_str());
-            if (!object) {
-                return;
-            }
-            auto* sketchView = freecad_cast<ViewProviderSketch*>(guiDoc->getViewProvider(object));
-            if (sketchView) {
-                sketchView->slotSolverUpdate();
-            }
-        });
+    auto admission = expressionDiagnostics.readAdmission();
+    if (!admission || !isInEditMode()) {
         return;
     }
 
@@ -4390,6 +4358,8 @@ bool ViewProviderSketch::setEdit(int ModNum)
             "setEdit: could not import Show module. Visibility automation will not work.\n");
     }
 
+    expressionDiagnostics.start(this);
+
     // start the edit dialog
     if (!sketchDlg) {
         sketchDlg = new TaskDlgEditSketch(this);
@@ -4563,6 +4533,7 @@ inline QString intListHelper(const std::vector<int>& ints)
 
 void ViewProviderSketch::UpdateSolverInformation()
 {
+    expressionDiagnostics.refresh(getSketchObject());
     // Updates Solver Information with the Last solver execution at SketchObject level
     int dofs = getSketchObject()->getLastDoF();
     bool hasConflicts = getSketchObject()->getLastHasConflicts();
@@ -4659,6 +4630,7 @@ void ViewProviderSketch::unsetEdit(int ModNum)
 
     connectUndoDocument.disconnect();
     connectRedoDocument.disconnect();
+    expressionDiagnostics.stop();
     connectSolverUpdate.disconnect();
     connectConstraintAdded.disconnect();
 

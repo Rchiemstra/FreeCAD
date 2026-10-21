@@ -18,6 +18,7 @@ add_executable(Gui_tests_run
         PersonalViewContext.cpp
         PropertyEditorPaint.cpp
         PropertyEditorTransaction.cpp
+        ExpressionDiagnosticsPresentation.cpp
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
         DocumentRecovery.cpp

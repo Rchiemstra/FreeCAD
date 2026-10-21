@@ -86,6 +86,21 @@ def recompute_document(document, timeout_seconds: float = 120.0) -> None:
     if FreeCAD.activeDocument() != document:
         FreeCAD.setActiveDocument(document.Name)
 
+    def settle_presentation() -> None:
+        admitted_last_poll = False
+
+        def ready() -> bool:
+            nonlocal admitted_last_poll
+            admitted = FreeCADGui.tryRunPresentationCallback(lambda: None, document)
+            # The owner can finish before a queued GUI presentation retry.
+            # Require admission across GUI polls so the retry gets a turn.
+            settled = admitted_last_poll and admitted
+            admitted_last_poll = admitted
+            return settled
+
+        _pump_gui_until(ready, timeout_seconds, lambda: _readiness_report(document))
+
+    settle_presentation()
     if not document.mustExecute():
         wait_for_mutation_ready(document, timeout_seconds)
         return
@@ -120,6 +135,9 @@ def recompute_document(document, timeout_seconds: float = 120.0) -> None:
             raise RuntimeError(f"document recompute failed: {handle.status()}")
 
         FreeCADGui.updateGui()
+        # Presentation callbacks can themselves touch the model. Deliver them
+        # before deciding whether another recompute pass is needed.
+        settle_presentation()
         if state == "partial_failure":
             # The caller inspects the failed features; the document cannot
             # become ready while they are invalid.

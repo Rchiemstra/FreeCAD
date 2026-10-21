@@ -50,6 +50,7 @@
 #include "AutoConstraint.h"
 
 #include "ShortcutListener.h"
+#include "SketchExpressionDiagnostics.h"
 #include "Utils.h"
 #include "SketchEditState.h"
 
@@ -535,6 +536,13 @@ public:
     /** @name Properties */
     //@{
     App::PropertyBool Autoconstraints;
+    SketchExpressionDiagnostics& getExpressionDiagnostics()
+    {
+        return expressionDiagnostics;
+    }
+    const SketchExpressionDiagnostics& getExpressionDiagnostics() const
+    { return expressionDiagnostics; }
+
     App::PropertyBool AvoidRedundant;
     App::PropertyPythonObject TempoVis;
     App::PropertyBool HideDependent;
@@ -768,6 +776,7 @@ public:
     //@{
     friend class ViewProviderSketchDrawSketchHandlerAttorney;
     friend class ViewProviderSketchCoinAttorney;
+    friend class SketchExpressionDiagnostics;
     friend class ViewProviderSketchSnapAttorney;
     friend class ViewProviderSketchCommandConstraintsAttorney;
     //@}
@@ -1079,6 +1088,7 @@ private:
 
     std::unique_ptr<ShortcutListener> listener;
 
+    SketchExpressionDiagnostics expressionDiagnostics;
     std::unique_ptr<EditModeCoinManager> editCoinManager;
 
     std::unique_ptr<SnapManager> snapManager;

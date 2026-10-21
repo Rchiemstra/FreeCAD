@@ -31105,6 +31105,30 @@
       "evidence": "\"setTextAndFont(%i, '%s', '%s', %s, %s)\","
     },
     {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 45,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 65,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "line": 121,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "for (auto* document : App::GetApplication().getDocuments()) {"
+    },
+    {
       "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
       "line": 144,
       "category": "live-app-dereference",
@@ -31114,7 +31138,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 886,
+      "line": 896,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31122,7 +31146,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 954,
+      "line": 964,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31130,7 +31154,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 956,
+      "line": 966,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31138,7 +31162,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 958,
+      "line": 968,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31146,7 +31170,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1246,
+      "line": 1256,
       "category": "live-reference-callback",
       "subsystem": "Sketcher",
       "disposition": "migrate",
@@ -31154,7 +31178,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1371,
+      "line": 1381,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31162,7 +31186,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1389,
+      "line": 1399,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31170,7 +31194,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1517,
+      "line": 1527,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31178,7 +31202,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1900,
+      "line": 1910,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31186,7 +31210,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
-      "line": 1932,
+      "line": 1942,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31354,15 +31378,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 3957,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "App::Document* doc = App::GetApplication().getDocument(documentName.c_str());"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 4257,
+      "line": 4225,
       "category": "live-reference-callback",
       "subsystem": "Sketcher",
       "disposition": "migrate",
@@ -31370,7 +31386,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 4264,
+      "line": 4232,
       "category": "live-reference-callback",
       "subsystem": "Sketcher",
       "disposition": "migrate",
@@ -31378,7 +31394,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5077,
+      "line": 5049,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31386,7 +31402,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5105,
+      "line": 5077,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31394,7 +31410,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5129,
+      "line": 5101,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31402,7 +31418,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
-      "line": 5147,
+      "line": 5119,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -31410,7 +31426,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.h",
-      "line": 682,
+      "line": 690,
       "category": "update-data-provider",
       "subsystem": "Sketcher",
       "disposition": "migrate",

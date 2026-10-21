@@ -9,6 +9,8 @@ SET(Test_SRCS
     FreeCADInitTests.py
     AutoSaverStress.py
     RunAutoSaverStress.py
+    TestExpressionDiagnostics.py
+    TestExpressionDiagnosticsGui.py
     Document.py
     GuiDocument.py
     Metadata.py
