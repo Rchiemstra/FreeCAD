@@ -4,11 +4,14 @@
 
 #include <Inventor/nodes/SoCoordinate3.h>
 #include <Inventor/nodes/SoIndexedFaceSet.h>
+#include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoMaterialBinding.h>
 #include <Inventor/nodes/SoNormal.h>
 #include <Inventor/nodes/SoSeparator.h>
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -29,8 +32,53 @@ std::uint64_t elapsedMicros(const Clock::time_point start, const Clock::time_poi
 
 SoSeparator* buildCoinSubtree(const PresentationRenderBuffer& buffer)
 {
+    const auto maxCount = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (buffer.vertices.size() % 3 != 0 || buffer.normals.size() % 3 != 0
+        || buffer.indices.size() % 3 != 0 || buffer.vertices.size() / 3 > maxCount
+        || buffer.normals.size() / 3 > maxCount || buffer.indices.size() / 3 > maxCount / 4
+        || std::any_of(buffer.indices.begin(), buffer.indices.end(), [&](std::uint32_t index) {
+               return index >= buffer.vertices.size() / 3;
+           })) {
+        return nullptr;
+    }
+    if (!buffer.topology.empty()) {
+        std::size_t triangles = 0;
+        for (const auto count : buffer.topology) {
+            if (count > buffer.indices.size() / 3 - triangles) {
+                return nullptr;
+            }
+            triangles += count;
+        }
+        if (triangles != buffer.indices.size() / 3) {
+            return nullptr;
+        }
+    }
+
     auto* root = new SoSeparator;
     root->ref();
+
+    const auto& appearance = buffer.material;
+    if (appearance.diffuseColor.size() % 3 == 0
+        && appearance.diffuseColor.size() / 3 <= maxCount
+        && appearance.transparency.size() <= maxCount) {
+        auto* material = new SoMaterial;
+        for (std::size_t i = 0; i < appearance.diffuseColor.size() / 3; ++i) {
+            material->diffuseColor.set1Value(static_cast<int>(i),
+                appearance.diffuseColor[i * 3], appearance.diffuseColor[i * 3 + 1],
+                appearance.diffuseColor[i * 3 + 2]);
+        }
+        if (!appearance.transparency.empty()) {
+            material->transparency.setValues(0, static_cast<int>(appearance.transparency.size()),
+                                             appearance.transparency.data());
+        }
+        root->addChild(material);
+        auto* binding = new SoMaterialBinding;
+        binding->value = appearance.binding == PresentationMaterialBinding::PerFace
+            ? SoMaterialBinding::PER_FACE
+            : appearance.binding == PresentationMaterialBinding::PerVertex
+                ? SoMaterialBinding::PER_VERTEX_INDEXED : SoMaterialBinding::OVERALL;
+        root->addChild(binding);
+    }
 
     if (!buffer.vertices.empty()) {
         auto* coords = new SoCoordinate3;
@@ -263,10 +311,18 @@ void PresentationApplyScheduler::applySlice(const ApplySlicePlan& slice)
                     _stagingBuild.renderBuffers.resize(slice.renderBufferIndex + 1);
                 }
                 _stagingBuild.renderBuffers[slice.renderBufferIndex] = source;
-                if (_stagingCoinRoot) {
+                const auto hidden = std::find_if(
+                    _stagingPacket->tree.begin(), _stagingPacket->tree.end(),
+                    [&](const PresentationTreeNode& node) {
+                        return node.stableObjectIdentity == source.stableObjectIdentity
+                            && !node.visible;
+                    });
+                if (_stagingCoinRoot && hidden == _stagingPacket->tree.end()) {
                     SoSeparator* subtree = buildCoinSubtree(source);
-                    _stagingCoinRoot->addChild(subtree);
-                    subtree->unref();
+                    if (subtree) {
+                        _stagingCoinRoot->addChild(subtree);
+                        subtree->unref();
+                    }
                 }
             }
             break;

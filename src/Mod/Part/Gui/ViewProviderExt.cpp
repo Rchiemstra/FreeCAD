@@ -94,6 +94,7 @@
 #include <Mod/Part/App/Tools.h>
 
 #include "ViewProviderExt.h"
+#include "DocumentPresentationCapture.h"
 #include "ViewProviderPresentationAdapter.h"
 #include "ViewProviderPartExtPy.h"
 #include "SoBrepEdgeSet.h"
@@ -462,6 +463,9 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
                 Gui::SyntheticPropertyReplay replay(this, &ShapeAppearance);
                 onChanged(&ShapeAppearance);
             }
+            // Reapply the placement marker without assigning a persistent value.
+            Base::ObjectStatusLocker<App::Property::Status, App::Property> placementReplay(
+                App::Property::NoModify, &ShowPlacement);
             onChanged(&ShowPlacement);
         }
     }
@@ -1707,32 +1711,6 @@ Gui::ViewProviderPresentationClassification ViewProviderPartExt::presentationCla
     return Gui::ViewProviderPresentationClassification::Adapted;
 }
 
-namespace
-{
-
-void appendCoinVec3Field(const SoMFVec3f& field, std::vector<float>& target)
-{
-    const int count = field.getNum();
-    target.reserve(target.size() + static_cast<std::size_t>(count) * 3U);
-    for (int index = 0; index < count; ++index) {
-        const SbVec3f& value = field[index];
-        target.push_back(value[0]);
-        target.push_back(value[1]);
-        target.push_back(value[2]);
-    }
-}
-
-void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& target)
-{
-    const int count = field.getNum();
-    target.reserve(target.size() + static_cast<std::size_t>(count));
-    for (int index = 0; index < count; ++index) {
-        target.push_back(static_cast<std::uint32_t>(field[index]));
-    }
-}
-
-}  // namespace
-
 bool ViewProviderPartExt::capturePresentationRenderBuffer(
     const Gui::ViewProviderPresentationCaptureRequest& request,
     Gui::PresentationRenderBuffer& buffer) const
@@ -1746,41 +1724,7 @@ bool ViewProviderPartExt::capturePresentationRenderBuffer(
         return !request.stableObjectIdentity.empty();
     }
 
-    const TopoDS_Shape shape = getRenderedShape().getShape();
-    if (Part::Tools::isShapeEmpty(shape)) {
-        return !request.stableObjectIdentity.empty();
-    }
-
-    // Coin node destructors are protected — allocate with refcounting.
-    auto* tempCoords = new SoCoordinate3;
-    auto* tempFaces = new SoBrepFaceSet;
-    auto* tempNorm = new SoNormal;
-    auto* tempLines = new SoBrepEdgeSet;
-    auto* tempNodes = new SoBrepPointSet;
-    tempCoords->ref();
-    tempFaces->ref();
-    tempNorm->ref();
-    tempLines->ref();
-    tempNodes->ref();
-    ViewProviderPartExt::setupCoinGeometry(
-        shape,
-        tempCoords,
-        tempFaces,
-        tempNorm,
-        tempLines,
-        tempNodes,
-        Deviation.getValue(),
-        AngularDeflection.getValue(),
-        NormalsFromUV);
-
-    appendCoinVec3Field(tempCoords->point, buffer.vertices);
-    appendCoinVec3Field(tempNorm->vector, buffer.normals);
-    appendCoinInt32Field(tempFaces->coordIndex, buffer.indices);
-    appendCoinInt32Field(tempFaces->partIndex, buffer.topology);
-    tempNodes->unref();
-    tempLines->unref();
-    tempNorm->unref();
-    tempFaces->unref();
-    tempCoords->unref();
-    return !buffer.vertices.empty() || !request.stableObjectIdentity.empty();
+    return PartGui::capturePartPresentationRenderBuffer(
+        *pcObject, request.stableObjectIdentity, getRenderedShape().getShape(),
+        Deviation.getValue(), AngularDeflection.getValue(), NormalsFromUV, buffer);
 }

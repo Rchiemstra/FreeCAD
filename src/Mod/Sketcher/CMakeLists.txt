@@ -50,6 +50,7 @@ if(BUILD_GUI)
           SketcherTests/TestVisualLayerListGui.py
           SketcherTests/TestViewSectionGui.py
           SketcherTests/TestSketchReferenceRepairGui.py
+          SketcherTests/TestSketchEditCleanGui.py
     )
 endif(BUILD_GUI)
 

@@ -58,7 +58,7 @@ class TechDrawExport DrawComplexSection: public DrawViewSection
 
 public:
     DrawComplexSection();
-    ~DrawComplexSection() override = default;
+    ~DrawComplexSection() override;
 
 //NOLINTBEGIN
     App::PropertyLink CuttingToolWireObject;
@@ -66,7 +66,7 @@ public:
 //NOLINTEND
 
     TopoDS_Shape makeCuttingTool(double dMax) override;
-    void makeSectionCut(const TopoDS_Shape& baseShape) override;
+    void startSectionCut(const TopoDS_Shape& baseShape) override;
     TopoDS_Wire closeProfileForCut(const TopoDS_Wire& profileWire,
                                    double dMax) const;
     TopoDS_Shape makeCuttingToolFromClosedProfile(const TopoDS_Wire& profileWire, double dMax);
@@ -195,7 +195,7 @@ private:
     QMetaObject::Connection connectAlignWatcher;
     QFutureWatcher<void> m_alignWatcher;
     QFuture<void> m_alignFuture;
-    bool m_waitingForAlign;
+    std::atomic_bool m_waitingForAlign;
 
     static const char* ProjectionStrategyEnums[];       //NOLINT
 };
