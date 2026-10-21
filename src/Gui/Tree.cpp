@@ -54,6 +54,7 @@
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/Link.h>
 #include <App/MutationClassification.h>
+#include <App/ScopedDocumentMutation.h>
 #include <App/SuppressibleExtension.h>
 
 #include "Tree.h"
@@ -3588,7 +3589,10 @@ void TreeWidget::onUpdateStatus()
         // object state (e.g. a sketch's ExternalGeo for the overlay icon) now
         // races it; read the committed presentation or retry once it is idle.
         auto* appDocument = v.first->getDocument();
-        if (appDocument && documentExecutionLaneBusy(*appDocument)) {
+        // claimChildren() also writes GeoExcluded status bits. Keep pending
+        // tree work queued until a temporary motion scope has restored state.
+        if (appDocument && (documentExecutionLaneBusy(*appDocument)
+                            || App::ScopedDocumentMutation::isActive(*appDocument))) {
             _updateStatus();
             return;
         }
@@ -4249,6 +4253,15 @@ void TreeWidget::onItemChanged(QTreeWidgetItem* item, int column)
 
 void TreeWidget::onSelectTimer()
 {
+    // Selection sync can expand items and write their App::Expand bits,
+    // even when onUpdateStatus() has deferred its own pending work.
+    for (const auto& entry : DocumentMap) {
+        auto* doc = entry.first->getDocument();
+        if (doc && App::ScopedDocumentMutation::isActive(*doc)) {
+            selectTimer->start();
+            return;
+        }
+    }
 
     _updateStatus(false);
 

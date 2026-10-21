@@ -48,6 +48,15 @@ void ScopedDocumentMutation::check(const Document& document)
     }
 }
 
+bool ScopedDocumentMutation::isActive(const Document& document) noexcept
+{
+    if (!admissionActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::lock_guard lock(admissionMutex);
+    return admissions.contains(&document);
+}
+
 ScopedDocumentMutation::Allow::Allow(const Document& document)
 {
     std::lock_guard lock(admissionMutex);

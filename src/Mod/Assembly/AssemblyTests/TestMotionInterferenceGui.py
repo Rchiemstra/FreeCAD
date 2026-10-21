@@ -26,6 +26,28 @@ class TestMotionInterferenceGui(unittest.TestCase):
         Gui.showMainWindow()
 
     def setUp(self):
+        # Exceptions caught by GUIApplication::notify otherwise leave the test
+        # green even though an event handler unwound through Qt.
+        self.report = Gui.getMainWindow().findChild(QtWidgets.QTextEdit, "Report view")
+        self.assertIsNotNone(self.report, "Report output is required for exception checks")
+        errors_enabled = App.Console.GetStatus("ReportOutput", "Err")
+        App.Console.SetStatus("ReportOutput", "Err", True)
+        self.addCleanup(App.Console.SetStatus, "ReportOutput", "Err", errors_enabled)
+        QtCore.QCoreApplication.sendPostedEvents(self.report, QtCore.QEvent.User)
+        self.report.clear()
+        self.notify_errors = set()
+
+        def capture():
+            self.notify_errors.update(line for line in self.report.toPlainText().splitlines()
+                                      if "GUIApplication::notify" in line)
+
+        def check_report():
+            QtCore.QCoreApplication.sendPostedEvents(self.report, QtCore.QEvent.User)
+            self.report.textChanged.disconnect(capture)
+            self.assertFalse(self.notify_errors, "\n".join(sorted(self.notify_errors)))
+
+        self.report.textChanged.connect(capture)
+        self.addCleanup(check_report)
         Gui.activateWorkbench("AssemblyWorkbench")
         self.fixture = _Fixture()
         self.fixture.setUp()

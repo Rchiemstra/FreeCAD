@@ -2763,7 +2763,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 695,
+      "line": 696,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2771,7 +2771,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 696,
+      "line": 697,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2779,7 +2779,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 909,
+      "line": 910,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2787,7 +2787,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1248,
+      "line": 1249,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2795,7 +2795,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1329,
+      "line": 1330,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2803,7 +2803,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1332,
+      "line": 1333,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2811,7 +2811,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2314,
+      "line": 2315,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2819,7 +2819,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2621,
+      "line": 2622,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2827,7 +2827,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2638,
+      "line": 2639,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2835,7 +2835,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2685,
+      "line": 2686,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2843,7 +2843,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2956,
+      "line": 2957,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2851,7 +2851,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2972,
+      "line": 2973,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2859,7 +2859,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2987,
+      "line": 2988,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2867,7 +2867,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3388,
+      "line": 3389,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2875,7 +2875,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3442,
+      "line": 3443,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2883,7 +2883,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3453,
+      "line": 3454,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2891,7 +2891,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3627,
+      "line": 3631,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2899,7 +2899,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3711,
+      "line": 3715,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2907,7 +2907,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3712,
+      "line": 3716,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2915,7 +2915,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3714,
+      "line": 3718,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2923,7 +2923,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3715,
+      "line": 3719,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2931,7 +2931,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4447,
+      "line": 4460,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2939,7 +2939,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4467,
+      "line": 4480,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2947,7 +2947,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4468,
+      "line": 4481,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2955,7 +2955,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4471,
+      "line": 4484,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2963,7 +2963,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4472,
+      "line": 4485,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2971,7 +2971,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4474,
+      "line": 4487,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2979,7 +2979,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4475,
+      "line": 4488,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2987,7 +2987,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4495,
+      "line": 4508,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2995,7 +2995,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4496,
+      "line": 4509,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3003,7 +3003,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4705,
+      "line": 4718,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3011,7 +3011,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 5137,
+      "line": 5150,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3019,7 +3019,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 5524,
+      "line": 5537,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",

@@ -25,6 +25,8 @@ public:
     ScopedDocumentMutation& operator=(const ScopedDocumentMutation&) = delete;
 
     static void check(const Document& document);
+    /// Background GUI maintenance must wait until temporary state is restored.
+    static bool isActive(const Document& document) noexcept;
 
     class AppExport Allow
     {
