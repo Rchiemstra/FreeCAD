@@ -3,9 +3,11 @@
 """Bounded, sampled single-joint interference checks on the document thread.
 
 No continuous-motion guarantee is implied. A complete result describes only the
-sampled poses. Event scans own their world-space geometry after state restoration.
+sampled + refined poses, with no global-minimum claim. Event scans own their
+world-space geometry after state restoration.
 """
 
+import bisect
 import math
 import threading
 
@@ -178,7 +180,8 @@ def _driver(doc, joint, start, end, count, unit, created):
 
 
 def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
-               clearance=None, cancel=None, progress=None, maxFacePairCandidates=10000,
+               clearance=None, maximumGap=None, refinementTolerance=None,
+               refinementPoseBudget=20, cancel=None, progress=None, maxFacePairCandidates=10000,
                _scan=None):
     """Scan two occurrences through one bounded joint sweep, synchronously.
 
@@ -187,15 +190,28 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     enabled limits. Explicit intervals are intersected with those limits. Step is
     a maximum spacing (default 1 degree/mm); both endpoints are sampled.
 
+    After a complete coarse sweep, bisect detected event transitions and refine
+    the smallest measured whole-solid gap locally around neighbouring samples.
+    Every evaluated pose contributes to events and the minimum; newly discovered
+    event brackets are also bisected within their remaining refinement budget.
+    refinementTolerance uses the joint coordinate unit (default step/100, with
+    step defaulting to 1); refinementPoseBudget limits scans per refinement
+    (default 20, zero disables extra poses). Brackets are sorted coordinates.
+    This is a local sampled + refined search, never a global-minimum guarantee.
+    maximumGap optionally bounds the pair's shortest separation in mm.
+
     Return a dict with samples, firstContact, firstClearanceViolation,
-    minimumClearance, completeness and reason. Events retain scan witnesses and
-    placements, previousClearSample and resolution. Exclusions suppress events,
-    but retain raw distance measurements. Contact is included in a clearance
-    violation. Validation raises ValueError; runtime failures return incomplete.
+    firstGapViolation, minimumClearance, sampledMinimumClearance, completeness
+    and reason. Refined records include bracket, converged, refinementPoses and
+    sampledCoordinate; minima also retain sampledValue. Events retain scan
+    witnesses and placements, previousClearSample and resolution. Exclusions
+    suppress contact/clearance events, but retain raw distance measurements (also
+    used for maximumGap). Contact is included in a clearance violation. Validation raises ValueError; runtime failures return incomplete.
 
     Use SweepCancellation for cooperative cancellation. progress(sample) runs
-    after each scan and may cancel or raise; it must not edit the document. Call
-    on the document thread with no active transaction, simulation task or drag.
+    after each scan (phase is "sampling" or "refinement") and may cancel or raise;
+    it must not edit the document. Call on the document thread with no active
+    transaction, simulation task or drag.
     """
     assembly = _require_assembly(assembly)
     _validate_mechanism(assembly, joint)
@@ -204,6 +220,18 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                           "mm", "clearance")
     if requirement < 0:
         raise ValueError("clearance must be nonnegative")
+    refinementTolerance = _number(
+        (1.0 if step is None else _number(step, unit, "step")) / 100
+        if refinementTolerance is None else refinementTolerance, unit, "refinementTolerance")
+    if refinementTolerance <= 0:
+        raise ValueError("refinementTolerance must be positive")
+    if (not isinstance(refinementPoseBudget, int) or isinstance(refinementPoseBudget, bool)
+            or refinementPoseBudget < 0):
+        raise ValueError("refinementPoseBudget must be a nonnegative integer")
+    if maximumGap is not None:
+        maximumGap = _number(maximumGap, "mm", "maximumGap")
+        if maximumGap < 0:
+            raise ValueError("maximumGap must be nonnegative")
     if cancel is None:
         cancel = SweepCancellation()
     if not isinstance(cancel, SweepCancellation):
@@ -214,9 +242,12 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
         assembly, first, second, cancel=cancel._token,
         maxFacePairCandidates=maxFacePairCandidates)
     result = dict(unit=unit, interval=(start, end), clearance=requirement, samples=[],
-                  firstContact=None, firstClearanceViolation=None, minimumClearance=None,
+                  maximumGap=maximumGap, refinementTolerance=refinementTolerance,
+                  refinementPoseBudget=refinementPoseBudget, sampledMinimumClearance=None,
+                  firstGapViolation=None, firstContact=None, firstClearanceViolation=None,
+                  minimumClearance=None,
                   completeness="incomplete", reason="Sweep did not finish",
-                  message="no finding at the sampled poses")
+                  message="no finding at the sampled + refined poses")
     tolerance = 1e-6
 
     def write(callback):
@@ -227,7 +258,53 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     def run():
         created = []
         original_clearance = assembly.InterferenceClearance.Value
-        previous_contact_clear = previous_requirement_clear = None
+        event_flags = (("firstContact", "contact"),
+                       ("firstClearanceViolation", "clearanceViolation"),
+                       ("firstGapViolation", "gapViolation"))
+        clear_poses = {flag: [] for _, flag in event_flags}
+
+        def sweep_order(record):
+            return record["coordinate"] * (1 if end >= start else -1)
+
+        def register(record):
+            # Every solved scan contributes, regardless of which refinement
+            # requested it. Clear poses are ordered along the sweep, not time.
+            sample = {k: v for k, v in record.items() if k not in ("scan", "placements")}
+            for key, flag in event_flags:
+                event = result[key]
+                if not record[flag]:
+                    bisect.insort(clear_poses[flag], sample, key=sweep_order)
+                elif event is None:
+                    event = result[key] = dict(record, sampledCoordinate=record["coordinate"],
+                                               refinementPoses=0)
+                elif sweep_order(record) < sweep_order(event):
+                    event.update(record)
+                if event is not None:
+                    index = bisect.bisect_left(clear_poses[flag], sweep_order(event), key=sweep_order)
+                    prior = clear_poses[flag][index - 1] if index else None
+                    coordinate = event["coordinate"]
+                    clear = prior["coordinate"] if prior else coordinate
+                    event.update(previousClearSample=prior,
+                                 resolution=abs(coordinate - clear) if prior else None,
+                                 bracket=tuple(sorted((clear, coordinate))),
+                                 converged=abs(coordinate - clear) <= refinementTolerance)
+            minimum = result["minimumClearance"]
+            if minimum is None:
+                minimum = result["minimumClearance"] = dict(
+                    record, value=record["minimumClearance"], sampledValue=record["minimumClearance"],
+                    sampledCoordinate=record["coordinate"], converged=False,
+                    bracket=None, refinementPoses=0)
+            elif record["minimumClearance"] < minimum["value"]:
+                minimum.update(record, value=record["minimumClearance"])
+                if minimum["bracket"] is not None:
+                    low, high = minimum["bracket"]
+                    minimum["bracket"] = (min(low, record["coordinate"]),
+                                          max(high, record["coordinate"]))
+                    minimum["converged"] = (
+                        minimum["bracket"][1] - minimum["bracket"][0] <= refinementTolerance)
+            if record["phase"] == "sampling":
+                minimum.update(sampledValue=minimum["value"], sampledCoordinate=minimum["coordinate"])
+                result["sampledMinimumClearance"] = dict(minimum)
 
         def remove_drivers():
             for name in reversed(created):
@@ -268,6 +345,130 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                     write(lambda: assembly.updateForFrame(frame))
                     yield frame
 
+        class Cancelled(Exception):
+            pass
+
+        def evaluate(coordinate, frame, phase, index):
+            if cancel.cancelled:
+                raise Cancelled()
+            sample = dict(coordinate=coordinate, frame=frame, phase=phase, index=index)
+            scan = scan_pair(
+                assembly, first, second, measureDistances=True,
+                maxFacePairCandidates=maxFacePairCandidates, cancel=cancel._token)
+            if scan["cancelled"] or cancel.cancelled:
+                raise Cancelled()
+            if not scan["complete"]:
+                diagnostics = [i["diagnostic"] for i in scan["componentIssues"]]
+                diagnostics += [p["faceEnumerationDiagnostic"] for p in scan["pairs"]]
+                raise RuntimeError("Static scan incomplete: " + "; ".join(filter(None, diagnostics)))
+            pairs = scan["pairs"]
+            if not pairs or any(not p["distanceMeasured"] for p in pairs):
+                raise RuntimeError("Static scan did not measure the whole selected pair")
+            distance = min(p["solidDetection"]["minimumDistance"] for p in pairs)
+            if not math.isfinite(distance) or distance < 0:
+                raise RuntimeError("Static scan returned an invalid distance")
+            active = [p for p in pairs if not p["excluded"]]
+            contact = any(p["solidDetection"]["kind"] in ("Contact", "Penetration")
+                          or any(h["kind"] in ("Contact", "Penetration")
+                                 and not h["suppressedByExclusion"] for h in p["faceHits"])
+                          for p in active)
+            violation = contact or any(
+                p["detection"]["kind"] == "ClearanceViolation" or any(
+                    h["kind"] == "ClearanceViolation" and not h["suppressedByExclusion"]
+                    for h in p["faceHits"]) for p in active)
+            sample.update(minimumClearance=distance, contact=contact, clearanceViolation=violation)
+            sample["gapViolation"] = maximumGap is not None and distance > maximumGap
+            record = dict(sample, scan=scan,
+                          placements={o.Name: App.Placement(o.Placement)
+                                      for o in assembly.Document.Objects
+                                      if "Placement" in o.PropertiesList})
+            register(record)
+            return record
+
+        def notify(record):
+            if progress:
+                progress({k: v for k, v in record.items() if k not in ("scan", "placements")})
+            if cancel.cancelled:
+                raise Cancelled()
+
+        def extra_pose(coordinate, index):
+            QtCore.QCoreApplication.processEvents()
+            if cancel.cancelled:
+                raise Cancelled()
+            current = _coordinate(joint, unit)
+            if unit == "deg":
+                current += 360 * round((coordinate - current) / 360)
+            segments = max(1, math.ceil(abs(coordinate - current) / 30)) if unit == "deg" else 1
+            for frame in poses(current, coordinate, segments):
+                pass
+            if cancel.cancelled:
+                raise Cancelled()
+            actual = _coordinate(joint, unit)
+            if unit == "deg":
+                actual += 360 * round((coordinate - actual) / 360)
+            if not math.isfinite(actual) or abs(actual - coordinate) > tolerance:
+                raise RuntimeError("Simulation did not solve the refinement coordinate")
+            return evaluate(actual, frame, "refinement", index)
+
+        def refine_minimum():
+            sampled = result["sampledMinimumClearance"]
+            index = sampled["index"]
+            samples = result["samples"]
+            low, high = sorted((samples[max(0, index - 1)]["coordinate"],
+                                samples[min(len(samples) - 1, index + 1)]["coordinate"]))
+            best = dict(result["minimumClearance"])
+            low, high = min(low, best["coordinate"]), max(high, best["coordinate"])
+            best.update(sampledCoordinate=sampled["coordinate"], sampledValue=sampled["value"],
+                        bracket=(low, high), converged=False, refinementPoses=0)
+            minimum = result["minimumClearance"]
+            minimum.update(best)
+            # Golden-section interval reduction, preserving the best solved pose
+            # inside the bracket, including endpoint and flat minima.
+            for used in range(refinementPoseBudget):
+                if high - low <= refinementTolerance:
+                    break
+                x = best["coordinate"]
+                edge = low if x - low > high - x else high
+                probe = extra_pose(x + (edge - x) * (3 - math.sqrt(5)) / 2, index)
+                y = probe["coordinate"]
+                if probe["minimumClearance"] < best["value"]:
+                    if y < x:
+                        high = x
+                    else:
+                        low = x
+                    best.update(probe, value=probe["minimumClearance"])
+                elif y < x:
+                    low = y
+                else:
+                    high = y
+                best.update(bracket=(low, high), refinementPoses=used + 1)
+                minimum.update(bracket=(low, high), refinementPoses=used + 1)
+                notify(probe)
+            minimum["converged"] = high - low <= refinementTolerance
+
+        def refine_event(key):
+            event = result[key]
+            if event is None:
+                return
+            for used in range(event["refinementPoses"], refinementPoseBudget):
+                previous = event["previousClearSample"]
+                clear = previous["coordinate"] if previous else event["coordinate"]
+                hit = event["coordinate"]
+                if abs(hit - clear) <= refinementTolerance:
+                    break
+                probe = extra_pose((clear + hit) / 2, event["index"])
+                event["refinementPoses"] = used + 1
+                notify(probe)
+
+        def refine_events():
+            # A later event's bisection can discover an earlier event type.
+            # Revisit those brackets while preserving each event's budget.
+            while any(result[key] is not None and not result[key]["converged"]
+                      and result[key]["refinementPoses"] < refinementPoseBudget
+                      for key, _ in event_flags):
+                for key, _ in event_flags:
+                    refine_event(key)
+
         try:
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled before simulation")
@@ -306,61 +507,21 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                                        f"requested {start:g} {unit}")
                 if coordinate < min(start, end) - tolerance or coordinate > max(start, end) + tolerance:
                     raise RuntimeError("Solved pose is outside the permitted interval")
-                scan = scan_pair(
-                    assembly, first, second, measureDistances=True,
-                    maxFacePairCandidates=maxFacePairCandidates, cancel=cancel._token)
-                if scan["cancelled"] or cancel.cancelled:
-                    result.update(completeness="cancelled", reason="Static scan cancelled")
-                    return
-                sample = dict(coordinate=coordinate, frame=frame, index=len(result["samples"]))
+                record = evaluate(coordinate, frame, "sampling", len(result["samples"]))
+                sample = {k: v for k, v in record.items() if k not in ("scan", "placements")}
                 result["samples"].append(sample)
-                if not scan["complete"]:
-                    diagnostics = [i["diagnostic"] for i in scan["componentIssues"]]
-                    diagnostics += [p["faceEnumerationDiagnostic"] for p in scan["pairs"]]
-                    raise RuntimeError("Static scan incomplete: " + "; ".join(filter(None, diagnostics)))
-                pairs = scan["pairs"]
-                if not pairs or any(not p["distanceMeasured"] for p in pairs):
-                    raise RuntimeError("Static scan did not measure the whole selected pair")
-                distance = min(p["solidDetection"]["minimumDistance"] for p in pairs)
-                if not math.isfinite(distance) or distance < 0:
-                    raise RuntimeError("Static scan returned an invalid distance")
-                active = [p for p in pairs if not p["excluded"]]
-                contact = any(p["solidDetection"]["kind"] in ("Contact", "Penetration")
-                              or any(h["kind"] in ("Contact", "Penetration")
-                                     and not h["suppressedByExclusion"] for h in p["faceHits"])
-                              for p in active)
-                violation = contact or any(
-                    p["detection"]["kind"] == "ClearanceViolation" or any(
-                        h["kind"] == "ClearanceViolation" and not h["suppressedByExclusion"]
-                        for h in p["faceHits"]) for p in active)
-                sample.update(minimumClearance=distance, contact=contact, clearanceViolation=violation)
-
-                def snapshot(previous_clear):
-                    return dict(sample, previousClearSample=previous_clear,
-                                resolution=abs(coordinate - previous_clear["coordinate"])
-                                if previous_clear else None, scan=scan,
-                                placements={o.Name: App.Placement(o.Placement)
-                                            for o in assembly.Document.Objects
-                                            if "Placement" in o.PropertiesList})
-
-                if contact and result["firstContact"] is None:
-                    result["firstContact"] = snapshot(previous_contact_clear)
-                if violation and result["firstClearanceViolation"] is None:
-                    result["firstClearanceViolation"] = snapshot(previous_requirement_clear)
-                if result["minimumClearance"] is None or distance < result["minimumClearance"]["value"]:
-                    result["minimumClearance"] = dict(snapshot(None), value=distance)
-                if not contact:
-                    previous_contact_clear = sample
-                if not violation:
-                    previous_requirement_clear = sample
-                if progress:
-                    progress(dict(sample))
+                notify(record)
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled during sweep")
             elif not result["samples"] or abs(result["samples"][-1]["coordinate"] - end) > tolerance:
                 raise RuntimeError("Simulation did not cover the requested end endpoint")
             else:
+                refine_events()
+                refine_minimum()
+                refine_events()
                 result.update(completeness="complete", reason="")
+        except Cancelled:
+            result.update(completeness="cancelled", reason="Cancelled during sweep or refinement")
         finally:
             def cleanup():
                 try:
@@ -374,6 +535,6 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
         AssemblyApp._withMotionSweepState(assembly, run)
     except Exception as error:
         result.update(completeness="incomplete", reason=str(error))
-    if result["firstContact"] or result["firstClearanceViolation"]:
-        result["message"] = "Finding at the sampled poses; see event coordinate and resolution"
+    if any(result[key] for key in ("firstContact", "firstClearanceViolation", "firstGapViolation")):
+        result["message"] = "Finding at the sampled + refined poses; see event coordinate and resolution"
     return result

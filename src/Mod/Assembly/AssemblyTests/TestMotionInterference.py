@@ -301,9 +301,11 @@ class TestMotionSweep(unittest.TestCase):
         self.assertEqual(len(result["samples"]), 11)
         contact = result["firstContact"]
         self.assertAlmostEqual(contact["coordinate"], 5)
-        self.assertAlmostEqual(contact["previousClearSample"]["coordinate"], 4)
-        self.assertAlmostEqual(contact["resolution"], 1)
-        self.assertAlmostEqual(result["firstClearanceViolation"]["coordinate"], 4)
+        self.assertLessEqual(contact["resolution"], 0.01)
+        self.assertAlmostEqual(contact["previousClearSample"]["coordinate"],
+                               contact["coordinate"] - contact["resolution"])
+        self.assertAlmostEqual(result["firstClearanceViolation"]["sampledCoordinate"], 4)
+        self.assertLessEqual(abs(result["firstClearanceViolation"]["coordinate"] - 3.5), 0.01)
         self.assertAlmostEqual(result["minimumClearance"]["value"], 0)
         self.assertAlmostEqual(result["minimumClearance"]["coordinate"], 5)
         pair = contact["scan"]["pairs"][0]
@@ -329,8 +331,10 @@ class TestMotionSweep(unittest.TestCase):
         self.assertAlmostEqual(result["samples"][-1]["coordinate"], 90)
         self.assertFalse(result["samples"][0]["contact"])
         self.assertFalse(result["samples"][-1]["contact"])
-        self.assertAlmostEqual(result["firstContact"]["coordinate"], 36)
-        self.assertAlmostEqual(result["firstContact"]["resolution"], 9)
+        self.assertAlmostEqual(result["firstContact"]["sampledCoordinate"], 36)
+        expected = math.degrees(math.atan2(5, 7) - math.asin(0.5 / math.sqrt(74)))
+        self.assertLessEqual(abs(result["firstContact"]["coordinate"] - expected), 0.09)
+        self.assertLessEqual(result["firstContact"]["resolution"], 0.09)
 
     def test_signed_unwrapped_angles_and_descending_interval(self):
         self.revolute()
@@ -349,7 +353,7 @@ class TestMotionSweep(unittest.TestCase):
             self.assertEqual(result["completeness"], "complete", result["reason"])
             self.assertEqual(result["interval"], (0, 2))
             self.assertIsNone(result["firstContact"])
-            self.assertEqual(result["message"], "no finding at the sampled poses")
+            self.assertEqual(result["message"], "no finding at the sampled + refined poses")
             self.assertAlmostEqual(result["minimumClearance"]["value"], 3)
 
     def test_enabled_revolute_limits_exclude_contact(self):
@@ -411,7 +415,8 @@ class TestMotionSweep(unittest.TestCase):
         observed = []
 
         def progress(sample):
-            observed.append(member.Placement.Base.z)
+            if sample["phase"] == "sampling":
+                observed.append(member.Placement.Base.z)
             self.assertAlmostEqual(member.Placement.Base.z, sample["coordinate"])
             self.assertAlmostEqual(member.Placement.Base.z, self.arm.Placement.Base.z)
 
@@ -584,3 +589,186 @@ class TestMotionSweep(unittest.TestCase):
             self.assertEqual(result["completeness"], "incomplete", result["reason"])
             self.assertIn(diagnostic, result["reason"])
             self.assert_restored(before)
+
+    def offset_spheres(self):
+        # Translating sphere centres (0,0,s) and (3,0,4.3):
+        # d(s) = sqrt(9 + (s-4.3)^2) - 2, minimum 1 at s=4.3.
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(3, 0, 4.3))
+        self.doc.recompute()
+
+    def test_refined_slider_minimum_and_distant_clear_measurement(self):
+        self.offset_spheres()
+        before = self.state()
+        result = self.sweep(interval=(0, 8), step=2, clearance=0.1,
+                            refinementTolerance=0.001)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        sampled, minimum = result["sampledMinimumClearance"], result["minimumClearance"]
+        self.assertGreater(sampled["value"] - 1, 0.01)
+        self.assertAlmostEqual(sampled["value"], math.sqrt(9.09) - 2, places=6)
+        self.assertLess(abs(minimum["coordinate"] - 4.3), 0.001)
+        self.assertLess(abs(minimum["value"] - 1), 0.001)
+        self.assertTrue(minimum["converged"])
+        self.assertLessEqual(minimum["bracket"][1] - minimum["bracket"][0], 0.001)
+        self.assertTrue(minimum["bracket"][0] <= minimum["coordinate"] <= minimum["bracket"][1])
+        pair = minimum["scan"]["pairs"][0]
+        self.assertTrue(pair["distanceMeasured"])
+        self.assertEqual(pair["solidDetection"]["kind"], "Clear")
+        self.assertGreater(minimum["value"], result["clearance"])
+        print("ANALYTIC slider sampled=%.9f refined=%.9f coordinate=%.9f" %
+              (sampled["value"], minimum["value"], minimum["coordinate"]))
+        self.assert_restored(before)
+
+    def test_refined_revolute_nonmonotonic_gap(self):
+        self.revolute()
+        angle = math.radians(37)
+        self.arm.Shape = Part.makeSphere(0.25, App.Vector(5, 0, 0))
+        self.obstacle.Shape = Part.makeSphere(
+            0.25, App.Vector(6 * math.cos(angle), 6 * math.sin(angle), 0))
+        self.doc.recompute()
+        result = self.sweep(interval=(0, 80), step=20, refinementTolerance="0.002 deg",
+                            refinementPoseBudget=32)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        minimum = result["minimumClearance"]
+        self.assertGreater(result["sampledMinimumClearance"]["value"] - 0.5, 0.04)
+        self.assertLess(abs(minimum["coordinate"] - 37), 0.002)
+        self.assertLess(abs(minimum["value"] - 0.5), 0.002)
+        self.assertTrue(minimum["converged"])
+        print("ANALYTIC revolute sampled=%.9f refined=%.9f coordinate=%.9f" %
+              (result["sampledMinimumClearance"]["value"], minimum["value"], minimum["coordinate"]))
+
+    def test_refinement_only_contact_is_registered(self):
+        # d(s) = max(0, sqrt(1.99^2 + (s-4.3)^2) - 2).
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(1.99, 0, 4.3))
+        self.doc.recompute()
+        observed = []
+        result = self.sweep(interval=(0, 8), step=2, progress=observed.append)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertTrue(all(not sample["contact"] for sample in result["samples"]))
+        event = result["firstContact"]
+        print("ANALYTIC refinement-only contact=%s minimum=%.9f" %
+              (event["coordinate"] if event else None, result["minimumClearance"]["value"]))
+        self.assertIsNotNone(event)
+        expected = 4.3 - math.sqrt(4 - 1.99 ** 2)
+        self.assertLess(abs(event["coordinate"] - expected), 0.02)
+        self.assertEqual(event["coordinate"], min(p["coordinate"] for p in observed if p["contact"]))
+        for key, flag in (("firstContact", "contact"),
+                          ("firstClearanceViolation", "clearanceViolation")):
+            event = result[key]
+            clear = max(p["coordinate"] for p in observed
+                        if not p[flag] and p["coordinate"] < event["coordinate"])
+            self.assertAlmostEqual(event["previousClearSample"]["coordinate"], clear)
+            self.assertEqual(event["bracket"], (clear, event["coordinate"]))
+            self.assertAlmostEqual(event["resolution"], event["coordinate"] - clear)
+            self.assertLessEqual(event["resolution"], 0.02)
+            self.assertAlmostEqual(event["placements"][self.arm.Name].Base.z, event["coordinate"])
+        self.assertIn("Finding", result["message"])
+        self.assertIn("sampled + refined", result["message"])
+
+    def test_event_bisection_updates_minimum_and_pose(self):
+        # d(s) = sqrt(9 + (s-4.9)^2) - 2; the event probe at 5 improves the minimum.
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(3, 0, 4.9))
+        self.doc.recompute()
+        observed = []
+        result = self.sweep(interval=(8, 0), step=2, clearance=1.15,
+                            refinementPoseBudget=1, progress=observed.append)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        minimum = result["minimumClearance"]
+        print("ANALYTIC event-probe minimum=%.9f coordinate=%.9f measured=%.9f" %
+              (minimum["value"], minimum["coordinate"],
+               min(p["minimumClearance"] for p in observed)))
+        self.assertAlmostEqual(minimum["value"], math.sqrt(9.01) - 2, places=7)
+        self.assertAlmostEqual(minimum["coordinate"], 5)
+        self.assertAlmostEqual(minimum["value"], min(p["minimumClearance"] for p in observed))
+        self.assertAlmostEqual(result["sampledMinimumClearance"]["value"], math.sqrt(9.81) - 2)
+        self.assertAlmostEqual(minimum["placements"][self.arm.Name].Base.z, 5)
+        solid = minimum["scan"]["pairs"][0]["solidDetection"]
+        a, b = (App.Vector(*solid[key]) for key in ("pointOnFirst", "pointOnSecond"))
+        self.assertAlmostEqual((a - b).Length, minimum["value"])
+        self.assertTrue(minimum["bracket"][0] <= 5 <= minimum["bracket"][1])
+        event = result["firstClearanceViolation"]
+        self.assertAlmostEqual(event["previousClearSample"]["coordinate"], 6)
+        self.assertEqual(event["bracket"], (5, 6))
+        self.assertAlmostEqual(event["resolution"], 1)
+
+    def test_refined_thin_contact_and_clearance_transition(self):
+        self.obstacle.Shape = Part.makeBox(2, 2, 0.01, App.Vector(0, -0.5, 5.37))
+        self.doc.recompute()
+        result = self.sweep(interval=(0, 6), clearance=0.2, refinementTolerance=0.001)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        for key, expected in (("firstContact", 4.37), ("firstClearanceViolation", 4.17)):
+            event = result[key]
+            self.assertAlmostEqual(event["sampledCoordinate"], 5)
+            self.assertLess(abs(event["coordinate"] - expected), 0.001)
+            self.assertTrue(event["converged"])
+            self.assertLessEqual(event["bracket"][1] - event["bracket"][0], 0.001)
+            self.assertTrue(event["bracket"][0] <= expected <= event["bracket"][1])
+            self.assertTrue(event["contact" if key == "firstContact" else "clearanceViolation"])
+            print("ANALYTIC %s sampled=%.6f refined=%.9f expected=%.6f" %
+                  (key, event["sampledCoordinate"], event["coordinate"], expected))
+
+    def test_maximum_gap_transition_in_both_directions(self):
+        for interval in ((0, 4), (4, 0)):
+            with self.subTest(interval=interval):
+                result = self.sweep(interval=interval, maximumGap="2 mm",
+                                    refinementTolerance=0.001)
+                self.assertEqual(result["completeness"], "complete", result["reason"])
+                event = result["firstGapViolation"]
+                self.assertIsNotNone(event)
+                if interval[0] == 0:
+                    self.assertAlmostEqual(event["coordinate"], 0)
+                    self.assertEqual(event["bracket"], (0, 0))
+                else:
+                    self.assertAlmostEqual(event["sampledCoordinate"], 2)
+                    self.assertLess(abs(event["coordinate"] - 3), 0.001)
+                    self.assertTrue(event["gapViolation"])
+                    self.assertGreater(event["minimumClearance"], 2)
+                    print("ANALYTIC maximum gap sampled=%.6f refined=%.9f expected=3" %
+                          (event["sampledCoordinate"], event["coordinate"]))
+                self.assertTrue(event["converged"])
+        self.assertIsNone(self.sweep(interval=(0, 2))["firstGapViolation"])
+
+    def test_refinement_budget_exhausted(self):
+        self.offset_spheres()
+        result = self.sweep(interval=(0, 8), step=2, refinementTolerance=1e-9,
+                            refinementPoseBudget=1)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        minimum = result["minimumClearance"]
+        self.assertFalse(minimum["converged"])
+        self.assertEqual(minimum["refinementPoses"], 1)
+        self.assertGreater(minimum["bracket"][1] - minimum["bracket"][0], 1e-9)
+
+    def test_cancel_and_callback_error_during_refinement_restore(self):
+        self.offset_spheres()
+        for mode in ("cancel", "error"):
+            token = Assembly.SweepCancellation()
+            observed = []
+            before = self.state()
+
+            def progress(sample):
+                if sample["phase"] != "refinement":
+                    return
+                observed.append(sample["coordinate"])
+                with self.assertRaisesRegex(RuntimeError, "temporary motion"):
+                    self.arm.Shape = Part.makeBox(2, 2, 2)
+                if mode == "cancel":
+                    token.cancel()
+                else:
+                    raise RuntimeError("Refinement callback failure")
+
+            result = self.sweep(interval=(0, 8), step=2, cancel=token, progress=progress)
+            self.assertTrue(observed)
+            self.assertEqual(result["completeness"],
+                             "cancelled" if mode == "cancel" else "incomplete", result["reason"])
+            self.assertFalse(result["minimumClearance"]["converged"])
+            self.assert_restored(before)
+
+    def test_refinement_and_gap_arguments_validated(self):
+        for options in (dict(refinementTolerance=0), dict(refinementTolerance=float("nan")),
+                        dict(refinementTolerance="1 deg"), dict(refinementPoseBudget=-1),
+                        dict(refinementPoseBudget=1.5), dict(maximumGap=-1),
+                        dict(maximumGap=float("inf")), dict(maximumGap="2 deg")):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.sweep(**options)

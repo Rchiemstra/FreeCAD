@@ -71,7 +71,7 @@ class MotionInterferenceTask:
         layout = QtWidgets.QVBoxLayout(self.form)
         explanation = QtWidgets.QLabel(translate(
             "Assembly", "Choose one revolute or slider joint and two components. "
-            "Only the sampled poses are checked; narrow collisions between samples can be missed."))
+            "Results use sampled + refined poses; narrow collisions between samples can be missed."))
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
         self.inputs = QtWidgets.QWidget()
@@ -101,6 +101,11 @@ class MotionInterferenceTask:
         self.clearanceField = QtWidgets.QLineEdit()
         self.clearanceField.setPlaceholderText(translate("Assembly", "Use assembly clearance"))
         fields.addRow(translate("Assembly", "Required clearance (mm, optional)"), self.clearanceField)
+        self.maximumGapField = QtWidgets.QLineEdit()
+        self.maximumGapField.setPlaceholderText(translate("Assembly", "Off"))
+        fields.addRow(translate("Assembly", "Maximum gap (mm, optional)"), self.maximumGapField)
+        self.maximumGapField.setToolTip(translate(
+            "Assembly", "Upper bound on the components' shortest whole-solid separation"))
         layout.addWidget(self.inputs)
         buttons = QtWidgets.QHBoxLayout()
         self.runButton = QtWidgets.QPushButton(translate("Assembly", "Run"))
@@ -139,7 +144,8 @@ class MotionInterferenceTask:
         self._jointChanged()
         for picker in (self.jointPicker, self.firstPicker, self.secondPicker):
             picker.currentIndexChanged.connect(self._settingsChanged)
-        for field in (self.startField, self.endField, self.stepField, self.clearanceField):
+        for field in (self.startField, self.endField, self.stepField, self.clearanceField,
+                      self.maximumGapField):
             field.textChanged.connect(self._settingsChanged)
         App.addDocumentObserver(self)
 
@@ -232,10 +238,13 @@ class MotionInterferenceTask:
             timer.stop()
 
     def _progress(self, sample):
-        self.progress.setRange(0, self._sampleCount)
+        if sample["phase"] == "refinement":
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, self._sampleCount)
         self.progress.setValue(sample["index"] + 1)
-        self.resultText.setText(translate("Assembly", "Checked sampled pose {0} {1}.").format(
-            _value(sample["coordinate"]), self.unit))
+        self.resultText.setText(translate("Assembly", "Checked {0} pose {1} {2}.").format(
+            sample["phase"], _value(sample["coordinate"]), self.unit))
         self._owned = False
         try:
             QtWidgets.QApplication.processEvents()
@@ -266,11 +275,14 @@ class MotionInterferenceTask:
             self._sampleCount = count + 1
             clearance = self.clearanceField.text().strip()
             clearance = quantity(clearance) if clearance else None
+            maximum_gap = self.maximumGapField.text().strip()
+            maximum_gap = quantity(maximum_gap) if maximum_gap else None
             self._labels = (first.Label, second.Label)
             with ThreadPoolExecutor(max_workers=1) as self._executor:
                 self.result = Assembly.sweepJoint(
                     self.assembly, joint, first, second, interval=interval, step=step,
-                    clearance=clearance, cancel=self.token, progress=self._progress,
+                    clearance=clearance, maximumGap=maximum_gap,
+                    cancel=self.token, progress=self._progress,
                     _scan=self._scan)
             self._displayResult()
         except Exception as error:
@@ -295,36 +307,49 @@ class MotionInterferenceTask:
         if result["completeness"] != "complete":
             sentences.append(translate("Assembly", "Sweep {0}: {1}. Original pose restored.").format(
                 result["completeness"], result["reason"]))
-        for key, physical in (("firstContact", True), ("firstClearanceViolation", False)):
+        def refinement(record):
+            bracket = record["bracket"]
+            if bracket is None:
+                return translate("Assembly", "refinement not completed")
+            width = _value(bracket[1] - bracket[0])
+            if record["converged"]:
+                return translate("Assembly", "refined to {0} {1}").format(width, result["unit"])
+            return translate("Assembly", "refinement not converged; bracket {0} {1}").format(
+                width, result["unit"])
+
+        for key, physical in (("firstContact", True), ("firstClearanceViolation", False),
+                              ("firstGapViolation", True)):
             event = result[key]
             if event is None:
                 continue
-            contact = result["firstContact"]
-            if not physical and contact and event["index"] == contact["index"]:
-                continue
-            if physical:
+            if key == "firstGapViolation":
+                action = translate("Assembly", "exceeds the maximum gap from")
+            elif physical:
                 penetrates = any(pair["solidDetection"]["kind"] == "Penetration"
                                  and not pair["excluded"] for pair in event["scan"]["pairs"])
                 action = (translate("Assembly", "intersects") if penetrates
                           else translate("Assembly", "touches"))
             else:
                 action = translate("Assembly", "violates the required clearance from")
-            sentence = translate("Assembly", "{0} {1} {2} at sampled {3} {4}").format(
-                self._labels[0], action, self._labels[1], _value(event["coordinate"]), result["unit"])
+            sentence = translate("Assembly", "{0} {1} {2} at {3} {4}").format(
+                self._labels[0], action, self._labels[1],
+                _value(event["coordinate"]), result["unit"])
             previous = event["previousClearSample"]
             if previous is not None:
-                sentence += translate("Assembly", " ({0} {1} was clear, step {2} {1})").format(
+                sentence += translate("Assembly", " ({0} {1} was clear, resolution {2} {1})").format(
                     _value(previous["coordinate"]), result["unit"], _value(event["resolution"]))
             else:
-                sentence += translate("Assembly", " (first sampled pose)")
+                sentence += translate("Assembly", " (first evaluated pose)")
+            sentence += " (" + refinement(event) + "; sampled + refined)"
             sentences.append(sentence + ".")
             self.events.append((event, physical, sentence))
         minimum = result["minimumClearance"]
         if not self.events and result["completeness"] == "complete":
-            sentences.append(translate("Assembly", "No finding at the sampled poses."))
+            sentences.append(translate("Assembly", "No finding at the sampled + refined poses."))
         if minimum is not None:
-            sentence = translate("Assembly", "Smallest sampled clearance {0} mm at {1} {2}").format(
+            sentence = translate("Assembly", "Smallest clearance {0} mm at {1} {2}").format(
                 _value(minimum["value"]), _value(minimum["coordinate"]), result["unit"])
+            sentence += " (" + refinement(minimum) + "; sampled + refined)"
             sentences.append(sentence + ".")
             self.events.append((minimum, True, sentence))
         self.resultText.setText("\n".join(sentences))
@@ -362,7 +387,7 @@ class MotionInterferenceTask:
             try:
                 AssemblyApp._withMotionSweepMutation(self.assembly, apply_pose)
                 pairs = event["scan"]["pairs"]
-                if "value" in event:
+                if "value" in event or (raw and event.get("gapViolation")):
                     index = min(range(len(pairs)), key=lambda i:
                                 pairs[i]["solidDetection"]["minimumDistance"])
                 elif raw:

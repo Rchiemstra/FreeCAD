@@ -154,8 +154,8 @@ class TestMotionInterferenceGui(unittest.TestCase):
         self.assertEqual(result["completeness"], "complete", result["reason"])
         self.assertEqual(len(result["samples"]), 11)
         text = self.panel.resultText.text()
-        for value in ("Arm", "Obstacle", "sampled 36.0 deg", "27.0 deg was clear",
-                      "step 9.0 deg", "Smallest sampled clearance"):
+        for value in ("Arm", "Obstacle", "deg was clear", "resolution",
+                      "sampled + refined", "Smallest clearance"):
             self.assertIn(value, text)
         self.assertTrue(self.panel.showButton.isEnabled())
         self.fixture.assert_restored(before)
@@ -203,9 +203,9 @@ class TestMotionInterferenceGui(unittest.TestCase):
     def test_minimum_clearance_show_and_restore_button(self):
         self.joint.AngleMax = 18
         result = self.run_panel()
-        self.assertIn("No finding at the sampled poses", self.panel.resultText.text())
+        self.assertIn("No finding at the sampled + refined poses", self.panel.resultText.text())
         self.assertIsNone(result["firstContact"])
-        self.assertIn("Smallest sampled clearance", self.panel.resultText.text())
+        self.assertIn("Smallest clearance", self.panel.resultText.text())
         self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
         before = self.fixture.state()
         self.replay(lambda: self.assertEqual(
@@ -360,9 +360,10 @@ class TestMotionInterferenceGui(unittest.TestCase):
         before = self.fixture.state()
         result = self.run_panel()
         self.assertEqual(result["completeness"], "complete", result["reason"])
-        self.assertAlmostEqual(result["firstClearanceViolation"]["coordinate"], 4)
+        self.assertAlmostEqual(result["firstClearanceViolation"]["sampledCoordinate"], 4)
+        self.assertLessEqual(abs(result["firstClearanceViolation"]["coordinate"] - 3.5), 0.01)
         self.assertAlmostEqual(result["firstContact"]["coordinate"], 5)
-        self.assertIn("sampled 5.0 mm", self.panel.resultText.text())
+        self.assertIn("at 5.0 mm", self.panel.resultText.text())
         self.fixture.assert_restored(before)
 
     def prepare_history(self):
@@ -534,3 +535,90 @@ class TestMotionInterferenceGui(unittest.TestCase):
             result = self.run_panel()
         self.assertIn("Original marker failure", result["reason"])
         self.assertEqual(self.marker_state(), before)
+
+    def test_refined_minimum_text_show_and_restore(self):
+        self.slider_panel(8)
+        self.fixture.offset_spheres()
+        self.panel.stepField.setText("2")
+        before = self.fixture.state()
+        result = self.run_panel()
+        text = self.panel.resultText.text()
+        self.assertIn("Smallest clearance", text)
+        self.assertIn("refined to", text)
+        self.assertIn("sampled + refined", text)
+        minimum = result["minimumClearance"]
+        self.assertLess(abs(minimum["coordinate"] - 4.3), 0.02)
+        self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
+        self.replay(lambda: self.assertEqual(
+            self.arm.Placement.toMatrix().A,
+            minimum["placements"][self.arm.Name].toMatrix().A))
+        self.fixture.assert_restored(before)
+
+    def test_gap_field_event_show_and_restore(self):
+        self.slider_panel(0)
+        self.panel.startField.setText("4")
+        self.panel.maximumGapField.setText("2 mm")
+        before = self.fixture.state()
+        result = self.run_panel()
+        event = result["firstGapViolation"]
+        self.assertLess(abs(event["coordinate"] - 3), 0.01)
+        self.assertIn("maximum gap", self.panel.resultText.text())
+        index = next(i for i, (record, _, _) in enumerate(self.panel.events) if record is event)
+        self.panel.eventPicker.setCurrentIndex(index)
+        self.replay(lambda: self.assertEqual(
+            self.arm.Placement.toMatrix().A, event["placements"][self.arm.Name].toMatrix().A))
+        self.fixture.assert_restored(before)
+
+    def test_refinement_only_contact_text_show_and_restore(self):
+        self.slider_panel(8)
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(1.99, 0, 4.3))
+        self.doc.recompute()
+        self.panel.stepField.setText("2")
+        before = self.fixture.state()
+        result = self.run_panel()
+        self.assertTrue(all(not sample["contact"] for sample in result["samples"]))
+        event = result["firstContact"]
+        self.assertIsNotNone(event)
+        self.assertNotIn("No finding", self.panel.resultText.text())
+        self.assertIn("sampled + refined", self.panel.resultText.text())
+        index = next(i for i, (record, _, _) in enumerate(self.panel.events) if record is event)
+        self.panel.eventPicker.setCurrentIndex(index)
+        self.replay(lambda: self.assertEqual(
+            self.arm.Placement.toMatrix().A, event["placements"][self.arm.Name].toMatrix().A))
+        self.fixture.assert_restored(before)
+
+    def test_event_probe_minimum_show_and_restore(self):
+        self.slider_panel(0)
+        self.panel.startField.setText("8")
+        self.panel.stepField.setText("2")
+        self.panel.clearanceField.setText("1.15")
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(3, 0, 4.9))
+        self.doc.recompute()
+        before = self.fixture.state()
+        from Assembly import sweepJoint
+
+        def limited(*args, **kwargs):
+            return sweepJoint(*args, **kwargs, refinementPoseBudget=1)
+
+        with patch("Assembly.sweepJoint", side_effect=limited):
+            result = self.run_panel()
+        minimum = result["minimumClearance"]
+        self.assertAlmostEqual(minimum["coordinate"], 5)
+        self.assertIn("1.001666 mm at 5.0 mm", self.panel.resultText.text())
+        self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
+        self.replay(lambda: self.assertAlmostEqual(self.arm.Placement.Base.z, 5))
+        self.fixture.assert_restored(before)
+
+    def test_nonconverged_minimum_text(self):
+        self.slider_panel(8)
+        self.fixture.offset_spheres()
+        from Assembly import sweepJoint
+
+        def limited(*args, **kwargs):
+            return sweepJoint(*args, **kwargs, refinementPoseBudget=0)
+
+        with patch("Assembly.sweepJoint", side_effect=limited):
+            self.run_panel()
+        self.assertIn("not converged", self.panel.resultText.text())
