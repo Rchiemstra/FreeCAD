@@ -638,6 +638,115 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
     def test_pending_pick_close_fences_commit(self):
         self.assert_pending_pick_cancelled("close", "commit")
 
+    def make_solver_update_fixture(self):
+        Gui.activateWorkbench("SketcherWorkbench")
+        self.doc = App.newDocument("QueuedSolverUpdate")
+        sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
+        sketch.addGeometry(Part.LineSegment(App.Vector(), App.Vector(10, 0, 0)), False)
+        self.recompute_gui_document()
+        self.assertTrue(Gui.activeDocument().setEdit(sketch.Name))
+        self.flush_gui(100)
+        return sketch
+
+    def watch_solver_redraws(self):
+        from pivy import coin
+
+        search = coin.SoSearchAction()
+        search.setName("EditingRoot")
+        search.setSearchingAll(True)
+        search.apply(Gui.activeDocument().activeView().getSceneGraph())
+        self.assertIsNotNone(search.getPath())
+        edit_root = search.getPath().getTail()
+        search.setName("PointsCoordinate0")
+        search.apply(edit_root)
+        self.assertIsNotNone(search.getPath())
+        coordinates = search.getPath().getTail()
+        redraws = []
+        sensor = coin.SoFieldSensor(lambda *_: redraws.append(True), None)
+        sensor.setPriority(0)
+        sensor.attach(coordinates.point)
+        self.addCleanup(sensor.detach)
+        return redraws, sensor
+
+    def test_queued_solver_update_does_not_redraw_restarted_edit(self):
+        sketch = self.make_solver_update_fixture()
+        # The synchronous owner-lane recompute services marshalled model
+        # notifications, but does not pump Qt's queued redraw callbacks.
+        sketch.touch()
+        self.doc.recompute()
+        # Restart while the queued GUI call is being delivered, before it can
+        # arm its redraw. resetEdit itself may pump Qt, so doing this earlier
+        # would allow the old callback to drain before the new edit exists.
+        test = self
+        watches = []
+
+        class RestartEdit(QtCore.QObject):
+            def eventFilter(self, receiver, event):
+                if (receiver == QtCore.QCoreApplication.instance()
+                        and event.type() == QtCore.QEvent.MetaCall):
+                    receiver.removeEventFilter(self)
+                    Gui.activeDocument().resetEdit()
+                    test.assertTrue(Gui.activeDocument().setEdit(sketch.Name))
+                    watches.append(test.watch_solver_redraws())
+                return False
+
+        restart = RestartEdit()
+        application = QtCore.QCoreApplication.instance()
+        application.installEventFilter(restart)
+        try:
+            self.flush_gui(100)
+        finally:
+            application.removeEventFilter(restart)
+        self.assertEqual(len(watches), 1, "solver update was not queued")
+        redraws, sensor = watches[0]
+        self.assertFalse(redraws, "old solver update redrew the new edit")
+        # Idle presentation catch-up can replace the coordinate nodes. Watch
+        # the current nodes for the positive controls after draining it.
+        sensor.detach()
+        redraws, sensor = self.watch_solver_redraws()
+        # Fresh GUI-thread and queued signals must still update this edit.
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertTrue(redraws, "current edit stopped receiving solver updates")
+        redraws.clear()
+        sketch.touch()
+        self.doc.recompute()
+        self.flush_gui(100)
+        self.assertTrue(redraws, "current edit stopped receiving queued solver updates")
+        sensor.detach()
+
+    def test_queued_solver_update_does_not_draw_during_commit(self):
+        sketch = self.make_solver_update_fixture()
+        redraws, sensor = self.watch_solver_redraws()
+        entered, release = threading.Event(), threading.Event()
+
+        def mutate():
+            sketch.toggleConstruction(0)
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("test solver update commit timed out")
+
+        result = self.doc.commitCompatibilityMutationAsync(
+            mutate, object_name=sketch.Name, recompute=False,
+        )
+        results = []
+        waiter = threading.Thread(target=lambda: results.append(result["wait"]()))
+        waiter.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            self.flush_gui(100)
+            self.assertFalse(redraws, "queued solver update drew during a model commit")
+        finally:
+            release.set()
+            # Do not leave owner work alive if a redraw assertion fails.
+            self.assertTrue(self.wait_until(lambda: not waiter.is_alive(), 10000))
+            waiter.join()
+        self.assertEqual([item["status"] for item in results], ["Committed"])
+        self.assertTrue(self.wait_until(lambda: bool(redraws), 2000),
+                        "solver redraw was lost while the document was busy")
+        sensor.detach()
+        self.recompute_gui_document()
+
     def test_pending_pick_edit_end_restores_scene_without_undo(self):
         self.assert_pending_pick_cancelled("edit")
 

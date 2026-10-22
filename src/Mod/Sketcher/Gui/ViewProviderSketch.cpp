@@ -78,6 +78,7 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/View3DInventorViewerInternal.h>
 #include <App/DocumentWouldBlock.h>
+#include <App/MutationClassification.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/GeoList.h>
@@ -3937,21 +3938,22 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
 
 void ViewProviderSketch::slotSolverUpdate()
 {
-    if (!isInEditMode()) {
-        return;
-    }
-
     // Solver updates can fire from the document owner lane. Coin / Qt work
     // must run on the GUI thread after the document lock is released.
     if (!App::DocumentWouldBlock::isGuiThread()) {
+        const auto session = solverUpdateSession.load();
+        if (!session) {
+            return;
+        }
         App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
         if (!document || !getObject()->isAttachedToDocument()) {
             return;
         }
         const std::string documentName = document->getName();
         const std::string objectName = getObject()->getNameInDocument();
-        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
-            if (!Gui::Application::Instance) {
+        auto update = [documentName, objectName,
+                       session = std::weak_ptr<SolverUpdateSession>(session)](auto retry) -> void {
+            if (session.expired() || !Gui::Application::Instance) {
                 return;
             }
             App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
@@ -3962,15 +3964,29 @@ void ViewProviderSketch::slotSolverUpdate()
             if (!guiDoc || guiDoc->isAboutToClose()) {
                 return;
             }
+            // Keep a commit from starting between the busy check and draw's
+            // reads of live geometry/solver data. Never wait on the GUI thread.
+            App::LivePresentationRefreshScope refresh;
+            if (!refresh.acquired() || guiDoc->deferLivePresentationUpdates()) {
+                // Preserve the final solver update, but never redraw while a
+                // commit/replay owns the model. The weak identity fences retries too.
+                Gui::scheduleGuiSingleShot(10, [retry]() { retry(retry); });
+                return;
+            }
             App::DocumentObject* object = doc->getObject(objectName.c_str());
             if (!object) {
                 return;
             }
             auto* sketchView = freecad_cast<ViewProviderSketch*>(guiDoc->getViewProvider(object));
-            if (sketchView) {
+            if (sketchView && sketchView->solverUpdateSession.load() == session.lock()) {
                 sketchView->slotSolverUpdate();
             }
-        });
+        };
+        Gui::scheduleGuiSingleShot(0, [update]() { update(update); });
+        return;
+    }
+
+    if (!isInEditMode()) {
         return;
     }
 
@@ -4329,6 +4345,7 @@ bool ViewProviderSketch::setEdit(int ModNum)
     preselection.reset();
     selection.reset();
     editCoinManager = std::make_unique<EditModeCoinManager>(*this);
+    solverUpdateSession.store(std::make_shared<SolverUpdateSession>());
     snapManager = std::make_unique<SnapManager>(*this);
 
 
@@ -4625,6 +4642,9 @@ void ViewProviderSketch::unsetEdit(int ModNum)
     if (ModNum != ViewProviderSketch::Default) {
         return PartGui::ViewProvider2DObject::unsetEdit(ModNum);
     }
+
+    // Invalidate queued redraws before any edit teardown or model restoration.
+    solverUpdateSession.store(nullptr);
 
     if (dragAutoConstraintHandler) {
         dragAutoConstraintHandler->clear();

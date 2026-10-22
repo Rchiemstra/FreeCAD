@@ -32,6 +32,7 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <fastsignals/signal.h>
+#include <atomic>
 #include <memory>
 
 #include <Base/Parameter.h>
@@ -1080,6 +1081,10 @@ private:
     std::unique_ptr<ShortcutListener> listener;
 
     std::unique_ptr<EditModeCoinManager> editCoinManager;
+
+    // Identity shared with off-thread solver notifications, never with another edit.
+    struct SolverUpdateSession {};
+    std::atomic<std::shared_ptr<SolverUpdateSession>> solverUpdateSession;
 
     std::unique_ptr<SnapManager> snapManager;
 
