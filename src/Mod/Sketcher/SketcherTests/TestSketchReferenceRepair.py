@@ -37,6 +37,7 @@ def signature(sketch):
             c.Value,
             c.Driving,
             c.IsActive,
+            c.InVirtualSpace,
         )
         for c in sketch.Constraints
     )
@@ -425,3 +426,155 @@ class TestSketchReferenceRepair(unittest.TestCase):
             ).Length,
             1e-7,
         )
+
+    def test_explicit_pick_different_source_and_duplicate_geometry(self):
+        from SketchReferenceRepair import picked_candidate
+
+        wanted = self.broken()
+        replacement = self.doc.addObject("PartDesign::Feature", "Replacement")
+        replacement.Shape = Part.makeCompound([wanted, wanted.copy(noElementMap=True)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = signature(self.sketch)
+        undo_count = self.doc.UndoCount
+        selected = picked_candidate(self.sketch, reference, replacement, "Edge2")
+        repair(self.sketch, [(reference, selected)])
+        self.doc.recompute()
+        self.assertFalse(broken_references(self.sketch))
+        self.assertEqual(signature(self.sketch), before)
+        self.assertEqual(self.doc.UndoCount, undo_count + 1)
+        linked_source, linked_subs = self.sketch.ExternalGeometry[0]
+        self.assertIs(linked_source, replacement)
+        self.assertEqual(len(linked_subs), 1)
+        self.assertTrue(
+            linked_source.getSubObject(linked_subs[0]).isSame(replacement.Shape.Edges[1])
+        )
+        self.doc.undo()
+        self.doc.recompute()
+        self.assertEqual(len(broken_references(self.sketch)), 1)
+        self.assertEqual(signature(self.sketch), before)
+
+    def test_explicit_pick_rejects_incompatible_and_stale_geometry(self):
+        from SketchReferenceRepair import picked_candidate
+
+        wanted = self.broken()
+        self.source.Shape = Part.makeCompound([wanted, edge(30)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaises(RepairError):
+            picked_candidate(self.sketch, reference, self.source, "Vertex1")
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+        selected = picked_candidate(self.sketch, reference, self.source, "Edge1")
+        self.source.Shape = Part.makeCompound([edge(30)])
+        self.doc.recompute()
+        before = rejected_snapshot(self.sketch)
+        with self.assertRaises(RepairError):
+            repair(self.sketch, [(reference, selected)])
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+
+
+    def assert_moved_pick(self, replacement_shape, vertex=False, wanted=None, expected=None):
+        from SketchReferenceRepair import picked_candidate
+
+        self.broken(vertex=vertex, wanted=wanted)
+        # Retain driving dimensions, a named expression, and a reference
+        # dimension with virtual-space/active settings through solver movement.
+        dim = self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 0, 2, 0.0))
+        self.sketch.setDriving(dim, False)
+        self.sketch.renameConstraint(dim, "MeasuredWidth")
+        self.sketch.setVirtualSpace(dim, True)
+        self.sketch.setActive(dim, False)
+        self.source.Shape = Part.makeCompound([replacement_shape, edge(30)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = signature(self.sketch)
+        undo_count = self.doc.UndoCount
+        # The ranked path must continue to refuse moved or resized geometry.
+        self.assertFalse(any(c.compatible for c in candidates(self.sketch, reference)))
+        selected = picked_candidate(
+            self.sketch, reference, self.source, "Vertex1" if vertex else "Edge1"
+        )
+        repair(self.sketch, [(reference, selected)])
+        self.doc.recompute()
+        after = signature(self.sketch)
+        self.assertFalse(broken_references(self.sketch))
+        self.assertEqual(after[:3], before[:3])
+        self.assertEqual(after[3][0][:2], before[3][0][:2])
+        self.assertNotEqual(after[4], before[4], "solver did not move the sketch")
+        if expected is None:
+            expected = replacement_shape.Vertexes[0].Point
+        self.assertLess((self.sketch.getPoint(0, 1) - expected).Length, 1e-7)
+        self.assertAlmostEqual(self.sketch.Geometry[0].length(), 5.0)
+        self.assertEqual(self.doc.UndoCount, undo_count + 1)
+        self.doc.undo()
+        self.doc.recompute()
+        self.assertEqual(signature(self.sketch), before)
+        self.assertEqual(len(broken_references(self.sketch)), 1)
+        self.doc.redo()
+        self.doc.recompute()
+        self.assertFalse(broken_references(self.sketch))
+        self.assertEqual(signature(self.sketch), after)
+
+    def test_explicit_pick_moved_resized_line_preserves_settings(self):
+        self.assert_moved_pick(edge(12, 23))
+
+    def test_explicit_pick_moved_vertex_preserves_settings(self):
+        self.assert_moved_pick(Part.Vertex(App.Vector(12, 7, 0)), vertex=True)
+
+    def test_explicit_pick_moved_resized_arc_preserves_settings(self):
+        old = Part.Arc(App.Vector(), App.Vector(5, 5, 0), App.Vector(10, 0, 0)).toShape()
+        new = Part.Arc(
+            App.Vector(12, 0, 0), App.Vector(22, 10, 0), App.Vector(32, 0, 0)
+        ).toShape()
+        # Sketcher canonicalizes clockwise arcs to the sketch's +Z normal;
+        # constraint point 1 is consequently the source arc's last endpoint.
+        self.assert_moved_pick(new, wanted=old, expected=App.Vector(32, 0, 0))
+
+    def test_explicit_pick_kind_refusals_are_translated(self):
+        import SketchReferenceRepair as module
+        from dataclasses import replace
+
+        self.broken()
+        self.source.Shape = Part.makeCompound([
+            Part.makeCircle(5), Part.Vertex(App.Vector(12, 7, 0))
+        ])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = rejected_snapshot(self.sketch)
+        with patch.object(App.Qt, "translate", side_effect=lambda context, text: "translated: " + text):
+            for ref, subelement in (
+                (replace(reference, kind="attachment"), "Edge1"),
+                (reference, "Vertex1"),
+                (reference, "Edge1"),
+            ):
+                with self.subTest(subelement=subelement, kind=ref.kind):
+                    with self.assertRaisesRegex(RepairError, "^translated: "):
+                        module.picked_candidate(self.sketch, ref, self.source, subelement)
+        self.assertEqual(rejected_snapshot(self.sketch), before)
+
+
+    def test_explicit_pick_updates_reference_measurement_keeps_settings(self):
+        from SketchReferenceRepair import picked_candidate
+
+        self.broken()
+        dim = self.sketch.addConstraint(
+            Sketcher.Constraint("DistanceX", -3, 1, -3, 2, 10.0)
+        )
+        self.sketch.setDriving(dim, False)
+        self.sketch.renameConstraint(dim, "ExternalWidth")
+        self.sketch.setVirtualSpace(dim, True)
+        self.source.Shape = Part.makeCompound([edge(12, 23), edge(30)])
+        self.doc.recompute()
+        reference = broken_references(self.sketch)[0]
+        before = signature(self.sketch)
+        selected = picked_candidate(self.sketch, reference, self.source, "Edge1")
+        repair(self.sketch, [(reference, selected)])
+        self.doc.recompute()
+        after = signature(self.sketch)
+        self.assertEqual(after[0][:-1], before[0][:-1])
+        self.assertEqual(after[0][-1][:8], before[0][-1][:8])
+        self.assertEqual(after[0][-1][9:], before[0][-1][9:])
+        self.assertEqual(after[1:3], before[1:3])
+        self.assertAlmostEqual(self.sketch.Constraints[dim].Value, 23.0)
+        self.assertFalse(broken_references(self.sketch))

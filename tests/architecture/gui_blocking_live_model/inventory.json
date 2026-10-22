@@ -275,6 +275,7 @@
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Sketcher/SketchReferenceRepairGui.py",
+    "src/Mod/Sketcher/SketchReferenceReassignGui.py",
     "src/Mod/Sketcher/SketchReferenceRepair.py",
     "src/Mod/Start/StartMigrator.py",
     "src/Mod/AddonManager/AddonManager.py",
@@ -4342,14 +4343,6 @@
       "subsystem": "Assembly",
       "disposition": "investigate",
       "evidence": "App.ActiveDocument.abortTransaction()"
-    },
-    {
-      "path": "src/Mod/Assembly/JointObject.py",
-      "occurrence": 1,
-      "category": "live-app-dereference",
-      "subsystem": "Assembly",
-      "disposition": "investigate",
-      "evidence": "App.ActiveDocument.abortTransaction()  # Close the auto-transaction"
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
