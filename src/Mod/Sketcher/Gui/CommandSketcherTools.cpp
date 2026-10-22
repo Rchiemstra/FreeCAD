@@ -33,8 +33,10 @@
 #include <Inventor/SbString.h>
 
 #include <App/Application.h>
+#include <App/Expression.h>
 #include <Base/Console.h>
 #include <Base/Reader.h>
+#include <Base/Tools.h>
 #include <Base/Writer.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
@@ -256,7 +258,10 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     }
 
     std::vector<std::unique_ptr<Sketcher::Constraint>> shapeConstraints;
-    for (auto constr : obj->Constraints.getValues()) {
+    std::string expressionsAsStr;
+    const auto& constraints = obj->Constraints.getValues();
+    for (size_t constraintId = 0; constraintId < constraints.size(); ++constraintId) {
+        const auto constr = constraints[constraintId];
 
         auto isSelectedGeoOrAxis = [](const std::vector<int>& vec, int value) {
             return (std::ranges::find(vec, value) != vec.end())
@@ -287,6 +292,25 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
                 temp->setGeoId(i, mappedGeoId->second);
             }
         }
+        auto expression = obj->getExpression(
+            obj->Constraints.createPath(static_cast<int>(constraintId))).expression;
+        if (expression) {
+            // Names are not copied by PythonConverter. Keep expression references unchanged,
+            // resolving them in the target sketch just like references to other objects.
+            const std::string newId = "lastConstraintId + " + std::to_string(shapeConstraints.size());
+            const std::string name = constr->Name.empty()
+                ? "Constraints[" + std::to_string(constraintId) + "]" : constr->Name;
+            const std::string expressionStr = Base::Tools::escapeEncodeString(expression->toString());
+            expressionsAsStr +=
+                "try:\n"
+                "    objectStr.evalExpression('" + expressionStr + "')\n"
+                "    objectStr.setExpression('Constraints[%d]' % (" + newId + "), '"
+                + expressionStr + "')\n"
+                "except Exception as error:\n"
+                "    App.Console.PrintWarning('Could not paste expression for constraint %s "
+                "(Constraints[%d]): %s\\n' % ('" + Base::Tools::escapeEncodeString(name)
+                + "', " + newId + ", error))\n";
+        }
         shapeConstraints.push_back(std::move(temp));
     }
     std::vector<Sketcher::Constraint*> rawCstrs;
@@ -304,7 +328,14 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     exportedData.append("\n");
     exportedData.append(geosAsStr);
     exportedData.append("\n");
+    if (!expressionsAsStr.empty()) {
+        exportedData.append("lastConstraintId = objectStr.ConstraintCount\n");
+    }
     exportedData.append(cstrAsStr);
+    if (!expressionsAsStr.empty()) {
+        exportedData.append("\n# Restore constraint expressions in the target sketch.\n");
+        exportedData.append(expressionsAsStr);
+    }
 
     if (!exportedData.empty()) {
         QClipboard* clipboard = QGuiApplication::clipboard();
@@ -417,7 +448,7 @@ void CmdSketcherPaste::activated(int iMsg)
 
    openCommand(QT_TRANSLATE_NOOP("Command", "Paste in Sketcher"));
 
-    Gui::Command::doCommand(Gui::Command::Doc, data.c_str());
+    Gui::Command::doCommand(Gui::Command::Doc, "%s", data.c_str());
 
     obj->solve(true);
     vp->draw(false, false);

@@ -30202,7 +30202,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 1172,
+      "line": 1203,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30210,7 +30210,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 1177,
+      "line": 1208,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30218,7 +30218,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 1379,
+      "line": 1410,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30226,7 +30226,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 1387,
+      "line": 1418,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30234,7 +30234,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 1964,
+      "line": 1995,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30242,7 +30242,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 2210,
+      "line": 2241,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30250,7 +30250,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 2274,
+      "line": 2305,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -30258,7 +30258,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandSketcherTools.cpp",
-      "line": 2410,
+      "line": 2441,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
