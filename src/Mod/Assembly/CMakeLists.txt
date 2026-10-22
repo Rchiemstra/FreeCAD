@@ -34,6 +34,7 @@ set(Assembly_Scripts
     CommandExportASMT.py
     CommandReviewNote.py
     TestAssemblyWorkbench.py
+    TestAssemblyGui.py
     JointObject.py
     ComponentPattern.py
     CommandComponentPattern.py
@@ -46,7 +47,7 @@ set(Assembly_Scripts
 )
 
 if(BUILD_GUI)
-    list (APPEND Assembly_Scripts InitGui.py TestAssemblyGui.py)
+    list (APPEND Assembly_Scripts InitGui.py)
 endif(BUILD_GUI)
 
 INSTALL(
@@ -69,6 +70,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestMotionInterference.py
     AssemblyTests/TestMotionInterferenceGui.py
     AssemblyTests/TestComponentPattern.py
+    AssemblyTests/TestJointEditorSwitch.py
     AssemblyTests/TestCommandCreateView.py
     AssemblyTests/TestCommandInsertLink.py
     AssemblyTests/TestCrossBodyDatumStaleness.py

@@ -22,9 +22,6 @@
 # **************************************************************************/
 
 
-FreeCAD.__unit_test__ += ["TestAssemblyGui"]
-
-
 class AssemblyCommandGroup:
     def __init__(self, cmdlist, menu, tooltip=None):
         self.cmdlist = cmdlist
@@ -388,3 +385,6 @@ class AssemblyWorkbench(Workbench):
 
 
 Gui.addWorkbench(AssemblyWorkbench())
+
+# Registered separately so the GUI test runner executes the joint editor tests.
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]

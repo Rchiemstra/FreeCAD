@@ -35,6 +35,7 @@ if(BUILD_GUI)
     list (APPEND Sketcher_Scripts
           InitGui.py
           SketchReferenceRepairGui.py
+          SketchReferenceReassignGui.py
           TestSketcherGui.py
     )
     list (APPEND Sketcher_TestScripts
