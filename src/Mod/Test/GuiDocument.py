@@ -39,6 +39,7 @@ from Test.GuiRecompute import (
     save_document_as,
     touch_on_owner_thread,
     undo_document,
+    wait_for_mutation_ready,
     write_recovery_snapshot,
 )
 
@@ -331,8 +332,8 @@ class TestGuiDocument(unittest.TestCase):
         thread inside its commit boundary.
 
         What has to hold is that the refresh command does not *block* on it and
-        that the proxy never runs off the main thread, not that the feature is
-        left unrecomputed.
+        that the proxy runs on the document owner thread, not that the feature
+        is left unrecomputed.
         """
 
         class RefreshProxy:
@@ -363,6 +364,10 @@ class TestGuiDocument(unittest.TestCase):
             QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
             FreeCADGui.updateGui()
             time.sleep(0.005)
+
+        # Object state can settle before commit finalization and notification
+        # replay finish. Wait for the document before reading live results.
+        wait_for_mutation_ready(self.doc, timeout_seconds=5.0)
 
         # Dispatched, not run inline: the proxy sleeps 50ms and the command
         # still returns immediately.
