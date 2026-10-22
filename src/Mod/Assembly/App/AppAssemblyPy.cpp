@@ -49,6 +49,10 @@ public:
             "Create a thread-safe cooperative scan cancellation token.");
         add_varargs_method("cancelInterferenceScan", &Module::cancelScan,
             "Cancel scans using the supplied token; cancellation is cooperative.");
+        add_varargs_method("_motionSimulationFrameTimes", &Module::motionSimulationFrameTimes,
+            "Internal: native solver timestamps, including the unsolved input frame.");
+        add_varargs_method("_motionSimulationJointState", &Module::motionSimulationJointState,
+            "Internal: participating joint's prescribed and solver coordinates.");
         add_varargs_method("_withMotionSweepState", &Module::withMotionSweepState,
             "Internal synchronous document-thread scope for the motion controller.");
         add_varargs_method("_withMotionSweepMutation", &Module::withMotionSweepMutation,
@@ -68,6 +72,14 @@ private:
     Py::Object runPrepared(const Py::Tuple& args)
     {
         return runPreparedInterferenceScanPy(args);
+    }
+    Py::Object motionSimulationFrameTimes(const Py::Tuple& args)
+    {
+        return motionSimulationFrameTimesPy(args);
+    }
+    Py::Object motionSimulationJointState(const Py::Tuple& args)
+    {
+        return motionSimulationJointStatePy(args);
     }
     Py::Object withMotionSweepState(const Py::Tuple& args)
     {

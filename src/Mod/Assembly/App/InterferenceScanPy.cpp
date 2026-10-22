@@ -361,6 +361,53 @@ Py::Object runPreparedInterferenceScanPy(const Py::Tuple& args)
     }
 }
 
+Py::Object motionSimulationFrameTimesPy(const Py::Tuple& args)
+{
+    PyObject* hostPy = nullptr;
+    if (!PyArg_ParseTuple(args.ptr(), "O!", &App::DocumentObjectPy::Type, &hostPy)) {
+        throw Py::Exception();
+    }
+    auto* host = dynamic_cast<AssemblyObject*>(
+        static_cast<App::DocumentObjectPy*>(hostPy)->getDocumentObjectPtr());
+    if (!host || !host->isAttachedToDocument()) {
+        throw Py::ValueError("An attached assembly is required");
+    }
+    Py::List times;
+    for (double time : host->motionSimulationFrameTimes()) {
+        times.append(Py::Float(time));
+    }
+    return times;
+}
+
+Py::Object motionSimulationJointStatePy(const Py::Tuple& args)
+{
+    PyObject* hostPy = nullptr;
+    PyObject* jointPy = nullptr;
+    unsigned long frame;
+    const char* formula;
+    double time;
+    if (!PyArg_ParseTuple(args.ptr(), "O!O!ksd", &App::DocumentObjectPy::Type, &hostPy,
+                          &App::DocumentObjectPy::Type, &jointPy, &frame, &formula, &time)) {
+        throw Py::Exception();
+    }
+    auto* host = dynamic_cast<AssemblyObject*>(
+        static_cast<App::DocumentObjectPy*>(hostPy)->getDocumentObjectPtr());
+    auto* joint = static_cast<App::DocumentObjectPy*>(jointPy)->getDocumentObjectPtr();
+    if (!host || !host->isAttachedToDocument() || !joint || !joint->isAttachedToDocument()) {
+        throw Py::ValueError("An attached assembly and joint are required");
+    }
+    try {
+        Py::List values;
+        for (double value : host->motionSimulationJointState(joint, frame, formula, time)) {
+            values.append(Py::Float(value));
+        }
+        return values;
+    }
+    catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+}
+
 Py::Object withMotionSweepStatePy(const Py::Tuple& args, bool mutation)
 {
     PyObject* hostPy = nullptr;

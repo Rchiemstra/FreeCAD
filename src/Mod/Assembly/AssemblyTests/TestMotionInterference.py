@@ -772,3 +772,271 @@ class TestMotionSweep(unittest.TestCase):
                         dict(maximumGap=float("inf")), dict(maximumGap="2 deg")):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.sweep(**options)
+
+    def simulation(self, formula="10*time", start=0, end=1, step=0.1):
+        from Assembly.MotionInterference import _driver
+        import UtilsAssembly
+
+        created = []
+        sim = _driver(self.doc, self.joint, 0, 1, 10,
+                      "deg" if self.joint.JointType == "Revolute" else "mm", created)
+        sim.Group[0].Formula = formula
+        sim.aTimeStart, sim.bTimeEnd, sim.cTimeStepOutput = start, end, step
+        UtilsAssembly.getSimulationGroup(self.assembly).Group = [sim]
+        self.doc.recompute()
+        return sim
+
+    def sweep_simulation(self, sim, **options):
+        return Assembly.sweepSimulation(self.assembly, sim, self.arm, self.obstacle, **options)
+
+    def gear_simulation(self, formula="pi/2*time"):
+        self.revolute()
+        follower = self.assembly.newObject("Part::Feature", "Follower")
+        follower.Shape = Part.makeSphere(0.5, App.Vector(5, 0, 0))
+        self.doc.recompute()
+        dependent = self.make_joint("Revolute", self.base, follower)
+        dependent.Label = "Follower pivot"
+        gear = self.make_joint("Gears", self.arm, follower)
+        gear.Distance = gear.Distance2 = 10
+        angle = math.radians(-60)
+        self.obstacle.Shape = Part.makeSphere(0.5, App.Vector(5*math.cos(angle), 5*math.sin(angle), 0))
+        sim = self.simulation(formula)
+        return sim, follower, dependent
+
+    def test_simulation_ideal_gear_contact_and_coordinates(self):
+        sim, follower, dependent = self.gear_simulation()
+        before = self.state()
+        result = Assembly.sweepSimulation(self.assembly, sim, follower, self.obstacle,
+                                          refinementTolerance=0.00001, refinementPoseBudget=32)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        event = result["firstContact"]
+        expected = 60 - math.degrees(2*math.asin(0.1))
+        actual = event["drivenCoordinates"][self.joint.Name]["value"]
+        self.assertLess(abs(actual - expected), 0.002)
+        self.assertAlmostEqual(actual, 90*event["time"], places=5)
+        self.assertIsNotNone(event["previousClearSample"])
+        self.assertLess(event["previousClearSample"]["time"], event["time"])
+        print("ANALYTIC simulation gear contact=%.9f expected=%.9f frame=%s t=%.9f" %
+              (actual, expected, event["frame"], event["time"]))
+        self.assert_restored(before)
+
+    def test_simulation_four_bar_contact(self):
+        self.doc.removeObject(self.joint.Name)
+        self.arm.Placement = App.Placement(App.Vector(), App.Rotation(App.Vector(0,0,1), 90))
+        self.arm.Shape = Part.makeBox(10, 0.2, 0.2)
+        coupler = self.assembly.newObject("Part::Feature", "Coupler")
+        coupler.Shape = Part.makeSphere(1, App.Vector(10,0,0))
+        coupler.Placement.Base = App.Vector(0,10,0)
+        rocker = self.assembly.newObject("Part::Feature", "Rocker")
+        rocker.Shape = Part.makeBox(10,0.2,0.2)
+        rocker.Placement = App.Placement(App.Vector(20,0,0), App.Rotation(App.Vector(0,0,1),90))
+        self.doc.recompute()
+        def pin(first, second, p, q):
+            joint = self.make_joint("Revolute", first, second)
+            with patch("JointObject.solveIfAllowed"):
+                joint.Placement1.Base = App.Vector(*p)
+                joint.Placement2.Base = App.Vector(*q)
+            return joint
+        self.joint = pin(self.base, self.arm, (0,0,0), (0,0,0))
+        pin(self.arm, coupler, (10,0,0), (0,0,0))
+        pin(coupler, rocker, (20,0,0), (10,0,0))
+        pin(self.base, rocker, (20,0,0), (0,0,0))
+        angle = math.radians(110)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(10+10*math.cos(angle),10*math.sin(angle),0))
+        sim = self.simulation("pi/2+pi/6*time")
+        before = self.state()
+        result = Assembly.sweepSimulation(self.assembly, sim, coupler, self.obstacle,
+                                          refinementTolerance=0.00001, refinementPoseBudget=32)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        event = result["firstContact"]
+        expected = 110 - math.degrees(2*math.asin(0.1))
+        actual = event["drivenCoordinates"][self.joint.Name]["value"]
+        self.assertLess(abs(actual - expected), 0.002)
+        print("ANALYTIC simulation four-bar contact=%.9f expected=%.9f t=%.9f" %
+              (actual, expected, event["time"]))
+        self.assert_restored(before)
+
+    def test_simulation_dependent_limit_mid_trajectory(self):
+        sim, follower, dependent = self.gear_simulation("pi/3*sin(pi*time)")
+        dependent.EnableAngleMin = True
+        dependent.AngleMin = -30
+        self.doc.recompute()
+        before = self.state()
+        result = self.sweep_simulation(sim)
+        self.assertEqual(result["completeness"], "incomplete", result["reason"])
+        self.assertIn(dependent.Label, result["reason"])
+        self.assertIn("limit", result["reason"])
+        self.assertLess(result["samples"][-1]["time"], 0.5)
+        self.assert_restored(before)
+
+    def test_simulation_driver_full_turn_limit(self):
+        self.revolute()
+        sim = self.simulation("2*pi*time", step=1)
+        self.joint.EnableAngleMax = True
+        self.joint.AngleMax = 90
+        self.doc.recompute()
+        before = self.state()
+        result = self.sweep_simulation(sim, refinementPoseBudget=0)
+        print("ANALYTIC driver endpoint=360 deg max=90: %s %s" %
+              (result["completeness"], result["reason"]))
+        self.assertEqual(result["completeness"], "incomplete", result["reason"])
+        self.assertIn(self.joint.Name, result["reason"])
+        self.assert_restored(before)
+
+    def test_simulation_dependent_full_turn_limit(self):
+        # Equal gears make a -360 degree follower turn for a 360 degree driver.
+        sim, follower, dependent = self.gear_simulation("2*pi*time")
+        sim.cTimeStepOutput = 1
+        dependent.EnableAngleMin = True
+        dependent.AngleMin = -90
+        self.doc.recompute()
+        before = self.state()
+        result = self.sweep_simulation(sim, refinementPoseBudget=0)
+        print("ANALYTIC dependent endpoint=-360 deg min=-90: %s %s" %
+              (result["completeness"], result["reason"]))
+        self.assertEqual(result["completeness"], "incomplete", result["reason"])
+        self.assertIn(dependent.Name, result["reason"])
+        self.assert_restored(before)
+
+    def test_simulation_disconnected_driver_is_incomplete(self):
+        from Assembly.MotionInterference import _driver
+
+        loose = [self.assembly.newObject("Part::Feature", name)
+                 for name in ("LooseBase", "LooseArm")]
+        for obj in loose:
+            obj.Shape = Part.makeBox(1, 1, 1)
+        disconnected = self.make_joint("Slider", *loose)
+        disconnected.Label = "Disconnected slider"
+        sim = self.simulation()
+        extra = _driver(self.doc, disconnected, 0, 5, 10, "mm", [])
+        motion = extra.Group[0]
+        sim.Group = list(sim.Group) + [motion]
+        # Even a stationary prescription must participate in the solver.
+        for formula in ("5*time", "0*time"):
+            motion.Formula = formula
+            self.doc.recompute()
+            before = self.state()
+            result = Assembly.sweepSimulation(self.assembly, sim, loose[1], self.obstacle,
+                                              refinementPoseBudget=0)
+            print("ANALYTIC disconnected driver prescribed=%s stationary=0: %s %s" %
+                  (formula, result["completeness"], result["reason"]))
+            self.assertEqual(result["completeness"], "incomplete", result["reason"])
+            self.assertIn(disconnected.Name, result["reason"])
+            self.assert_restored(before)
+
+    def test_simulation_screw_dependent_full_turn_limit(self):
+        # A 5 mm screw pitch converts 5 mm of slider travel into one turn.
+        follower = self.assembly.newObject("Part::Feature", "ScrewFollower")
+        follower.Shape = Part.makeSphere(0.5, App.Vector(5, 0, 0))
+        self.doc.recompute()
+        dependent = self.make_joint("Revolute", self.base, follower)
+        screw = self.make_joint("Screw", self.arm, follower)
+        screw.Distance = 5
+        dependent.EnableAngleMin = True
+        dependent.AngleMin = -90
+        sim = self.simulation("5*time", step=1)
+        before = self.state()
+        result = self.sweep_simulation(sim, refinementPoseBudget=0)
+        print("ANALYTIC screw dependent endpoint=-360 deg min=-90: %s %s" %
+              (result["completeness"], result["reason"]))
+        self.assertEqual(result["completeness"], "incomplete", result["reason"])
+        self.assertIn(dependent.Name, result["reason"])
+        self.assert_restored(before)
+
+    def test_simulation_tiny_range_requires_distinct_end_frame(self):
+        # The endpoint is 5 mm from the start despite the tiny time range.
+        sim = self.simulation("1e8*time", end=5e-8, step=1)
+        before = self.state()
+        result = self.sweep_simulation(sim, refinementPoseBudget=0)
+        print("ANALYTIC tiny range end=5e-8 s displacement=5 mm: %s %s" %
+              (result["completeness"], result["reason"]))
+        self.assertEqual(result["completeness"], "incomplete", result["reason"])
+        self.assertIn("end frame", result["reason"])
+        self.assert_restored(before)
+
+    def test_simulation_nonmonotonic_minimum_absolute_time_initial_value(self):
+        self.offset_spheres()
+        sim = self.simulation("initialValue+1.6*(time-2)", start=2, end=6, step=1)
+        self.arm.Placement.Base.z = 0.3
+        before = self.state()
+        result = self.sweep_simulation(sim, refinementTolerance="0.001 s", refinementPoseBudget=32)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        minimum = result["minimumClearance"]
+        self.assertLess(abs(minimum["time"]-4.5), 0.001)
+        self.assertGreater(result["sampledMinimumClearance"]["value"], 1.1)
+        self.assertAlmostEqual(minimum["value"], 1, places=5)
+        self.assertLess(abs(minimum["drivenCoordinates"][self.joint.Name]["value"] - 4.3), 0.002)
+        self.assertEqual([s["time"] for s in result["samples"]], [2,3,4,5,6])
+        self.assertEqual([s["frame"] for s in result["samples"]], [1,2,3,4,5])
+        print("ANALYTIC simulation minimum=%.9f expected=1 time=%.9f expected=4.5" %
+              (minimum["value"], minimum["time"]))
+        self.assert_restored(before)
+
+    def test_simulation_maximum_gap_and_frame_sampled_label(self):
+        sim = self.simulation("4-4*time")
+        before = self.state()
+        result = self.sweep_simulation(sim, maximumGap=2, refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        event = result["firstGapViolation"]
+        self.assertAlmostEqual(event["time"], 0.3)
+        self.assertAlmostEqual(event["previousClearSample"]["time"], 0.2)
+        self.assertEqual(result["sampling"], "frame-sampled")
+        self.assertIn("frame-sampled", result["message"])
+        self.assert_restored(before)
+        refined = self.sweep_simulation(sim, maximumGap=2, refinementTolerance=0.00001)
+        self.assertEqual(refined["completeness"], "complete", refined["reason"])
+        event = refined["firstGapViolation"]
+        self.assertLess(abs(event["time"]-0.25), 0.00001)
+        self.assertTrue(event["gapViolation"])
+        print("ANALYTIC simulation maximum gap time=%.9f expected=0.25" % event["time"])
+        self.assert_restored(before)
+
+    def test_simulation_cancel_error_and_solver_failure_restore(self):
+        sim = self.simulation()
+        # Preserve an already generated frame store as well as document state.
+        self.assertEqual(self.assembly.generateSimulation(sim), 0)
+        self.assembly.updateForFrame(3)
+        frame_count = self.assembly.numberOfFrames()
+        for mode in ("cancel", "callback", "solver"):
+            token = Assembly.SweepCancellation()
+            def progress(sample):
+                if mode == "cancel":
+                    token.cancel()
+                elif mode == "callback":
+                    raise RuntimeError("Trajectory callback failed")
+            if mode == "solver":
+                sim.Group[0].Formula = "unknown_function(time)"
+            before = self.state()
+            result = self.sweep_simulation(sim, cancel=token, progress=progress)
+            self.assertEqual(result["completeness"], "cancelled" if mode == "cancel" else "incomplete")
+            self.assertTrue(result["reason"])
+            self.assert_restored(before)
+            self.assertEqual(self.assembly.numberOfFrames(), frame_count)
+        self.assembly.updateForFrame(frame_count-1)
+        self.assertAlmostEqual(self.arm.Placement.Base.z, 10)
+
+    def test_simulation_missing_unexpected_frames_are_incomplete(self):
+        import AssemblyApp
+        sim = self.simulation()
+        for times in ([0,0,0.1,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1],
+                      [0,0,0.1,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1],
+                      [0,0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]):
+            before = self.state()
+            with patch.object(AssemblyApp, "_motionSimulationFrameTimes", return_value=times):
+                result = self.sweep_simulation(sim)
+            self.assertEqual(result["completeness"], "incomplete")
+            self.assertIn("frame", result["reason"].lower())
+            self.assert_restored(before)
+
+    def test_simulation_invalid_finite_range_and_ownership(self):
+        sim = self.simulation()
+        for prop, value in (("aTimeStart", float("nan")), ("bTimeEnd", -1),
+                            ("cTimeStepOutput", 0), ("cTimeStepOutput", float("inf"))):
+            original = getattr(sim, prop)
+            setattr(sim, prop, value)
+            with self.assertRaises(ValueError):
+                self.sweep_simulation(sim)
+            setattr(sim, prop, original)
+        self.assembly.Group = [o for o in self.assembly.Group if o.TypeId != "Assembly::SimulationGroup"]
+        with self.assertRaises(ValueError):
+            self.sweep_simulation(sim)

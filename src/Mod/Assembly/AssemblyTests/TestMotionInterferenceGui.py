@@ -66,6 +66,13 @@ class TestMotionInterferenceGui(unittest.TestCase):
         self.panel = MotionInterferenceTask(self.assembly)
         Gui.Control.showDialog(self.panel)
         self.panel.stepField.setText("9")
+        # Settle the tree's deferred selection expansion before state snapshots.
+        timeout = App.ParamGet("User parameter:BaseApp/Preferences/TreeView").GetInt(
+            "SelectionTimeout", 100
+        )
+        loop = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(max(1, timeout) + 20, loop.quit)
+        loop.exec_()
 
     def tearDown(self):
         self.panel.cancel()
@@ -622,3 +629,36 @@ class TestMotionInterferenceGui(unittest.TestCase):
         with patch("Assembly.sweepJoint", side_effect=limited):
             self.run_panel()
         self.assertIn("not converged", self.panel.resultText.text())
+
+    def test_simulation_mode_run_show_restore(self):
+        self.panel.reject()
+        Gui.Control.closeDialog()
+        import UtilsAssembly
+        from CommandCreateSimulation import Simulation, Motion
+
+        group = UtilsAssembly.getSimulationGroup(self.assembly)
+        sim = group.newObject("App::FeaturePython", "Simulation")
+        Simulation(sim)
+        motion = self.doc.addObject("App::FeaturePython", "Motion")
+        Motion(motion, "Angular", (self.joint, [""]), "pi/2*time")
+        sim.Group = [motion]
+        sim.cTimeStepOutput = 0.1
+        self.doc.recompute()
+        self.panel = MotionInterferenceTask(self.assembly)
+        Gui.Control.showDialog(self.panel)
+        self.panel.modePicker.setCurrentText("Simulation")
+        self.assertFalse(self.panel.startField.isEnabled())
+        self.assertEqual(self.panel.simulations[self.panel.simulationPicker.currentIndex()], sim)
+        self.panel.firstPicker.setCurrentIndex(self.panel.components.index(self.arm))
+        self.panel.secondPicker.setCurrentIndex(self.panel.components.index(self.obstacle))
+        before = self.fixture.state()
+        result = self.run_panel()
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertIn("Minimum sampled", self.panel.resultText.text())
+        self.assertIn("frame", self.panel.resultText.text())
+        self.assertIn("t =", self.panel.resultText.text())
+        self.panel.eventPicker.setCurrentIndex(len(self.panel.events)-1)
+        minimum = result["minimumClearance"]
+        self.replay(lambda: self.assertEqual(self.arm.Placement.toMatrix().A,
+                    minimum["placements"][self.arm.Name].toMatrix().A))
+        self.fixture.assert_restored(before)

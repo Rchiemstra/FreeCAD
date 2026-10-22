@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Bounded, sampled single-joint interference checks on the document thread.
+"""Sampled joint-range and prescribed-simulation checks on the document thread.
 
 No continuous-motion guarantee is implied. A complete result describes only the
 sampled + refined poses, with no global-minimum claim. Event scans own their
@@ -179,6 +179,212 @@ def _driver(doc, joint, start, end, count, unit, created):
     return sim
 
 
+def _simulations(assembly):
+    return [sim for group in assembly.Group if group.TypeId == "Assembly::SimulationGroup"
+            for sim in group.Group]
+
+
+class _SimulationTrajectory:
+    """Native finite trajectory, using disposable parameter/motion copies.
+
+    Freeze initialValue at entry. Refinement re-solves the prefix ending at the
+    requested time from the original placements, so closed-loop branch selection
+    and initialValue never depend on the order of refinement probes.
+    """
+
+    def __init__(self, assembly, simulation):
+        if simulation not in _simulations(assembly):
+            raise ValueError("Choose a simulation belonging to this assembly")
+        self.assembly = assembly
+        self.simulation = simulation
+        self.start = _number(simulation.aTimeStart, "s", "simulation start")
+        self.end = _number(simulation.bTimeEnd, "s", "simulation end")
+        self.step = _number(simulation.cTimeStepOutput, "s", "simulation output step")
+        if (self.end <= self.start or self.step <= 0 or
+                not math.isfinite((self.end - self.start) / self.step)):
+            raise ValueError("Simulation needs an increasing finite time range and positive output step")
+        self.count = math.ceil((self.end - self.start) / self.step)
+        if self.count > 10000:
+            raise ValueError("Simulation exceeds 10001 sampled frames")
+        self.motions = []
+        joints = list(assembly.Joints)
+        for motion in simulation.Group:
+            ref = getattr(motion, "Joint", None)
+            joint = ref[0] if ref else None
+            kind = str(getattr(motion, "MotionType", ""))
+            if joint not in joints or getattr(joint, "Suppressed", False):
+                raise ValueError("Simulation motion must reference an active joint in this assembly")
+            if kind not in ("Angular", "Linear"):
+                raise ValueError("Simulation motion must be Angular or Linear")
+            unit = "deg" if kind == "Angular" else "mm"
+            value = _coordinate(joint, unit)
+            if unit == "deg":
+                value = math.radians(value)
+            formula = motion.Formula.replace("initialValue", f"({value:.10g})")
+            self.motions.append((joint, kind, formula))
+        if not self.motions:
+            raise ValueError("Simulation has no driven joints")
+        self.initial = {obj.Name: App.Placement(obj.Placement) for obj in assembly.Document.Objects
+                        if "Placement" in obj.PropertiesList}
+
+    def coordinates(self, time, frame):
+        # Check every enabled bound, including dependent and cylindrical joints.
+        coordinates = {}
+        prescribed = {}
+        for joint, kind, formula in self.motions:
+            unit = "deg" if kind == "Angular" else "mm"
+            try:
+                values = AssemblyApp._motionSimulationJointState(
+                    self.assembly, joint, frame, formula, time)
+                wanted = math.degrees(values[0]) if unit == "deg" else values[0]
+                actual = math.degrees(values[1]) if unit == "deg" else _coordinate(joint, unit)
+                if not math.isfinite(wanted) or not math.isfinite(actual):
+                    raise RuntimeError("Nonfinite prescribed or solved coordinate")
+                if abs(actual - wanted) > 1e-6:
+                    raise RuntimeError(f"Prescribed {wanted:g} {unit}, solved {actual:g} {unit}; "
+                                       "angular turns must be unambiguous")
+                if unit == "deg" and abs(math.remainder(
+                        _coordinate(joint, unit) - wanted, 360)) > 1e-6:
+                    raise RuntimeError("Solved placement does not reach the prescribed angle")
+                prescribed[(joint.Name, unit)] = wanted
+            except Exception as error:
+                limited = ", ".join(f"{j.Label} ({j.Name})" for j in self.assembly.Joints
+                                    if not getattr(j, "Suppressed", False) and
+                                    (getattr(j, "EnableAngleMin", False) or
+                                     getattr(j, "EnableAngleMax", False)))
+                diagnostic = f"; enabled angular limits unverified: {limited}" if limited else ""
+                raise RuntimeError(f"Joint {joint.Label} ({joint.Name}): "
+                                   f"{error}{diagnostic}") from error
+        for joint in self.assembly.Joints:
+            if getattr(joint, "Suppressed", False):
+                continue
+            for unit, prefix in (("deg", "Angle"), ("mm", "Length")):
+                driven = any(j == joint and (kind == "Angular") == (unit == "deg")
+                             for j, kind, _ in self.motions)
+                bounds = [(suffix, _number(getattr(joint, prefix + suffix), unit, "joint limit"))
+                          for suffix in ("Min", "Max")
+                          if getattr(joint, "Enable" + prefix + suffix, False)]
+                if not driven and not bounds:
+                    continue
+                key = (joint.Name, unit)
+                if driven:
+                    value = prescribed[key]
+                elif unit == "deg":
+                    try:
+                        values = AssemblyApp._motionSimulationJointState(
+                            self.assembly, joint, frame, "", time)
+                        value = math.degrees(values[0])
+                    except Exception as error:
+                        raise RuntimeError(f"Joint {joint.Label} ({joint.Name}) enabled "
+                                           f"angular limits unverified: {error}") from error
+                else:
+                    value = _coordinate(joint, unit)
+                if not math.isfinite(value):
+                    raise RuntimeError(f"Joint {joint.Label} has a nonfinite coordinate")
+                for suffix, bound in bounds:
+                    if (suffix == "Min" and value < bound - 1e-6 or
+                            suffix == "Max" and value > bound + 1e-6):
+                        raise RuntimeError(f"Joint {joint.Label} ({joint.Name}) exceeds enabled "
+                                           f"{prefix}{suffix} limit: {value:g} {unit}")
+                if driven:
+                    coordinates.setdefault(joint.Name, {})[unit] = value
+        # Revolute and slider drivers have one coordinate; cylindrical drivers
+        # can have both, retained without overwriting either motion.
+        return {name: (dict(value=next(iter(values.values())), unit=next(iter(values)))
+                       if len(values) == 1 else dict(coordinates=values))
+                for name, values in coordinates.items()}
+
+    def generate(self, end, step):
+        doc = self.assembly.Document
+        created = []
+        try:
+            for name, placement in self.initial.items():
+                obj = doc.getObject(name)
+                if obj.Placement.toMatrix().A != placement.toMatrix().A:
+                    obj.Placement = placement
+            sim = doc.addObject("App::FeaturePython", "MotionInterferenceSimulation")
+            created.append(sim.Name)
+            sim.addProperty("App::PropertyLinkList", "Group")
+            sim.addProperty("App::PropertyBool", "RecordMotionCoordinates")
+            sim.RecordMotionCoordinates = True
+            for name, value in (("aTimeStart", self.start), ("bTimeEnd", end),
+                                ("cTimeStepOutput", step),
+                                ("fGlobalErrorTolerance", self.simulation.fGlobalErrorTolerance)):
+                sim.addProperty("App::PropertyFloat", name)
+                setattr(sim, name, float(value))
+            motions = []
+            for joint, kind, formula in self.motions:
+                motion = doc.addObject("App::FeaturePython", "MotionInterferenceDriver")
+                created.append(motion.Name)
+                motion.addProperty("App::PropertyXLinkSubHidden", "Joint")
+                motion.Joint = (joint, [""])
+                motion.addProperty("App::PropertyEnumeration", "MotionType")
+                motion.MotionType = ["Angular", "Linear"]
+                motion.MotionType = kind
+                motion.addProperty("App::PropertyString", "Formula")
+                motion.Formula = formula
+                motions.append(motion)
+            sim.Group = motions
+            code = self.assembly.generateSimulation(sim)
+            if code != 0:
+                raise RuntimeError(f"Simulation generation failed ({code})")
+            times = AssemblyApp._motionSimulationFrameTimes(self.assembly)
+            duration = end - self.start
+            tolerance = duration * 1e-8
+            expected = [self.start + i * step for i in range(
+                math.floor(duration / step) + 1)]
+            if len(expected) == 1 or abs(expected[-1] - end) > tolerance:
+                expected.append(end)
+            else:
+                expected[-1] = end
+            if (len(times) != len(expected) + 1 or
+                    self.assembly.numberOfFrames() != len(times) or
+                    any(not math.isfinite(t) or abs(t - wanted) > tolerance
+                        or i > 0 and t <= times[i]
+                        for i, (t, wanted) in enumerate(zip(times[1:], expected)))):
+                raise RuntimeError("Simulation has missing or unexpected frames/times or end frame")
+            return times
+        finally:
+            for name in reversed(created):
+                doc.removeObject(name)
+
+    def record(self, time, frame):
+        try:
+            return dict(time=time, frame=frame, drivenCoordinates=self.coordinates(time, frame))
+        except Exception as error:
+            raise RuntimeError(f"Frame {frame} (t = {time:g} s): {error}") from error
+
+
+def sweepSimulation(assembly, simulation, first, second, *, clearance=None, maximumGap=None,
+                    refinementTolerance=None, refinementPoseBudget=20, cancel=None, progress=None,
+                    maxFacePairCandidates=10000, _scan=None):
+    """Check a finite existing simulation's prescribed solver trajectory.
+
+    Uses sweepJoint's scanner, events, minimum search and scoped restoration.
+    Records contain native frame index, absolute time (seconds), and signed
+    drivenCoordinates (degrees/mm). Frame 0 is unsolved input and is not scanned.
+    Every enabled joint limit is checked before accepting each solved pose.
+    Every driver must participate and reach its prescribed coordinate at each
+    frame. Angles use solver iteration coordinates, never nearest output-angle
+    unwrapping. Missing/unexpected frames or solver errors yield incomplete results.
+
+    Refinement tolerance is in seconds (default output step/100). Disposable
+    copies freeze initialValue at entry and re-solve [start, probe time] from the
+    entry pose with output spacing at most the original step. No placement
+    interpolation or permanent simulation edit is used. Refined records retain
+    the preceding native frame and frameFraction. Zero budget gives explicitly
+    frame-sampled results. Sampling/refinement is no continuous clearance proof.
+    Other options, callbacks and validation follow sweepJoint.
+    """
+    assembly = _require_assembly(assembly)
+    trajectory = _SimulationTrajectory(assembly, simulation)
+    return _sweep(assembly, None, first, second, start=trajectory.start, end=trajectory.end,
+                  count=trajectory.count, unit="s", step=trajectory.step, clearance=clearance,
+                  maximumGap=maximumGap, refinementTolerance=refinementTolerance,
+                  refinementPoseBudget=refinementPoseBudget, cancel=cancel, progress=progress,
+                  maxFacePairCandidates=maxFacePairCandidates, _scan=_scan, trajectory=trajectory)
+
+
 def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                clearance=None, maximumGap=None, refinementTolerance=None,
                refinementPoseBudget=20, cancel=None, progress=None, maxFacePairCandidates=10000,
@@ -216,6 +422,16 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     assembly = _require_assembly(assembly)
     _validate_mechanism(assembly, joint)
     start, end, count, unit = _interval(joint, interval, step)
+    return _sweep(assembly, joint, first, second, start=start, end=end, count=count,
+                  unit=unit, step=step, clearance=clearance, maximumGap=maximumGap,
+                  refinementTolerance=refinementTolerance, refinementPoseBudget=refinementPoseBudget,
+                  cancel=cancel, progress=progress, maxFacePairCandidates=maxFacePairCandidates,
+                  _scan=_scan)
+
+
+def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, clearance,
+           maximumGap, refinementTolerance, refinementPoseBudget, cancel, progress,
+           maxFacePairCandidates, _scan, trajectory=None):
     requirement = _number(assembly.InterferenceClearance if clearance is None else clearance,
                           "mm", "clearance")
     if requirement < 0:
@@ -248,6 +464,9 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                   minimumClearance=None,
                   completeness="incomplete", reason="Sweep did not finish",
                   message="no finding at the sampled + refined poses")
+    if trajectory is not None:
+        result.update(mode="Simulation", sampling="frame-sampled" if refinementPoseBudget == 0
+                      else "sampled + refined", simulation=trajectory.simulation.Name)
     tolerance = 1e-6
 
     def write(callback):
@@ -348,10 +567,15 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
         class Cancelled(Exception):
             pass
 
-        def evaluate(coordinate, frame, phase, index):
+        def evaluate(coordinate, frame, phase, index, native_frame=None):
             if cancel.cancelled:
                 raise Cancelled()
             sample = dict(coordinate=coordinate, frame=frame, phase=phase, index=index)
+            if trajectory is not None:
+                sample.update(trajectory.record(
+                    coordinate, frame if native_frame is None else native_frame))
+                sample["frame"] = frame
+                sample["frameFraction"] = 1 + (coordinate - start) / step
             scan = scan_pair(
                 assembly, first, second, measureDistances=True,
                 maxFacePairCandidates=maxFacePairCandidates, cancel=cancel._token)
@@ -395,6 +619,18 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
             QtCore.QCoreApplication.processEvents()
             if cancel.cancelled:
                 raise Cancelled()
+            if trajectory is not None:
+                # Re-solve a prefix to preserve the original mechanism branch.
+                segments = max(1, math.ceil((coordinate - start) / step))
+                spacing = (coordinate - start) / segments
+                times = write(lambda: trajectory.generate(coordinate, spacing))
+                for native_frame in range(1, len(times)):
+                    if cancel.cancelled:
+                        raise Cancelled()
+                    write(lambda: assembly.updateForFrame(native_frame))
+                    trajectory.record(times[native_frame], native_frame)  # intermediate limits too
+                return evaluate(coordinate, min(count, math.floor((coordinate-start)/step)) + 1,
+                                "refinement", index, native_frame=len(times) - 1)
             current = _coordinate(joint, unit)
             if unit == "deg":
                 current += 360 * round((coordinate - current) / 360)
@@ -474,43 +710,55 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                 result.update(completeness="cancelled", reason="Cancelled before simulation")
                 return
             write(lambda: setattr(assembly, "InterferenceClearance", requirement))
-            if unit == "deg":
-                current = _coordinate(joint, unit)
-                delta = math.remainder(start - current, 360)
-                if abs(delta) > 45:
-                    # Initialize the rotational driver's direction-cosine branch
-                    # in small steps. These seed poses are outside sweep coverage.
-                    for _ in poses(current, current + delta, math.ceil(abs(delta) / 30)):
-                        pass
-                    if not cancel.cancelled and abs(
-                            math.remainder(_coordinate(joint, unit) - start, 360)) > tolerance:
-                        raise RuntimeError("Simulation could not solve the angular start branch")
-            if cancel.cancelled:
-                result.update(completeness="cancelled", reason="Cancelled during initialization")
-                return
-            for frame in poses(start, end, count):
-                coordinate = _coordinate(joint, unit)
-                previous = result["samples"][-1] if result["samples"] else None
+            if trajectory is not None:
+                times = write(lambda: trajectory.generate(end, step))
+                for frame, time in enumerate(times[1:], 1):
+                    QtCore.QCoreApplication.processEvents()
+                    if cancel.cancelled:
+                        raise Cancelled()
+                    write(lambda: assembly.updateForFrame(frame))
+                    record = evaluate(time, frame, "sampling", len(result["samples"]))
+                    result["samples"].append({k: v for k, v in record.items()
+                                              if k not in ("scan", "placements")})
+                    notify(record)
+            else:
                 if unit == "deg":
-                    anchor = previous["coordinate"] if previous else start
-                    coordinate += 360 * round((anchor - coordinate) / 360)
-                if not math.isfinite(coordinate):
-                    raise RuntimeError("Solver returned a nonfinite joint coordinate")
-                if previous:
-                    delta = coordinate - previous["coordinate"]
-                    if abs(delta) <= tolerance:
-                        continue  # Native zero-start simulations repeat their initial frame.
-                    if delta * (end - start) < 0 or abs(delta) > abs(end - start) / count + tolerance:
-                        raise RuntimeError("Unexpected solver motion or missing sample")
-                elif abs(coordinate - start) > tolerance:
-                    raise RuntimeError(f"Simulation solved start {coordinate:g} {unit}; "
-                                       f"requested {start:g} {unit}")
-                if coordinate < min(start, end) - tolerance or coordinate > max(start, end) + tolerance:
-                    raise RuntimeError("Solved pose is outside the permitted interval")
-                record = evaluate(coordinate, frame, "sampling", len(result["samples"]))
-                sample = {k: v for k, v in record.items() if k not in ("scan", "placements")}
-                result["samples"].append(sample)
-                notify(record)
+                    current = _coordinate(joint, unit)
+                    delta = math.remainder(start - current, 360)
+                    if abs(delta) > 45:
+                        # Initialize the rotational driver's direction-cosine branch
+                        # in small steps. These seed poses are outside sweep coverage.
+                        for _ in poses(current, current + delta, math.ceil(abs(delta) / 30)):
+                            pass
+                        if not cancel.cancelled and abs(
+                                math.remainder(_coordinate(joint, unit) - start, 360)) > tolerance:
+                            raise RuntimeError("Simulation could not solve the angular start branch")
+                if cancel.cancelled:
+                    result.update(completeness="cancelled", reason="Cancelled during initialization")
+                    return
+                for frame in poses(start, end, count):
+                    coordinate = _coordinate(joint, unit)
+                    previous = result["samples"][-1] if result["samples"] else None
+                    if unit == "deg":
+                        anchor = previous["coordinate"] if previous else start
+                        coordinate += 360 * round((anchor - coordinate) / 360)
+                    if not math.isfinite(coordinate):
+                        raise RuntimeError("Solver returned a nonfinite joint coordinate")
+                    if previous:
+                        delta = coordinate - previous["coordinate"]
+                        if abs(delta) <= tolerance:
+                            continue  # Native zero-start simulations repeat their initial frame.
+                        if delta * (end - start) < 0 or abs(delta) > abs(end - start) / count + tolerance:
+                            raise RuntimeError("Unexpected solver motion or missing sample")
+                    elif abs(coordinate - start) > tolerance:
+                        raise RuntimeError(f"Simulation solved start {coordinate:g} {unit}; "
+                                           f"requested {start:g} {unit}")
+                    if coordinate < min(start, end) - tolerance or coordinate > max(start, end) + tolerance:
+                        raise RuntimeError("Solved pose is outside the permitted interval")
+                    record = evaluate(coordinate, frame, "sampling", len(result["samples"]))
+                    sample = {k: v for k, v in record.items() if k not in ("scan", "placements")}
+                    result["samples"].append(sample)
+                    notify(record)
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled during sweep")
             elif not result["samples"] or abs(result["samples"][-1]["coordinate"] - end) > tolerance:
@@ -537,4 +785,6 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
         result.update(completeness="incomplete", reason=str(error))
     if any(result[key] for key in ("firstContact", "firstClearanceViolation", "firstGapViolation")):
         result["message"] = "Finding at the sampled + refined poses; see event coordinate and resolution"
+    if trajectory is not None:
+        result["message"] = result["message"].replace("sampled + refined", result["sampling"])
     return result
