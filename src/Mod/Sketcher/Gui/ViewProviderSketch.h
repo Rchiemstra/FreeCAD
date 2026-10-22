@@ -33,6 +33,7 @@
 #include <QMetaObject>
 #include <fastsignals/signal.h>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include <Base/Parameter.h>
@@ -1082,9 +1083,8 @@ private:
 
     std::unique_ptr<EditModeCoinManager> editCoinManager;
 
-    // Identity shared with off-thread solver notifications, never with another edit.
-    struct SolverUpdateSession {};
-    std::atomic<std::shared_ptr<SolverUpdateSession>> solverUpdateSession;
+    // Even, globally unique edit id; low bit marks a queued redraw. Zero means no edit.
+    std::atomic<std::uint64_t> solverUpdateSession {0};
 
     std::unique_ptr<SnapManager> snapManager;
 
