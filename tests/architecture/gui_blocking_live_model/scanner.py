@@ -6,9 +6,9 @@ directory under ``src/Mod``, top-level production ``InitGui.py`` entry points,
 and the reviewed module-aware Python GUI paths in :mod:`rules`), masks comments
 and string/char/raw literals per language, then applies the category search
 rules from :mod:`rules`. Its output is a deterministically sorted list of
-findings, each recording the repository-relative path, 1-based line, category
-key, owning subsystem, migration disposition, and the matched source line(s) as
-evidence.
+findings with runtime line numbers. Committed findings use the stable identity
+(path, category, evidence, occurrence), plus owning subsystem and disposition.
+Occurrences are numbered from one within each path/category/evidence group.
 
 This module is both importable (used by the validator) and runnable as a
 standalone reproducibility command::
@@ -53,7 +53,7 @@ REPOSITORY_ROOT = Path(
 class Finding:
     """One candidate or inventoried site."""
 
-    __slots__ = ("category", "disposition", "evidence", "line", "path", "subsystem")
+    __slots__ = ("category", "disposition", "evidence", "line", "path", "subsystem", "occurrence")
 
     def __init__(
         self,
@@ -63,6 +63,7 @@ class Finding:
         subsystem: str,
         disposition: str,
         evidence: str,
+        occurrence: int = 1,
     ) -> None:
         self.path = path
         self.line = line
@@ -70,14 +71,19 @@ class Finding:
         self.subsystem = subsystem
         self.disposition = disposition
         self.evidence = evidence
+        self.occurrence = occurrence
 
-    def key(self) -> tuple[str, int, str]:
+    def location_key(self) -> tuple[str, int, str]:
+        """Runtime location used to collapse same-line scanner matches."""
         return (self.path, self.line, self.category)
+
+    def key(self) -> tuple[str, str, str, int]:
+        return (self.path, self.category, self.evidence, self.occurrence)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "path": self.path,
-            "line": self.line,
+            "occurrence": self.occurrence,
             "category": self.category,
             "subsystem": self.subsystem,
             "disposition": self.disposition,
@@ -88,7 +94,8 @@ class Finding:
     def from_dict(cls, data: dict[str, object]) -> Finding:
         return cls(
             path=str(data["path"]),
-            line=int(data["line"]),
+            line=0,  # A snapshot has no runtime location.
+            occurrence=int(data["occurrence"]),
             category=str(data["category"]),
             subsystem=str(data["subsystem"]),
             disposition=str(data["disposition"]),
@@ -2703,10 +2710,15 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
     unique: list[Finding] = []
     seen: set[tuple[str, int, str]] = set()
     for finding in findings:
-        if finding.key() in seen:
+        if finding.location_key() in seen:
             continue
-        seen.add(finding.key())
+        seen.add(finding.location_key())
         unique.append(finding)
+    occurrences: dict[tuple[str, str, str], int] = {}
+    for finding in sorted(unique, key=lambda item: item.line):
+        group = (finding.path, finding.category, finding.evidence)
+        occurrences[group] = occurrences.get(group, 0) + 1
+        finding.occurrence = occurrences[group]
     return unique
 
 
@@ -2725,19 +2737,19 @@ def scan(repository_root: Path) -> list[Finding]:
         )
     )
     # Collapse multiple regex matches on the same line for the same category
-    # into a single finding: a finding is identified by (path, line, category).
+    # into a single runtime site. Snapshot identity is independent of its line.
     unique: list[Finding] = []
     seen: set[tuple[str, int, str]] = set()
     for finding in findings:
-        if finding.key() in seen:
+        if finding.location_key() in seen:
             continue
-        seen.add(finding.key())
+        seen.add(finding.location_key())
         unique.append(finding)
     return unique
 
 
 def scan_to_dicts(repository_root: Path) -> list[dict[str, object]]:
-    return [finding.to_dict() for finding in scan(repository_root)]
+    return [finding.to_dict() for finding in sorted(scan(repository_root), key=stable_sort_key)]
 
 
 EXCLUSIONS_PATH = Path(__file__).resolve().parent / "exclusions.json"
@@ -2751,11 +2763,26 @@ def load_exclusions() -> list[dict[str, object]]:
     return list(data.get("exclusions", []))
 
 
+def snapshot_key(entry: dict[str, object]) -> tuple[str, str, str, int]:
+    """Stable identity shared by snapshots and reviewed exclusions."""
+    return (
+        str(entry["path"]), str(entry["category"]), str(entry["evidence"]),
+        int(entry["occurrence"]),
+    )
+
+
+def stable_sort_key(finding: Finding) -> tuple[bytes, bytes, bytes, int]:
+    return (
+        rules.posix_byte_sort_key(finding.path),
+        rules.posix_byte_sort_key(finding.category),
+        finding.evidence.encode("utf-8"),
+        finding.occurrence,
+    )
+
+
 def apply_exclusions(findings: list[Finding], exclusions: list[dict[str, object]]) -> list[Finding]:
-    """Return findings with the excluded (path, line, category) keys removed."""
-    excluded = {
-        (str(entry["path"]), int(entry["line"]), str(entry["category"])) for entry in exclusions
-    }
+    """Remove reviewed stable identities, retaining runtime locations."""
+    excluded = {snapshot_key(entry) for entry in exclusions}
     return [finding for finding in findings if finding.key() not in excluded]
 
 
@@ -2804,78 +2831,32 @@ def build_payload(
         "scope": scope_entries(repository_root),
         "categories": [category.key for category in rules.CATEGORIES],
         "excluded_count": len(exclusions),
-        "findings": [finding.to_dict() for finding in curated],
+        "findings": [finding.to_dict() for finding in sorted(curated, key=stable_sort_key)],
     }
 
 
-def _subsystem_sentence(counts: dict[str, int]) -> str:
-    ordered = sorted(
-        counts.items(),
-        key=lambda item: (-item[1], rules.posix_byte_sort_key(item[0])),
-    )
-    parts = [f"`{name}` ({count})" for name, count in ordered]
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0]
-    return ", ".join(parts[:-1]) + ",\nand " + parts[-1]
-
-
-def refresh_report_counts(report_text: str, payload: dict[str, object]) -> str:
-    """Rewrite the machine-checked counts in ``REPORT.md`` from ``payload``."""
+def render_summary(payload: dict[str, object]) -> str:
+    """Render current derived counts on demand; never write them to REPORT.md."""
     findings = list(payload["findings"])  # type: ignore[arg-type]
-    categories = [str(key) for key in payload["categories"]]  # type: ignore[union-attr]
-    category_counts = {key: 0 for key in categories}
+    category_counts = {str(key): 0 for key in payload["categories"]}  # type: ignore[union-attr]
     subsystem_counts: dict[str, int] = {}
     language_counts = {"C++": 0, "Python": 0}
     for finding in findings:
-        category = str(finding["category"])
-        category_counts[category] = category_counts.get(category, 0) + 1
+        category_counts[str(finding["category"])] += 1
         subsystem = str(finding["subsystem"])
         subsystem_counts[subsystem] = subsystem_counts.get(subsystem, 0) + 1
         language_counts["Python" if str(finding["path"]).endswith(".py") else "C++"] += 1
-
-    def replace_glance(section: re.Match[str]) -> str:
-        def replace_row(row: re.Match[str]) -> str:
-            key = row.group(1)
-            if key not in category_counts:
-                return row.group(0)
-            return f"| `{key}` | {category_counts[key]} |"
-
-        return re.sub(r"\| `([^`]+)` \| [\d,]+ \|", replace_row, section.group(0))
-
-    updated = re.sub(
-        r"## Inventory at a glance.*?(?=\n## )",
-        replace_glance,
-        report_text,
-        count=1,
-        flags=re.DOTALL,
-    )
-    total = len(findings)
-    updated = re.sub(
-        r"\(\d[\d,]*\s+findings across (?:seven|eight|nine) categories",
-        f"({total:,} findings across nine categories",
-        updated,
-        count=1,
-    )
-    updated = re.sub(
-        r"spans \d[\d,]* C\+\+ and \d[\d,]* Python findings",
-        (
-            f"spans {language_counts['C++']:,} C++ and "
-            f"{language_counts['Python']:,} Python findings"
-        ),
-        updated,
-        count=1,
-    )
-    sentence = _subsystem_sentence(subsystem_counts)
-    updated = re.sub(
-        r"Owning subsystems:\n.*?(?=\n\n)",
-        "Owning subsystems:\n" + sentence + ".",
-        updated,
-        count=1,
-        flags=re.DOTALL,
-    )
-    return updated
+    lines = [f"Total findings: {len(findings)}", f"Excluded: {payload['excluded_count']}"]
+    for label, counts in (
+        ("Categories", category_counts), ("Languages", language_counts),
+        ("Subsystems", subsystem_counts),
+    ):
+        lines.append(f"{label}:")
+        lines.extend(
+            f"  {name}: {counts[name]}"
+            for name in sorted(counts, key=rules.posix_byte_sort_key)
+        )
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2892,6 +2873,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Write inventory.json next to this module instead of stdout.",
     )
+    parser.add_argument("--summary", action="store_true", help="Print current finding counts.")
     args = parser.parse_args(argv)
 
     repository_root = Path(args.repo_root).resolve()
@@ -2905,19 +2887,15 @@ def main(argv: list[str] | None = None) -> int:
         package_dir = Path(__file__).resolve().parent
         target = package_dir / "inventory.json"
         target.write_text(text, encoding="utf-8")
-        report_path = package_dir / "REPORT.md"
-        if report_path.is_file():
-            report_path.write_text(
-                refresh_report_counts(report_path.read_text(encoding="utf-8"), payload),
-                encoding="utf-8",
-            )
         print(
             f"wrote {len(curated)} findings ({len(findings)} scanned, "
             f"{len(exclusions)} excluded) to {target}"
         )
+        if args.summary:
+            print(render_summary(payload), end="")
         return 0
 
-    print(text, end="")
+    print(render_summary(payload) if args.summary else text, end="")
     return 0
 
 
