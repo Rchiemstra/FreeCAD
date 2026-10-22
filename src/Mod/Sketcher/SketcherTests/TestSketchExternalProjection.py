@@ -42,23 +42,42 @@ class TestSketchExternalProjection(unittest.TestCase):
         self.assertLess(error, 1e-6)
         self.assertAlmostEqual(geometry.toShape().Length, (end - start).Length, places=6)
 
+    def assertPlaneNormal(self, edge, placement, expected):
+        located = edge.copy()
+        located.Placement = placement
+        plane = located.findPlane()
+        self.assertIsNotNone(plane)
+        normal = placement.Rotation.inverted().multVec(plane.Axis)
+        self.assertGreater(normal.dot(App.Vector(*expected)), 1 - 1e-12)
+
     def testEdgeOnSplineKeepsDiagonalProjection(self):
         # #29677(a): averaging Y must happen before undoing the alignment rotation.
+        # A half-turn covers the opposite normal; pole reversal alone may not.
         placements = (
-            App.Placement(),
-            App.Placement(App.Vector(7, -3, 11), App.Rotation(23, 41, 17)),
+            (App.Placement(), 1),
+            (App.Placement(App.Vector(7, -3, 11), App.Rotation(23, 41, 17)), 1),
+            (App.Placement(App.Vector(), App.Rotation(App.Vector(0, 0, 1), 180)), -1),
         )
         for slope in (1, -1):
-            for placement in placements:
-                with self.subTest(slope=slope, placement=placement):
-                    edge = self.spline(
-                        [(3, slope * 4, 2), (6, slope * 8, 6),
-                         (9, slope * 12, -2), (12, slope * 16, 2)]
-                    ).toShape()
-                    geos = self.importShape(edge, "Edge1", placement)
-                    self.assertEqual(len(geos), 1)
-                    self.assertIsInstance(geos[0], Part.LineSegment)
-                    self.assertSegment(geos[0], (3, slope * 4, 0), (12, slope * 16, 0))
+            for placement, sign in placements:
+                for reverse_poles in (False, True):
+                    for reverse_edge in (False, True):
+                        with self.subTest(
+                            slope=slope, placement=placement, sign=sign,
+                            reverse_poles=reverse_poles, reverse_edge=reverse_edge,
+                        ):
+                            poles = [(3, slope * 4, 2), (6, slope * 8, 6),
+                                     (9, slope * 12, -2), (12, slope * 16, 2)]
+                            edge = self.spline(poles[::-1] if reverse_poles else poles).toShape()
+                            if reverse_edge:
+                                edge.reverse()
+                            self.assertPlaneNormal(
+                                edge, placement, (sign * 0.8, -sign * slope * 0.6, 0)
+                            )
+                            geos = self.importShape(edge, "Edge1", placement)
+                            self.assertEqual(len(geos), 1)
+                            self.assertIsInstance(geos[0], Part.LineSegment)
+                            self.assertSegment(geos[0], (3, slope * 4, 0), (12, slope * 16, 0))
 
     def testTrimmedNonplanarFaceKeepsBoundary(self):
         # #29677(b): HLR exposes the untrimmed supporting B-spline of a face edge.
@@ -80,17 +99,39 @@ class TestSketchExternalProjection(unittest.TestCase):
             geos.remove(geo)
 
     def testEdgeOnSplineRounding25720(self):
-        # Rebuild d0b98703c0's case: a nominally horizontal edge-on spline whose
-        # bounding box has a tiny Y extent from rounding. Keep both ends at one Y.
+        # Keep axis-aligned projections exact despite bounding-box/rotation rounding.
+        placements = (
+            (App.Placement(), 1),
+            (App.Placement(App.Vector(), App.Rotation(App.Vector(0, 0, 1), 180)), -1),
+        )
         for x1, x2, x3, maximum in ((3, 8, 11, 11), (21, 21, 1, 16)):
-            with self.subTest(maximum=maximum):
-                # The second curve doubles back: PR 19700's bounding-box workaround
-                # must include its interior extremum, even though its ends coincide.
-                edge = self.spline(
-                    [(1, 4, 0), (x1, 4 + 1e-14, 6), (x2, 4 - 1e-14, -2), (x3, 4, 0)]
-                ).toShape()
-                geos = self.importShape(edge, "Edge1")
-                self.assertEqual(len(geos), 1)
-                self.assertIsInstance(geos[0], Part.LineSegment)
-                self.assertSegment(geos[0], (1, 4, 0), (maximum, 4, 0))
-                self.assertEqual(geos[0].StartPoint.y, geos[0].EndPoint.y)
+            for vertical in (False, True):
+                for placement, sign in placements:
+                    for reverse_poles in (False, True):
+                        for reverse_edge in (False, True):
+                            with self.subTest(
+                                maximum=maximum, vertical=vertical, sign=sign,
+                                reverse_poles=reverse_poles, reverse_edge=reverse_edge,
+                            ):
+                                # The second curve doubles back; include its interior extremum.
+                                poles = [(1, 4, 0), (x1, 4 + 1e-14, 6),
+                                         (x2, 4 - 1e-14, -2), (x3, 4, 0)]
+                                start, end = (1, 4, 0), (maximum, 4, 0)
+                                normal = (0, sign, 0)
+                                if vertical:
+                                    poles = [(y, x, z) for x, y, z in poles]
+                                    start, end = (4, 1, 0), (4, maximum, 0)
+                                    normal = (sign, 0, 0)
+                                curve = self.spline(poles[::-1] if reverse_poles else poles)
+                                edge = curve.toShape()
+                                if reverse_edge:
+                                    edge.reverse()
+                                self.assertPlaneNormal(edge, placement, normal)
+                                geos = self.importShape(edge, "Edge1", placement)
+                                self.assertEqual(len(geos), 1)
+                                self.assertIsInstance(geos[0], Part.LineSegment)
+                                self.assertSegment(geos[0], start, end)
+                                if vertical:
+                                    self.assertEqual(geos[0].StartPoint.x, geos[0].EndPoint.x)
+                                else:
+                                    self.assertEqual(geos[0].StartPoint.y, geos[0].EndPoint.y)

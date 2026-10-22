@@ -2055,6 +2055,16 @@ void processEdge(const TopoDS_Edge& edge,
                 p2.Transform(trsf);
             }
 
+            // Remove roundoff from axis-aligned projections.
+            if (fabs(p1.Y() - p2.Y()) < Precision::Confusion()) {
+                p1.SetY((p1.Y() + p2.Y()) / 2.0);
+                p2.SetY(p1.Y());
+            }
+            if (fabs(p1.X() - p2.X()) < Precision::Confusion()) {
+                p1.SetX((p1.X() + p2.X()) / 2.0);
+                p2.SetX(p1.X());
+            }
+
             Base::Vector3d P1(p1.X(), p1.Y(), 0);
             Base::Vector3d P2(p2.X(), p2.Y(), 0);
 
