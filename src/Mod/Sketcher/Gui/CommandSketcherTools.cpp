@@ -303,7 +303,10 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
             const std::string expressionStr = Base::Tools::escapeEncodeString(expression->toString());
             expressionsAsStr +=
                 "try:\n"
-                "    objectStr.evalExpression('" + expressionStr + "')\n"
+                "    value = objectStr.evalExpression('" + expressionStr + "')\n"
+                "    # Constraint values must be numbers or quantities; exclude bool explicitly.\n"
+                "    if isinstance(value, bool) or not isinstance(value, (int, float, App.Units.Quantity)):\n"
+                "        raise TypeError('Expression result must be a number or quantity')\n"
                 "    objectStr.setExpression('Constraints[%d]' % (" + newId + "), '"
                 + expressionStr + "')\n"
                 "except Exception as error:\n"

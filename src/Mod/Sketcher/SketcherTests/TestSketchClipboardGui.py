@@ -2,6 +2,7 @@
 """Exercise Sketcher clipboard expressions through the real edit-mode commands."""
 
 from unittest.mock import patch
+from uuid import uuid4
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -33,16 +34,33 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         sketch.addConstraint(Sketcher.Constraint("Distance", 1, 12.0))
         return sketch
 
-    def copy(self, edges=("Edge2",)):
+    def copy(self, edges=("Edge2",), command="Sketcher_CopyClipboard"):
         self.recompute_gui_document()
         self.assertTrue(Gui.activeDocument().setEdit(self.sketch.Name))
         self.flush_gui()
         Gui.Selection.clearSelection()
         for edge in edges:
             Gui.Selection.addSelection(self.sketch, edge)
-        Gui.runCommand("Sketcher_CopyClipboard")
-        text = QtGui.QApplication.clipboard().text()
+        clipboard = QtGui.QApplication.clipboard()
+        sentinel = str(uuid4())
+        clipboard.setText(sentinel)
+        geometry_types = [
+            type(self.sketch.Geometry[int(edge[4:]) - 1]).__name__ for edge in edges
+        ]
+        Gui.runCommand(command)
+        text = clipboard.text()
+        self.assertNotEqual(text, sentinel)
         self.assertTrue(text.startswith("# Copied from sketcher."))
+        self.assertIn(
+            f"#objectStr = App.getDocument('{self.doc.Name}').getObject('{self.sketch.Name}')\n",
+            text,
+        )
+        self.assertIn("objectStr.addGeometry(", text)
+        self.assertIn("objectStr.addConstraint(", text)
+        for geometry_type in set(geometry_types):
+            self.assertEqual(
+                text.count(f"Part.{geometry_type}("), geometry_types.count(geometry_type)
+            )
         return text
 
     def paste(self, target=None):
@@ -86,6 +104,15 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         for _ in range(2):
             count = self.paste()
             self.assert_expression(self.sketch, count, "Variables.width")
+
+    def test_cut_keeps_expression_on_paste(self):
+        self.sketch.setExpression("Constraints[1]", "12 mm")
+        self.copy(command="Sketcher_Cut")
+        self.flush_gui()
+        self.assertEqual(self.sketch.GeometryCount, 1)
+        self.assertEqual(self.sketch.ConstraintCount, 1)
+        count = self.paste()
+        self.assert_expression(self.sketch, count, "12 mm")
 
     def test_same_sketch_named_constraint(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
@@ -174,3 +201,42 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         warning.assert_called_once()
         self.assertIn(f"Constraints[{count}]", warning.call_args.args[0])
         self.assertEqual(target.ExpressionEngine, [])
+
+    def test_string_result_warns_once_and_keeps_radius(self):
+        variables = self.doc.addObject("App::VarSet", "Variables")
+        variables.addProperty("App::PropertyLength", "width")
+        variables.width = 12
+        circle = self.sketch.addGeometry(
+            Part.Circle(App.Vector(30, 0, 0), App.Vector(0, 0, 1), 12), False
+        )
+        radius = self.sketch.addConstraint(Sketcher.Constraint("Radius", circle, 12.0))
+        self.sketch.setExpression(f"Constraints[{radius}]", "Variables.width")
+        self.copy(("Edge3",))
+        Gui.activeDocument().resetEdit()
+        other = App.newDocument("ClipboardStringTarget")
+        self.addCleanup(self.cleanup_gui_document, other)
+        other.UndoMode = 1
+        variables = other.addObject("App::VarSet", "Variables")
+        variables.addProperty("App::PropertyString", "width")
+        variables.width = "not a length"
+        target = self.make_sketch(document=other)
+        self.recompute_gui_document(other)
+        self.assertTrue(Gui.activeDocument().setEdit(target.Name))
+        self.flush_gui()
+        with patch.object(App.Console, "PrintWarning") as warning:
+            count = self.paste(target)
+        # Check all fallback guarantees even when the binding poisons recompute.
+        with self.subTest("warning"):
+            warning.assert_called_once()
+            self.assertIn(f"Constraints[{count}]", warning.call_args.args[0])
+        with self.subTest("binding"):
+            self.assertEqual(target.ExpressionEngine, [])
+        Gui.activeDocument().resetEdit()
+        target.touch()
+        self.recompute_gui_document(other)
+        with self.subTest("recompute"):
+            self.assertTrue(target.isValid(), target.getStatusString())
+            self.assertNotIn("Invalid", target.State)
+            self.assertFalse(other.mustExecute())
+            self.assertTrue(all(obj.isValid() for obj in other.Objects))
+            self.assertAlmostEqual(target.getDatum(count).Value, 12.0)
