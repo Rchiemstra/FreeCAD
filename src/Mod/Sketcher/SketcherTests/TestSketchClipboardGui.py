@@ -77,7 +77,15 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
 
     def assert_expression(self, target, index, expression):
         expressions = {path.lstrip("."): value for path, value in target.ExpressionEngine}
-        self.assertEqual(expressions.get(f"Constraints[{index}]"), expression)
+        name = target.Constraints[index].Name
+        path = f"Constraints.{name}" if name else f"Constraints[{index}]"
+        self.assertEqual(expressions.get(path), expression)
+
+    def edit_target(self, target):
+        Gui.activeDocument().resetEdit()
+        self.recompute_gui_document(target.Document)
+        self.assertTrue(Gui.activeDocument().setEdit(target.Name))
+        self.flush_gui()
 
     def test_spreadsheet_alias_and_undo(self):
         sheet = self.doc.addObject("Spreadsheet::Sheet", "Spreadsheet")
@@ -106,12 +114,14 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
             self.assert_expression(self.sketch, count, "Variables.width")
 
     def test_cut_keeps_expression_on_paste(self):
+        self.sketch.renameConstraint(1, "Width")
         self.sketch.setExpression("Constraints[1]", "12 mm")
         self.copy(command="Sketcher_Cut")
         self.flush_gui()
         self.assertEqual(self.sketch.GeometryCount, 1)
         self.assertEqual(self.sketch.ConstraintCount, 1)
         count = self.paste()
+        self.assertEqual(self.sketch.Constraints[count].Name, "Width")
         self.assert_expression(self.sketch, count, "12 mm")
 
     def test_same_sketch_named_constraint(self):
@@ -122,17 +132,96 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         count = self.paste()
         self.assert_expression(self.sketch, count, ".Constraints.Driver")
 
-    def test_copied_names_are_not_remapped(self):
+    def test_cut_keeps_unpasted_index_reference_after_reindex(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.setExpression("Constraints[1]", f"Constraints[{driver}]")
+        self.copy(command="Sketcher_Cut")
+        self.flush_gui()
+        # Removing Width moves the unpasted driver from index 2 to index 1.
+        self.assertEqual(self.sketch.ConstraintCount, 2)
+        count = self.paste()
+        self.sketch.setDatum(1, App.Units.Quantity("24 mm"))
+        self.recompute_gui_document()
+        self.assertAlmostEqual(self.sketch.getDatum(count).Value, 24.0)
+
+    def test_same_sketch_names_and_internal_expression_repeated_paste(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
         self.sketch.renameConstraint(driver, "Driver")
+        self.sketch.renameConstraint(1, "Width")
         self.sketch.setExpression("Constraints[1]", ".Constraints.Driver")
         self.copy(("Edge1", "Edge2"))
+        for suffix in ("001", "002"):
+            count = self.sketch.ConstraintCount
+            undo_count = self.doc.UndoCount
+            Gui.runCommand("Sketcher_Paste")
+            self.flush_gui()
+            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+            self.assertEqual(self.sketch.Constraints[count + 1].Name, "Width" + suffix)
+            self.assertEqual(self.sketch.Constraints[count + 2].Name, "Driver" + suffix)
+            self.sketch.setDatum(count + 2, App.Units.Quantity("24 mm"))
+            self.recompute_gui_document()
+            self.assertAlmostEqual(self.sketch.getDatum(count + 1).Value, 24.0)
+            self.assertAlmostEqual(self.sketch.getDatum(1).Value, 12.0)
+        self.assertEqual(self.sketch.Constraints[2].Name, "Driver")
+
+    def test_cross_sketch_keeps_name(self):
+        self.sketch.renameConstraint(1, "Width")
+        self.copy()
+        target = self.make_sketch("Target")
+        self.edit_target(target)
+        count = self.paste(target)
+        self.assertEqual(target.Constraints[count].Name, "Width")
+
+    def test_cross_sketch_unpasted_named_constraint_warns_once(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.renameConstraint(driver, "Driver")
+        self.sketch.renameConstraint(1, "Width")
+        self.sketch.setExpression("Constraints.Width", ".Constraints.Driver")
+        self.copy()
+        target = self.make_sketch("Target")
+        target.renameConstraint(1, "Driver")
+        target.setDatum(1, App.Units.Quantity("99 mm"))
+        self.edit_target(target)
+        with patch.object(App.Console, "PrintWarning") as warning:
+            count = self.paste(target)
+        warning.assert_called_once()
+        self.assertIn("Width", warning.call_args.args[0])
+        self.assertIn("Driver", warning.call_args.args[0])
+        self.assertEqual(target.ExpressionEngine, [])
+        self.assertEqual(target.Constraints[1].Name, "Driver")
+        self.assertAlmostEqual(target.getDatum(1).Value, 99.0)
+
+    def test_internal_index_expression_cross_sketch(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.setExpression("Constraints[1]", f"Constraints[{driver}]")
+        self.copy(("Edge1", "Edge2"))
+        target = self.make_sketch("Target")
+        self.edit_target(target)
         Gui.runCommand("Sketcher_Paste")
         self.flush_gui()
-        self.assertEqual(self.sketch.ConstraintCount, 6)
-        self.assertEqual(self.sketch.Constraints[5].Name, "")
-        self.assert_expression(self.sketch, 4, ".Constraints.Driver")
-        self.assertEqual(self.sketch.Constraints[2].Name, "Driver")
+        self.assertEqual(target.ConstraintCount, 5)
+        target.setDatum(4, App.Units.Quantity("24 mm"))
+        self.recompute_gui_document()
+        self.assertAlmostEqual(target.getDatum(3).Value, 24.0)
+
+    def test_cut_internal_named_expression_cross_sketch(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.renameConstraint(driver, "Driver")
+        self.sketch.renameConstraint(1, "Width")
+        self.sketch.setExpression("Constraints.Width", ".Constraints.Driver")
+        self.copy(("Edge1", "Edge2"), command="Sketcher_Cut")
+        self.flush_gui()
+        self.assertEqual(self.sketch.GeometryCount, 0)
+        self.assertEqual(self.sketch.ConstraintCount, 0)
+        target = self.make_sketch("Target")
+        self.edit_target(target)
+        Gui.runCommand("Sketcher_Paste")
+        self.flush_gui()
+        self.assertEqual(target.Constraints[3].Name, "Width")
+        self.assertEqual(target.Constraints[4].Name, "Driver")
+        target.setDatum(4, App.Units.Quantity("24 mm"))
+        self.recompute_gui_document()
+        self.assertAlmostEqual(target.getDatum(3).Value, 24.0)
 
     def test_expression_with_quoted_unicode_label(self):
         variables = self.doc.addObject("App::VarSet", "Variables")

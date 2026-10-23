@@ -34,6 +34,7 @@
 
 #include <App/Application.h>
 #include <App/Expression.h>
+#include <App/ExpressionParser.h>
 #include <Base/Console.h>
 #include <Base/Reader.h>
 #include <Base/Tools.h>
@@ -212,6 +213,66 @@ Sketcher::SketchObject* getSketchObject()
 
 // Copy
 
+namespace {
+// Replace parsed references only, so labels and string literals are never rewritten.
+class ClipboardExpressionVisitor: public App::ExpressionVisitor
+{
+public:
+    ClipboardExpressionVisitor(Sketcher::SketchObject* sketch,
+                              const std::map<App::ObjectIdentifier, size_t>& copied,
+                              const std::string& expression)
+        : sketch(sketch), copied(copied)
+    {
+        while (expression.find(prefix) != std::string::npos) {
+            prefix += '_';
+        }
+    }
+
+    void visit(App::Expression& expression) override
+    {
+        auto* variable = dynamic_cast<App::VariableExpression*>(&expression);
+        if (!variable || variable->getPath().getProperty() != &sketch->Constraints) {
+            return;
+        }
+        const auto path = variable->getPath().canonicalPath();
+        const auto found = copied.find(path);
+        if (found == copied.end()) {
+            unpastedConstraint = variable->getPath().toString();
+            // Cut may shift an unpasted, unnamed constraint's index in the source sketch.
+            const auto& component = path.getPropertyComponent(1);
+            if (component.isArray()) {
+                const std::string marker = prefix + "source_"
+                    + std::to_string(component.getIndex()) + "__";
+                replacements.emplace(marker, "sourceConstraintIndices["
+                    + std::to_string(component.getIndex()) + "]");
+                variable->setPath(App::ObjectIdentifier(sketch, marker));
+            }
+            return;
+        }
+        const std::string marker = prefix + std::to_string(found->second) + "__";
+        replacements.emplace(marker, "lastConstraintId + " + std::to_string(found->second));
+        variable->setPath(App::ObjectIdentifier(sketch, marker));
+    }
+
+    std::string pythonString(const App::Expression& expression) const
+    {
+        std::string result = "'" + Base::Tools::escapeEncodeString(expression.toString()) + "'";
+        for (const auto& [marker, index] : replacements) {
+            result += ".replace('" + marker + "', '.Constraints[%d]' % (" + index + "))";
+        }
+        return result;
+    }
+
+    std::string unpastedConstraint;
+
+private:
+    Sketcher::SketchObject* sketch;
+    const std::map<App::ObjectIdentifier, size_t>& copied;
+    std::string prefix = "__sketchClipboardConstraint_";
+    std::map<std::string, std::string> replacements;
+};
+}
+
 bool copySelectionToClipboard(Sketcher::SketchObject* obj)
 {
     std::vector<int> listOfGeoId = getListOfSelectedGeoIds(true);
@@ -258,6 +319,9 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     }
 
     std::vector<std::unique_ptr<Sketcher::Constraint>> shapeConstraints;
+    std::map<App::ObjectIdentifier, size_t> copiedConstraintIds;
+    std::vector<size_t> sourceConstraintIds;
+    std::string namesAsStr;
     std::string expressionsAsStr;
     const auto& constraints = obj->Constraints.getValues();
     for (size_t constraintId = 0; constraintId < constraints.size(); ++constraintId) {
@@ -292,29 +356,50 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
                 temp->setGeoId(i, mappedGeoId->second);
             }
         }
+        copiedConstraintIds.emplace(
+            obj->Constraints.createPath(static_cast<int>(constraintId)).canonicalPath(),
+            shapeConstraints.size());
+        sourceConstraintIds.push_back(constraintId);
+        if (!constr->Name.empty()) {
+            namesAsStr += "(" + std::to_string(shapeConstraints.size()) + ", '"
+                + Base::Tools::escapeEncodeString(constr->Name) + "'),\n";
+        }
+        shapeConstraints.push_back(std::move(temp));
+    }
+    // All pasted constraints must be known before remapping forward references.
+    for (size_t index = 0; index < sourceConstraintIds.size(); ++index) {
+        const auto constraintId = sourceConstraintIds[index];
         auto expression = obj->getExpression(
             obj->Constraints.createPath(static_cast<int>(constraintId))).expression;
         if (expression) {
-            // Names are not copied by PythonConverter. Keep expression references unchanged,
-            // resolving them in the target sketch just like references to other objects.
-            const std::string newId = "lastConstraintId + " + std::to_string(shapeConstraints.size());
+            const auto constr = constraints[constraintId];
+            auto remapped = expression->copy();
+            ClipboardExpressionVisitor visitor(obj, copiedConstraintIds, expression->toString());
+            remapped->visit(visitor);
+            const std::string newId = "lastConstraintId + " + std::to_string(index);
             const std::string name = constr->Name.empty()
                 ? "Constraints[" + std::to_string(constraintId) + "]" : constr->Name;
-            const std::string expressionStr = Base::Tools::escapeEncodeString(expression->toString());
+            expressionsAsStr += "try:\n";
+            if (!visitor.unpastedConstraint.empty()) {
+                expressionsAsStr +=
+                    "    if (objectStr.Document.Name, objectStr.Name) != ('"
+                    + Base::Tools::escapeEncodeString(obj->getDocument()->getName()) + "', '"
+                    + Base::Tools::escapeEncodeString(obj->getNameInDocument()) + "'):\n"
+                    "        raise ValueError('Reference to unpasted constraint "
+                    + Base::Tools::escapeEncodeString(visitor.unpastedConstraint) + "')\n";
+            }
             expressionsAsStr +=
-                "try:\n"
-                "    value = objectStr.evalExpression('" + expressionStr + "')\n"
+                "    expression = " + visitor.pythonString(*remapped) + "\n"
+                "    value = objectStr.evalExpression(expression)\n"
                 "    # Constraint values must be numbers or quantities; exclude bool explicitly.\n"
                 "    if isinstance(value, bool) or not isinstance(value, (int, float, App.Units.Quantity)):\n"
                 "        raise TypeError('Expression result must be a number or quantity')\n"
-                "    objectStr.setExpression('Constraints[%d]' % (" + newId + "), '"
-                + expressionStr + "')\n"
+                "    objectStr.setExpression('Constraints[%d]' % (" + newId + "), expression)\n"
                 "except Exception as error:\n"
                 "    App.Console.PrintWarning('Could not paste expression for constraint %s "
                 "(Constraints[%d]): %s\\n' % ('" + Base::Tools::escapeEncodeString(name)
                 + "', " + newId + ", error))\n";
         }
-        shapeConstraints.push_back(std::move(temp));
     }
     std::vector<Sketcher::Constraint*> rawCstrs;
     rawCstrs.reserve(shapeConstraints.size());
@@ -329,12 +414,34 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     std::string exportedData = "# Copied from sketcher. From:\n#objectStr = ";
     exportedData.append(Gui::Command::getObjectCmd(obj));
     exportedData.append("\n");
+    if (!expressionsAsStr.empty()) {
+        exportedData.append("sourceConstraintIndices = list(range("
+            + std::to_string(constraints.size()) + "))\n");
+    }
     exportedData.append(geosAsStr);
     exportedData.append("\n");
-    if (!expressionsAsStr.empty()) {
+    if (!shapeConstraints.empty()) {
         exportedData.append("lastConstraintId = objectStr.ConstraintCount\n");
     }
     exportedData.append(cstrAsStr);
+    if (!namesAsStr.empty()) {
+        exportedData.append(
+            "\n# Restore constraint names without changing existing constraints.\n"
+            "copiedConstraintNames = [\n" + namesAsStr + "]\n"
+            "constraintNames = {c.Name for c in objectStr.Constraints if c.Name}\n"
+            "reservedNames = constraintNames | {name for index, name in copiedConstraintNames}\n"
+            "for index, name in copiedConstraintNames:\n"
+            "    uniqueName = name\n"
+            "    suffix = 1\n"
+            "    if name in constraintNames:\n"
+            "        uniqueName = name + '%03d' % suffix\n"
+            "        while uniqueName in reservedNames:\n"
+            "            suffix += 1\n"
+            "            uniqueName = name + '%03d' % suffix\n"
+            "    objectStr.renameConstraint(lastConstraintId + index, uniqueName)\n"
+            "    constraintNames.add(uniqueName)\n"
+            "    reservedNames.add(uniqueName)\n");
+    }
     if (!expressionsAsStr.empty()) {
         exportedData.append("\n# Restore constraint expressions in the target sketch.\n");
         exportedData.append(expressionsAsStr);
@@ -398,15 +505,56 @@ CmdSketcherCut::CmdSketcherCut()
 void CmdSketcherCut::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    if (copySelectionToClipboard(getSketchObject())) {
+    auto* obj = getSketchObject();
+    if (copySelectionToClipboard(obj)) {
 
         Gui::Document* doc = getActiveGuiDocument();
         ReleaseHandler(doc);
         auto* vp = static_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
 
+        // Follow the property notifications, including deletions of constraints spanning
+        // selected and unselected geometry, instead of predicting the deletion order.
+        std::vector<int> sourceIndices;
+        for (int index = 0; index < obj->Constraints.getSize(); ++index) {
+            sourceIndices.push_back(index);
+        }
+        fastsignals::scoped_connection removed(obj->Constraints.signalConstraintsRemoved.connect(
+            [&](const std::set<App::ObjectIdentifier>& paths) {
+                for (auto& index : sourceIndices) {
+                    if (index >= 0 && paths.contains(obj->Constraints.createPath(index))) {
+                        index = -1;
+                    }
+                }
+            }));
+        fastsignals::scoped_connection renamed(obj->Constraints.signalConstraintsRenamed.connect(
+            [&](const std::map<App::ObjectIdentifier, App::ObjectIdentifier>& paths) {
+                for (auto& index : sourceIndices) {
+                    if (index < 0) {
+                        continue;
+                    }
+                    const auto found = paths.find(obj->Constraints.createPath(index));
+                    if (found != paths.end()) {
+                        index = found->second.getPropertyComponent(1).getIndex();
+                    }
+                }
+            }));
         openCommand(QT_TRANSLATE_NOOP("Command", "Cut in Sketcher"));
         vp->deleteSelected();
         commitCommand();
+
+        auto* clipboard = QGuiApplication::clipboard();
+        QString data = clipboard->text();
+        const auto start = data.indexOf(QStringLiteral("sourceConstraintIndices = "));
+        if (start >= 0) {
+            std::string indices = "sourceConstraintIndices = [";
+            for (const auto index : sourceIndices) {
+                indices += (index < 0 ? "None" : std::to_string(index)) + ",";
+            }
+            indices += "]";
+            data.replace(start, data.indexOf(QLatin1Char('\n'), start) - start,
+                         QString::fromStdString(indices));
+            clipboard->setText(data);
+        }
     }
 }
 
