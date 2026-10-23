@@ -441,3 +441,187 @@ class TestDatumPlane(unittest.TestCase):
         )
 
         self.assertEqual(packed_color, color)
+
+
+class TestBinderDatumDisplay(unittest.TestCase):
+    def setUp(self):
+        self.Doc = App.newDocument("BinderDatumDisplay")
+        self.Body = self.Doc.addObject("PartDesign::Body", "Body")
+
+    def tearDown(self):
+        close_document(self.Doc)
+
+    @staticmethod
+    def _nodes(root, typeName):
+        from pivy import coin
+
+        search = coin.SoSearchAction()
+        search.setType(coin.SoType.fromName(typeName))
+        search.setInterest(coin.SoSearchAction.ALL)
+        search.setSearchingAll(True)
+        search.apply(root)
+        return [path.getTail() for path in search.getPaths()]
+
+    def _binders(self, support, refine=True):
+        for kind in ("SubShapeBinder", "ShapeBinder"):
+            binder = self.Doc.addObject("PartDesign::" + kind, "Binder")
+            if kind == "SubShapeBinder":
+                binder.Refine = refine
+            binder.Support = support
+            recompute_document(self.Doc)
+            binder.ViewObject.show()
+            Gui.updateGui()
+            yield binder
+
+    def _points(self, binder, minimum):
+        coords = self._nodes(binder.ViewObject.RootNode, "SoCoordinate3")[0]
+        self.assertGreaterEqual(coords.point.getNum(), minimum)
+        return [App.Vector(*point.getValue()) for point in coords.point.getValues()]
+
+    def _checkPlane(self, binder, placement):
+        points = self._points(binder, 4)
+        faces = self._nodes(binder.ViewObject.RootNode, "SoBrepFaceSet")[0]
+        self.assertEqual(list(faces.partIndex.getValues()), [2])
+        size = 50
+        local = placement.inverse() * binder.Placement
+        points = [local.multVec(point) for point in points]
+        for point in points:
+            self.assertAlmostEqual(point.z, 0, places=4)
+            self.assertLessEqual(abs(point.x), size + 1e-4)
+            self.assertLessEqual(abs(point.y), size + 1e-4)
+        self.assertAlmostEqual(min(p.x for p in points), -size, places=4)
+        self.assertAlmostEqual(max(p.x for p in points), size, places=4)
+        self.assertAlmostEqual(min(p.y for p in points), -size, places=4)
+        self.assertAlmostEqual(max(p.y for p in points), size, places=4)
+        self.assertGreater(binder.Shape.BoundBox.DiagonalLength, 1e90)
+        self.assertEqual(len(binder.Shape.Faces), 1)
+        self.assertEqual(len(binder.Shape.Face1.Edges), 0)
+        # The rendered face retains the Face1 selection detail.
+        self._checkTopology(binder)
+        self._checkPick(
+            binder, "Face1", placement.Base, placement.Rotation.multVec(App.Vector(0, 0, 1))
+        )
+
+    def _checkTopology(self, binder):
+        root = binder.ViewObject.RootNode
+        faces = self._nodes(root, "SoBrepFaceSet")[0]
+        edges = self._nodes(root, "SoBrepEdgeSet")[0]
+        vertices = self._nodes(root, "SoBrepPointSet")[0]
+        coords = self._nodes(root, "SoCoordinate3")[0]
+        self.assertEqual(faces.partIndex.getNum(), len(binder.Shape.Faces))
+        self.assertEqual(list(edges.coordIndex.getValues()).count(-1), len(binder.Shape.Edges))
+        self.assertEqual(
+            coords.point.getNum() - vertices.startIndex.getValue(), len(binder.Shape.Vertexes)
+        )
+
+    def _checkPick(self, binder, element, point, normal):
+        from pivy import coin
+
+        path = coin.SoPath()
+        detail = binder.ViewObject.getDetailPath(element, path)
+        self.assertIsNotNone(detail)
+        # Use the detail returned for highlighting on the actual picked path.
+        pick = coin.SoRayPickAction(coin.SbViewportRegion(100, 100))
+        pick.setRay(coin.SbVec3f(*(point + normal * 10)), coin.SbVec3f(*(-normal)))
+        pick.setPickAll(True)
+        pick.apply(path)
+        hits = [
+            p for p in pick.getPickedPointList()
+            if binder.ViewObject.getElementPicked(p) == element
+        ]
+        self.assertTrue(hits, element)
+        picked = hits[0]
+        picked.setDetail(detail, picked.getPath().getTail())
+        self.assertEqual(binder.ViewObject.getElementPicked(picked), element)
+
+    def testOriginXZPlane(self):
+        source = self.Doc.XZ_Plane
+        for binder in self._binders([(source, [""])]):
+            with self.subTest(binder=binder.TypeId):
+                self._checkPlane(binder, source.Placement)
+
+    def testRotatedDatumPlane(self):
+        source = self.Body.newObject("PartDesign::Plane", "DatumPlane")
+        source.Placement = App.Placement(App.Vector(11, 22, 33), App.Rotation(0, 30, 0))
+        for binder in self._binders([(source, [""])]):
+            with self.subTest(binder=binder.TypeId):
+                self._checkPlane(binder, source.Placement)
+
+    def testRotatedOriginPlaneInPart(self):
+        part = self.Doc.addObject("App::Part", "Part")
+        part.Placement = App.Placement(App.Vector(17, 23, 31), App.Rotation(20, 10, 15))
+        part.addObject(self.Body)
+        self.Body.Placement = App.Placement(App.Vector(7, 8, 9), App.Rotation(0, 30, 0))
+        source = self.Doc.XZ_Plane
+        binder = self.Doc.addObject("PartDesign::SubShapeBinder", "Binder")
+        path = self.Body.Name + "." + self.Body.Origin.Name + "." + source.Name + "."
+        binder.Support = [(part, [path])]
+        recompute_document(self.Doc)
+        binder.ViewObject.show()
+        Gui.updateGui()
+        self._checkPlane(binder, part.Placement * self.Body.Placement * source.Placement)
+
+    def testDatumLine(self):
+        source = self.Body.newObject("PartDesign::Line", "DatumLine")
+        source.Placement = App.Placement(App.Vector(11, 22, 33), App.Rotation(0, 30, 0))
+        size = 50
+        for binder in self._binders([(source, [""])]):
+            with self.subTest(binder=binder.TypeId):
+                points = self._points(binder, 2)
+                local = source.Placement.inverse() * binder.Placement
+                points = [local.multVec(point) for point in points]
+                for point in points:
+                    self.assertAlmostEqual(point.x, 0, places=4)
+                    self.assertAlmostEqual(point.y, 0, places=4)
+                    self.assertLessEqual(abs(point.z), size + 1e-4)
+                self.assertAlmostEqual(min(p.z for p in points), -size, places=4)
+                self.assertAlmostEqual(max(p.z for p in points), size, places=4)
+                self.assertGreater(binder.Shape.BoundBox.DiagonalLength, 1e90)
+                self.assertEqual(len(binder.Shape.Vertexes), 0)
+                self._checkTopology(binder)
+
+    def testMixedCompound(self):
+        datum = self.Body.newObject("PartDesign::Plane", "DatumPlane")
+        datum.Placement = App.Placement(App.Vector(11, 22, 33), App.Rotation(0, 30, 0))
+        recompute_document(self.Doc)
+        source = self.Doc.addObject("Part::Feature", "Mixed")
+        finite = Part.makePlane(12, 8, App.Vector(100, 200, 300))
+        # Infinite face first: temporary boundary edges would shift all finite edge indices.
+        infinite = datum.Shape.copy()
+        infinite.reverse()
+        source.Shape = Part.makeCompound([infinite, finite])
+        source.Placement = App.Placement(App.Vector(7, 13, 19), App.Rotation(10, 20, 30))
+        for binder in self._binders([(source, ["Face1", "Face2"])], refine=False):
+            with self.subTest(binder=binder.TypeId):
+                points = self._points(binder, 8)
+                faces = self._nodes(binder.ViewObject.RootNode, "SoBrepFaceSet")[0]
+                self.assertEqual(list(faces.partIndex.getValues()), [2, 2])
+                self._checkTopology(binder)
+                indices = list(faces.coordIndex.getValues())
+                local = source.Placement.inverse() * binder.Placement
+                finitePoints = [local.multVec(points[i]) for i in indices[8:] if i >= 0]
+                for point in finitePoints:
+                    self.assertAlmostEqual(point.z, 300, places=4)
+                    self.assertGreaterEqual(point.x, 100 - 1e-4)
+                    self.assertLessEqual(point.x, 112 + 1e-4)
+                    self.assertGreaterEqual(point.y, 200 - 1e-4)
+                    self.assertLessEqual(point.y, 208 + 1e-4)
+                datumLocal = datum.Placement.inverse() * local
+                for i in indices[:8]:
+                    if i >= 0:
+                        point = datumLocal.multVec(points[i])
+                        self.assertAlmostEqual(point.z, 0, places=4)
+                        self.assertAlmostEqual(abs(point.x), 50, places=4)
+                        self.assertAlmostEqual(abs(point.y), 50, places=4)
+                a, b, c = [points[i] for i in indices[:3]]
+                normal = local.Rotation.multVec((b - a).cross(c - a))
+                expected = datum.Placement.Rotation.multVec(App.Vector(0, 0, -1))
+                self.assertGreater(normal.dot(expected), 9999)
+                self.assertEqual(len(binder.Shape.Face1.Edges), 0)
+                self.assertAlmostEqual(binder.Shape.Face2.Area, 96)
+                self.assertGreater(binder.Shape.BoundBox.DiagonalLength, 1e90)
+                world = source.Placement
+                normal = world.Rotation.multVec(App.Vector(0, 0, 1))
+                self._checkPick(binder, "Face2", world.multVec(finite.CenterOfMass), normal)
+                edge = binder.Shape.Edge1
+                self._checkPick(binder, "Edge1", edge.CenterOfMass, normal)
