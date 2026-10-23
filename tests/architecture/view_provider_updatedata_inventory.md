@@ -2,149 +2,149 @@
 
 Production presentation providers discovered under `src/Gui`, every `src/Mod/*/Gui`, and the reviewed module-aware Python GUI packages (Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Wave 3 classifies every row as `adapted` (pointer-free presentation adapter) or `unsupported` (explicit capability; no synchronous updateData fallback).
 
-| file | symbol/caller | line | classification |
-| --- | --- | ---: | --- |
-| `src/Gui/ViewProvider.cpp` | `ViewProvider` | 1031 | unsupported |
-| `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 302 | unsupported |
-| `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotationLabel` | 490 | unsupported |
-| `src/Gui/ViewProviderDragger.cpp` | `ViewProviderDragger` | 78 | unsupported |
-| `src/Gui/ViewProviderFeaturePython.cpp` | `ViewProviderFeaturePythonImp` | 719 | unsupported |
-| `src/Gui/ViewProviderGeometryObject.cpp` | `ViewProviderGeometryObject` | 171 | unsupported |
-| `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | 360 | unsupported |
-| `src/Gui/ViewProviderInventorObject.cpp` | `ViewProviderInventorObject` | 90 | unsupported |
-| `src/Gui/ViewProviderLink.cpp` | `LinkInfo` | 537 | unsupported |
-| `src/Gui/ViewProviderLink.cpp` | `ViewProviderLink` | 2275 | unsupported |
-| `src/Gui/ViewProviderPart.cpp` | `ViewProviderPart` | 86 | unsupported |
-| `src/Gui/ViewProviderPlacement.cpp` | `ViewProviderPlacement` | 99 | unsupported |
-| `src/Gui/ViewProviderVRMLObject.cpp` | `ViewProviderVRMLObject` | 213 | unsupported |
-| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderMotion` | 381 | unsupported |
-| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderSimulation` | 229 | unsupported |
-| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedView` | 288 | unsupported |
-| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedViewStep` | 663 | unsupported |
-| `src/Mod/Assembly/Gui/ViewProviderAssembly.cpp` | `ViewProviderAssembly` | 246 | unsupported |
-| `src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp` | `ViewProviderReviewNote` | 488 | unsupported |
-| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1791 | unsupported |
-| `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | 1264 | unsupported |
-| `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | 566 | unsupported |
-| `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | 190 | unsupported |
-| `src/Mod/BIM/ArchBuildingPart.py` | `ViewProviderBuildingPart` | 995 | unsupported |
-| `src/Mod/BIM/ArchComponent.py` | `ViewProviderComponent` | 1640 | unsupported |
-| `src/Mod/BIM/ArchCoveringGui.py` | `_ViewProviderCovering` | 150 | unsupported |
-| `src/Mod/BIM/ArchCurtainWall.py` | `ViewProviderCurtainWall` | 759 | unsupported |
-| `src/Mod/BIM/ArchEquipment.py` | `_ViewProviderEquipment` | 247 | unsupported |
-| `src/Mod/BIM/ArchFence.py` | `_ViewProviderFence` | 330 | unsupported |
-| `src/Mod/BIM/ArchMaterial.py` | `_ViewProviderArchMaterial` | 412 | unsupported |
-| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelCut` | 1003 | unsupported |
-| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelSheet` | 1395 | unsupported |
-| `src/Mod/BIM/ArchPanel.py` | `_ViewProviderPanel` | 605 | unsupported |
-| `src/Mod/BIM/ArchRebar.py` | `_ViewProviderRebar` | 612 | unsupported |
-| `src/Mod/BIM/ArchReference.py` | `ViewProviderArchReference` | 638 | unsupported |
-| `src/Mod/BIM/ArchSectionPlane.py` | `_ViewProviderSectionPlane` | 1537 | unsupported |
-| `src/Mod/BIM/ArchSite.py` | `_ViewProviderSite` | 1724 | unsupported |
-| `src/Mod/BIM/ArchSpace.py` | `_ViewProviderSpace` | 724 | unsupported |
-| `src/Mod/BIM/ArchStairs.py` | `_ViewProviderStairs` | 2472 | unsupported |
-| `src/Mod/BIM/ArchStructure.py` | `_ViewProviderStructure` | 1491 | unsupported |
-| `src/Mod/BIM/ArchWall.py` | `_ViewProviderWall` | 1952 | unsupported |
-| `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | 922 | unsupported |
-| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_material` | 563 | unsupported |
-| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_object` | 66 | unsupported |
-| `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderArea` | 90 | unsupported |
-| `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderAreaView` | 172 | unsupported |
-| `src/Mod/CAM/Gui/ViewProviderPath.cpp` | `ViewProviderPath` | 498 | unsupported |
-| `src/Mod/CAM/Gui/ViewProviderPathShape.cpp` | `ViewProviderPathShape` | 89 | unsupported |
-| `src/Mod/CAM/Path/Dressup/Gui/Tags.py` | `PathDressupTagViewProvider` | 486 | unsupported |
-| `src/Mod/CAM/Path/Main/Gui/Fixture.py` | `_ViewProviderFixture` | 137 | unsupported |
-| `src/Mod/CAM/Path/Main/Gui/Job.py` | `ViewProvider` | 310 | unsupported |
-| `src/Mod/CAM/Path/Op/Gui/Base.py` | `ViewProvider` | 301 | unsupported |
-| `src/Mod/CAM/Path/Tool/Gui/Controller.py` | `ViewProvider` | 88 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraft` | 191 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraftAlt` | 592 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderAngularDimension` | 901 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderLinearDimension` | 324 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_draft_annotation.py` | `ViewProviderDraftAnnotation` | 198 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_draftlink.py` | `ViewProviderDraftLink` | 59 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_label.py` | `ViewProviderLabel` | 209 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_layer.py` | `ViewProviderLayer` | 206 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_text.py` | `ViewProviderText` | 108 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_wire.py` | `ViewProviderWire` | 112 | unsupported |
-| `src/Mod/Draft/draftviewproviders/view_wpproxy.py` | `ViewProviderWorkingPlaneProxy` | 193 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraint.cpp` | `ViewProviderFemConstraint` | 179 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.cpp` | `ViewProviderFemConstraintBearing` | 67 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintContact.cpp` | `ViewProviderFemConstraintContact` | 62 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintDisplacement.cpp` | `ViewProviderFemConstraintDisplacement` | 70 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintFixed.cpp` | `ViewProviderFemConstraintFixed` | 61 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintFluidBoundary.cpp` | `ViewProviderFemConstraintFluidBoundary` | 77 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintForce.cpp` | `ViewProviderFemConstraintForce` | 67 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintGear.cpp` | `ViewProviderFemConstraintGear` | 71 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintHeatflux.cpp` | `ViewProviderFemConstraintHeatflux` | 63 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintInitialTemperature.cpp` | `ViewProviderFemConstraintInitialTemperature` | 63 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintPlaneRotation.cpp` | `ViewProviderFemConstraintPlaneRotation` | 65 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintPressure.cpp` | `ViewProviderFemConstraintPressure` | 67 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintPulley.cpp` | `ViewProviderFemConstraintPulley` | 68 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintRigidBody.cpp` | `ViewProviderFemConstraintRigidBody` | 65 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintSpring.cpp` | `ViewProviderFemConstraintSpring` | 61 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintTemperature.cpp` | `ViewProviderFemConstraintTemperature` | 62 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemConstraintTransform.cpp` | `ViewProviderFemConstraintTransform` | 71 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemMesh.cpp` | `ViewProviderFemMesh` | 382 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemMeshShapeNetgen.cpp` | `ViewProviderFemMeshShapeNetgen` | 85 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemPostFilter.cpp` | `ViewProviderFemPostCalculator` | 281 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemPostFunction.cpp` | `ViewProviderFemPostFunctionProvider` | 75 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemPostObject.cpp` | `ViewProviderFemPostObject` | 799 | unsupported |
-| `src/Mod/Fem/Gui/ViewProviderFemPostPipeline.cpp` | `ViewProviderFemPostPipeline` | 59 | unsupported |
-| `src/Mod/Fem/femviewprovider/view_base_fempostvisualization.py` | `VPPostVisualization` | 89 | unsupported |
-| `src/Mod/Fem/femviewprovider/view_constraint_currentdensity.py` | `VPConstraintCurrentDensity` | 58 | unsupported |
-| `src/Mod/Fem/femviewprovider/view_mesh_gmsh.py` | `VPMeshGmsh` | 72 | unsupported |
-| `src/Mod/Fem/femviewprovider/view_mesh_shape.py` | `VPMeshShape` | 57 | unsupported |
-| `src/Mod/Inspection/Gui/ViewProviderInspection.cpp` | `ViewProviderInspection` | 351 | unsupported |
-| `src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp` | `ViewProviderMeasureBase` | 443 | unsupported |
-| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderIndexedFaceSet` | 2533 | adapted |
-| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderMesh` | 492 | adapted |
-| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderMeshObject` | 2624 | adapted |
-| `src/Mod/Mesh/Gui/ViewProviderCurvature.cpp` | `ViewProviderMeshCurvature` | 314 | unsupported |
-| `src/Mod/Mesh/Gui/ViewProviderMeshFaceSet.cpp` | `ViewProviderMeshFaceSet` | 100 | adapted |
-| `src/Mod/Mesh/Gui/ViewProviderTransform.cpp` | `ViewProviderMeshTransform` | 79 | adapted |
-| `src/Mod/MeshPart/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | 90 | unsupported |
-| `src/Mod/OpenSCAD/OpenSCADFeatures.py` | `ViewProviderTree` | 48 | unsupported |
-| `src/Mod/Part/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | 90 | unsupported |
-| `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObject` | 403 | adapted |
-| `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObjectGrid` | 256 | adapted |
-| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | 140 | adapted |
-| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiCommon` | 414 | adapted |
-| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiFuse` | 270 | adapted |
-| `src/Mod/Part/Gui/ViewProviderCompound.cpp` | `ViewProviderCompound` | 136 | adapted |
-| `src/Mod/Part/Gui/ViewProviderCurveNet.cpp` | `ViewProviderCurveNet` | 100 | adapted |
-| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | 987 | adapted |
-| `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderChamfer` | 368 | adapted |
-| `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderFillet` | 247 | adapted |
-| `src/Mod/Part/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 57 | unsupported |
-| `src/Mod/Part/Gui/ViewProviderReference.cpp` | `ViewProviderPartReference` | 228 | unsupported |
-| `src/Mod/Part/Gui/ViewProviderRuledSurface.cpp` | `ViewProviderRuledSurface` | 60 | adapted |
-| `src/Mod/PartDesign/Gui/ViewProvider.cpp` | `ViewProvider` | 109 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderBody.cpp` | `ViewProviderBody` | 341 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | 428 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp` | `ViewProviderDatumCoordinateSystem` | 199 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderDatumLine.cpp` | `ViewProviderDatumLine` | 71 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderDatumPlane.cpp` | `ViewProviderDatumPlane` | 90 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderHole.cpp` | `ViewProviderHole` | 139 | unsupported |
-| `src/Mod/PartDesign/Gui/ViewProviderSketchBased.cpp` | `ViewProviderSketchBased` | 116 | unsupported |
-| `src/Mod/Points/Gui/ViewProvider.cpp` | `ViewProviderScattered` | 430 | adapted |
-| `src/Mod/Points/Gui/ViewProvider.cpp` | `ViewProviderStructured` | 601 | adapted |
-| `src/Mod/Robot/Gui/ViewProviderRobotObject.cpp` | `ViewProviderRobotObject` | 170 | unsupported |
-| `src/Mod/Robot/Gui/ViewProviderTrajectory.cpp` | `ViewProviderTrajectory` | 126 | unsupported |
-| `src/Mod/Sketcher/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 59 | unsupported |
-| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | 3915 | unsupported |
-| `src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp` | `ViewProviderSheet` | 189 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | 52 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp` | `ViewProviderBalloon` | 114 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderDimension.cpp` | `ViewProviderDimension` | 167 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderDrawingView.cpp` | `ViewProviderDrawingView` | 251 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderGeomHatch.cpp` | `ViewProviderGeomHatch` | 115 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderHatch.cpp` | `ViewProviderHatch` | 112 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderImage.cpp` | `ViewProviderImage` | 49 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderPage.cpp` | `ViewProviderPage` | 160 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderProjGroup.cpp` | `ViewProviderProjGroup` | 246 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderProjGroupItem.cpp` | `ViewProviderProjGroupItem` | 56 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderRichAnno.cpp` | `ViewProviderRichAnno` | 112 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderSymbol.cpp` | `ViewProviderSymbol` | 53 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderTemplate.cpp` | `ViewProviderTemplate` | 83 | unsupported |
-| `src/Mod/TechDraw/Gui/ViewProviderViewSection.cpp` | `ViewProviderViewSection` | 115 | unsupported |
+| file | symbol/caller | classification |
+| --- | --- | --- |
+| `src/Gui/ViewProvider.cpp` | `ViewProvider` | unsupported |
+| `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | unsupported |
+| `src/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotationLabel` | unsupported |
+| `src/Gui/ViewProviderDragger.cpp` | `ViewProviderDragger` | unsupported |
+| `src/Gui/ViewProviderFeaturePython.cpp` | `ViewProviderFeaturePythonImp` | unsupported |
+| `src/Gui/ViewProviderGeometryObject.cpp` | `ViewProviderGeometryObject` | unsupported |
+| `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | unsupported |
+| `src/Gui/ViewProviderInventorObject.cpp` | `ViewProviderInventorObject` | unsupported |
+| `src/Gui/ViewProviderLink.cpp` | `LinkInfo` | unsupported |
+| `src/Gui/ViewProviderLink.cpp` | `ViewProviderLink` | unsupported |
+| `src/Gui/ViewProviderPart.cpp` | `ViewProviderPart` | unsupported |
+| `src/Gui/ViewProviderPlacement.cpp` | `ViewProviderPlacement` | unsupported |
+| `src/Gui/ViewProviderVRMLObject.cpp` | `ViewProviderVRMLObject` | unsupported |
+| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderMotion` | unsupported |
+| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderSimulation` | unsupported |
+| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedView` | unsupported |
+| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedViewStep` | unsupported |
+| `src/Mod/Assembly/Gui/ViewProviderAssembly.cpp` | `ViewProviderAssembly` | unsupported |
+| `src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp` | `ViewProviderReviewNote` | unsupported |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | unsupported |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | unsupported |
+| `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | unsupported |
+| `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | unsupported |
+| `src/Mod/BIM/ArchBuildingPart.py` | `ViewProviderBuildingPart` | unsupported |
+| `src/Mod/BIM/ArchComponent.py` | `ViewProviderComponent` | unsupported |
+| `src/Mod/BIM/ArchCoveringGui.py` | `_ViewProviderCovering` | unsupported |
+| `src/Mod/BIM/ArchCurtainWall.py` | `ViewProviderCurtainWall` | unsupported |
+| `src/Mod/BIM/ArchEquipment.py` | `_ViewProviderEquipment` | unsupported |
+| `src/Mod/BIM/ArchFence.py` | `_ViewProviderFence` | unsupported |
+| `src/Mod/BIM/ArchMaterial.py` | `_ViewProviderArchMaterial` | unsupported |
+| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelCut` | unsupported |
+| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelSheet` | unsupported |
+| `src/Mod/BIM/ArchPanel.py` | `_ViewProviderPanel` | unsupported |
+| `src/Mod/BIM/ArchRebar.py` | `_ViewProviderRebar` | unsupported |
+| `src/Mod/BIM/ArchReference.py` | `ViewProviderArchReference` | unsupported |
+| `src/Mod/BIM/ArchSectionPlane.py` | `_ViewProviderSectionPlane` | unsupported |
+| `src/Mod/BIM/ArchSite.py` | `_ViewProviderSite` | unsupported |
+| `src/Mod/BIM/ArchSpace.py` | `_ViewProviderSpace` | unsupported |
+| `src/Mod/BIM/ArchStairs.py` | `_ViewProviderStairs` | unsupported |
+| `src/Mod/BIM/ArchStructure.py` | `_ViewProviderStructure` | unsupported |
+| `src/Mod/BIM/ArchWall.py` | `_ViewProviderWall` | unsupported |
+| `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | unsupported |
+| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_material` | unsupported |
+| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_object` | unsupported |
+| `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderArea` | unsupported |
+| `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderAreaView` | unsupported |
+| `src/Mod/CAM/Gui/ViewProviderPath.cpp` | `ViewProviderPath` | unsupported |
+| `src/Mod/CAM/Gui/ViewProviderPathShape.cpp` | `ViewProviderPathShape` | unsupported |
+| `src/Mod/CAM/Path/Dressup/Gui/Tags.py` | `PathDressupTagViewProvider` | unsupported |
+| `src/Mod/CAM/Path/Main/Gui/Fixture.py` | `_ViewProviderFixture` | unsupported |
+| `src/Mod/CAM/Path/Main/Gui/Job.py` | `ViewProvider` | unsupported |
+| `src/Mod/CAM/Path/Op/Gui/Base.py` | `ViewProvider` | unsupported |
+| `src/Mod/CAM/Path/Tool/Gui/Controller.py` | `ViewProvider` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraft` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraftAlt` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderAngularDimension` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderLinearDimension` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_draft_annotation.py` | `ViewProviderDraftAnnotation` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_draftlink.py` | `ViewProviderDraftLink` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_label.py` | `ViewProviderLabel` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_layer.py` | `ViewProviderLayer` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_text.py` | `ViewProviderText` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_wire.py` | `ViewProviderWire` | unsupported |
+| `src/Mod/Draft/draftviewproviders/view_wpproxy.py` | `ViewProviderWorkingPlaneProxy` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraint.cpp` | `ViewProviderFemConstraint` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.cpp` | `ViewProviderFemConstraintBearing` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintContact.cpp` | `ViewProviderFemConstraintContact` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintDisplacement.cpp` | `ViewProviderFemConstraintDisplacement` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintFixed.cpp` | `ViewProviderFemConstraintFixed` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintFluidBoundary.cpp` | `ViewProviderFemConstraintFluidBoundary` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintForce.cpp` | `ViewProviderFemConstraintForce` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintGear.cpp` | `ViewProviderFemConstraintGear` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintHeatflux.cpp` | `ViewProviderFemConstraintHeatflux` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintInitialTemperature.cpp` | `ViewProviderFemConstraintInitialTemperature` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintPlaneRotation.cpp` | `ViewProviderFemConstraintPlaneRotation` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintPressure.cpp` | `ViewProviderFemConstraintPressure` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintPulley.cpp` | `ViewProviderFemConstraintPulley` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintRigidBody.cpp` | `ViewProviderFemConstraintRigidBody` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintSpring.cpp` | `ViewProviderFemConstraintSpring` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintTemperature.cpp` | `ViewProviderFemConstraintTemperature` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemConstraintTransform.cpp` | `ViewProviderFemConstraintTransform` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemMesh.cpp` | `ViewProviderFemMesh` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemMeshShapeNetgen.cpp` | `ViewProviderFemMeshShapeNetgen` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemPostFilter.cpp` | `ViewProviderFemPostCalculator` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemPostFunction.cpp` | `ViewProviderFemPostFunctionProvider` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemPostObject.cpp` | `ViewProviderFemPostObject` | unsupported |
+| `src/Mod/Fem/Gui/ViewProviderFemPostPipeline.cpp` | `ViewProviderFemPostPipeline` | unsupported |
+| `src/Mod/Fem/femviewprovider/view_base_fempostvisualization.py` | `VPPostVisualization` | unsupported |
+| `src/Mod/Fem/femviewprovider/view_constraint_currentdensity.py` | `VPConstraintCurrentDensity` | unsupported |
+| `src/Mod/Fem/femviewprovider/view_mesh_gmsh.py` | `VPMeshGmsh` | unsupported |
+| `src/Mod/Fem/femviewprovider/view_mesh_shape.py` | `VPMeshShape` | unsupported |
+| `src/Mod/Inspection/Gui/ViewProviderInspection.cpp` | `ViewProviderInspection` | unsupported |
+| `src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp` | `ViewProviderMeasureBase` | unsupported |
+| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderIndexedFaceSet` | adapted |
+| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderMesh` | adapted |
+| `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderMeshObject` | adapted |
+| `src/Mod/Mesh/Gui/ViewProviderCurvature.cpp` | `ViewProviderMeshCurvature` | unsupported |
+| `src/Mod/Mesh/Gui/ViewProviderMeshFaceSet.cpp` | `ViewProviderMeshFaceSet` | adapted |
+| `src/Mod/Mesh/Gui/ViewProviderTransform.cpp` | `ViewProviderMeshTransform` | adapted |
+| `src/Mod/MeshPart/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | unsupported |
+| `src/Mod/OpenSCAD/OpenSCADFeatures.py` | `ViewProviderTree` | unsupported |
+| `src/Mod/Part/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | unsupported |
+| `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObject` | adapted |
+| `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObjectGrid` | adapted |
+| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | adapted |
+| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiCommon` | adapted |
+| `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiFuse` | adapted |
+| `src/Mod/Part/Gui/ViewProviderCompound.cpp` | `ViewProviderCompound` | adapted |
+| `src/Mod/Part/Gui/ViewProviderCurveNet.cpp` | `ViewProviderCurveNet` | adapted |
+| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | adapted |
+| `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderChamfer` | adapted |
+| `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderFillet` | adapted |
+| `src/Mod/Part/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | unsupported |
+| `src/Mod/Part/Gui/ViewProviderReference.cpp` | `ViewProviderPartReference` | unsupported |
+| `src/Mod/Part/Gui/ViewProviderRuledSurface.cpp` | `ViewProviderRuledSurface` | adapted |
+| `src/Mod/PartDesign/Gui/ViewProvider.cpp` | `ViewProvider` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderBody.cpp` | `ViewProviderBody` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp` | `ViewProviderBoolean` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp` | `ViewProviderDatumCoordinateSystem` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderDatumLine.cpp` | `ViewProviderDatumLine` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderDatumPlane.cpp` | `ViewProviderDatumPlane` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderHole.cpp` | `ViewProviderHole` | unsupported |
+| `src/Mod/PartDesign/Gui/ViewProviderSketchBased.cpp` | `ViewProviderSketchBased` | unsupported |
+| `src/Mod/Points/Gui/ViewProvider.cpp` | `ViewProviderScattered` | adapted |
+| `src/Mod/Points/Gui/ViewProvider.cpp` | `ViewProviderStructured` | adapted |
+| `src/Mod/Robot/Gui/ViewProviderRobotObject.cpp` | `ViewProviderRobotObject` | unsupported |
+| `src/Mod/Robot/Gui/ViewProviderTrajectory.cpp` | `ViewProviderTrajectory` | unsupported |
+| `src/Mod/Sketcher/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | unsupported |
+| `src/Mod/Sketcher/Gui/ViewProviderSketch.cpp` | `ViewProviderSketch` | unsupported |
+| `src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp` | `ViewProviderSheet` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp` | `ViewProviderAnnotation` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp` | `ViewProviderBalloon` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderDimension.cpp` | `ViewProviderDimension` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderDrawingView.cpp` | `ViewProviderDrawingView` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderGeomHatch.cpp` | `ViewProviderGeomHatch` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderHatch.cpp` | `ViewProviderHatch` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderImage.cpp` | `ViewProviderImage` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderPage.cpp` | `ViewProviderPage` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderProjGroup.cpp` | `ViewProviderProjGroup` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderProjGroupItem.cpp` | `ViewProviderProjGroupItem` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderRichAnno.cpp` | `ViewProviderRichAnno` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderSymbol.cpp` | `ViewProviderSymbol` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderTemplate.cpp` | `ViewProviderTemplate` | unsupported |
+| `src/Mod/TechDraw/Gui/ViewProviderViewSection.cpp` | `ViewProviderViewSection` | unsupported |
