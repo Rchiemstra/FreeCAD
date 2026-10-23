@@ -1105,6 +1105,200 @@ class TestMotionSweep(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.sweep_simulation(sim)
 
+    def test_all_rework_flexible_assembly_rejected(self):
+        sim = self.simulation()
+        source = Assembly.createAssembly(self.doc)
+        for name in ("FlexibleA", "FlexibleB"):
+            leaf = source.newObject("Part::Feature", name)
+            leaf.Shape = Part.makeBox(1, 1, 1)
+        link = self.assembly.newObject("Assembly::AssemblyLink", "Flexible")
+        link.LinkedObject = source
+        link.Rigid = False
+        self.doc.recompute()
+        inventory = AssemblyApp._motionInterferenceLeaves(self.assembly)
+        self.assertGreaterEqual(sum(l["component"] == "Flexible."
+                                    for l in inventory["leaves"]), 2)
+        result = self.sweep_simulation(sim, scope="all", refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "incomplete")
+        self.assertIn("Flexible", result["reason"])
+        self.assertIn("not supported", result["reason"])
+
+    def test_all_rework_errored_fixed_joint_keeps_pair(self):
+        from Assembly.MotionAllPairs import _rigid_classes
+
+        mate = self.assembly.newObject("Part::Feature", "StationaryMate")
+        mate.Shape = Part.makeBox(2, 2, 2, App.Vector(0, -0.5, 6))
+        fixed = self.make_joint("Fixed", self.arm, mate)
+        sim = self.simulation()
+        fixed.setExpression("Placement1.Base.x", "1 / 0")
+        self.doc.recompute()
+        self.assertIn("Invalid", fixed.State)
+        self.assertNotIn(fixed, self.assembly.Joints)
+        root = _rigid_classes(self.assembly)
+        self.assertNotEqual(root(self.arm.Name), root(mate.Name))
+        result = self.sweep_simulation(sim, scope="all", refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        pair = next(p for p in result["pairResults"]
+                    if set(p["pair"]) == {"Arm.", "StationaryMate."})
+        self.assertIsNotNone(pair["firstContact"])
+
+    def test_all_rework_validates_static_only_simulation_and_options(self):
+        sim = self.simulation()
+        Assembly.createGroundedJoint(self.assembly, self.arm, recompute=False)
+        self.doc.recompute()
+        with self.assertRaisesRegex(ValueError, "Choose a simulation"):
+            self.sweep_simulation(None, scope="all")
+        for options in (dict(clearance=-1), dict(maximumGap=-1),
+                        dict(refinementTolerance=0), dict(refinementPoseBudget=-1),
+                        dict(maxFacePairCandidates=-1), dict(maxFacePairCandidates=1.5),
+                        dict(maxFacePairCandidates=1 << 80), dict(cancel=object())):
+            with self.subTest(options=options):
+                with self.assertRaises((ValueError, TypeError, OverflowError)) as pair:
+                    self.sweep_simulation(sim, **options)
+                with self.assertRaises(type(pair.exception)) as all_pairs:
+                    self.sweep_simulation(sim, scope="all", **options)
+                self.assertEqual(str(pair.exception), str(all_pairs.exception))
+        sim.cTimeStepOutput = 0
+        with self.assertRaisesRegex(ValueError, "positive output step"):
+            self.sweep_simulation(sim, scope="all")
+
+    def test_all_rework_hidden_default_and_opt_in(self):
+        self.obstacle.Visibility = False
+        for include in (False, True):
+            options = dict(includeHidden=True) if include else {}
+            result = self.sweep(scope="all", refinementPoseBudget=0, coverageBudget=0,
+                                **options)
+            self.assertEqual(result["completeness"], "complete", result["reason"])
+            self.assertEqual(result["includeHidden"], include)
+            self.assertIn("included" if include else "excluded", result["message"])
+            self.assertEqual(result["firstContact"] is not None, include)
+
+    def test_all_three_body_first_event_and_runtime(self):
+        before = self.state()
+        started = time.monotonic()
+        result = self.sweep(scope="all", clearance=0, coverageBudget=0)
+        print("ALL MODEL runtime=%.6fs" % (time.monotonic() - started))
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["staticPairs"], 1)
+        self.assertEqual(len(result["pairResults"]), 2)
+        touching = [p for p in result["pairResults"] if p["firstContact"]]
+        self.assertEqual(len(touching), 1)
+        self.assertEqual(set(touching[0]["pair"]), {"Arm.", "Obstacle."})
+        self.assertAlmostEqual(result["firstEvent"]["coordinate"], 5, places=2)
+        self.assert_restored(before)
+
+    def test_all_hidden_component_included_on_request(self):
+        self.obstacle.Visibility = False
+        result = self.sweep(scope="all", includeHidden=True,
+                            refinementPoseBudget=0, coverageBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["firstContact"]["pair"], ("Arm.", "Obstacle."))
+
+    def test_all_exclusion_named_and_suppressed(self):
+        self.assembly.InterferenceExcludedSources = [(self.arm, [""]), (self.obstacle, [""])]
+        self.assembly.InterferenceExclusionReasons = [self.doc.Name + "#IntendedContact"]
+        result = self.sweep(scope="all", coverageBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertIsNone(result["firstContact"])
+        self.assertTrue(any(p["exclusionRule"].endswith("#IntendedContact")
+                            for p in result["pairResults"] if p.get("exclusionRule")))
+
+    def test_all_design_rule_tighter_than_sweep_clearance(self):
+        self.base.Shape = Part.makeBox(2, 2, 2, App.Vector(-1, -1, -20))
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "MotionClearances")
+        for cell, value in {"A1": "Face", "B1": "Tolerance", "C1": "Comment",
+                            "A2": "*", "B2": "2 mm", "C2": "Keep tool space"}.items():
+            sheet.set(cell, value)
+        self.doc.recompute()
+        self.assembly.InterferenceClearanceSheet = sheet
+        result = self.sweep(scope="all", clearance=0.1, coverageBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        event = result["firstClearanceViolation"]
+        self.assertAlmostEqual(event["coordinate"], 3, delta=0.011)
+        self.assertIn("Keep tool space", str(event["rules"]))
+
+    def test_all_rigid_moving_pair_skipped(self):
+        import JointObject
+
+        mate = self.assembly.newObject("Part::Feature", "RigidMate")
+        mate.Shape = Part.makeBox(1, 1, 1, App.Vector(4, 0, 0))
+        group = self.joint.getParentGroup().newObject("App::FeaturePython", "RigidGroup")
+        JointObject.RigidGroupJoint(group, [self.arm, mate])
+        self.doc.recompute()
+        result = self.sweep(scope="all", refinementPoseBudget=0, coverageBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["staticPairs"], 2)
+        self.assertFalse(any(set(p["pair"]) == {"Arm.", "RigidMate."}
+                             for p in result["pairResults"]))
+
+    def test_all_budgets_and_cancel_restore(self):
+        for options, reason in ((dict(pairBudget=1), "Pair budget"),
+                                (dict(poseBudget=1), "Pose budget")):
+            before = self.state()
+            result = self.sweep(scope="all", **options)
+            self.assertEqual(result["completeness"], "incomplete")
+            self.assertIn(reason, result["reason"])
+            self.assert_restored(before)
+        token = Assembly.SweepCancellation()
+        result = self.sweep(scope="all", cancel=token, progress=lambda _: token.cancel())
+        self.assertEqual(result["completeness"], "cancelled")
+
+    def test_all_simulation_and_default_pair_unchanged(self):
+        result = self.sweep_simulation(self.simulation(), scope="all", refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["staticPairs"], 1)
+        self.assertEqual(len(result["pairResults"]), 2)
+        default = self.sweep(interval=(0, 2), refinementPoseBudget=0)
+        explicit = self.sweep(interval=(0, 2), refinementPoseBudget=0, scope="pair")
+        for key in default:
+            if key not in ("minimumClearance", "sampledMinimumClearance"):
+                self.assertEqual(default[key], explicit[key], key)
+        self.assertEqual(default["minimumClearance"]["value"],
+                         explicit["minimumClearance"]["value"])
+
+    def test_all_leaf_pairs_are_distinct_under_a_component(self):
+        # The grounded component has two physical leaves; events must identify
+        # the actual leaf, rather than one aggregated component A x B result.
+        self.doc.removeObject(self.joint.Name)
+        grounded = next(o for o in self.doc.Objects
+                        if getattr(o, "ObjectToGround", None) == self.obstacle)
+        self.doc.removeObject(grounded.Name)
+        self.doc.removeObject(self.obstacle.Name)
+        obstacle = self.assembly.newObject("App::Part", "ObstacleGroup")
+        for name, z in (("NearLeaf", 6), ("FarLeaf", 30)):
+            leaf = obstacle.newObject("Part::Feature", name)
+            leaf.Shape = Part.makeBox(2, 2, 2, App.Vector(0, -0.5, z))
+        Assembly.createGroundedJoint(self.assembly, obstacle, recompute=False)
+        self.joint = self.make_joint("Slider", self.base, self.arm)
+        self.doc.recompute()
+        result = self.sweep(scope="all", coverageBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        touching = [p for p in result["pairResults"] if p["firstContact"]]
+        self.assertEqual(len(touching), 1)
+        self.assertIn("ObstacleGroup.NearLeaf.", touching[0]["pair"])
+        self.assertTrue(any("ObstacleGroup.FarLeaf." in p["pair"]
+                            for p in result["pairResults"]))
+
+    def test_all_simulation_checks_differently_moving_pair(self):
+        sim, follower, _ = self.gear_simulation()
+        result = self.sweep_simulation(sim, scope="all", refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["staticPairs"], 1)
+        self.assertTrue(any(set(p["pair"]) == {"Arm.", "Follower."}
+                            for p in result["pairResults"]))
+
+    def test_gap_coverage_analytic_proven_and_unresolved(self):
+        # Slider distance is 5-s on [0,2]. L=1, upper cone bound is 5+margin.
+        for maximum, expected in ((6, "proven"), (4.9, "unresolved"),
+                                  (5.0000005, "unresolved")):
+            result = self.sweep(interval=(0, 2), step=2, refinementPoseBudget=0,
+                                coverageBudget=4, maximumGap=maximum)
+            self.assertEqual(result["gapCoverage"], expected)
+            self.assertAlmostEqual(result["provenUpperBound"], 5.000001, places=5)
+            self.assertEqual(result["coverage"], "proven")
+            print("ANALYTIC maxGap=%g upper=%.9f gapCoverage=%s" %
+                  (maximum, result["provenUpperBound"], result["gapCoverage"]))
+
     def test_coverage_thin_obstacle_missed_by_coarse_samples(self):
         self.arm.Shape = Part.makeBox(1, 1, 0.01)
         self.obstacle.Shape = Part.makeBox(1, 1, 0.01, App.Vector(0, 0, 3.37))

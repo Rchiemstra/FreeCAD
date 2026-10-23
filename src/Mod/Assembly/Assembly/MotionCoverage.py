@@ -29,10 +29,16 @@ class RigidSweepCoverage:
         result.update(coverage="unresolved", coverageReason="Sweep has not finished",
                       unresolvedIntervals=[(self.start, self.end)], provenLowerBound=None,
                       boundConstant=None, boundUnit=None, coveragePoses=0, coverageBudget=budget)
+        if result.get("maximumGap") is not None:
+            result.update(gapCoverage="unresolved", gapCoverageReason="Sweep has not finished",
+                          provenUpperBound=None, unresolvedGapIntervals=[(self.start, self.end)])
         if joint is None:
             self.unavailable("Prescribed simulation trajectory has no continuous motion bound")
 
     def unavailable(self, reason):
+        if self.result.get("maximumGap") is not None:
+            self.result.update(gapCoverage="not available", gapCoverageReason=reason,
+                               unresolvedGapIntervals=[])
         self.result.update(coverage="not available", coverageReason=reason,
                            unresolvedIntervals=[], provenLowerBound=None)
 
@@ -120,3 +126,44 @@ class RigidSweepCoverage:
         if not self.budget:
             result["unresolvedIntervals"] = [(self.start, self.end)]
         result.update(coverage="unresolved", coverageReason=reason)
+
+    def upper_intervals(self):
+        constant = self.result["boundConstant"]
+        scale = math.pi / 180 if self.unit == "deg" else 1
+        points = list(self.points.items())
+        for endpoint in (self.start, self.end):
+            if endpoint not in self.points:
+                coordinate, distance = min(self.points.items(), key=lambda p: abs(p[0] - endpoint))
+                points.append((endpoint, distance + constant * abs(endpoint - coordinate) * scale))
+        points = sorted((s, d) for s, d in points if self.start <= s <= self.end)
+        return [((d0 + d1 + constant * (s1 - s0) * scale) / 2 + self.margin, s0, s1)
+                for (s0, d0), (s1, d1) in zip(points, points[1:])]
+
+    def finish_gap(self):
+        """Certify maximum separation using the existing observed poses only.
+
+        Upper cones use the same rigid-motion Lipschitz constant as contact
+        coverage. No extra solves are introduced: pair-mode event coordinates,
+        witnesses and contact-coverage results retain their existing values.
+        """
+        result = self.result
+        maximum = result.get("maximumGap")
+        if maximum is None or not self.ready or result["gapCoverage"] == "not available":
+            return
+        intervals = self.upper_intervals()
+        pending = [(low, high) for upper, low, high in intervals if upper >= maximum]
+        result.update(provenUpperBound=max((upper for upper, _, _ in intervals),
+                                          default=max(self.points.values()) + self.margin),
+                      unresolvedGapIntervals=pending)
+        if not self.budget:
+            reason = "Coverage disabled (coverageBudget=0)"
+            result["unresolvedGapIntervals"] = [(self.start, self.end)]
+        elif result["firstGapViolation"] is not None:
+            reason = "Gap violation found; remaining intervals are unresolved"
+        elif pending:
+            reason = "Upper separation bound reaches maximumGap; intervals remain unresolved"
+        else:
+            result.update(gapCoverage="proven",
+                          gapCoverageReason="Every interval is below maximumGap")
+            return
+        result.update(gapCoverage="unresolved", gapCoverageReason=reason)

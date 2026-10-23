@@ -9,6 +9,8 @@ scans own their world-space geometry after state restoration.
 
 import bisect
 import math
+import operator
+import sys
 import threading
 
 import FreeCAD as App
@@ -88,7 +90,8 @@ def _validate_mechanism(assembly, joint):
 
     group = next((o for o in assembly.Group if o.TypeId == "Assembly::JointGroup"), None)
     joints = list(group.Group) if group else []
-    if joint not in joints or getattr(joint, "Suppressed", True):
+    applied = list(assembly.Joints)
+    if joint not in applied:
         raise ValueError("Choose an active joint in this assembly")
     if joint.JointType not in ("Revolute", "Slider", "Cylindrical"):
         raise ValueError("Only a single revolute, slider or cylindrical joint is supported")
@@ -129,6 +132,8 @@ def _validate_mechanism(assembly, joint):
             for member in members[1:]:
                 connect(members[0], member)
         elif hasattr(item, "JointType"):
+            if item not in applied:
+                continue
             if item != joint and item.JointType != "Fixed":
                 raise ValueError("Coupled or additional moving joints are not supported")
             refs = (UtilsAssembly.getMovingPart(item.Reference1),
@@ -374,9 +379,11 @@ class _SimulationTrajectory:
             raise RuntimeError(f"Frame {frame} (t = {time:g} s): {error}") from error
 
 
-def sweepSimulation(assembly, simulation, first, second, *, clearance=None, maximumGap=None,
+def sweepSimulation(assembly, simulation, first=None, second=None, *,
+                    clearance=None, maximumGap=None,
                     refinementTolerance=None, refinementPoseBudget=20, cancel=None, progress=None,
-                    maxFacePairCandidates=10000, _scan=None):
+                    maxFacePairCandidates=10000, scope="pair", pairBudget=1000,
+                    poseBudget=10000, includeHidden=False, _scan=None):
     """Check a finite existing simulation's prescribed solver trajectory.
 
     Uses sweepJoint's scanner, events, minimum search and scoped restoration.
@@ -393,10 +400,24 @@ def sweepSimulation(assembly, simulation, first, second, *, clearance=None, maxi
     interpolation or permanent simulation edit is used. Refined records retain
     the preceding native frame and frameFraction. Zero budget gives explicitly
     frame-sampled results. Sampling/refinement is no continuous clearance proof.
+    All-components scope excludes hidden leaves unless includeHidden=True.
     Other options, callbacks and validation follow sweepJoint.
     """
     assembly = _require_assembly(assembly)
+    if scope not in ("pair", "all"):
+        raise ValueError('scope must be "pair" or "all"')
     trajectory = _SimulationTrajectory(assembly, simulation)
+    if scope == "all":
+        from .MotionAllPairs import sweepAll
+
+        _validate_options(assembly, trajectory.step, "s", clearance, maximumGap,
+                          refinementTolerance, refinementPoseBudget, 64, cancel,
+                          maxFacePairCandidates)
+        return sweepAll(assembly, lambda a, b, **opts: sweepSimulation(
+            assembly, simulation, a, b, **opts), pairBudget=pairBudget, poseBudget=poseBudget,
+            clearance=clearance, maximumGap=maximumGap, refinementTolerance=refinementTolerance,
+            refinementPoseBudget=refinementPoseBudget, cancel=cancel, progress=progress,
+            maxFacePairCandidates=maxFacePairCandidates, includeHidden=includeHidden, _scan=_scan)
     return _sweep(assembly, None, first, second, start=trajectory.start, end=trajectory.end,
                   count=trajectory.count, unit="s", step=trajectory.step, clearance=clearance,
                   maximumGap=maximumGap, refinementTolerance=refinementTolerance,
@@ -404,10 +425,11 @@ def sweepSimulation(assembly, simulation, first, second, *, clearance=None, maxi
                   maxFacePairCandidates=maxFacePairCandidates, _scan=_scan, trajectory=trajectory)
 
 
-def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
+def sweepJoint(assembly, joint, first=None, second=None, *, interval=None, step=None,
                clearance=None, maximumGap=None, refinementTolerance=None,
                refinementPoseBudget=20, cancel=None, progress=None, maxFacePairCandidates=10000,
-               coverageBudget=64, motionType=None, _scan=None):
+               coverageBudget=64, motionType=None, scope="pair", pairBudget=1000,
+               poseBudget=10000, includeHidden=False, _scan=None):
     """Scan two occurrences through one bounded joint sweep, synchronously.
 
     Numeric endpoints/step are signed, unwrapped degrees for revolutes or mm for
@@ -431,7 +453,11 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     provenLowerBound is a conservative stroke-wide separation bound in mm.
     Cylindrical joints default to Linear; motionType="Angular" sweeps rotation
     while holding translation fixed (or vice versa). Simulation coverage is never
-    available. Maximum-gap violations and face rules remain sampled + refined.
+    available. Maximum-gap coverage uses the same Lipschitz upper bound.
+    Face rules remain sampled + refined. scope="all" sweeps changing leaf pairs
+    with shared pairBudget (enumerated pairs) and poseBudget (static scan calls);
+    exhaustion returns incomplete. Hidden leaves are excluded unless includeHidden=True.
+    scope="pair" preserves selected-pair behavior.
     maximumGap optionally bounds the pair's shortest separation in mm.
 
     Return a dict with samples, firstContact, firstClearanceViolation,
@@ -449,10 +475,25 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     """
     assembly = _require_assembly(assembly)
     mechanism = _validate_mechanism(assembly, joint)
+    if scope not in ("pair", "all"):
+        raise ValueError('scope must be "pair" or "all"')
     if motionType is not None and (joint.JointType != "Cylindrical" or
                                    motionType not in ("Angular", "Linear")):
         raise ValueError("motionType is Angular or Linear for a cylindrical joint only")
     start, end, count, unit = _interval(joint, interval, step, motionType)
+    if scope == "all":
+        from .MotionAllPairs import sweepAll
+
+        _validate_options(assembly, step, unit, clearance, maximumGap, refinementTolerance,
+                          refinementPoseBudget, coverageBudget, cancel, maxFacePairCandidates)
+        return sweepAll(assembly, lambda a, b, **opts: sweepJoint(assembly, joint, a, b, **opts),
+                        mechanism=mechanism, pairBudget=pairBudget, poseBudget=poseBudget,
+                        interval=interval, step=step, clearance=clearance, maximumGap=maximumGap,
+                        refinementTolerance=refinementTolerance,
+                        refinementPoseBudget=refinementPoseBudget, cancel=cancel, progress=progress,
+                        maxFacePairCandidates=maxFacePairCandidates, coverageBudget=coverageBudget,
+                        motionType=motionType, includeHidden=includeHidden, _scan=_scan)
+
     return _sweep(assembly, joint, first, second, start=start, end=end, count=count,
                   unit=unit, step=step, clearance=clearance, maximumGap=maximumGap,
                   refinementTolerance=refinementTolerance, refinementPoseBudget=refinementPoseBudget,
@@ -460,9 +501,8 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                   _scan=_scan, coverageBudget=coverageBudget, mechanism=mechanism)
 
 
-def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, clearance,
-           maximumGap, refinementTolerance, refinementPoseBudget, cancel, progress,
-           maxFacePairCandidates, _scan, trajectory=None, coverageBudget=64, mechanism=None):
+def _validate_options(assembly, step, unit, clearance, maximumGap, refinementTolerance,
+                      refinementPoseBudget, coverageBudget, cancel, maxFacePairCandidates):
     requirement = _number(assembly.InterferenceClearance if clearance is None else clearance,
                           "mm", "clearance")
     if requirement < 0:
@@ -482,10 +522,24 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
         maximumGap = _number(maximumGap, "mm", "maximumGap")
         if maximumGap < 0:
             raise ValueError("maximumGap must be nonnegative")
+    cap = operator.index(maxFacePairCandidates)
+    if cap > sys.maxsize or cap < -sys.maxsize - 1:
+        raise OverflowError("Python int too large to convert to C ssize_t")
+    if cap < 0:
+        raise ValueError("maxFacePairCandidates must be nonnegative (zero means unlimited)")
     if cancel is None:
         cancel = SweepCancellation()
     if not isinstance(cancel, SweepCancellation):
         raise TypeError("cancel must be a SweepCancellation")
+    return requirement, maximumGap, refinementTolerance, cancel
+
+
+def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, clearance,
+           maximumGap, refinementTolerance, refinementPoseBudget, cancel, progress,
+           maxFacePairCandidates, _scan, trajectory=None, coverageBudget=64, mechanism=None):
+    requirement, maximumGap, refinementTolerance, cancel = _validate_options(
+        assembly, step, unit, clearance, maximumGap, refinementTolerance,
+        refinementPoseBudget, coverageBudget, cancel, maxFacePairCandidates)
     scan_pair = AssemblyApp.scanSelectedPair if _scan is None else _scan
     # Validate selected occurrence handles before any motion or temporary writes.
     AssemblyApp._prepareSelectedPairScan(
@@ -808,6 +862,7 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                 refine_minimum()
                 refine_events()
                 coverage.refine(lambda coordinate: extra_pose(coordinate, 0), notify)
+                coverage.finish_gap()
                 refine_events()
                 result.update(completeness="complete", reason="")
         except Cancelled:
@@ -834,6 +889,8 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
     elif result["coverage"] == "proven":
         result.update(coverage="unresolved", coverageReason="Sweep did not finish",
                       unresolvedIntervals=[tuple(sorted((start, end)))])
+    if maximumGap is not None and result["completeness"] != "complete":
+        result.update(gapCoverage="unresolved", gapCoverageReason="Sweep did not finish")
     if trajectory is not None:
         result["message"] = result["message"].replace("sampled + refined", result["sampling"])
     return result

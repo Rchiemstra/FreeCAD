@@ -61,10 +61,16 @@ public:
             "Internal: snapshot selected geometry on the document thread.");
         add_varargs_method("_runPreparedInterferenceScan", &Module::runPrepared,
             "Internal: run an owned immutable snapshot on a worker, once.");
+        add_varargs_method("_motionInterferenceLeaves", &Module::motionInterferenceLeaves,
+            "Internal: static checker's physical leaves, component prefixes and exclusions.");
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+    Py::Object motionInterferenceLeaves(const Py::Tuple& args)
+    {
+        return motionInterferenceLeavesPy(args);
+    }
     Py::Object prepareSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
     {
         return scanSelectedPairPy(args, keywords, true);

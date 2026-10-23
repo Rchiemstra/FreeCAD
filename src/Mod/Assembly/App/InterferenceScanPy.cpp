@@ -13,6 +13,7 @@
 #include <Mod/Part/App/TopoShapePy.h>
 #include <Standard_Failure.hxx>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <memory>
@@ -244,6 +245,59 @@ Py::Object cancelInterferenceScanPy(const Py::Tuple& args)
     return Py::None();
 }
 
+Py::Object motionInterferenceLeavesPy(const Py::Tuple& args)
+{
+    PyObject* hostPy = nullptr;
+    int includeHidden = 0;
+    if (!PyArg_ParseTuple(args.ptr(), "O!|p", &App::DocumentObjectPy::Type,
+                          &hostPy, &includeHidden)) {
+        throw Py::Exception();
+    }
+    auto* host = static_cast<App::DocumentObjectPy*>(hostPy)->getDocumentObjectPtr();
+    if (!host || !host->isAttachedToDocument() || !isInterferenceRoot(host)) {
+        throw Py::ValueError("An attached interference root is required");
+    }
+    try {
+        const auto snapshot = prepareInterferenceComponentScanSnapshot(host, includeHidden != 0);
+        Py::List leaves;
+        for (std::size_t i = 0; i < snapshot.leaves.size(); ++i) {
+            const auto component = snapshot.componentIndexOfLeaf[i];
+            if (component >= snapshot.components.size()) {
+                throw Py::ValueError("Physical leaf has no component occurrence");
+            }
+            const auto& leaf = snapshot.leaves[i];
+            Py::Dict item;
+            item["path"] = Py::String(leaf.occurrenceSubName);
+            item["component"] = Py::String(snapshot.components[component].occurrencePrefix);
+            item["sourceId"] = Py::String(leaf.sourceId);
+            item["rigidComponent"] = Py::String(
+                snapshot.components[component].component->getNameInDocument());
+            leaves.append(item);
+        }
+        Py::List exclusions;
+        for (const auto& rule : getInterferenceExclusionRules(host)) {
+            if (rule.valid) {
+                Py::Dict item;
+                item["first"] = Py::String(rule.firstIdentity);
+                item["second"] = Py::String(rule.secondIdentity);
+                item["rule"] = Py::String(rule.reasonIdentity.empty()
+                    ? rule.firstIdentity + " / " + rule.secondIdentity : rule.reasonIdentity);
+                exclusions.append(item);
+            }
+        }
+        Py::Dict out;
+        out["leaves"] = leaves;
+        out["exclusions"] = exclusions;
+        return out;
+    }
+    catch (const Base::Exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+    catch (const Standard_Failure& error) {
+        throw Py::RuntimeError(error.GetMessageString());
+    }
+}
+
 Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, bool prepareOnly)
 {
     PyObject* hostPy = nullptr;
@@ -252,14 +306,18 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
     PyObject* token = Py_None;
     PyObject* clearance = Py_None;
     PyObject* geometry = Py_None;
+    const char* leafA = "";
+    const char* leafB = "";
     int measure = 0;
     Py_ssize_t cap = 10000;
-    static const std::array<const char*, 9> names {
-        "host", "first", "second", "measureDistances", "maxFacePairCandidates", "cancel", "clearance", "geometry", nullptr
+    static const std::array<const char*, 11> names {
+        "host", "first", "second", "measureDistances", "maxFacePairCandidates", "cancel",
+        "clearance", "geometry", "leafA", "leafB", nullptr
     };
     if (!Base::Wrapped_ParseTupleAndKeywords(
-            args.ptr(), keywords.ptr(), "O!OO|pnOOO", names,
-            &App::DocumentObjectPy::Type, &hostPy, &firstPy, &secondPy, &measure, &cap, &token, &clearance, &geometry)) {
+            args.ptr(), keywords.ptr(), "O!OO|pnOOOss", names,
+            &App::DocumentObjectPy::Type, &hostPy, &firstPy, &secondPy, &measure, &cap,
+            &token, &clearance, &geometry, &leafA, &leafB)) {
         throw Py::Exception();
     }
     if (cap < 0) {
@@ -300,6 +358,19 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
                        : collectInterferenceLeavesUnderPrefix(host, scope.first.occurrencePrefix, true);
         auto b = cached ? reposeInterferenceLeaves(host, cached->second)
                        : collectInterferenceLeavesUnderPrefix(host, scope.second.occurrencePrefix, true);
+        // Motion all-scope measures one exact physical leaf pair at a time.
+        auto selectLeaf = [](auto& leaves, const char* path) {
+            if (*path) {
+                std::erase_if(leaves, [path](const auto& leaf) {
+                    return leaf.occurrenceSubName != path;
+                });
+                if (leaves.size() != 1) {
+                    throw Py::ValueError("leaf path must identify one leaf under its component");
+                }
+            }
+        };
+        selectLeaf(a, leafA);
+        selectLeaf(b, leafB);
         auto prepared = a;
         prepared.insert(prepared.end(), b.begin(), b.end());
         options.clearanceRules = snapshotInterferenceClearanceRules(host, &prepared);

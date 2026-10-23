@@ -61,6 +61,7 @@ SET(AssemblyScripts_SRCS
     Assembly/__init__.py
     Assembly/api.py
     Assembly/DragFeedback.py
+    Assembly/MotionAllPairs.py
     Assembly/MotionCoverage.py
     Assembly/MotionInterference.py
 )

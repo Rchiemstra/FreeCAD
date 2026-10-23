@@ -34,7 +34,7 @@ class CommandMotionInterference:
             "CmdType": "ForEdit",
             "MenuText": QT_TRANSLATE_NOOP("Assembly", "Check Interference through Motion"),
             "ToolTip": QT_TRANSLATE_NOOP(
-                "Assembly", "Check two components through a joint range or existing simulation"),
+                "Assembly", "Check components through a joint range or existing simulation"),
         }
 
     def IsActive(self):
@@ -72,7 +72,7 @@ class MotionInterferenceTask:
         self.form.setWindowTitle(translate("Assembly", "Interference through Motion"))
         layout = QtWidgets.QVBoxLayout(self.form)
         explanation = QtWidgets.QLabel(translate(
-            "Assembly", "Choose a joint range or an existing simulation and two components. "
+            "Assembly", "Choose a joint range or simulation and a selected pair or all components. "
             "Rigid joint sweeps also bound separation between poses. Unresolved intervals "
             "and simulations use sampled + refined results."))
         explanation.setWordWrap(True)
@@ -88,6 +88,13 @@ class MotionInterferenceTask:
             self.simulationPicker.addItem(simulation.Label)
         fields.addRow(translate("Assembly", "Mode"), self.modePicker)
         fields.addRow(translate("Assembly", "Simulation"), self.simulationPicker)
+        self.scopePicker = QtWidgets.QComboBox()
+        self.scopePicker.addItems([translate("Assembly", "Selected pair"),
+                                   translate("Assembly", "All components")])
+        fields.addRow(translate("Assembly", "Scope"), self.scopePicker)
+        self.includeHiddenCheck = QtWidgets.QCheckBox(translate("Assembly", "Include hidden"))
+        self.includeHiddenCheck.setEnabled(False)
+        fields.addRow(self.includeHiddenCheck)
         self.jointPicker = QtWidgets.QComboBox()
         self.firstPicker = QtWidgets.QComboBox()
         self.secondPicker = QtWidgets.QComboBox()
@@ -160,7 +167,9 @@ class MotionInterferenceTask:
         self._jointChanged()
         self.modePicker.currentIndexChanged.connect(self._modeChanged)
         self._modeChanged()
-        for picker in (self.modePicker, self.simulationPicker, self.jointPicker,
+        self.scopePicker.currentIndexChanged.connect(self._scopeChanged)
+        self.includeHiddenCheck.toggled.connect(self._settingsChanged)
+        for picker in (self.scopePicker, self.modePicker, self.simulationPicker, self.jointPicker,
                        self.firstPicker, self.secondPicker):
             picker.currentIndexChanged.connect(self._settingsChanged)
         for field in (self.startField, self.endField, self.stepField, self.clearanceField,
@@ -170,6 +179,14 @@ class MotionInterferenceTask:
             picker.currentIndexChanged.connect(lambda *_: self._dragSettingsChanged())
         self.clearanceField.textChanged.connect(lambda *_: self._dragSettingsChanged())
         App.addDocumentObserver(self)
+
+    def _scopeChanged(self, *args):
+        selected = self.scopePicker.currentIndex() == 0
+        self.firstPicker.setEnabled(selected)
+        self.secondPicker.setEnabled(selected)
+        self.includeHiddenCheck.setEnabled(not selected)
+        self.dragFeedbackCheck.setChecked(False)
+        self.dragFeedbackCheck.setEnabled(selected)
 
     def _dragSettingsChanged(self):
         if self.dragFeedbackCheck.isChecked():
@@ -345,7 +362,9 @@ class MotionInterferenceTask:
             maximum_gap = quantity(maximum_gap) if maximum_gap else None
             self._labels = (first.Label, second.Label)
             with ThreadPoolExecutor(max_workers=1) as self._executor:
-                options = dict(clearance=clearance, maximumGap=maximum_gap,
+                options = dict(scope="all" if self.scopePicker.currentIndex() else "pair",
+                               includeHidden=self.includeHiddenCheck.isChecked(),
+                               clearance=clearance, maximumGap=maximum_gap,
                                cancel=self.token, progress=self._progress, _scan=self._scan)
                 if simulation_mode:
                     self.result = Assembly.sweepSimulation(
@@ -371,6 +390,9 @@ class MotionInterferenceTask:
                 self._close()
 
     def _displayResult(self):
+        if self.result.get("scope") == "all":
+            self._displayAllResult()
+            return
         result = self.result
         sentences = []
         if result["completeness"] != "complete":
@@ -424,6 +446,11 @@ class MotionInterferenceTask:
             sentence += " (" + refinement(event) + "; " + sampling + ")"
             sentences.append(sentence + ".")
             self.events.append((event, physical, sentence))
+        if result.get("maximumGap") is not None:
+            sentences.append(translate("Assembly", "no gap violation proven")
+                             if result["gapCoverage"] == "proven" else
+                             translate("Assembly", "Gap coverage {0}: {1}").format(
+                                 result["gapCoverage"], result["gapCoverageReason"]))
         coverage = result["coverage"]
         if coverage == "proven":
             sentences.append(translate("Assembly", "no contact proven between {0} and {1}.").format(
@@ -459,6 +486,58 @@ class MotionInterferenceTask:
             self.eventPicker.addItem(sentence)
         self.showButton.setEnabled(bool(self.events) and not self._stale)
 
+    def _displayAllResult(self):
+        result = self.result
+        sentences = [result["message"]]
+        if result["completeness"] != "complete":
+            sentences.append(translate("Assembly", "Sweep {0}: {1}. Original pose restored.")
+                             .format(result["completeness"], result["reason"]))
+        actions = {"firstContact": translate("Assembly", "contact"),
+                   "firstClearanceViolation": translate("Assembly", "clearance violation"),
+                   "firstGapViolation": translate("Assembly", "gap violation")}
+        for event in result["events"]:
+            child = next(p for p in result["pairResults"] if p["pair"] == event["pair"])
+            names = " / ".join(event["pair"])
+            sentence = "{}: {} at {} {}".format(names, actions[event["eventType"]],
+                                                _value(event["coordinate"]), child["unit"])
+            if child.get("sampling") == "frame-sampled":
+                sentence += " (" + translate("Assembly", "frame-sampled only") + ")"
+            elif event["resolution"] is None:
+                sentence += " (" + translate("Assembly", "first evaluated pose") + ")"
+            else:
+                status = (translate("Assembly", "refined") if event["converged"] else
+                          translate("Assembly", "refinement not converged"))
+                sentence += translate("Assembly", " (resolution {0} {1}; {2})").format(
+                    _value(event["resolution"]), child["unit"], status)
+            rules = ["{} rows {} {}".format(r["kind"], r["rows"], ", ".join(r["comments"]))
+                     for r in event["rules"]]
+            if rules:
+                sentence += " (" + "; ".join(dict.fromkeys(rules)) + ")"
+            sentences.append(sentence)
+            self.events.append((event, event["eventType"] != "firstClearanceViolation", sentence))
+        for child in result["pairResults"]:
+            names = " / ".join(child["pair"])
+            if child.get("exclusionRule"):
+                sentences.append(translate("Assembly", "{0}: exclusion rule {1}").format(
+                    names, child["exclusionRule"]))
+            if child["coverage"] == "proven":
+                sentences.append(translate("Assembly", "{0}: no contact proven").format(names))
+            else:
+                sentences.append(translate("Assembly", "{0}: coverage {1}, {2}").format(
+                    names, child["coverage"], child["coverageReason"]))
+            if child.get("maximumGap") is not None:
+                sentences.append(names + ": " + (
+                    translate("Assembly", "no gap violation proven")
+                    if child["gapCoverage"] == "proven" else
+                    translate("Assembly", "Gap coverage {0}: {1}").format(
+                        child["gapCoverage"], child["gapCoverageReason"])))
+        if not self.events and result["completeness"] == "complete":
+            sentences.append(translate("Assembly", "No finding at the sampled + refined poses."))
+        self.resultText.setText("\n".join(sentences))
+        for _, _, sentence in self.events:
+            self.eventPicker.addItem(sentence)
+        self.showButton.setEnabled(bool(self.events) and not self._stale)
+
     def show(self):
         if self.running or self.replaying or self._stale or not self.events:
             return
@@ -474,6 +553,11 @@ class MotionInterferenceTask:
     def _show(self):
         event, raw, sentence = self.events[self.eventPicker.currentIndex()]
         preview = None
+        window = Gui.getMainWindow()
+        layout = window.saveState()
+        dock_name = "Assembly Interference Check"
+        dock = window.findChild(QtWidgets.QDockWidget, dock_name)
+        dock_visible = dock is not None and dock.isVisible()
 
         def apply_pose():
             for name, placement in event["placements"].items():
@@ -520,6 +604,10 @@ class MotionInterferenceTask:
         except Exception as error:
             self.resultText.setText(translate("Assembly", "Cannot show pose: {}").format(error))
         finally:
+            dock = window.findChild(QtWidgets.QDockWidget, dock_name)
+            if dock is not None:
+                dock.setVisible(dock_visible)
+            window.restoreState(layout)
             self._owned = self.replaying = False
             self.inputs.setEnabled(True)
             self.runButton.setEnabled(True)

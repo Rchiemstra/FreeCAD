@@ -49,6 +49,18 @@ class TestMotionInterferenceGui(unittest.TestCase):
 
         self.report.textChanged.connect(capture)
         self.addCleanup(check_report)
+        window = Gui.getMainWindow()
+        layout = window.saveState()
+        dock = window.findChild(QtWidgets.QDockWidget, "Assembly Interference Check")
+        visible = dock is not None and dock.isVisible()
+
+        def restore_layout():
+            current = window.findChild(QtWidgets.QDockWidget, "Assembly Interference Check")
+            if current is not None:
+                current.setVisible(visible)
+            window.restoreState(layout)
+
+        self.addCleanup(restore_layout)
         Gui.activateWorkbench("AssemblyWorkbench")
         self.fixture = _Fixture()
         self.fixture.setUp()
@@ -100,6 +112,58 @@ class TestMotionInterferenceGui(unittest.TestCase):
             loop.exec_()
         poll.stop()
         self.assertTrue(condition(), "Timed out waiting for GUI operation")
+
+    def test_all_scope_sorted_entries_show_restore(self):
+        window = Gui.getMainWindow()
+        dock = window.findChild(QtWidgets.QDockWidget, "Assembly Interference Check")
+        visible = dock is not None and dock.isVisible()
+        self.panel.scopePicker.setCurrentIndex(1)
+        self.assertFalse(self.panel.firstPicker.isEnabled())
+        self.assertFalse(self.panel.secondPicker.isEnabled())
+        result = self.run_panel()
+        self.assertEqual(result["scope"], "all")
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertIn("pairs static: use the static check", self.panel.resultText.text())
+        self.assertTrue(self.panel.events)
+        self.assertIn("resolution", self.panel.resultText.text())
+        coordinates = [event[0]["coordinate"] for event in self.panel.events]
+        self.assertEqual(coordinates, sorted(coordinates))
+        original = self.arm.Placement.toMatrix().A
+        for index in range(len(self.panel.events)):
+            self.panel.eventPicker.setCurrentIndex(index)
+            event = self.panel.events[index][0]
+            self.replay(lambda: self.assertEqual(
+                self.arm.Placement.toMatrix().A, event["placements"][self.arm.Name].toMatrix().A))
+            self.assertEqual(self.arm.Placement.toMatrix().A, original)
+            dock = window.findChild(QtWidgets.QDockWidget, "Assembly Interference Check")
+            self.assertEqual(dock.isVisible(), visible)
+
+    def test_all_include_hidden_option(self):
+        self.assertFalse(self.panel.includeHiddenCheck.isChecked())
+        self.assertFalse(self.panel.includeHiddenCheck.isEnabled())
+        self.panel.scopePicker.setCurrentIndex(1)
+        self.assertTrue(self.panel.includeHiddenCheck.isEnabled())
+        self.obstacle.Visibility = False
+        result = self.run_panel()
+        self.assertFalse(result["includeHidden"])
+        self.assertIsNone(result["firstContact"])
+        self.assertIn("Hidden leaves excluded", self.panel.resultText.text())
+        self.panel.includeHiddenCheck.setChecked(True)
+        result = self.run_panel()
+        self.assertTrue(result["includeHidden"])
+        self.assertIsNotNone(result["firstContact"])
+        self.assertIn("Hidden leaves included", self.panel.resultText.text())
+
+    def test_all_cancel_is_responsive_and_restores(self):
+        self.panel.scopePicker.setCurrentIndex(1)
+        self.test_cancel_mid_run_is_responsive_and_restores()
+
+    def test_all_gap_coverage_text(self):
+        self.panel.maximumGapField.setText("100 mm")
+        self.panel.scopePicker.setCurrentIndex(1)
+        result = self.run_panel()
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertIn("no gap violation proven", self.panel.resultText.text())
 
     def run_panel(self):
         self.panel.runButton.click()

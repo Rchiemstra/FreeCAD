@@ -88,7 +88,14 @@ class AssemblyTestBase(unittest.TestCase):
         This method is called after each test() method. Add cleanup instructions here.
         Such cleanup instructions will likely undo those in the setUp() method.
         """
+        # Settle queued tree updates while their document/model indices exist.
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            Gui.updateGui()
         App.closeDocument(self.doc.Name)
+        if App.GuiUp:
+            Gui.updateGui()
 
 
 class TestCore(AssemblyTestBase):

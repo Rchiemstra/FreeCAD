@@ -11,6 +11,7 @@ struct InterferenceScanResult;
 
 Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords,
                               bool prepareOnly = false);
+Py::Object motionInterferenceLeavesPy(const Py::Tuple& args);
 Py::Object runPreparedInterferenceScanPy(const Py::Tuple& args);
 Py::Object newInterferenceScanCancellationPy(const Py::Tuple& args);
 Py::Object cancelInterferenceScanPy(const Py::Tuple& args);
