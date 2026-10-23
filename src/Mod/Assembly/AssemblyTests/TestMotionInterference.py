@@ -353,7 +353,8 @@ class TestMotionSweep(unittest.TestCase):
             self.assertEqual(result["completeness"], "complete", result["reason"])
             self.assertEqual(result["interval"], (0, 2))
             self.assertIsNone(result["firstContact"])
-            self.assertEqual(result["message"], "no finding at the sampled + refined poses")
+            self.assertEqual(result["coverage"], "proven")
+            self.assertEqual(result["message"], "no contact proven between Arm and Obstacle")
             self.assertAlmostEqual(result["minimumClearance"]["value"], 3)
 
     def test_enabled_revolute_limits_exclude_contact(self):
@@ -1040,3 +1041,157 @@ class TestMotionSweep(unittest.TestCase):
         self.assembly.Group = [o for o in self.assembly.Group if o.TypeId != "Assembly::SimulationGroup"]
         with self.assertRaises(ValueError):
             self.sweep_simulation(sim)
+
+    def test_coverage_thin_obstacle_missed_by_coarse_samples(self):
+        self.arm.Shape = Part.makeBox(1, 1, 0.01)
+        self.obstacle.Shape = Part.makeBox(1, 1, 0.01, App.Vector(0, 0, 3.37))
+        self.doc.recompute()
+        before = self.state()
+        result = self.sweep(interval=(0, 8), step=8, refinementPoseBudget=0, coverageBudget=64,
+                            refinementTolerance=0.001)
+        self.assertTrue(all(not s["contact"] for s in result["samples"]))
+        event = result["firstContact"]
+        self.assertIsNotNone(event, result["reason"])
+        self.assertGreaterEqual(event["coordinate"], 3.36 - 1e-6)
+        self.assertLessEqual(event["coordinate"], 3.38 + 1e-6)
+        print("ANALYTIC coverage thin contact=%.9f expected entry=3.36 exit=3.38" %
+              event["coordinate"])
+        self.assertEqual(result["coverage"], "unresolved")
+        self.assert_restored(before)
+
+    def test_coverage_enter_exit_between_clear_endpoints(self):
+        result = self.sweep(interval=(0, 10), step=10, refinementPoseBudget=0, coverageBudget=64)
+        self.assertTrue(all(not s["contact"] for s in result["samples"]))
+        self.assertIsNotNone(result["firstContact"])
+        self.assertAlmostEqual(result["firstContact"]["coordinate"], 5)
+        print("ANALYTIC coverage enter/exit contact=5 expected entry=5 exit=8")
+
+    def test_coverage_tangency(self):
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(2, 0, 4))
+        self.doc.recompute()
+        result = self.sweep(interval=(0, 8), step=8, refinementPoseBudget=0, coverageBudget=64)
+        self.assertIsNotNone(result["firstContact"])
+        self.assertAlmostEqual(result["firstContact"]["coordinate"], 4)
+        print("ANALYTIC coverage tangency=4 expected=4")
+
+    def test_coverage_revolute_periodic_wrap(self):
+        self.revolute()
+        self.arm.Shape = Part.makeSphere(0.1, App.Vector(5, 0, 0))
+        self.obstacle.Shape = Part.makeSphere(0.1, App.Vector(5, 0, 0))
+        self.doc.recompute()
+        result = self.sweep(interval=(350, 370), step=20, refinementPoseBudget=0,
+                            coverageBudget=64)
+        self.assertTrue(all(not s["contact"] for s in result["samples"]))
+        self.assertAlmostEqual(result["firstContact"]["coordinate"], 360, places=5)
+        self.assertAlmostEqual(result["boundConstant"], math.hypot(5*math.cos(math.radians(10)) + 0.1,
+                                               5*math.sin(math.radians(10)) + 0.1), places=5)
+        self.assertEqual(result["boundUnit"], "mm/rad")
+        print("ANALYTIC coverage wrap=%.9f expected=360 R=%.9f" %
+              (result["firstContact"]["coordinate"], result["boundConstant"]))
+
+    def test_coverage_budget_exhausted_and_off(self):
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(2.01, 0, 4.3))
+        self.doc.recompute()
+        for budget in (0, 1):
+            result = self.sweep(interval=(0, 8), step=8, refinementPoseBudget=0,
+                                coverageBudget=budget)
+            self.assertEqual(result["coverage"], "unresolved")
+            self.assertTrue(result["unresolvedIntervals"])
+            self.assertEqual(result["coveragePoses"], budget)
+            for low, high in result["unresolvedIntervals"]:
+                self.assertLess(low, high)
+                self.assertGreaterEqual(low, 0)
+                self.assertLessEqual(high, 8)
+            self.assertIn("sampled + refined", result["message"])
+
+    def test_coverage_proven_clear_analytic_lower_bound(self):
+        result = self.sweep(interval=(0, 2), step=2, refinementPoseBudget=0, coverageBudget=4)
+        self.assertEqual(result["coverage"], "proven", result["coverageReason"])
+        self.assertEqual(result["unresolvedIntervals"], [])
+        self.assertEqual(result["boundConstant"], 1)
+        self.assertEqual(result["boundUnit"], "mm/mm")
+        # d(0)=5, d(2)=3: (5+3-1*2)/2 = 3 mm.
+        self.assertAlmostEqual(result["provenLowerBound"], 3, places=5)
+        self.assertIn("no contact proven between Arm and Obstacle", result["message"])
+        print("ANALYTIC coverage lower bound=%.9f expected=3 L=1" %
+              result["provenLowerBound"])
+
+    def test_coverage_simulation_not_available(self):
+        result = self.sweep_simulation(self.simulation("2*time"), refinementPoseBudget=0)
+        self.assertEqual(result["coverage"], "not available")
+        self.assertIn("trajectory", result["coverageReason"])
+        self.assertIsNone(result["boundConstant"])
+        self.assertNotIn("no contact proven", result["message"])
+
+    def test_coverage_same_side_not_available(self):
+        result = Assembly.sweepJoint(self.assembly, self.joint, self.base, self.obstacle,
+                                     interval=(0, 2), step=2, refinementPoseBudget=0)
+        self.assertEqual(result["coverage"], "not available")
+        self.assertIn("opposite", result["coverageReason"])
+
+    def test_coverage_budget_validation(self):
+        for value in (-1, 1.5, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.sweep(coverageBudget=value)
+
+    def test_coverage_cylindrical_one_parameter(self):
+        self.doc.removeObject(self.joint.Name)
+        self.joint = self.make_joint("Cylindrical", self.base, self.arm)
+        self.doc.recompute()
+        result = self.sweep(interval=(0, 2), step=2, refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["coverage"], "proven", result["coverageReason"])
+        self.assertAlmostEqual(result["provenLowerBound"], 3, places=5)
+        self.arm.Shape = Part.makeSphere(0.1, App.Vector(5, 0, 0))
+        self.obstacle.Shape = Part.makeSphere(0.1, App.Vector(5, 0, 0))
+        self.doc.recompute()
+        before = self.state()
+        result = self.sweep(interval=(350, 370), step=20, motionType="Angular",
+                            refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertIsNotNone(result["firstContact"])
+        self.assertAlmostEqual(result["firstContact"]["coordinate"], 360, places=5)
+        self.assert_restored(before)
+
+    def test_coverage_cancel_and_callback_error_restore(self):
+        self.arm.Shape = Part.makeSphere(1)
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(2.01, 0, 4.3))
+        self.doc.recompute()
+        for mode in ("cancel", "error"):
+            token = Assembly.SweepCancellation()
+            before = self.state()
+            observed = []
+            def progress(record):
+                if record["phase"] == "refinement":
+                    observed.append(record["coordinate"])
+                    if mode == "cancel":
+                        token.cancel()
+                    else:
+                        raise RuntimeError("Coverage callback failure")
+            result = self.sweep(interval=(0, 8), step=8, refinementPoseBudget=0,
+                                cancel=token, progress=progress)
+            self.assertTrue(observed)
+            self.assertEqual(result["coverage"], "unresolved")
+            self.assertTrue(result["unresolvedIntervals"])
+            self.assertEqual(result["completeness"],
+                             "cancelled" if mode == "cancel" else "incomplete")
+            self.assert_restored(before)
+
+    def test_coverage_clearance_and_descending_bound(self):
+        result = self.sweep(interval=(2, 0), step=2, clearance=3.1, refinementPoseBudget=0)
+        self.assertIsNotNone(result["firstClearanceViolation"])
+        self.assertEqual(result["coverage"], "unresolved")
+        self.assertNotIn("no contact proven", result["message"])
+        for interval in ((0, 2), (2, 0)):
+            result = self.sweep(interval=interval, step=2, clearance=2.9, refinementPoseBudget=0)
+            self.assertEqual(result["coverage"], "proven")
+            self.assertAlmostEqual(result["provenLowerBound"], 3, places=5)
+
+    def test_coverage_dependent_trajectory_not_available(self):
+        sim, follower, dependent = self.gear_simulation()
+        result = Assembly.sweepSimulation(self.assembly, sim, follower, self.obstacle,
+                                          refinementPoseBudget=0)
+        self.assertEqual(result["coverage"], "not available")
+        self.assertIn("trajectory", result["coverageReason"])

@@ -210,7 +210,8 @@ class TestMotionInterferenceGui(unittest.TestCase):
     def test_minimum_clearance_show_and_restore_button(self):
         self.joint.AngleMax = 18
         result = self.run_panel()
-        self.assertIn("No finding at the sampled + refined poses", self.panel.resultText.text())
+        self.assertEqual(result["coverage"], "proven")
+        self.assertIn("no contact proven", self.panel.resultText.text())
         self.assertIsNone(result["firstContact"])
         self.assertIn("Smallest clearance", self.panel.resultText.text())
         self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
@@ -662,3 +663,20 @@ class TestMotionInterferenceGui(unittest.TestCase):
         self.replay(lambda: self.assertEqual(self.arm.Placement.toMatrix().A,
                     minimum["placements"][self.arm.Name].toMatrix().A))
         self.fixture.assert_restored(before)
+
+    def test_coverage_proven_and_unresolved_text(self):
+        self.slider_panel(2)
+        self.panel.stepField.setText("2")
+        result = self.run_panel()
+        self.assertEqual(result["coverage"], "proven")
+        self.assertIn("no contact proven between Arm and Obstacle", self.panel.resultText.text())
+        self.assertIn("lower bound", self.panel.resultText.text())
+        from Assembly import sweepJoint
+        def disabled(*args, **kwargs):
+            return sweepJoint(*args, **kwargs, coverageBudget=0)
+        with patch("Assembly.sweepJoint", side_effect=disabled):
+            result = self.run_panel()
+        self.assertEqual(result["coverage"], "unresolved")
+        self.assertIn("unresolved", self.panel.resultText.text())
+        self.assertIn("sampled + refined", self.panel.resultText.text())
+        self.assertNotIn("no contact proven", self.panel.resultText.text())

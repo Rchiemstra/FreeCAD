@@ -2,9 +2,9 @@
 
 """Sampled joint-range and prescribed-simulation checks on the document thread.
 
-No continuous-motion guarantee is implied. A complete result describes only the
-sampled + refined poses, with no global-minimum claim. Event scans own their
-world-space geometry after state restoration.
+Rigid one-joint sweeps can certify whole-solid separation between poses. Other
+results describe sampled + refined poses, with no global-minimum claim. Event
+scans own their world-space geometry after state restoration.
 """
 
 import bisect
@@ -16,6 +16,7 @@ import AssemblyApp
 from PySide import QtCore
 
 from .api import _require_assembly
+from .MotionCoverage import RigidSweepCoverage
 
 
 class SweepCancellation:
@@ -43,8 +44,8 @@ def _number(value, unit, field):
     return value
 
 
-def _interval(joint, interval, step):
-    angular = joint.JointType == "Revolute"
+def _interval(joint, interval, step, motionType=None):
+    angular = joint.JointType == "Revolute" or motionType == "Angular"
     unit, prefix = ("deg", "Angle") if angular else ("mm", "Length")
     endpoints = (None, None) if interval is None else tuple(interval)
     if len(endpoints) != 2:
@@ -89,8 +90,8 @@ def _validate_mechanism(assembly, joint):
     joints = list(group.Group) if group else []
     if joint not in joints or getattr(joint, "Suppressed", True):
         raise ValueError("Choose an active joint in this assembly")
-    if joint.JointType not in ("Revolute", "Slider"):
-        raise ValueError("Only a single revolute or slider joint is supported")
+    if joint.JointType not in ("Revolute", "Slider", "Cylindrical"):
+        raise ValueError("Only a single revolute, slider or cylindrical joint is supported")
     components = [o for o in assembly.Group if "Placement" in o.PropertiesList]
     for obj in assembly.Document.Objects:
         if obj != assembly and assembly.hasObject(obj, True):
@@ -143,9 +144,12 @@ def _validate_mechanism(assembly, joint):
     refs = next(refs for item, refs in edges if item == joint)
     if (root(refs[0]) == root(ground)) == (root(refs[1]) == root(ground)):
         raise ValueError("Joint must connect grounded and moving rigid components; closed loops unsupported")
+    moving = {obj.Name for obj in components if root(obj) != root(ground)}
+    fixed_reference = 1 if root(refs[0]) == root(ground) else 2
     connect(*refs)
     if any(root(obj) != root(ground) for obj in components):
         raise ValueError("Additional ungrounded moving components are not supported")
+    return moving, fixed_reference
 
 
 def _coordinate(joint, unit):
@@ -156,7 +160,7 @@ def _coordinate(joint, unit):
     return UtilsAssembly.getJointDistance(joint)
 
 
-def _driver(doc, joint, start, end, count, unit, created):
+def _driver(doc, joint, start, end, count, unit, created, heldCoordinate=None):
     # Plain motion data, with no import of the GUI simulation task module.
     sim = doc.addObject("App::FeaturePython", "MotionInterferenceSimulation")
     created.append(sim.Name)
@@ -176,6 +180,21 @@ def _driver(doc, joint, start, end, count, unit, created):
     scale = math.pi / 180 if unit == "deg" else 1
     motion.Formula = f"({start * scale:.17g})+({(end - start) * scale:.17g})*time"
     sim.Group = [motion]
+    if joint.JointType == "Cylindrical":
+        # Prescribe the second degree of freedom as a constant: a cylindrical
+        # sweep is one rigid translation OR rotation, never a free screw path.
+        other_unit = "mm" if unit == "deg" else "deg"
+        other = doc.addObject("App::FeaturePython", "MotionInterferenceHeldCoordinate")
+        created.append(other.Name)
+        other.addProperty("App::PropertyXLinkSubHidden", "Joint")
+        other.Joint = (joint, [""])
+        other.addProperty("App::PropertyEnumeration", "MotionType")
+        other.MotionType = ["Angular", "Linear"]
+        other.MotionType = "Linear" if unit == "deg" else "Angular"
+        other.addProperty("App::PropertyString", "Formula")
+        value = _coordinate(joint, other_unit) if heldCoordinate is None else heldCoordinate
+        other.Formula = repr(math.radians(value) if other_unit == "deg" else value)
+        sim.Group = [motion, other]
     return sim
 
 
@@ -388,7 +407,7 @@ def sweepSimulation(assembly, simulation, first, second, *, clearance=None, maxi
 def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
                clearance=None, maximumGap=None, refinementTolerance=None,
                refinementPoseBudget=20, cancel=None, progress=None, maxFacePairCandidates=10000,
-               _scan=None):
+               coverageBudget=64, motionType=None, _scan=None):
     """Scan two occurrences through one bounded joint sweep, synchronously.
 
     Numeric endpoints/step are signed, unwrapped degrees for revolutes or mm for
@@ -404,6 +423,15 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     step defaulting to 1); refinementPoseBudget limits scans per refinement
     (default 20, zero disables extra poses). Brackets are sorted coordinates.
     This is a local sampled + refined search, never a global-minimum guarantee.
+    coverageBudget limits additional midpoint scans across the entire stroke
+    (default 64; zero disables coverage). A supported rigid pair gets coverage
+    "proven" only when every interval's Lipschitz lower bound exceeds clearance;
+    otherwise unresolvedIntervals retain unproved coordinate ranges. boundConstant
+    is 1 mm/mm for translation or a bounding-box radius in mm/rad for rotation;
+    provenLowerBound is a conservative stroke-wide separation bound in mm.
+    Cylindrical joints default to Linear; motionType="Angular" sweeps rotation
+    while holding translation fixed (or vice versa). Simulation coverage is never
+    available. Maximum-gap violations and face rules remain sampled + refined.
     maximumGap optionally bounds the pair's shortest separation in mm.
 
     Return a dict with samples, firstContact, firstClearanceViolation,
@@ -420,18 +448,21 @@ def sweepJoint(assembly, joint, first, second, *, interval=None, step=None,
     transaction, simulation task or drag.
     """
     assembly = _require_assembly(assembly)
-    _validate_mechanism(assembly, joint)
-    start, end, count, unit = _interval(joint, interval, step)
+    mechanism = _validate_mechanism(assembly, joint)
+    if motionType is not None and (joint.JointType != "Cylindrical" or
+                                   motionType not in ("Angular", "Linear")):
+        raise ValueError("motionType is Angular or Linear for a cylindrical joint only")
+    start, end, count, unit = _interval(joint, interval, step, motionType)
     return _sweep(assembly, joint, first, second, start=start, end=end, count=count,
                   unit=unit, step=step, clearance=clearance, maximumGap=maximumGap,
                   refinementTolerance=refinementTolerance, refinementPoseBudget=refinementPoseBudget,
                   cancel=cancel, progress=progress, maxFacePairCandidates=maxFacePairCandidates,
-                  _scan=_scan)
+                  _scan=_scan, coverageBudget=coverageBudget, mechanism=mechanism)
 
 
 def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, clearance,
            maximumGap, refinementTolerance, refinementPoseBudget, cancel, progress,
-           maxFacePairCandidates, _scan, trajectory=None):
+           maxFacePairCandidates, _scan, trajectory=None, coverageBudget=64, mechanism=None):
     requirement = _number(assembly.InterferenceClearance if clearance is None else clearance,
                           "mm", "clearance")
     if requirement < 0:
@@ -444,6 +475,9 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
     if (not isinstance(refinementPoseBudget, int) or isinstance(refinementPoseBudget, bool)
             or refinementPoseBudget < 0):
         raise ValueError("refinementPoseBudget must be a nonnegative integer")
+    if (not isinstance(coverageBudget, int) or isinstance(coverageBudget, bool)
+            or coverageBudget < 0):
+        raise ValueError("coverageBudget must be a nonnegative integer")
     if maximumGap is not None:
         maximumGap = _number(maximumGap, "mm", "maximumGap")
         if maximumGap < 0:
@@ -467,6 +501,8 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
     if trajectory is not None:
         result.update(mode="Simulation", sampling="frame-sampled" if refinementPoseBudget == 0
                       else "sampled + refined", simulation=trajectory.simulation.Name)
+    coverage = RigidSweepCoverage(
+        assembly, joint, unit, mechanism, start, end, coverageBudget, result)
     tolerance = 1e-6
 
     def write(callback):
@@ -477,6 +513,8 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
     def run():
         created = []
         original_clearance = assembly.InterferenceClearance.Value
+        held_coordinate = (_coordinate(joint, "mm" if unit == "deg" else "deg")
+                           if joint is not None and joint.JointType == "Cylindrical" else None)
         event_flags = (("firstContact", "contact"),
                        ("firstClearanceViolation", "clearanceViolation"),
                        ("firstGapViolation", "gapViolation"))
@@ -532,7 +570,8 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
 
         def generate(low, high, segments):
             try:
-                sim = _driver(assembly.Document, joint, low, high, segments, unit, created)
+                options = {} if held_coordinate is None else dict(heldCoordinate=held_coordinate)
+                sim = _driver(assembly.Document, joint, low, high, segments, unit, created, **options)
                 code = assembly.generateSimulation(sim)
                 if code != 0:
                     raise RuntimeError(f"Simulation generation failed ({code})")
@@ -607,6 +646,7 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                                       for o in assembly.Document.Objects
                                       if "Placement" in o.PropertiesList})
             register(record)
+            coverage.observe(record)
             return record
 
         def notify(record):
@@ -767,6 +807,8 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                 refine_events()
                 refine_minimum()
                 refine_events()
+                coverage.refine(lambda coordinate: extra_pose(coordinate, 0), notify)
+                refine_events()
                 result.update(completeness="complete", reason="")
         except Cancelled:
             result.update(completeness="cancelled", reason="Cancelled during sweep or refinement")
@@ -785,6 +827,13 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
         result.update(completeness="incomplete", reason=str(error))
     if any(result[key] for key in ("firstContact", "firstClearanceViolation", "firstGapViolation")):
         result["message"] = "Finding at the sampled + refined poses; see event coordinate and resolution"
+    if result["coverage"] == "proven" and result["completeness"] == "complete":
+        result["message"] = "no contact proven between {} and {}".format(
+            first.Label if hasattr(first, "Label") else str(first),
+            second.Label if hasattr(second, "Label") else str(second))
+    elif result["coverage"] == "proven":
+        result.update(coverage="unresolved", coverageReason="Sweep did not finish",
+                      unresolvedIntervals=[tuple(sorted((start, end)))])
     if trajectory is not None:
         result["message"] = result["message"].replace("sampled + refined", result["sampling"])
     return result

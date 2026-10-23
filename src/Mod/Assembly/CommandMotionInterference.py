@@ -23,7 +23,7 @@ def _value(number):
 
 
 def _joints(assembly):
-    return [joint for joint in UtilsAssembly.getJointsOfType(assembly, ["Revolute", "Slider"])
+    return [joint for joint in UtilsAssembly.getJointsOfType(assembly, ["Revolute", "Slider", "Cylindrical"])
             if not getattr(joint, "Suppressed", False)]
 
 
@@ -73,7 +73,8 @@ class MotionInterferenceTask:
         layout = QtWidgets.QVBoxLayout(self.form)
         explanation = QtWidgets.QLabel(translate(
             "Assembly", "Choose a joint range or an existing simulation and two components. "
-            "Results use sampled + refined poses; narrow collisions between samples can be missed."))
+            "Rigid joint sweeps also bound separation between poses. Unresolved intervals "
+            "and simulations use sampled + refined results."))
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
         self.inputs = QtWidgets.QWidget()
@@ -391,8 +392,25 @@ class MotionInterferenceTask:
             sentence += " (" + refinement(event) + "; " + sampling + ")"
             sentences.append(sentence + ".")
             self.events.append((event, physical, sentence))
+        coverage = result["coverage"]
+        if coverage == "proven":
+            sentences.append(translate("Assembly", "no contact proven between {0} and {1}.").format(
+                *self._labels))
+        else:
+            sentences.append(translate("Assembly", "Coverage {0}: {1}; {2} poses.").format(
+                coverage, result["coverageReason"], sampling))
+        if result["boundConstant"] is not None:
+            sentences.append(translate(
+                "Assembly", "Separation lower bound {0} mm; bound constant {1} {2}.").format(
+                    _value(result["provenLowerBound"]) if result["provenLowerBound"] is not None
+                    else translate("Assembly", "unresolved"),
+                    _value(result["boundConstant"]), result["boundUnit"]))
+        if result["unresolvedIntervals"]:
+            sentences.append(translate("Assembly", "Unresolved intervals ({0}): {1}.").format(
+                result["unit"], ", ".join("[{}, {}]".format(_value(a), _value(b))
+                                       for a, b in result["unresolvedIntervals"])))
         minimum = result["minimumClearance"]
-        if not self.events and result["completeness"] == "complete":
+        if not self.events and result["completeness"] == "complete" and coverage != "proven":
             sentences.append(translate("Assembly", "No finding at the {0} poses.").format(sampling))
         if minimum is not None:
             wording = (translate("Assembly", "Minimum sampled clearance {0} mm at {1}")
