@@ -24,6 +24,7 @@
 
 #include <FCConfig.h>
 
+#include <algorithm>
 #include <memory>
 
 #include <QApplication>
@@ -63,6 +64,7 @@
 
 #include "DrawSketchHandlerTranslate.h"
 #include "DrawSketchHandlerOffset.h"
+#include "DrawSketchHandlerBSplineOffset.h"
 #include "DrawSketchHandlerRotate.h"
 #include "DrawSketchHandlerScale.h"
 #include "DrawSketchHandlerSymmetry.h"
@@ -2462,6 +2464,51 @@ void CmdSketcherOffset::activated(int iMsg)
     // get the needed lists and objects
     auto* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
     const std::vector<std::string>& subNames = selection[0].getSubNames();
+    // Inspect all input before the analytic route filters unsupported curves.
+    int splineId = GeoEnum::GeoUndef;
+    for (const auto& name : subNames) {
+        if (isEdge(name) || isExternalEdge(name)) {
+            const int id = isEdge(name) ? getEdgeId(name) : getExternalEdgeId(name);
+            const auto* geometry = Obj->getGeometry(id);
+            if (geometry && isBSplineCurve(*geometry)) {
+                splineId = id;
+            }
+        }
+    }
+    if (splineId != GeoEnum::GeoUndef) {
+        auto* edit = dynamic_cast<ViewProviderSketch*>(getActiveGuiDocument()->getInEdit());
+        size_t edgeCount = 0;
+        for (const auto& name : subNames) {
+            if (!isEdge(name) && !isExternalEdge(name)) {
+                continue;
+            }
+            const int id = isEdge(name) ? getEdgeId(name) : getExternalEdgeId(name);
+            const bool helper = id >= 0 && splineId >= 0
+                && GeometryFacade::isInternalAligned(Obj->getGeometry(id))
+                && std::ranges::any_of(Obj->Constraints.getValues(), [id, splineId](const auto* c) {
+                    return c->Type == InternalAlignment && c->First == id && c->Second == splineId;
+                });
+            if (!helper) {
+                ++edgeCount;
+            }
+        }
+        if (!edit || edit->getSketchObject() != Obj || splineId < 0
+            || GeometryFacade::isInternalAligned(Obj->getGeometry(splineId))) {
+            Gui::NotifyUserError(Obj,
+                QT_TRANSLATE_NOOP("Notifications", "Invalid selection"),
+                QT_TRANSLATE_NOOP("Notifications", "Select a single internal B-spline in the active sketch."));
+        }
+        else if (edgeCount != 1 || getSelection().getSelectionEx().size() != 1) {
+            Gui::NotifyUserError(Obj,
+                QT_TRANSLATE_NOOP("Notifications", "Invalid selection"),
+                QT_TRANSLATE_NOOP("Notifications", "Select a single B-spline without other edges."));
+        }
+        else {
+            ActivateHandler(getActiveGuiDocument(),
+                            std::make_unique<DrawSketchHandlerBSplineOffset>(*Obj, splineId));
+        }
+        return;
+    }
     if (!subNames.empty()) {
         for (auto& name : subNames) {
             int geoId {};
