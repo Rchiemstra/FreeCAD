@@ -69,24 +69,19 @@ class RigidSweepCoverage:
             self.result.update(boundConstant=constant,
                                boundUnit="mm/rad" if self.unit == "deg" else "mm/mm")
             self.ready = True
-        coordinate = record["coordinate"]
-        # The controller accepts endpoints within 1e-6 coordinate units. Anchor
-        # those measurements to the requested endpoints, reducing the distance
-        # by the maximum possible displacement over that small discrepancy.
-        anchor = coordinate
-        if abs(coordinate - self.start) <= 1e-6:
-            anchor = self.start
-        elif abs(coordinate - self.end) <= 1e-6:
-            anchor = self.end
-        scale = math.pi / 180 if self.unit == "deg" else 1
-        distance = record["minimumClearance"] - (
-            self.result["boundConstant"] * abs(anchor - coordinate) * scale)
-        self.points[anchor] = max(0.0, distance)
+        self.points[record["coordinate"]] = max(0.0, record["minimumClearance"])
 
     def intervals(self):
-        points = sorted(self.points.items())
         constant = self.result["boundConstant"]
         scale = math.pi / 180 if self.unit == "deg" else 1
+        points = list(self.points.items())
+        # Bound unevaluated endpoints from the nearest actual pose. These
+        # estimates are never stored as observations, even for a one-pose sweep.
+        for endpoint in (self.start, self.end):
+            if endpoint not in self.points:
+                coordinate, distance = min(self.points.items(), key=lambda p: abs(p[0] - endpoint))
+                points.append((endpoint, distance - constant * abs(endpoint - coordinate) * scale))
+        points = sorted((s, d) for s, d in points if self.start <= s <= self.end)
         return [(max(0.0, (d0 + d1 - constant * (s1 - s0) * scale) / 2 - self.margin),
                  s0, s1)
                 for (s0, d0), (s1, d1) in zip(points, points[1:])]

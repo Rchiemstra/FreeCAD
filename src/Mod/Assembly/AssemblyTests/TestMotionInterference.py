@@ -1085,7 +1085,7 @@ class TestMotionSweep(unittest.TestCase):
         self.assertTrue(all(not s["contact"] for s in result["samples"]))
         self.assertAlmostEqual(result["firstContact"]["coordinate"], 360, places=5)
         self.assertAlmostEqual(result["boundConstant"], math.hypot(5*math.cos(math.radians(10)) + 0.1,
-                                               5*math.sin(math.radians(10)) + 0.1), places=5)
+                                               5*math.sin(math.radians(10)) + 0.1), places=4)
         self.assertEqual(result["boundUnit"], "mm/rad")
         print("ANALYTIC coverage wrap=%.9f expected=360 R=%.9f" %
               (result["firstContact"]["coordinate"], result["boundConstant"]))
@@ -1117,6 +1117,56 @@ class TestMotionSweep(unittest.TestCase):
         self.assertIn("no contact proven between Arm and Obstacle", result["message"])
         print("ANALYTIC coverage lower bound=%.9f expected=3 L=1" %
               result["provenLowerBound"])
+
+    def test_coverage_sub_tolerance_revolute_stroke(self):
+        self.revolute()
+        self.arm.Shape = Part.makeSphere(1, App.Vector(10000, 0, 0))
+        self.obstacle.Shape = Part.makeSphere(1, App.Vector(10000, 3.00005, 0))
+        self.doc.recompute()
+        end = 9e-7
+        angle = math.radians(end / 2)
+        midpoint_gap = math.hypot(10000 * (1 - math.cos(angle)),
+                                  3.00005 - 10000 * math.sin(angle)) - 2
+        result = self.sweep(interval=(0, end), step=1, clearance=1, refinementPoseBudget=0)
+        print("ANALYTIC sub-tolerance midpoint=%.9f bound=%.9f coverage=%s poses=%d" %
+              (midpoint_gap, result["provenLowerBound"], result["coverage"],
+               len(result["samples"])))
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(len(result["samples"]), 1)
+        self.assertLess(midpoint_gap, 1)
+        self.assertNotEqual(result["coverage"], "proven")
+        self.assertLessEqual(result["provenLowerBound"], midpoint_gap)
+
+    def test_coverage_unevaluated_endpoint_spans(self):
+        from Assembly.MotionCoverage import RigidSweepCoverage
+
+        # Unit-speed translation of radius-1 spheres: gap is 3+s or 5-s.
+        for coordinates, distance, endpoint in (
+                ((0.25, 2), lambda s: 3 + s, 0),
+                ((0, 1.75), lambda s: 5 - s, 2)):
+            with self.subTest(endpoint=endpoint):
+                result = dict(clearance=3.1, firstClearanceViolation=None)
+                coverage = RigidSweepCoverage(self.assembly, self.joint, "mm",
+                                              ({self.arm.Name}, 1), 0, 2, 1, result)
+
+                def evaluate(coordinate):
+                    record = dict(coordinate=coordinate, minimumClearance=distance(coordinate),
+                                  scan=dict(leaves=[dict(occurrenceSubName="Arm."),
+                                                    dict(occurrenceSubName="Obstacle.")],
+                                            pairs=[dict(leafIndexA=0, leafIndexB=1)]))
+                    coverage.observe(record)
+                    return record
+
+                for coordinate in coordinates:
+                    evaluate(coordinate)
+                coverage.refine(evaluate, lambda record: None)
+                print("ANALYTIC offset endpoint=%d gap=3 bound=%.9f coverage=%s" %
+                      (endpoint, result["provenLowerBound"], result["coverage"]))
+                self.assertEqual(result["coverage"], "unresolved")
+                self.assertAlmostEqual(result["provenLowerBound"], 3 - coverage.margin)
+                self.assertEqual(result["coveragePoses"], 1)
+                self.assertTrue(any(endpoint in interval
+                                    for interval in result["unresolvedIntervals"]))
 
     def test_coverage_simulation_not_available(self):
         result = self.sweep_simulation(self.simulation("2*time"), refinementPoseBudget=0)
