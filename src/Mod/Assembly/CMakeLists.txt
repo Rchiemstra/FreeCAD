@@ -64,6 +64,7 @@ SET(AssemblyScripts_SRCS
     Assembly/MotionAllPairs.py
     Assembly/MotionCoverage.py
     Assembly/MotionInterference.py
+    Assembly/MotionJointGrid.py
 )
 
 

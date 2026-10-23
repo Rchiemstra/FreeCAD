@@ -16,11 +16,13 @@ from .api import (
     referenceFromSelection,
 )
 from .MotionInterference import SweepCancellation, sweepJoint, sweepSimulation
+from .MotionJointGrid import sweepJoints
 
 __all__ = [
     "AssemblyApp",
     "SweepCancellation",
     "sweepJoint",
+    "sweepJoints",
     "sweepSimulation",
     "scanSelectedPair",
     "newInterferenceScanCancellation",

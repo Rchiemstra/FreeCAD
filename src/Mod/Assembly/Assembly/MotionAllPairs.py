@@ -67,11 +67,28 @@ def _require_rigid_components(assembly):
             pending.append(linked)
 
 
+def _selected_components(assembly, components):
+    """Validate direct physical component occurrences, retaining link identity."""
+    components = [] if components is None else list(components)
+    names = set()
+    for obj in components:
+        if (obj not in assembly.Group or "Placement" not in obj.PropertiesList or
+                not (hasattr(obj, "Shape") or obj.isDerivedFrom("App::Part") or
+                     obj.isDerivedFrom("App::Link"))):
+            raise ValueError("Selected components must belong directly to this assembly")
+        names.add(obj.Name + ".")
+    if len(names) < 2:
+        raise ValueError("Select at least two distinct assembly components")
+    return names
+
+
 def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=10000,
-             cancel=None, progress=None, includeHidden=False, _scan=None, **options):
+             cancel=None, progress=None, includeHidden=False, components=None,
+             scope="all", _scan=None, **options):
     """Sweep each eligible leaf pair with shared scan and pair-enumeration budgets.
 
     Hidden physical occurrences participate only with includeHidden=True.
+    Selection scope includes only pairs crossing distinct selected components.
     A pair consumes its sampled/refined controller before the next pair starts.
     Each controller restores the same entry state. This costs extra
     solver calls but bounds memory and keeps cancellation between every scan.
@@ -86,7 +103,8 @@ def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=100
     cancel = SweepCancellation() if cancel is None else cancel
     if not isinstance(cancel, SweepCancellation):
         raise TypeError("cancel must be a SweepCancellation")
-    result = dict(scope="all", includeHidden=includeHidden, pairResults=[], events=[],
+    selected = _selected_components(assembly, components) if scope == "selection" else None
+    result = dict(scope=scope, includeHidden=includeHidden, pairResults=[], events=[],
                   firstEvent=None, staticPairs=0,
                   pairsVisited=0, posesUsed=0, pairBudget=pairBudget, poseBudget=poseBudget,
                   completeness="incomplete", reason="Sweep did not finish")
@@ -101,10 +119,13 @@ def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=100
             result.update(completeness="cancelled", reason="Cancelled before leaf collection")
             return result
         inventory = AssemblyApp._motionInterferenceLeaves(assembly, includeHidden)
-        leaves = inventory["leaves"]
+        leaves = [leaf for leaf in inventory["leaves"]
+                  if selected is None or leaf["component"] in selected]
         exclusions = {frozenset((r["first"], r["second"])): r["rule"]
                       for r in inventory["exclusions"]}
         for a, b in itertools.combinations(leaves, 2):
+            if selected is not None and a["component"] == b["component"]:
+                continue
             if cancel.cancelled:
                 result.update(completeness="cancelled", reason="Cancelled between pairs")
                 break

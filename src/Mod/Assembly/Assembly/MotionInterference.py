@@ -46,7 +46,7 @@ def _number(value, unit, field):
     return value
 
 
-def _interval(joint, interval, step, motionType=None):
+def _interval(joint, interval, step, motionType=None, *, _poseLimit=10000):
     angular = joint.JointType == "Revolute" or motionType == "Angular"
     unit, prefix = ("deg", "Angle") if angular else ("mm", "Length")
     endpoints = (None, None) if interval is None else tuple(interval)
@@ -79,7 +79,7 @@ def _interval(joint, interval, step, motionType=None):
     # Adjacent rotations must be unambiguous when unwrapping the measured angle.
     spacing = min(step, 90.0) if angular else step
     count = max(1, math.ceil(abs(end - start) / spacing))
-    if count > 10000:
+    if _poseLimit is not None and count > _poseLimit:
         raise ValueError("Sweep exceeds 10001 sampled poses; increase step or narrow interval")
     return start, end, count, unit
 
@@ -208,6 +208,10 @@ def _simulations(assembly):
             for sim in group.Group]
 
 
+class _InfeasiblePose(RuntimeError):
+    """A solved pose demonstrably misses a prescribed coordinate or enabled limit."""
+
+
 class _SimulationTrajectory:
     """Native finite trajectory, using disposable parameter/motion copies.
 
@@ -251,10 +255,11 @@ class _SimulationTrajectory:
         self.initial = {obj.Name: App.Placement(obj.Placement) for obj in assembly.Document.Objects
                         if "Placement" in obj.PropertiesList}
 
-    def coordinates(self, time, frame):
+    def coordinates(self, time, frame, angleOffsets=None):
         # Check every enabled bound, including dependent and cylindrical joints.
         coordinates = {}
         prescribed = {}
+        offsets = angleOffsets or {}
         for joint, kind, formula in self.motions:
             unit = "deg" if kind == "Angular" else "mm"
             try:
@@ -262,14 +267,17 @@ class _SimulationTrajectory:
                     self.assembly, joint, frame, formula, time)
                 wanted = math.degrees(values[0]) if unit == "deg" else values[0]
                 actual = math.degrees(values[1]) if unit == "deg" else _coordinate(joint, unit)
+                if unit == "deg":
+                    actual += offsets.get(joint.Name, 0)
                 if not math.isfinite(wanted) or not math.isfinite(actual):
                     raise RuntimeError("Nonfinite prescribed or solved coordinate")
                 if abs(actual - wanted) > 1e-6:
-                    raise RuntimeError(f"Prescribed {wanted:g} {unit}, solved {actual:g} {unit}; "
-                                       "angular turns must be unambiguous")
+                    raise _InfeasiblePose(
+                        f"Prescribed {wanted:g} {unit}, solved {actual:g} {unit}; "
+                        "angular turns must be unambiguous")
                 if unit == "deg" and abs(math.remainder(
                         _coordinate(joint, unit) - wanted, 360)) > 1e-6:
-                    raise RuntimeError("Solved placement does not reach the prescribed angle")
+                    raise _InfeasiblePose("Solved placement does not reach the prescribed angle")
                 prescribed[(joint.Name, unit)] = wanted
             except Exception as error:
                 limited = ", ".join(f"{j.Label} ({j.Name})" for j in self.assembly.Joints
@@ -277,8 +285,9 @@ class _SimulationTrajectory:
                                     (getattr(j, "EnableAngleMin", False) or
                                      getattr(j, "EnableAngleMax", False)))
                 diagnostic = f"; enabled angular limits unverified: {limited}" if limited else ""
-                raise RuntimeError(f"Joint {joint.Label} ({joint.Name}): "
-                                   f"{error}{diagnostic}") from error
+                error_type = _InfeasiblePose if isinstance(error, _InfeasiblePose) else RuntimeError
+                raise error_type(f"Joint {joint.Label} ({joint.Name}): "
+                                 f"{error}{diagnostic}") from error
         for joint in self.assembly.Joints:
             if getattr(joint, "Suppressed", False):
                 continue
@@ -297,7 +306,7 @@ class _SimulationTrajectory:
                     try:
                         values = AssemblyApp._motionSimulationJointState(
                             self.assembly, joint, frame, "", time)
-                        value = math.degrees(values[0])
+                        value = math.degrees(values[0]) + offsets.get(joint.Name, 0)
                     except Exception as error:
                         raise RuntimeError(f"Joint {joint.Label} ({joint.Name}) enabled "
                                            f"angular limits unverified: {error}") from error
@@ -308,8 +317,9 @@ class _SimulationTrajectory:
                 for suffix, bound in bounds:
                     if (suffix == "Min" and value < bound - 1e-6 or
                             suffix == "Max" and value > bound + 1e-6):
-                        raise RuntimeError(f"Joint {joint.Label} ({joint.Name}) exceeds enabled "
-                                           f"{prefix}{suffix} limit: {value:g} {unit}")
+                        raise _InfeasiblePose(
+                            f"Joint {joint.Label} ({joint.Name}) exceeds enabled "
+                            f"{prefix}{suffix} limit: {value:g} {unit}")
                 if driven:
                     coordinates.setdefault(joint.Name, {})[unit] = value
         # Revolute and slider drivers have one coordinate; cylindrical drivers
@@ -383,7 +393,7 @@ def sweepSimulation(assembly, simulation, first=None, second=None, *,
                     clearance=None, maximumGap=None,
                     refinementTolerance=None, refinementPoseBudget=20, cancel=None, progress=None,
                     maxFacePairCandidates=10000, scope="pair", pairBudget=1000,
-                    poseBudget=10000, includeHidden=False, _scan=None):
+                    poseBudget=10000, includeHidden=False, components=None, _scan=None):
     """Check a finite existing simulation's prescribed solver trajectory.
 
     Uses sweepJoint's scanner, events, minimum search and scoped restoration.
@@ -404,10 +414,10 @@ def sweepSimulation(assembly, simulation, first=None, second=None, *,
     Other options, callbacks and validation follow sweepJoint.
     """
     assembly = _require_assembly(assembly)
-    if scope not in ("pair", "all"):
-        raise ValueError('scope must be "pair" or "all"')
+    if scope not in ("pair", "selection", "all"):
+        raise ValueError('scope must be "pair", "selection" or "all"')
     trajectory = _SimulationTrajectory(assembly, simulation)
-    if scope == "all":
+    if scope != "pair":
         from .MotionAllPairs import sweepAll
 
         _validate_options(assembly, trajectory.step, "s", clearance, maximumGap,
@@ -417,7 +427,8 @@ def sweepSimulation(assembly, simulation, first=None, second=None, *,
             assembly, simulation, a, b, **opts), pairBudget=pairBudget, poseBudget=poseBudget,
             clearance=clearance, maximumGap=maximumGap, refinementTolerance=refinementTolerance,
             refinementPoseBudget=refinementPoseBudget, cancel=cancel, progress=progress,
-            maxFacePairCandidates=maxFacePairCandidates, includeHidden=includeHidden, _scan=_scan)
+            maxFacePairCandidates=maxFacePairCandidates, includeHidden=includeHidden,
+            components=components, scope=scope, _scan=_scan)
     return _sweep(assembly, None, first, second, start=trajectory.start, end=trajectory.end,
                   count=trajectory.count, unit="s", step=trajectory.step, clearance=clearance,
                   maximumGap=maximumGap, refinementTolerance=refinementTolerance,
@@ -429,7 +440,7 @@ def sweepJoint(assembly, joint, first=None, second=None, *, interval=None, step=
                clearance=None, maximumGap=None, refinementTolerance=None,
                refinementPoseBudget=20, cancel=None, progress=None, maxFacePairCandidates=10000,
                coverageBudget=64, motionType=None, scope="pair", pairBudget=1000,
-               poseBudget=10000, includeHidden=False, _scan=None):
+               poseBudget=10000, includeHidden=False, components=None, _scan=None):
     """Scan two occurrences through one bounded joint sweep, synchronously.
 
     Numeric endpoints/step are signed, unwrapped degrees for revolutes or mm for
@@ -457,7 +468,8 @@ def sweepJoint(assembly, joint, first=None, second=None, *, interval=None, step=
     Face rules remain sampled + refined. scope="all" sweeps changing leaf pairs
     with shared pairBudget (enumerated pairs) and poseBudget (static scan calls);
     exhaustion returns incomplete. Hidden leaves are excluded unless includeHidden=True.
-    scope="pair" preserves selected-pair behavior.
+    scope="selection", components=[...] restricts leaf pairs to distinct selected
+    direct components (at least two). scope="pair" preserves selected-pair behavior.
     maximumGap optionally bounds the pair's shortest separation in mm.
 
     Return a dict with samples, firstContact, firstClearanceViolation,
@@ -475,13 +487,13 @@ def sweepJoint(assembly, joint, first=None, second=None, *, interval=None, step=
     """
     assembly = _require_assembly(assembly)
     mechanism = _validate_mechanism(assembly, joint)
-    if scope not in ("pair", "all"):
-        raise ValueError('scope must be "pair" or "all"')
+    if scope not in ("pair", "selection", "all"):
+        raise ValueError('scope must be "pair", "selection" or "all"')
     if motionType is not None and (joint.JointType != "Cylindrical" or
                                    motionType not in ("Angular", "Linear")):
         raise ValueError("motionType is Angular or Linear for a cylindrical joint only")
     start, end, count, unit = _interval(joint, interval, step, motionType)
-    if scope == "all":
+    if scope != "pair":
         from .MotionAllPairs import sweepAll
 
         _validate_options(assembly, step, unit, clearance, maximumGap, refinementTolerance,
@@ -492,7 +504,8 @@ def sweepJoint(assembly, joint, first=None, second=None, *, interval=None, step=
                         refinementTolerance=refinementTolerance,
                         refinementPoseBudget=refinementPoseBudget, cancel=cancel, progress=progress,
                         maxFacePairCandidates=maxFacePairCandidates, coverageBudget=coverageBudget,
-                        motionType=motionType, includeHidden=includeHidden, _scan=_scan)
+                        motionType=motionType, includeHidden=includeHidden, components=components,
+                        scope=scope, _scan=_scan)
 
     return _sweep(assembly, joint, first, second, start=start, end=end, count=count,
                   unit=unit, step=step, clearance=clearance, maximumGap=maximumGap,

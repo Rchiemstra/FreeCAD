@@ -117,7 +117,7 @@ class TestMotionInterferenceGui(unittest.TestCase):
         window = Gui.getMainWindow()
         dock = window.findChild(QtWidgets.QDockWidget, "Assembly Interference Check")
         visible = dock is not None and dock.isVisible()
-        self.panel.scopePicker.setCurrentIndex(1)
+        self.panel.scopePicker.setCurrentIndex(2)
         self.assertFalse(self.panel.firstPicker.isEnabled())
         self.assertFalse(self.panel.secondPicker.isEnabled())
         result = self.run_panel()
@@ -141,7 +141,7 @@ class TestMotionInterferenceGui(unittest.TestCase):
     def test_all_include_hidden_option(self):
         self.assertFalse(self.panel.includeHiddenCheck.isChecked())
         self.assertFalse(self.panel.includeHiddenCheck.isEnabled())
-        self.panel.scopePicker.setCurrentIndex(1)
+        self.panel.scopePicker.setCurrentIndex(2)
         self.assertTrue(self.panel.includeHiddenCheck.isEnabled())
         self.obstacle.Visibility = False
         result = self.run_panel()
@@ -155,15 +155,86 @@ class TestMotionInterferenceGui(unittest.TestCase):
         self.assertIn("Hidden leaves included", self.panel.resultText.text())
 
     def test_all_cancel_is_responsive_and_restores(self):
-        self.panel.scopePicker.setCurrentIndex(1)
+        self.panel.scopePicker.setCurrentIndex(2)
         self.test_cancel_mid_run_is_responsive_and_restores()
 
     def test_all_gap_coverage_text(self):
         self.panel.maximumGapField.setText("100 mm")
-        self.panel.scopePicker.setCurrentIndex(1)
+        self.panel.scopePicker.setCurrentIndex(2)
         result = self.run_panel()
         self.assertEqual(result["completeness"], "complete", result["reason"])
         self.assertIn("no gap violation proven", self.panel.resultText.text())
+
+    def test_rework277_mixed_selection_refuses_every_invalid_entry(self):
+        foreign_doc = App.newDocument("ForeignMotionSelection")
+        self.addCleanup(App.closeDocument, foreign_doc.Name)
+        foreign = foreign_doc.addObject("Part::Feature", "Arm")
+        foreign.Shape = Part.makeBox(1, 1, 1)
+        unrelated = self.doc.addObject("Part::Feature", "Unrelated")
+        unrelated.Shape = Part.makeBox(1, 1, 1)
+        self.doc.recompute()
+        foreign_doc.recompute()
+        App.setActiveDocument(self.doc.Name)
+        self.panel.scopePicker.setCurrentIndex(1)
+        before = self.fixture.state()
+        for obj in (foreign, unrelated):
+            with self.subTest(entry=obj.FullName):
+                Gui.Selection.clearSelection()
+                Gui.Selection.addSelection(self.assembly, self.arm.Name + ".Face1")
+                Gui.Selection.addSelection(self.assembly, self.obstacle.Name + ".Face1")
+                Gui.Selection.addSelection(obj)
+                self.panel.runButton.click()
+                self.wait(lambda: not self.panel.running)
+                self.assertIsNone(self.panel.result)
+                self.assertIn("Cannot run sweep", self.panel.resultText.text())
+                self.assertIn(obj.Name, self.panel.resultText.text())
+                self.assertIn(obj.Document.Name, self.panel.resultText.text())
+                self.fixture.assert_restored(before)
+
+    def test_slice3d_selected_components_from_selection(self):
+        fourth = self.assembly.newObject("Part::Feature", "Unselected")
+        fourth.Shape = Part.makeBox(1, 1, 1)
+        import Assembly
+        Assembly.createGroundedJoint(self.assembly, fourth, recompute=False)
+        self.doc.recompute()
+        Gui.Selection.addSelection(self.assembly, self.fixture.base.Name + ".Face1")
+        self.panel.scopePicker.setCurrentIndex(1)
+        result = self.run_panel()
+        self.assertEqual(result["scope"], "selection")
+        self.assertEqual(result["pairsVisited"], 3)
+        self.assertEqual(result["staticPairs"], 1)
+        self.assertTrue(all("Unselected." not in p["pair"] for p in result["pairResults"]))
+        self.assertTrue(self.panel.events)
+
+    def test_slice3d_several_rows_pose_replay_restore(self):
+        follower, other = self.fixture.several_spheres()
+        self.joint = self.fixture.joint
+        self.panel.reject()
+        Gui.Control.closeDialog()
+        self.panel = MotionInterferenceTask(self.assembly)
+        Gui.Control.showDialog(self.panel)
+        self.panel.modePicker.setCurrentIndex(1)
+        self.assertEqual(self.panel.modePicker.currentText(), "Several joints")
+        self.assertEqual(self.panel.jointTable.rowCount(), 2)
+        self.panel.firstPicker.setCurrentIndex(self.panel.components.index(self.arm))
+        self.panel.secondPicker.setCurrentIndex(self.panel.components.index(follower))
+        for row in range(2):
+            self.panel.jointTable.item(row, 3).setText("35")
+        before = self.fixture.state()
+        result = self.run_panel()
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["gridSize"], 9)
+        self.assertIsNotNone(result["firstContact"])
+        text = self.panel.resultText.text()
+        self.assertIn("sampled + refined", text)
+        self.assertIn("not available", text)
+        self.assertIn(self.joint.Label, text)
+        self.assertIn(other.Label, text)
+        self.assertTrue(self.panel.events)
+        event = self.panel.events[0][0]
+        self.replay(lambda: self.assertEqual(
+            follower.Placement.toMatrix().A, event["placements"][follower.Name].toMatrix().A))
+        self.fixture.assert_restored(before)
 
     def run_panel(self):
         self.panel.runButton.click()

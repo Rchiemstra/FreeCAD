@@ -1502,3 +1502,322 @@ class TestMotionSweep(unittest.TestCase):
                                           refinementPoseBudget=0)
         self.assertEqual(result["coverage"], "not available")
         self.assertIn("trajectory", result["coverageReason"])
+
+
+    def several_spheres(self):
+        self.revolute()
+        self.arm.Shape = Part.makeSphere(0.5, App.Vector(5, 0, 0))
+        follower = self.assembly.newObject("Part::Feature", "Follower")
+        follower.Shape = Part.makeSphere(0.5, App.Vector(5, 0, 0))
+        follower.Placement.Base.y = 10
+        self.doc.recompute()
+        other = self.make_joint("Revolute", self.base, follower)
+        other.Placement1.Base.y = 10
+        self.joint.EnableAngleMin = self.joint.EnableAngleMax = True
+        self.joint.AngleMin, self.joint.AngleMax = 0, 70
+        other.EnableAngleMin = other.EnableAngleMax = True
+        other.AngleMin, other.AngleMax = -70, 0
+        self.doc.recompute()
+        return follower, other
+
+    def test_rework277_negative_entry_turns(self):
+        follower, other = self.several_spheres()
+        self.arm.Placement.Rotation = App.Rotation(App.Vector(0, 0, 1), -120)
+        self.joint.AngleMin, self.joint.AngleMax = -130, -110
+        self.doc.recompute()
+        before = self.arm.Placement.toMatrix().A
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges=[(-120, -120), (0, 0)], refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["unreachable"], 0, result["unreachablePoses"])
+        self.assertEqual(len(result["samples"]), 1)
+        self.assertAlmostEqual(
+            result["samples"][0]["drivenCoordinates"][self.joint.Name]["value"], -120)
+        for actual, expected in zip(self.arm.Placement.toMatrix().A, before):
+            self.assertAlmostEqual(actual, expected, places=12)
+
+    def test_rework277_solver_errors_are_incomplete(self):
+        from Assembly.MotionJointGrid import _driver as native_driver
+
+        follower, other = self.several_spheres()
+        for phase in ("sampling", "refinement"):
+            with self.subTest(phase=phase):
+                before = self.state()
+                calls = []
+
+                def driver(*args, **kwargs):
+                    calls.append(None)
+                    # Two drivers per pose; all nine grid poses precede refinement.
+                    if phase == "sampling" or len(calls) > 18:
+                        raise RuntimeError("Solver backend unavailable during " + phase)
+                    return native_driver(*args, **kwargs)
+
+                with patch("Assembly.MotionJointGrid._driver", side_effect=driver):
+                    result = Assembly.sweepJoints(
+                        self.assembly, [self.joint, other], first=self.arm,
+                        second=follower, steps=35)
+                self.assertEqual(result["completeness"], "incomplete", result["reason"])
+                self.assertIn("Solver backend unavailable during " + phase, result["reason"])
+                self.assertEqual(result["unreachable"], 0)
+                self.assertEqual(len(result["samples"]), 0 if phase == "sampling" else 9)
+                self.assert_restored(before)
+
+    def test_rework277_refinement_replaces_earlier_contact(self):
+        follower, other = self.several_spheres()
+        pivot = App.Vector(11.830127, 6.830127, 0)
+        self.arm.Shape = Part.makeSphere(1.5, App.Vector(5, 8.660254, 0))
+        follower.Shape = Part.makeSphere(1.5, App.Vector(10, 0, 0))
+        follower.Placement = App.Placement()
+        self.joint.Placement1.Base = self.joint.Placement2.Base = pivot
+        other.Placement1 = other.Placement2 = App.Placement()
+        self.joint.AngleMin = other.AngleMin = 0
+        self.joint.AngleMax = other.AngleMax = 90
+        self.doc.recompute()
+        before = self.state()
+        probes = []
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            steps=90, clearance=3, refinementTolerance=0.001, progress=probes.append)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertFalse(result["samples"][1]["contact"])
+        self.assertTrue(result["samples"][1]["clearanceViolation"])
+        self.assertTrue(result["samples"][2]["contact"])
+        self.assertTrue(any(p["pose"] == [0, 45] and p["contact"] for p in probes))
+        event = result["firstContact"]
+        self.assertEqual(event["index"], 1)
+        self.assertEqual(event["pose"][0], 0)
+        self.assertLess(event["pose"][1], 45)
+        radius = math.hypot(5, 8.660254)
+        expected = math.degrees(math.atan2(8.660254, 5) - math.acos(
+            (radius*radius + 100 - 9)/(20*radius)))
+        self.assertAlmostEqual(event["pose"][1], expected, delta=0.001)
+        self.assertTrue(event["converged"])
+        self.assertLessEqual(event["resolution"], 0.001)
+        self.assertFalse(event["previousClearSample"]["contact"])
+        self.assertAlmostEqual(event["minimumClearance"], 0)
+        self.assertAlmostEqual(event["drivenCoordinates"][other.Name]["value"],
+                               event["pose"][1])
+        self.assertEqual(event["placements"][self.arm.Name].toMatrix().A,
+                         self.arm.Placement.toMatrix().A)
+        self.assert_restored(before)
+
+    def test_slice3d_selection_three_of_four(self):
+        fourth = self.assembly.newObject("Part::Feature", "Unselected")
+        fourth.Shape = Part.makeBox(1, 1, 1, App.Vector(0, 0, 3))
+        Assembly.createGroundedJoint(self.assembly, fourth, recompute=False)
+        self.doc.recompute()
+        before = self.state()
+        selected = [self.base, self.arm, self.obstacle]
+        result = self.sweep(scope="selection", components=selected, coverageBudget=0,
+                            refinementPoseBudget=0)
+        self.assertEqual(result["scope"], "selection")
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["pairsVisited"], 3)
+        self.assertEqual(result["staticPairs"], 1)
+        self.assertEqual({p["pair"] for p in result["pairResults"]},
+                         {("Base.", "Arm."), ("Arm.", "Obstacle.")})
+        self.assertTrue(result["events"])
+        self.assertTrue(all("Unselected." not in e["pair"] for e in result["events"]))
+        self.assert_restored(before)
+        for components in ([self.arm], [self.arm, self.arm], [self.arm, self.joint]):
+            with self.assertRaises(ValueError):
+                self.sweep(scope="selection", components=components)
+
+    def test_slice3d_product_contact_only_both_revolute(self):
+        follower, other = self.several_spheres()
+        # Freeze the other DOF for the existing one-joint API.
+        for driven, held in ((self.joint, other), (other, self.joint)):
+            held.JointType = "Fixed"
+            single = Assembly.sweepJoint(self.assembly, driven, self.arm, follower,
+                                         step=35, coverageBudget=0, refinementPoseBudget=0)
+            self.assertEqual(single["completeness"], "complete", single["reason"])
+            self.assertIsNone(single["firstContact"])
+            held.JointType = "Revolute"
+        self.doc.recompute()
+        before = self.state()
+        started = time.monotonic()
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges=[(0, 70), (0, -70)], steps=[35, 35], refinementTolerance=0.001)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["gridSize"], 9)
+        self.assertEqual(result["unreachable"], 0)
+        self.assertEqual(result["coverage"], "not available")
+        self.assertEqual(result["sampling"], "sampled + refined")
+        event = result["firstContact"]
+        self.assertIsNotNone(event)
+        coords = event["drivenCoordinates"]
+        self.assertAlmostEqual(coords[self.joint.Name]["value"], 70, places=5)
+        x, y = 5*math.cos(math.radians(70)), 5*math.sin(math.radians(70)) - 10
+        d = math.hypot(x, y)
+        analytic = math.degrees(math.atan2(y, x) + math.acos((25 + d*d - 1)/(10*d)))
+        self.assertAlmostEqual(coords[other.Name]["value"], analytic, delta=0.001)
+        self.assertLessEqual(event["resolution"], 0.001)
+        self.assertAlmostEqual(result["minimumClearance"]["value"], 0)
+        self.assertEqual(len(result["minimumClearance"]["drivenCoordinates"]), 2)
+        print("ANALYTIC grid contact=(70, %.9f) expected=(70, %.9f), runtime=%.6fs" %
+              (coords[other.Name]["value"], analytic, time.monotonic() - started))
+        self.assert_restored(before)
+
+    def test_slice3d_coupled_unreachable_never_scanned(self):
+        _, follower, other = self.gear_simulation()
+        self.arm.Shape = Part.makeSphere(0.5, App.Vector(
+            5*math.cos(math.radians(-30)), 5*math.sin(math.radians(-30)), 0))
+        self.doc.recompute()
+        before = self.state()
+        scanned = []
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges=[(0, 30), (-30, 0)], steps=30, refinementPoseBudget=0,
+            progress=lambda s: scanned.append(s))
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["gridSize"], 4)
+        self.assertEqual(result["unreachable"], 2)
+        self.assertEqual(len(scanned), 2)
+        self.assertTrue(all(abs(s["drivenCoordinates"][self.joint.Name]["value"] +
+                                s["drivenCoordinates"][other.Name]["value"]) < 1e-6
+                            for s in scanned))
+        self.assertIsNone(result["firstContact"])
+        self.assert_restored(before)
+
+    def test_slice3d_grid_budget_refuses_before_solving(self):
+        follower, other = self.several_spheres()
+        before = self.state()
+        with patch.object(AssemblyApp, "scanSelectedPair", side_effect=AssertionError("scan")):
+            with self.assertRaisesRegex(ValueError, "9.*poseBudget.*8"):
+                Assembly.sweepJoints(self.assembly, [self.joint, other], first=self.arm,
+                                     second=follower, steps=35, poseBudget=8)
+        self.assert_restored(before)
+        with self.assertRaisesRegex(ValueError, "20004.*poseBudget.*8"):
+            Assembly.sweepJoints(self.assembly, [self.joint, other], first=self.arm,
+                                 second=follower, steps=[70/10001, 70], poseBudget=8)
+        self.assert_restored(before)
+
+    def test_slice3d_cancel_error_exact_restore(self):
+        follower, other = self.several_spheres()
+        for mode in ("cancel", "error"):
+            before = self.state()
+            token = Assembly.SweepCancellation()
+
+            def progress(sample):
+                if mode == "cancel":
+                    token.cancel()
+                else:
+                    raise RuntimeError("grid callback failed")
+
+            result = Assembly.sweepJoints(
+                self.assembly, [self.joint, other], first=self.arm, second=follower,
+                steps=35, cancel=token, progress=progress)
+            self.assertEqual(result["completeness"],
+                             "cancelled" if mode == "cancel" else "incomplete")
+            self.assertEqual(len(result["samples"]), 1)
+            self.assert_restored(before)
+
+    def test_slice3d_pair_mode_unchanged(self):
+        before = self.state()
+        default = self.sweep(interval=(0, 2), refinementPoseBudget=0)
+        pair = self.sweep(interval=(0, 2), refinementPoseBudget=0, scope="pair",
+                          components=[self.arm, self.obstacle])
+        for key in default:
+            if key not in ("minimumClearance", "sampledMinimumClearance"):
+                self.assertEqual(default[key], pair[key], key)
+        self.assertEqual(default["minimumClearance"]["value"], pair["minimumClearance"]["value"])
+        self.assert_restored(before)
+
+
+    def test_slice3d_multi_selection_rules_and_budgets(self):
+        follower, other = self.several_spheres()
+        before = self.state()
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], steps=35, scope="selection",
+            components=[self.base, self.arm, follower], refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(result["pairsVisited"], 3)
+        self.assertEqual(len(result["pairResults"]), 3)
+        self.assertEqual(set(result["firstContact"]["pair"]), {"Arm.", "Follower."})
+        self.assertNotIn("Obstacle.", str([p["pair"] for p in result["pairResults"]]))
+        self.assert_restored(before)
+        self.assembly.InterferenceExcludedSources = [(self.arm, [""]), (follower, [""])]
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], steps=35, scope="selection",
+            components=[self.arm, follower], refinementPoseBudget=0)
+        self.assertIsNone(result["firstContact"])
+        self.assertAlmostEqual(result["minimumClearance"]["value"], 0)
+        self.assertEqual(result["coverage"], "not available")
+        for options in (dict(pairBudget=1), dict(poseBudget=9)):
+            result = Assembly.sweepJoints(
+                self.assembly, [self.joint, other], steps=35, scope="all",
+                refinementPoseBudget=0, **options)
+            self.assertEqual(result["completeness"], "incomplete")
+            self.assertIn("budget", result["reason"])
+
+    def test_slice3d_scan_error_and_refinement_cancel_restore(self):
+        follower, other = self.several_spheres()
+        before = self.state()
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower, steps=35,
+            _scan=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("scan failed")))
+        self.assertEqual(result["completeness"], "incomplete")
+        self.assertIn("scan failed", result["reason"])
+        self.assertEqual(result["unreachable"], 0)
+        self.assert_restored(before)
+        token = Assembly.SweepCancellation()
+
+        def cancel_refinement(sample):
+            if sample["phase"] == "refinement":
+                token.cancel()
+
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower, steps=35,
+            cancel=token, progress=cancel_refinement)
+        self.assertEqual(result["completeness"], "cancelled")
+        self.assertEqual(len(result["samples"]), 9)
+        self.assert_restored(before)
+
+    def test_slice3d_clearance_gap_and_missing_limit(self):
+        follower, other = self.several_spheres()
+        other.EnableAngleMin = False
+        before = self.state()
+        with self.assertRaisesRegex(ValueError, "Missing bound"):
+            Assembly.sweepJoints(self.assembly, [self.joint, other], first=self.arm,
+                                 second=follower, steps=35)
+        result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges={self.joint: (0, 70), other.Name: (0, -70)}, steps=35,
+            clearance="0.5 mm", maximumGap="8.9 mm", refinementTolerance=0.001)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        event = result["firstClearanceViolation"]
+        self.assertIsNotNone(event)
+        x, y = 5*math.cos(math.radians(70)), 5*math.sin(math.radians(70)) - 10
+        d = math.hypot(x, y)
+        analytic = math.degrees(math.atan2(y, x) + math.acos((25 + d*d - 1.5**2)/(10*d)))
+        actual = event["drivenCoordinates"][other.Name]["value"]
+        self.assertAlmostEqual(actual, analytic, delta=0.001)
+        gap = result["firstGapViolation"]
+        self.assertEqual(set(gap["drivenCoordinates"]), {self.joint.Name, other.Name})
+        self.assertTrue(all(abs(c["value"]) < 1e-6 for c in gap["drivenCoordinates"].values()))
+        self.assertEqual(result["gapCoverage"], "not available")
+        gap_result = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges=[(70, 0), (-70, 0)], steps=35, maximumGap=8.9,
+            refinementTolerance=0.001)
+        self.assertEqual(gap_result["completeness"], "complete", gap_result["reason"])
+        gap_event = gap_result["firstGapViolation"]
+        gap_angle = math.degrees(math.atan2(-10, 5) + math.acos(
+            (25 + 125 - 9.9**2)/(10*math.sqrt(125))))
+        self.assertAlmostEqual(gap_event["drivenCoordinates"][other.Name]["value"],
+                               gap_angle, delta=0.001)
+        self.assertLessEqual(gap_event["resolution"], 0.001)
+        print("ANALYTIC grid gap=8.9mm at (0, %.9f), expected=(0, %.9f)" %
+              (gap_event["drivenCoordinates"][other.Name]["value"], gap_angle))
+        print("ANALYTIC grid clearance=0.5mm at (70, %.9f), expected=(70, %.9f)" %
+              (actual, analytic))
+        self.assert_restored(before)
+        fixed = Assembly.sweepJoints(
+            self.assembly, [self.joint, other], first=self.arm, second=follower,
+            ranges=[(0, 0), (0, 0)], refinementPoseBudget=0)
+        self.assertEqual(fixed["gridSize"], 1)
+        self.assertEqual(len(fixed["samples"]), 1)
+        self.assertAlmostEqual(fixed["minimumClearance"]["value"], 9)
+        self.assert_restored(before)

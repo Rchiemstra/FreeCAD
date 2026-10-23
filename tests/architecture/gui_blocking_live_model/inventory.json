@@ -105,6 +105,7 @@
     "src/Mod/Assembly/CommandInsertNewPart.py",
     "src/Mod/Assembly/CommandMotionInterference.py",
     "src/Mod/Assembly/Assembly/MotionInterference.py",
+    "src/Mod/Assembly/Assembly/MotionJointGrid.py",
     "src/Mod/Assembly/CommandReviewNote.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     "src/Mod/Assembly/JointObject.py",
@@ -3645,6 +3646,14 @@
     {
       "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
       "occurrence": 4,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents()"
+    },
+    {
+      "path": "src/Mod/Assembly/Assembly/MotionJointGrid.py",
+      "occurrence": 1,
       "category": "process-events-polling",
       "subsystem": "Assembly",
       "disposition": "investigate",
