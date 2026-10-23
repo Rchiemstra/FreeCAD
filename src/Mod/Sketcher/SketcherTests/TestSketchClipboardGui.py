@@ -169,6 +169,50 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         self.assertIn(f"Constraints[{count}]", warning.call_args.args[0])
         self.assert_expression(self.sketch, count, None)
 
+    def check_dangling_reference(self, command):
+        for reference in ("deleted_name", "deleted_index", "cleared_name"):
+            with self.subTest(reference=reference):
+                Gui.activeDocument().resetEdit()
+                self.sketch = self.make_sketch("Source")
+                driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+                self.sketch.renameConstraint(1, "Width")
+                if reference == "deleted_index":
+                    path = f"Constraints[{driver}]"
+                else:
+                    self.sketch.renameConstraint(driver, "Driver")
+                    path = ".Constraints.Driver"
+                self.sketch.setExpression("Constraints.Width", path)
+                if reference == "cleared_name":
+                    self.sketch.renameConstraint(driver, "")
+                else:
+                    self.sketch.delConstraint(driver)
+                self.assert_expression(self.sketch, 1, path)
+                self.copy(command=command)
+                self.flush_gui()
+                before = (
+                    self.sketch.GeometryCount,
+                    self.sketch.ConstraintCount,
+                    self.sketch.ExpressionEngine,
+                )
+                with patch.object(App.Console, "PrintWarning") as warning:
+                    count = self.paste()
+                warning.assert_called_once()
+                self.assertIn("Width", warning.call_args.args[0])
+                self.assertIn(path, warning.call_args.args[0])
+                self.assert_expression(self.sketch, count, None)
+                self.undo_gui_document()
+                self.assertEqual((
+                    self.sketch.GeometryCount,
+                    self.sketch.ConstraintCount,
+                    self.sketch.ExpressionEngine,
+                ), before)
+
+    def test_copy_dangling_reference_warns_once_and_keeps_value(self):
+        self.check_dangling_reference("Sketcher_CopyClipboard")
+
+    def test_cut_dangling_reference_warns_once_and_keeps_value(self):
+        self.check_dangling_reference("Sketcher_Cut")
+
     def test_same_sketch_names_and_internal_expression_repeated_paste(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
         self.sketch.renameConstraint(driver, "Driver")

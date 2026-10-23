@@ -237,7 +237,15 @@ public:
             return;
         }
         // Resolve the constraint, regardless of local dots, names or object qualifiers.
-        const auto* constraint = sketch->Constraints.getConstraint(variable->getPath());
+        const Sketcher::Constraint* constraint = nullptr;
+        try {
+            constraint = sketch->Constraints.getConstraint(variable->getPath());
+        }
+        catch (const Base::Exception&) {
+            // A dangling reference has no identity that can be checked on paste.
+            unresolvedConstraint = variable->getPath().toString();
+            return;
+        }
         const auto found = copied.find(constraint);
         if (found == copied.end()) {
             unpastedConstraint = variable->getPath().toString();
@@ -264,6 +272,7 @@ public:
     }
 
     std::string unpastedConstraint;
+    std::string unresolvedConstraint;
 
 private:
     Sketcher::SketchObject* sketch;
@@ -378,6 +387,11 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
             const std::string name = constr->Name.empty()
                 ? "Constraints[" + std::to_string(constraintId) + "]" : constr->Name;
             expressionsAsStr += "try:\n";
+            if (!visitor.unresolvedConstraint.empty()) {
+                expressionsAsStr +=
+                    "    raise ValueError('Reference to missing constraint "
+                    + Base::Tools::escapeEncodeString(visitor.unresolvedConstraint) + "')\n";
+            }
             if (!visitor.unpastedConstraint.empty()) {
                 expressionsAsStr +=
                     "    if (objectStr.Document.Name, objectStr.Name) != ('"
