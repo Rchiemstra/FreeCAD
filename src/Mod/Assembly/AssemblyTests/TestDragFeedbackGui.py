@@ -146,35 +146,61 @@ class TestDragFeedbackGui(unittest.TestCase):
     def test_drag_result_and_history_equal_without_feedback_and_timing(self):
         self.enable()
         self.feedback.close()
-        initial = App.Placement(self.arm.Placement)
+        initial = [(obj, prop, App.Placement(obj.getPropertyByName(prop)))
+                   for obj in self.doc.Objects for prop in obj.PropertiesList
+                   if obj.getTypeIdOfProperty(prop) == "App::PropertyPlacement"]
         results, timings = [], []
         camera = self.view.getCamera()
-        for enabled in (False, True):
-            self.arm.Placement = initial
+
+        def event(action, z=0):
+            # Redraw updates Coin's clipping planes from scene bounds, even
+            # without feedback. getPointOnLine uses those single-precision
+            # camera fields: restore them immediately before every native event,
+            # including the initial projection, rather than before updateGui.
             self.view.setCamera(camera)
+            return self.event(action, z)
+
+        modes = (False, False, True, True, False)
+        for enabled in modes:
+            self.feedback.close()
+            for obj, prop, placement in initial:
+                setattr(obj, prop, placement)
             Gui.updateGui()
             if enabled:
                 self.enable()
             undo, redo = self.doc.UndoCount, self.doc.RedoCount
-            self.begin()
+            event("press")
+            self.assertTrue(event("move"), "Native drag must start")
             steps = 40
             started = time.perf_counter()
             for index in range(steps):
-                self.event("move", (index + 1) * 0.12)
+                event("move", (index + 1) * 0.12)
                 QtWidgets.QApplication.processEvents()
             timings.append(1000 * (time.perf_counter() - started) / steps)
-            self.event("release")
+            event("release")
             results.append(([obj.Placement.toMatrix().A for obj in (self.arm, self.obstacle)],
                             self.doc.UndoCount - undo, self.doc.RedoCount - redo,
                             self.doc.getFileChangeState()["state"]))
-        self.assertEqual(results[0][1:], results[1][1:])
-        self.assertEqual(results[0][1], 1, "Each native drag must create one undo entry")
-        difference = max(abs(a - b) for off, on in zip(results[0][0], results[1][0])
-                         for a, b in zip(off, on))
-        print(f"DRAG PLACEMENT max on/off matrix difference: {difference:.17g}")
-        self.assertEqual(results[0][0], results[1][0])
+        off = [result for enabled, result in zip(modes, results) if not enabled]
+        on = [result for enabled, result in zip(modes, results) if enabled]
+
+        def difference(first, second):
+            return max(abs(a - b) for firstMatrix, secondMatrix in zip(first[0], second[0])
+                       for a, b in zip(firstMatrix, secondMatrix))
+
+        offDifferences = [difference(a, b) for index, a in enumerate(off) for b in off[index + 1:]]
+        onDifferences = [difference(a, b) for a in on for b in off]
+        print(f"DRAG PLACEMENT max off/off matrix difference ({len(offDifferences)} pairs): "
+              f"{max(offDifferences):.17g}; on/off ({len(onDifferences)} pairs): "
+              f"{max(onDifferences):.17g}")
+        for index, result in enumerate(results):
+            with self.subTest(run=index, feedback=modes[index]):
+                self.assertEqual(result[1:], results[0][1:])
+                self.assertEqual(result[1], 1, "Each native drag must create one undo entry")
+                self.assertEqual(result[0], results[0][0])
         print(f"DRAG TIMING slider assembly (40 native solver steps): "
-              f"off={timings[0]:.3f} ms/step on={timings[1]:.3f} ms/step")
+              + " ".join(f"{'on' if enabled else 'off'}={timing:.3f} ms/step"
+                         for enabled, timing in zip(modes, timings)))
 
     def test_resting_contact_after_throttle(self):
         self.enable()
