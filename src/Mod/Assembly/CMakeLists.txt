@@ -60,6 +60,7 @@ INSTALL(
 SET(AssemblyScripts_SRCS
     Assembly/__init__.py
     Assembly/api.py
+    Assembly/DragFeedback.py
     Assembly/MotionCoverage.py
     Assembly/MotionInterference.py
 )
@@ -70,6 +71,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestCore.py
     AssemblyTests/TestMotionInterference.py
     AssemblyTests/TestMotionInterferenceGui.py
+    AssemblyTests/TestDragFeedbackGui.py
     AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestJointEditorSwitch.py
     AssemblyTests/TestCommandCreateView.py

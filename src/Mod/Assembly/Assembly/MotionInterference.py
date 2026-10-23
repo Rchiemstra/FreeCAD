@@ -837,3 +837,10 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
     if trajectory is not None:
         result["message"] = result["message"].replace("sampled + refined", result["sampling"])
     return result
+
+
+def setDragFeedback(assembly, pairs=None, enabled=True, *, clearance=None):
+    """Enable transient GUI contact feedback at displayed drag poses; off by default."""
+    from .DragFeedback import setDragFeedback as configure
+
+    return configure(assembly, pairs, enabled, clearance=clearance)

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <Base/BoundBox.h>
+#include <Base/Matrix.h>
 #include <Base/Vector3D.h>
 #include <Mod/Part/App/InterferenceDetection.h>
 #include <TopoDS_Shape.hxx>
@@ -61,6 +62,7 @@ struct InterferenceLeaf
     /** Stable source-definition identity (document#name of linked definition). */
     std::string sourceId;
     TopoDS_Shape worldShape;
+    Base::Matrix4D worldTransform;
     Base::BoundBox3d worldBoundBox;
     bool visible = true;
     bool shapeValid = true;
@@ -414,6 +416,12 @@ AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefi
     const App::DocumentObject* root,
     const std::string& occurrencePrefix,
     bool includeHidden
+);
+
+/** Repose document-independent geometry using current occurrence transforms only. */
+AssemblyExport std::vector<InterferenceLeaf> reposeInterferenceLeaves(
+    const App::DocumentObject* root,
+    const std::vector<InterferenceLeaf>& ownedLeaves
 );
 
 /**

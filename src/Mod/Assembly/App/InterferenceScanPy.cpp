@@ -14,6 +14,7 @@
 #include <Standard_Failure.hxx>
 
 #include <array>
+#include <cmath>
 #include <memory>
 
 namespace Assembly
@@ -249,14 +250,16 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
     PyObject* firstPy = nullptr;
     PyObject* secondPy = nullptr;
     PyObject* token = Py_None;
+    PyObject* clearance = Py_None;
+    PyObject* geometry = Py_None;
     int measure = 0;
     Py_ssize_t cap = 10000;
-    static const std::array<const char*, 7> names {
-        "host", "first", "second", "measureDistances", "maxFacePairCandidates", "cancel", nullptr
+    static const std::array<const char*, 9> names {
+        "host", "first", "second", "measureDistances", "maxFacePairCandidates", "cancel", "clearance", "geometry", nullptr
     };
     if (!Base::Wrapped_ParseTupleAndKeywords(
-            args.ptr(), keywords.ptr(), "O!OO|pnO", names,
-            &App::DocumentObjectPy::Type, &hostPy, &firstPy, &secondPy, &measure, &cap, &token)) {
+            args.ptr(), keywords.ptr(), "O!OO|pnOOO", names,
+            &App::DocumentObjectPy::Type, &hostPy, &firstPy, &secondPy, &measure, &cap, &token, &clearance, &geometry)) {
         throw Py::Exception();
     }
     if (cap < 0) {
@@ -272,12 +275,31 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
             throw Py::ValueError("Select exactly two distinct component occurrences under host");
         }
         InterferenceScanOptions options;
-        options.clearance = getInterferenceClearance(host);
+        options.clearance = clearance == Py_None ? getInterferenceClearance(host)
+                                                : PyFloat_AsDouble(clearance);
+        if (PyErr_Occurred()) {
+            throw Py::Exception();
+        }
+        if (clearance != Py_None
+            && (!std::isfinite(options.clearance) || options.clearance < 0)) {
+            throw Py::ValueError("clearance must be finite and nonnegative");
+        }
         options.measureSelectedPairDistances = measure != 0;
         options.maxFacePairCandidates = static_cast<std::size_t>(cap);
         options.cancelFlag = token == Py_None ? nullptr : cancellation(token);
-        auto a = collectInterferenceLeavesUnderPrefix(host, scope.first.occurrencePrefix, true);
-        auto b = collectInterferenceLeavesUnderPrefix(host, scope.second.occurrencePrefix, true);
+        auto* cached = geometry == Py_None ? nullptr
+            : static_cast<PreparedScan*>(PyCapsule_GetPointer(geometry, preparedName));
+        if (geometry != Py_None && !cached) {
+            throw Py::Exception();
+        }
+        if (cached && (cached->firstOccurrence != scope.first.occurrencePrefix
+                       || cached->secondOccurrence != scope.second.occurrencePrefix)) {
+            throw Py::ValueError("Geometry must belong to the same occurrence pair");
+        }
+        auto a = cached ? reposeInterferenceLeaves(host, cached->first)
+                       : collectInterferenceLeavesUnderPrefix(host, scope.first.occurrencePrefix, true);
+        auto b = cached ? reposeInterferenceLeaves(host, cached->second)
+                       : collectInterferenceLeavesUnderPrefix(host, scope.second.occurrencePrefix, true);
         auto prepared = a;
         prepared.insert(prepared.end(), b.begin(), b.end());
         options.clearanceRules = snapshotInterferenceClearanceRules(host, &prepared);

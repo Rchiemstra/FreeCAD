@@ -6,11 +6,11 @@ import sys
 import FreeCAD as App
 
 from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
-from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui
+from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, TestDragFeedbackGui
 
 # Report-view redirection hides the command-line summary from CI. This entry
 # point is also importable in the interactive test workbench.
 if App.ConfigGet("TestCase").startswith("TestAssemblyGui"):
     sys.stdout = sys.__stdout__
 
-True if TestJointEditorSwitch and TestMotionInterferenceGui else False
+True if TestJointEditorSwitch and TestMotionInterferenceGui and TestDragFeedbackGui else False

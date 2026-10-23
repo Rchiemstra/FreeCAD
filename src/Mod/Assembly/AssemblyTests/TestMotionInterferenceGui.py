@@ -17,6 +17,7 @@ if App.GuiUp:
     from CommandMotionInterference import CommandMotionInterference, MotionInterferenceTask
 
 from AssemblyTests.TestMotionInterference import TestMotionSweep as _Fixture
+from AssemblyTests.TestDragFeedbackGui import TestDragFeedbackGui
 
 
 @unittest.skipUnless(App.GuiUp, "GUI required")
@@ -209,16 +210,26 @@ class TestMotionInterferenceGui(unittest.TestCase):
 
     def test_minimum_clearance_show_and_restore_button(self):
         self.joint.AngleMax = 18
+        self.panel.dragFeedbackCheck.setChecked(True)
         result = self.run_panel()
+        self.assertFalse(self.panel.dragFeedbackCheck.isChecked())
+        self.assertTrue(self.panel.dragFeedbackCheck.isEnabled())
         self.assertEqual(result["coverage"], "proven")
         self.assertIn("no contact proven", self.panel.resultText.text())
         self.assertIsNone(result["firstContact"])
         self.assertIn("Smallest clearance", self.panel.resultText.text())
         self.panel.eventPicker.setCurrentIndex(len(self.panel.events) - 1)
         before = self.fixture.state()
-        self.replay(lambda: self.assertEqual(
-            self.arm.Placement.toMatrix().A,
-            result["minimumClearance"]["placements"][self.arm.Name].toMatrix().A))
+        self.panel.dragFeedbackCheck.setChecked(True)
+
+        def check_replay():
+            self.assertFalse(self.panel.dragFeedbackCheck.isChecked())
+            self.assertFalse(self.panel.dragFeedbackCheck.isEnabled())
+            self.assertEqual(self.arm.Placement.toMatrix().A,
+                             result["minimumClearance"]["placements"][self.arm.Name].toMatrix().A)
+
+        self.replay(check_replay)
+        self.assertTrue(self.panel.dragFeedbackCheck.isEnabled())
         self.fixture.assert_restored(before)
         self.assertTrue(Gui.Control.activeDialog())
 

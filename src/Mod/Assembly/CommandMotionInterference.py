@@ -118,6 +118,11 @@ class MotionInterferenceTask:
         self.maximumGapField.setToolTip(translate(
             "Assembly", "Upper bound on the components' shortest whole-solid separation"))
         layout.addWidget(self.inputs)
+        self._dragFeedback = None
+        self.dragFeedbackCheck = QtWidgets.QCheckBox(translate("Assembly", "Check contact while dragging"))
+        self.dragFeedbackCheck.setToolTip(translate("Assembly", "Check contact and required clearance at this pose only"))
+        fields.addRow(self.dragFeedbackCheck)
+        self.dragFeedbackCheck.toggled.connect(self._dragFeedbackChanged)
         buttons = QtWidgets.QHBoxLayout()
         self.runButton = QtWidgets.QPushButton(translate("Assembly", "Run"))
         self.cancelButton = QtWidgets.QPushButton(translate("Assembly", "Cancel"))
@@ -161,7 +166,33 @@ class MotionInterferenceTask:
         for field in (self.startField, self.endField, self.stepField, self.clearanceField,
                       self.maximumGapField):
             field.textChanged.connect(self._settingsChanged)
+        for picker in (self.firstPicker, self.secondPicker):
+            picker.currentIndexChanged.connect(lambda *_: self._dragSettingsChanged())
+        self.clearanceField.textChanged.connect(lambda *_: self._dragSettingsChanged())
         App.addDocumentObserver(self)
+
+    def _dragSettingsChanged(self):
+        if self.dragFeedbackCheck.isChecked():
+            self._dragFeedbackChanged(True)
+
+    def _stopDragFeedback(self):
+        if self._dragFeedback is not None:
+            self._dragFeedback.close()
+            self._dragFeedback = None
+
+    def _dragFeedbackChanged(self, enabled):
+        self._stopDragFeedback()
+        if enabled:
+            try:
+                from Assembly.MotionInterference import setDragFeedback
+                self._dragFeedback = setDragFeedback(
+                    self.assembly, [(self.components[self.firstPicker.currentIndex()],
+                                     self.components[self.secondPicker.currentIndex()])],
+                    clearance=self.clearanceField.text().strip() or None)
+                self._dragFeedback.onFailure = lambda: self.dragFeedbackCheck.setChecked(False)
+            except Exception as error:
+                App.Console.PrintWarning(f"Contact feedback disabled: {error}\n")
+                self.dragFeedbackCheck.setChecked(False)
 
     def _prefillSelection(self):
         selected = []
@@ -217,10 +248,10 @@ class MotionInterferenceTask:
         return QtWidgets.QDialogButtonBox.Close
 
     def isAllowedAlterDocument(self):
-        return False
+        return self.dragFeedbackCheck.isChecked() and not (self.running or self.replaying)
 
     def isAllowedAlterSelection(self):
-        return False
+        return self.isAllowedAlterDocument()
 
     def isAllowedAlterView(self):
         return True
@@ -228,6 +259,7 @@ class MotionInterferenceTask:
     def start(self):
         if self.running or self.replaying or self._closed:
             return
+        self.dragFeedbackCheck.setChecked(False)
         self.result = None
         self.events = []
         self.eventPicker.clear()
@@ -430,6 +462,7 @@ class MotionInterferenceTask:
     def show(self):
         if self.running or self.replaying or self._stale or not self.events:
             return
+        self.dragFeedbackCheck.setChecked(False)
         self.replaying = True
         self._restorePending = False
         self.showButton.setEnabled(False)
@@ -507,6 +540,7 @@ class MotionInterferenceTask:
             self.resultText.setText(translate("Assembly", "Cancelling; waiting for the current scan…"))
 
     def reject(self):
+        self._stopDragFeedback()
         if self._closed:
             return True
         if self.running or self.replaying:
@@ -530,6 +564,8 @@ class MotionInterferenceTask:
         self.restore()
 
     def slotDeletedDocument(self, doc):
+        if doc == self.document:
+            self._stopDragFeedback()
         if doc == self.document and not self._closed:
             self._closed = True
             App.removeDocumentObserver(self)

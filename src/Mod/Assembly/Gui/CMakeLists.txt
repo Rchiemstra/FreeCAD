@@ -45,6 +45,8 @@ SET(AssemblyGui_SRCS_Module
     AppAssemblyGuiPy.cpp
     MotionInterferenceGuiPy.cpp
     MotionInterferenceGuiPy.h
+    DragFeedback.cpp
+    DragFeedback.h
     PreCompiled.h
     Commands.cpp
     Commands.h

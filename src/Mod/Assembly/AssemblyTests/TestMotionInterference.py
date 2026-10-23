@@ -15,6 +15,7 @@ from unittest.mock import patch
 import FreeCAD as App
 import Part
 import Assembly
+import AssemblyApp
 
 
 class TestMotionInterference(unittest.TestCase):
@@ -42,6 +43,31 @@ class TestMotionInterference(unittest.TestCase):
         self.doc.recompute()
         self.assembly.InterferenceClearanceSheet = sheet
         return sheet
+
+    def test_prepared_worker_geometry_has_no_document_topology(self):
+        prepared = AssemblyApp._prepareSelectedPairScan(
+            self.assembly, self.first, self.second, measureDistances=True)
+        result = AssemblyApp._runPreparedInterferenceScan(prepared)
+        for obj in (self.first, self.second):
+            leaf = next(l for l in result["leaves"] if l["occurrenceSubName"] == obj.Name + ".")
+            self.assertFalse(leaf["worldShape"].isPartner(obj.Shape),
+                             "Worker topology must be independent of the document")
+            self.assertEqual(leaf["worldShape"].Placement.toMatrix().A,
+                             obj.Placement.toMatrix().A)
+
+    def test_read_only_clearance_override(self):
+        self.second.Placement.Base.x = 2
+        before = (self.doc.UndoCount, self.doc.RedoCount, self.doc.getFileChangeState(),
+                  self.assembly.InterferenceClearance.Value,
+                  self.first.Placement.toMatrix().A, self.second.Placement.toMatrix().A)
+        result = self.scan(measureDistances=True, clearance=1.5)
+        self.assertEqual(result["pairs"][0]["detection"]["kind"], "ClearanceViolation")
+        self.assertEqual(before, (self.doc.UndoCount, self.doc.RedoCount, self.doc.getFileChangeState(),
+                                 self.assembly.InterferenceClearance.Value,
+                                 self.first.Placement.toMatrix().A, self.second.Placement.toMatrix().A))
+        for value in (-1, float("inf"), float("nan")):
+            with self.assertRaises(ValueError):
+                self.scan(clearance=value)
 
     def test_distant_clear_pair_is_measured_on_request(self):
         pruned = self.scan()
@@ -315,6 +341,43 @@ class TestMotionSweep(unittest.TestCase):
         self.arm.Placement.Base = App.Vector(0, 0, 50)
         leaf = contact["scan"]["leaves"][pair["leafIndexA"]]
         self.assertAlmostEqual(leaf["worldShape"].BoundBox.ZMin, 5)
+
+    def test_sweep_external_link_geometry_matches_each_displayed_pose_without_cache_writes(self):
+        source = App.newDocument("SweepSource")
+        self.addCleanup(lambda: App.closeDocument(source.Name))
+        definition = source.addObject("Part::Feature", "Definition")
+        definition.Shape = Part.makeBox(1, 1, 1)
+        source.recompute()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        source.saveAs(os.path.join(directory.name, "Source.FCStd"))
+        self.doc.saveAs(os.path.join(directory.name, "Owner.FCStd"))
+        App.setActiveDocument(self.doc.Name)
+        link = self.assembly.newObject("App::Link", "ExternalArm")
+        link.setLink(definition)
+        self.doc.removeObject(self.joint.Name)
+        self.doc.removeObject(self.arm.Name)
+        self.arm = link
+        self.joint = self.make_joint("Slider", self.base, link)
+        self.doc.recompute()
+        properties = {o.FullName: o.PropertiesList for d in (source, self.doc) for o in d.Objects}
+        checked = []
+        scan = AssemblyApp.scanSelectedPair
+
+        def capture(*args, **kwargs):
+            result = scan(*args, **kwargs)
+            leaf = next(l for l in result["leaves"] if l["occurrenceSubName"] == link.Name + ".")
+            self.assertEqual(leaf["worldShape"].Placement.toMatrix().A, link.Placement.toMatrix().A)
+            checked.append(link.Placement.Base.z)
+            return result
+
+        result = Assembly.sweepJoint(self.assembly, self.joint, link, self.obstacle,
+                                     interval=(0, 6), step=2, refinementPoseBudget=0,
+                                     coverageBudget=0, _scan=capture)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertGreater(len(set(checked)), 1)
+        self.assertEqual(properties, {o.FullName: o.PropertiesList
+                                      for d in (source, self.doc) for o in d.Objects})
 
     def revolute(self):
         self.doc.removeObject(self.joint.Name)
