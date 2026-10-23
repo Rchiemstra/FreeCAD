@@ -132,6 +132,18 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         count = self.paste()
         self.assert_expression(self.sketch, count, ".Constraints.Driver")
 
+    def test_same_sketch_quoted_constraint_name(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.renameConstraint(driver, "Driver ' \u00b5")
+        self.sketch.setExpression("Constraints[1]", f".Constraints[{driver}]")
+        self.copy()
+        with patch.object(App.Console, "PrintWarning") as warning:
+            count = self.paste()
+        warning.assert_not_called()
+        self.sketch.setDatum(driver, App.Units.Quantity("24 mm"))
+        self.recompute_gui_document()
+        self.assertAlmostEqual(self.sketch.getDatum(count).Value, 24.0)
+
     def test_cut_keeps_unpasted_index_reference_after_reindex(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
         self.sketch.setExpression("Constraints[1]", f"Constraints[{driver}]")
@@ -143,6 +155,19 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         self.sketch.setDatum(1, App.Units.Quantity("24 mm"))
         self.recompute_gui_document()
         self.assertAlmostEqual(self.sketch.getDatum(count).Value, 24.0)
+
+    def test_replaced_unpasted_driver_warns_once(self):
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.setExpression("Constraints[1]", f"Constraints[{driver}]")
+        self.copy()
+        self.sketch.delConstraint(driver)
+        # A new constraint at the same index, with the same value, is not the driver.
+        self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        with patch.object(App.Console, "PrintWarning") as warning:
+            count = self.paste()
+        warning.assert_called_once()
+        self.assertIn(f"Constraints[{count}]", warning.call_args.args[0])
+        self.assert_expression(self.sketch, count, None)
 
     def test_same_sketch_names_and_internal_expression_repeated_paste(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
@@ -203,6 +228,85 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         target.setDatum(4, App.Units.Quantity("24 mm"))
         self.recompute_gui_document()
         self.assertAlmostEqual(target.getDatum(3).Value, 24.0)
+
+    def check_internal_reference_spellings(self, cross_sketch):
+        for named in (False, True):
+            for qualified in (False, True):
+                paths = ("Constraints[2]", "Constraints.Driver") if named else ("Constraints[2]",)
+                for path in paths:
+                    for local in (False, True):
+                        # Object-qualified references cannot also have a leading local dot.
+                        if qualified and local:
+                            continue
+                        Gui.activeDocument().resetEdit()
+                        self.sketch = self.make_sketch("Source")
+                        driver = self.sketch.addConstraint(
+                            Sketcher.Constraint("Distance", 0, 12.0)
+                        )
+                        if named:
+                            self.sketch.renameConstraint(driver, "Driver")
+                        prefix = self.sketch.Name + "." if qualified else ("." if local else "")
+                        expression = prefix + path
+                        with self.subTest(cross_sketch=cross_sketch, expression=expression):
+                            self.sketch.setExpression("Constraints[1]", expression)
+                            self.copy(("Edge1", "Edge2"))
+                            target = self.make_sketch("Target") if cross_sketch else self.sketch
+                            if cross_sketch:
+                                self.edit_target(target)
+                            count = target.ConstraintCount
+                            undo_count = self.doc.UndoCount
+                            with patch.object(App.Console, "PrintWarning") as warning:
+                                Gui.runCommand("Sketcher_Paste")
+                                self.flush_gui()
+                            warning.assert_not_called()
+                            self.assertEqual(target.ConstraintCount, count + 3)
+                            self.assertEqual(self.doc.UndoCount, undo_count + 1)
+                            target.setDatum(count + 2, App.Units.Quantity("24 mm"))
+                            self.recompute_gui_document()
+                            self.assertAlmostEqual(target.getDatum(count + 1).Value, 24.0)
+                            self.assertAlmostEqual(self.sketch.getDatum(1).Value, 12.0)
+
+    def test_internal_reference_spellings_same_sketch(self):
+        self.check_internal_reference_spellings(False)
+
+    def test_internal_reference_spellings_cross_sketch(self):
+        self.check_internal_reference_spellings(True)
+
+    def test_cut_unpasted_driver_after_undo_redo(self):
+        for history in ("undo", "undo_redo", "undo_redo_undo"):
+            with self.subTest(history=history):
+                Gui.activeDocument().resetEdit()
+                self.sketch = self.doc.addObject("Sketcher::SketchObject", "Source")
+                for index, length in enumerate((5.0, 12.0, 12.0)):
+                    self.sketch.addGeometry(Part.LineSegment(
+                        App.Vector(0, index * 10, 0), App.Vector(length, index * 10, 0)
+                    ), False)
+                    self.sketch.addConstraint(Sketcher.Constraint("Distance", index, length))
+                self.sketch.setExpression("Constraints[1]", "Constraints[2]")
+                self.copy(("Edge1", "Edge2"), command="Sketcher_Cut")
+                self.flush_gui()
+                self.assertEqual(self.sketch.ConstraintCount, 1)
+                self.undo_gui_document()
+                if history != "undo":
+                    self.redo_gui_document()
+                if history == "undo_redo_undo":
+                    self.undo_gui_document()
+                count = self.sketch.ConstraintCount
+                geometries = self.sketch.GeometryCount
+                undo_count = self.doc.UndoCount
+                with patch.object(App.Console, "PrintWarning") as warning:
+                    Gui.runCommand("Sketcher_Paste")
+                    self.flush_gui()
+                warning.assert_not_called()
+                self.assertEqual(self.sketch.ConstraintCount, count + 2)
+                self.assertEqual(self.sketch.GeometryCount, geometries + 2)
+                self.assertEqual(self.doc.UndoCount, undo_count + 1)
+                self.assertAlmostEqual(self.sketch.getDatum(count).Value, 5.0)
+                self.assertAlmostEqual(self.sketch.getDatum(count + 1).Value, 12.0)
+                driver = 0 if history == "undo_redo" else 2
+                self.sketch.setDatum(driver, App.Units.Quantity("24 mm"))
+                self.recompute_gui_document()
+                self.assertAlmostEqual(self.sketch.getDatum(count + 1).Value, 24.0)
 
     def test_cut_internal_named_expression_cross_sketch(self):
         driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))

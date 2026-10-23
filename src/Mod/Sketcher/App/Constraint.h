@@ -125,6 +125,12 @@ public:
     // does not copy the tag, but generates a new one
     Constraint* copy() const;
 
+    /// Identity preserved by cloning, including transaction undo/redo.
+    const boost::uuids::uuid& getTag() const
+    {
+        return tag;
+    }
+
     // from base class
     unsigned int getMemSize() const override;
     void Save(Base::Writer& /*writer*/) const override;

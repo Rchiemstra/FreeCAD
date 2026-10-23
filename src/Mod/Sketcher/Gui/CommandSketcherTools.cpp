@@ -26,6 +26,8 @@
 
 #include <memory>
 
+#include <boost/uuid/uuid_io.hpp>
+
 #include <QApplication>
 #include <QClipboard>
 #include <QMessageBox>
@@ -219,7 +221,7 @@ class ClipboardExpressionVisitor: public App::ExpressionVisitor
 {
 public:
     ClipboardExpressionVisitor(Sketcher::SketchObject* sketch,
-                              const std::map<App::ObjectIdentifier, size_t>& copied,
+                              const std::map<const Sketcher::Constraint*, size_t>& copied,
                               const std::string& expression)
         : sketch(sketch), copied(copied)
     {
@@ -234,31 +236,29 @@ public:
         if (!variable || variable->getPath().getProperty() != &sketch->Constraints) {
             return;
         }
-        const auto path = variable->getPath().canonicalPath();
-        const auto found = copied.find(path);
+        // Resolve the constraint, regardless of local dots, names or object qualifiers.
+        const auto* constraint = sketch->Constraints.getConstraint(variable->getPath());
+        const auto found = copied.find(constraint);
         if (found == copied.end()) {
             unpastedConstraint = variable->getPath().toString();
-            // Cut may shift an unpasted, unnamed constraint's index in the source sketch.
-            const auto& component = path.getPropertyComponent(1);
-            if (component.isArray()) {
-                const std::string marker = prefix + "source_"
-                    + std::to_string(component.getIndex()) + "__";
-                replacements.emplace(marker, "sourceConstraintIndices["
-                    + std::to_string(component.getIndex()) + "]");
-                variable->setPath(App::ObjectIdentifier(sketch, marker));
-            }
+            const std::string marker = prefix + "source_"
+                + std::to_string(replacements.size()) + "__";
+            replacements.emplace(marker, "sourceConstraintPaths['"
+                + boost::uuids::to_string(constraint->getTag()) + "']");
+            variable->setPath(App::ObjectIdentifier(sketch, marker));
             return;
         }
         const std::string marker = prefix + std::to_string(found->second) + "__";
-        replacements.emplace(marker, "lastConstraintId + " + std::to_string(found->second));
+        replacements.emplace(marker, "'.Constraints[%d]' % (lastConstraintId + "
+            + std::to_string(found->second) + ")");
         variable->setPath(App::ObjectIdentifier(sketch, marker));
     }
 
     std::string pythonString(const App::Expression& expression) const
     {
         std::string result = "'" + Base::Tools::escapeEncodeString(expression.toString()) + "'";
-        for (const auto& [marker, index] : replacements) {
-            result += ".replace('" + marker + "', '.Constraints[%d]' % (" + index + "))";
+        for (const auto& [marker, path] : replacements) {
+            result += ".replace('" + marker + "', " + path + ")";
         }
         return result;
     }
@@ -267,7 +267,7 @@ public:
 
 private:
     Sketcher::SketchObject* sketch;
-    const std::map<App::ObjectIdentifier, size_t>& copied;
+    const std::map<const Sketcher::Constraint*, size_t>& copied;
     std::string prefix = "__sketchClipboardConstraint_";
     std::map<std::string, std::string> replacements;
 };
@@ -319,7 +319,7 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     }
 
     std::vector<std::unique_ptr<Sketcher::Constraint>> shapeConstraints;
-    std::map<App::ObjectIdentifier, size_t> copiedConstraintIds;
+    std::map<const Sketcher::Constraint*, size_t> copiedConstraintIds;
     std::vector<size_t> sourceConstraintIds;
     std::string namesAsStr;
     std::string expressionsAsStr;
@@ -356,9 +356,7 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
                 temp->setGeoId(i, mappedGeoId->second);
             }
         }
-        copiedConstraintIds.emplace(
-            obj->Constraints.createPath(static_cast<int>(constraintId)).canonicalPath(),
-            shapeConstraints.size());
+        copiedConstraintIds.emplace(constr, shapeConstraints.size());
         sourceConstraintIds.push_back(constraintId);
         if (!constr->Name.empty()) {
             namesAsStr += "(" + std::to_string(shapeConstraints.size()) + ", '"
@@ -414,10 +412,6 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
     std::string exportedData = "# Copied from sketcher. From:\n#objectStr = ";
     exportedData.append(Gui::Command::getObjectCmd(obj));
     exportedData.append("\n");
-    if (!expressionsAsStr.empty()) {
-        exportedData.append("sourceConstraintIndices = list(range("
-            + std::to_string(constraints.size()) + "))\n");
-    }
     exportedData.append(geosAsStr);
     exportedData.append("\n");
     if (!shapeConstraints.empty()) {
@@ -512,49 +506,9 @@ void CmdSketcherCut::activated(int iMsg)
         ReleaseHandler(doc);
         auto* vp = static_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
 
-        // Follow the property notifications, including deletions of constraints spanning
-        // selected and unselected geometry, instead of predicting the deletion order.
-        std::vector<int> sourceIndices;
-        for (int index = 0; index < obj->Constraints.getSize(); ++index) {
-            sourceIndices.push_back(index);
-        }
-        fastsignals::scoped_connection removed(obj->Constraints.signalConstraintsRemoved.connect(
-            [&](const std::set<App::ObjectIdentifier>& paths) {
-                for (auto& index : sourceIndices) {
-                    if (index >= 0 && paths.contains(obj->Constraints.createPath(index))) {
-                        index = -1;
-                    }
-                }
-            }));
-        fastsignals::scoped_connection renamed(obj->Constraints.signalConstraintsRenamed.connect(
-            [&](const std::map<App::ObjectIdentifier, App::ObjectIdentifier>& paths) {
-                for (auto& index : sourceIndices) {
-                    if (index < 0) {
-                        continue;
-                    }
-                    const auto found = paths.find(obj->Constraints.createPath(index));
-                    if (found != paths.end()) {
-                        index = found->second.getPropertyComponent(1).getIndex();
-                    }
-                }
-            }));
         openCommand(QT_TRANSLATE_NOOP("Command", "Cut in Sketcher"));
         vp->deleteSelected();
         commitCommand();
-
-        auto* clipboard = QGuiApplication::clipboard();
-        QString data = clipboard->text();
-        const auto start = data.indexOf(QStringLiteral("sourceConstraintIndices = "));
-        if (start >= 0) {
-            std::string indices = "sourceConstraintIndices = [";
-            for (const auto index : sourceIndices) {
-                indices += (index < 0 ? "None" : std::to_string(index)) + ",";
-            }
-            indices += "]";
-            data.replace(start, data.indexOf(QLatin1Char('\n'), start) - start,
-                         QString::fromStdString(indices));
-            clipboard->setText(data);
-        }
     }
 }
 
@@ -595,7 +549,21 @@ void CmdSketcherPaste::activated(int iMsg)
     if (data.find("# Copied from sketcher.", 0) == std::string::npos) {
         return;
     }
-    data = "objectStr = " + Gui::Command::getObjectCmd(obj) +"\n" + data;
+    // Resolve source identities before adding constraints. Tags survive Cut's reindexing
+    // and transaction undo/redo; a deleted or replaced driver has no matching tag.
+    std::string sourcePaths = "sourceConstraintPaths = {\n";
+    const auto& constraints = obj->Constraints.getValues();
+    for (size_t index = 0; index < constraints.size(); ++index) {
+        std::string path = ".Constraints[" + std::to_string(index) + "]";
+        const auto& name = constraints[index]->Name;
+        if (!name.empty() && App::ExpressionParser::isTokenAnIndentifier(name)) {
+            path = ".Constraints." + name;
+        }
+        sourcePaths += "'" + boost::uuids::to_string(constraints[index]->getTag())
+            + "': '" + Base::Tools::escapeEncodeString(path) + "',\n";
+    }
+    sourcePaths += "}\n";
+    data = "objectStr = " + Gui::Command::getObjectCmd(obj) +"\n" + sourcePaths + data;
 
    openCommand(QT_TRANSLATE_NOOP("Command", "Paste in Sketcher"));
 
