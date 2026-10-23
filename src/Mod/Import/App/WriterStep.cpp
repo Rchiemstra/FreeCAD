@@ -28,6 +28,7 @@
 
 
 #include "WriterStep.h"
+#include "StepPmiExport.h"
 #include <Base/Exception.h>
 #include <App/Application.h>
 #include <Mod/Part/App/encodeFilename.h>
@@ -39,12 +40,16 @@ WriterStep::WriterStep(const Base::FileInfo& file)  // NOLINT
     : file {file}
 {}
 
-void WriterStep::write(Handle(TDocStd_Document) hDoc) const  // NOLINT
+void WriterStep::write(Handle(TDocStd_Document) hDoc,
+                       const StepPmiExport* semanticPMI) const  // NOLINT
 {
     std::string utf8Name = file.filePath();
     std::string name8bit = Part::encodeFilename(utf8Name);
 
     STEPCAFControl_Writer writer;
+    if (semanticPMI) {
+        writer.SetDimTolMode(true);
+    }
 #if OCC_VERSION_HEX >= 0x070900
     // Temporary workaround for OCCT 7.9+, see: https://github.com/Open-Cascade-SAS/OCCT/issues/1327
     // TODO: Remove or refine the guards or remove when the issue is fixed in OCCT 8.0.1
@@ -56,6 +61,9 @@ void WriterStep::write(Handle(TDocStd_Document) hDoc) const  // NOLINT
 #endif
     Part::Interface::writeStepAssembly(Part::Interface::Assembly::On);
     writer.Transfer(hDoc, STEPControl_AsIs);
+    if (semanticPMI) {
+        semanticPMI->complete(writer.ChangeWriter().Model());
+    }
 
     APIHeaderSection_MakeHeader makeHeader(writer.ChangeWriter().Model());
     Base::Reference<ParameterGrp> hGrp = App::GetApplication()

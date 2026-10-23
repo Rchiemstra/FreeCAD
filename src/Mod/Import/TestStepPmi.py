@@ -11,18 +11,25 @@ import Import
 import Part
 import StepPmi
 from TestStepPmiExtended import StepPmiExtendedTests
+from TestStepPmiExport import StepPmiExportTests
 
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "TestData", "StepPmi", "semantic.step")
 
 
-class TestStepPmi(StepPmiExtendedTests, unittest.TestCase):
+class TestStepPmi(StepPmiExtendedTests, StepPmiExportTests, unittest.TestCase):
     def setUp(self):
         self.existing = set(App.listDocuments())
         self.directory = tempfile.TemporaryDirectory(prefix="freecad-step-pmi-")
         self.prefs = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Import")
         self.saved = {item[1]: item[2] for item in (self.prefs.GetContents() or [])}
         self.prefs.SetBool("ImportSemanticPMI", False)
+        self.export_prefs = {"ExportSemanticPMI": False, "ExportLegacy": False,
+                             "ExportHiddenObject": True, "ExportKeepPlacement": False}
+        for key, value in self.export_prefs.items():
+            self.prefs.SetBool(key, value)
+        self.export_units = Part.exportUnits()
+        Part.setStaticValue("write.step.unit", "MM")
 
     def tearDown(self):
         for name in set(App.listDocuments()) - self.existing:
@@ -31,6 +38,12 @@ class TestStepPmi(StepPmiExtendedTests, unittest.TestCase):
             self.prefs.SetBool("ImportSemanticPMI", self.saved["ImportSemanticPMI"])
         else:
             self.prefs.RemBool("ImportSemanticPMI")
+        for key in self.export_prefs:
+            if key in self.saved:
+                self.prefs.SetBool(key, self.saved[key])
+            else:
+                self.prefs.RemBool(key)
+        Part.setStaticValue("write.step.unit", self.export_units["write.step.unit"])
         self.directory.cleanup()
 
     def load(self, links=False, saved=False, **options):

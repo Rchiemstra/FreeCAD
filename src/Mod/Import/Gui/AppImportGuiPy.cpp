@@ -121,7 +121,8 @@ public:
         add_keyword_method(
             "export",
             &Module::exporter,
-            "export(list,string) -- Export a list of objects into a single file."
+            "export(list,string,...,semanticPMI=bool) -- Export shapes; opt-in AP242 PMI "
+            "returns per-object status/reason records (ExportSemanticPMI defaults off)."
         );
         add_varargs_method("ocaf", &Module::ocaf, "ocaf(string) -- Browse the ocaf structure.");
         initialize("This module is the ImportGui module.");  // register with Python
@@ -508,6 +509,7 @@ private:
                 options.setItem("exportHidden", Py::Boolean(stepSettings.exportHidden));
                 options.setItem("keepPlacement", Py::Boolean(stepSettings.keepPlacement));
                 options.setItem("legacy", Py::Boolean(stepSettings.exportLegacy));
+                options.setItem("semanticPMI", Py::Boolean(stepSettings.semanticPMI));
             }
         }
 
@@ -522,12 +524,14 @@ private:
         PyObject* pyexportHidden = Py_None;
         PyObject* pylegacy = Py_None;
         PyObject* pykeepPlacement = Py_None;
-        static const std::array<const char*, 7>
-            kwd_list {"obj", "name", "options", "exportHidden", "legacy", "keepPlacement", nullptr};
+        PyObject* semanticPMI = Py_None;
+        static const std::array<const char*, 8>
+            kwd_list {"obj", "name", "options", "exportHidden", "legacy", "keepPlacement",
+                      "semanticPMI", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "Oet|O!O!O!O!",
+                "Oet|O!O!O!O!O!",
                 kwd_list,
                 &object,
                 "utf-8",
@@ -539,7 +543,9 @@ private:
                 &PyBool_Type,
                 &pylegacy,
                 &PyBool_Type,
-                &pykeepPlacement
+                &pykeepPlacement,
+                &PyBool_Type,
+                &semanticPMI
             )) {
             throw Py::Exception();
         }
@@ -569,11 +575,16 @@ private:
             if (options.hasKey("exportHidden")) {
                 exportHidden = static_cast<bool>(Py::Boolean(options.getItem("exportHidden")));
             }
+            if (options.hasKey("semanticPMI")) {
+                semanticPMI = Py::Boolean(options.getItem("semanticPMI")) ? Py_True : Py_False;
+            }
             if (options.hasKey("keepPlacement")) {
                 keepPlacement = static_cast<bool>(Py::Boolean(options.getItem("keepPlacement")));
             }
         }
 
+        Import::StepPmiExport pmi(semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+        Py::Object pmiReport = Py::None();
         try {
             Py::Sequence list(object);
             std::vector<App::DocumentObject*> objs;
@@ -590,6 +601,7 @@ private:
             hApp->NewDocument(TCollection_ExtendedString("MDTV-CAF"), hDoc);
 
             Import::ExportOCAF2 ocaf(hDoc, &getShapeColors);
+            ocaf.setShapeObserver(pmi.observer());
             if (!legacyExport || !ocaf.canFallback(objs)) {
                 ocaf.setExportOptions(Import::ExportOCAF2::customExportOptions());
                 ocaf.setExportHiddenObject(exportHidden);
@@ -600,6 +612,7 @@ private:
             else {
                 bool keepExplicitPlacement = true;
                 ExportOCAFGui ocaf(hDoc, keepExplicitPlacement);
+                ocaf.setShapeObserver(pmi.observer());
                 ocaf.exportObjects(objs);
             }
 
@@ -615,7 +628,7 @@ private:
                 }
 
                 Import::WriterStep writer(file);
-                writer.write(hDoc);
+                pmiReport = pmi.write(file, hDoc, objs);
             }
             else if (file.hasExtension({"igs", "iges"})) {
                 Import::WriterIges writer(file);
@@ -636,7 +649,7 @@ private:
             throw Py::Exception();
         }
 
-        return Py::None();
+        return pmiReport;
     }
     Py::Object ocaf(const Py::Tuple& args)
     {

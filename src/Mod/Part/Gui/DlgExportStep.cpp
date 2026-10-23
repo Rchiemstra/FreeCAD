@@ -94,6 +94,7 @@ void DlgExportStep::saveSettings()
     ui->checkBoxExportHiddenObj->onSave();
     ui->checkBoxExportLegacy->onSave();
     ui->checkBoxKeepPlacement->onSave();
+    ui->checkBoxSemanticPMI->onSave();
 }
 
 void DlgExportStep::loadSettings()
@@ -116,6 +117,7 @@ void DlgExportStep::loadSettings()
     ui->checkBoxExportHiddenObj->onRestore();
     ui->checkBoxExportLegacy->onRestore();
     ui->checkBoxKeepPlacement->onRestore();
+    ui->checkBoxSemanticPMI->onRestore();
 }
 
 StepSettings DlgExportStep::getSettings() const
@@ -124,6 +126,7 @@ StepSettings DlgExportStep::getSettings() const
     set.exportLegacy = ui->checkBoxExportLegacy->isChecked();
     set.exportHidden = ui->checkBoxExportHiddenObj->isChecked();
     set.keepPlacement = ui->checkBoxKeepPlacement->isChecked();
+    set.semanticPMI = ui->checkBoxSemanticPMI->isChecked();
     return set;
 }
 

@@ -114,6 +114,9 @@ def create(document, records, warnings=()):
                 {"schemaVersion": 1, "record": record}, ensure_ascii=False, sort_keys=True
             ), "Versioned semantic metadata; independent of the STEP source file")
 
+        from StepPmiExport import fingerprint
+
+        geometry_fingerprints = {}
         for record in records:
             obj = objects[record["sourceId"]]
             datum_ids = record["datumIds"]
@@ -123,13 +126,21 @@ def create(document, records, warnings=()):
             _property(obj, "IntegerList", "DatumSystemPositions",
                       [datum.DatumPosition for datum in datums], "Positions; equal values share a compartment")
             references = []
+            fingerprints = {}
             unresolved = []
             for ref in record["references"]:
                 owner = document.getObject(ref["objectName"]) if ref["objectName"] else None
                 if ref["status"] == "resolved" and owner is not None:
                     references.append((owner, [ref["subElement"]] if ref["subElement"] else []))
+                    if hasattr(owner, "Shape"):
+                        if owner.Name not in geometry_fingerprints:
+                            geometry_fingerprints[owner.Name] = fingerprint(owner)
+                        fingerprints[owner.Name] = geometry_fingerprints[owner.Name]
                 else:
                     unresolved.append(f"{ref['role']} {ref['sourceId']}: {ref['status']}")
+            raw = json.loads(obj.RawMetadata)
+            raw["geometryFingerprints"] = fingerprints
+            obj.RawMetadata = json.dumps(raw, ensure_ascii=False, sort_keys=True)
             unresolved.extend("datum " + source for source in datum_ids if source not in objects)
             unsupported = any("unsupported association" in warning for warning in record["warnings"])
             if unsupported:

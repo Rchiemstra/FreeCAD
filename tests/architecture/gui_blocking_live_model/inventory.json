@@ -23626,7 +23626,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 239,
+      "line": 240,
       "category": "live-app-dereference",
       "subsystem": "Import",
       "disposition": "investigate",
@@ -23634,7 +23634,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 341,
+      "line": 342,
       "category": "direct-recompute",
       "subsystem": "Import",
       "disposition": "migrate",
@@ -23642,7 +23642,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 358,
+      "line": 359,
       "category": "direct-recompute",
       "subsystem": "Import",
       "disposition": "migrate",
@@ -23650,7 +23650,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 458,
+      "line": 459,
       "category": "live-app-dereference",
       "subsystem": "Import",
       "disposition": "investigate",
@@ -23658,7 +23658,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 461,
+      "line": 462,
       "category": "live-app-dereference",
       "subsystem": "Import",
       "disposition": "investigate",
@@ -23666,7 +23666,7 @@
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
-      "line": 479,
+      "line": 480,
       "category": "direct-recompute",
       "subsystem": "Import",
       "disposition": "migrate",

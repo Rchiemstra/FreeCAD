@@ -51,6 +51,8 @@ set(Import_Scripts
     Init.py
     stepZ.py
     StepPmi.py
+    StepPmiExport.py
+    TestStepPmiExport.py
     TestStepPmi.py
     TestStepPmiExtended.py
 )

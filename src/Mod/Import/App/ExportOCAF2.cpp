@@ -210,6 +210,15 @@ void ExportOCAF2::setupObject(
 )
 {
     setName(label, obj, name);
+    if (shapeObserver) {
+        TDF_Label definition = label;
+        if (aShapeTool->IsComponent(label)) {
+            aShapeTool->GetReferredShape(label, definition);
+        }
+        auto exported = shape;
+        exported.setShape(aShapeTool->GetShape(definition));
+        shapeObserver(definition, obj, exported);
+    }
     if (aShapeTool->IsComponent(label)) {
         auto& names = myNames[label];
         // The subname reference may contain several possible namings.

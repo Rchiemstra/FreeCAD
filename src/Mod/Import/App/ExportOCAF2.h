@@ -35,6 +35,7 @@
 
 #include <Mod/Import/ImportGlobal.h>
 #include "Tools.h"
+#include "StepPmiExport.h"
 
 namespace App
 {
@@ -78,6 +79,10 @@ public:
         options.keepPlacement = enable;
     }
     void exportObjects(std::vector<App::DocumentObject*>& objs, const char* name = nullptr);
+    void setShapeObserver(ShapeExportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
     bool canFallback(std::vector<App::DocumentObject*> objs);
 
 private:
@@ -114,6 +119,7 @@ private:
     GetShapeColorsFunc getShapeColors;
 
     ExportOCAFOptions options;
+    ShapeExportObserver shapeObserver;
 };
 
 }  // namespace Import
