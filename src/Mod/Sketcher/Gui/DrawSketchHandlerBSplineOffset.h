@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <Geom_BSplineCurve.hxx>
 #include <Standard_Failure.hxx>
 
 #include <App/Document.h>
@@ -161,6 +162,14 @@ private:
         auto reverse = new QCheckBox(QObject::tr("Reverse side"), panel.get());
         reverse->setObjectName(QStringLiteral("BSplineOffsetReverse"));
         layout->addWidget(reverse);
+        auto side = new QLabel(panel.get());
+        side->setObjectName(QStringLiteral("BSplineOffsetSide"));
+        if (closedSource()) {
+            side->setText(
+                QObject::tr("Inside / outside: press Update preview to determine the side.")
+            );
+        }
+        layout->addWidget(side);
         auto status = new QLabel(
             QObject::tr("Press Update preview to compute the approximation."),
             panel.get()
@@ -195,6 +204,7 @@ private:
         auto invalidate = [this]() {
             preview = {};
             clearEdit();
+            updateSide();
             setStatus(QObject::tr("Inputs changed. Press Update preview."));
         };
         for (const char* name : {"BSplineOffsetDistance", "BSplineOffsetTolerance"}) {
@@ -269,6 +279,9 @@ private:
                 return QObject::tr(
                     "Independent approximate B-spline offset verified within tolerance."
                 );
+            case Status::SeamCorner:
+                return QObject::tr("The closed B-spline has a G0-only corner at the seam; "
+                                   "a G1 tangent is required.");
             case Status::InvalidOptions:
                 return QObject::tr(
                            "Use finite distance and tolerance at least %1 and less than half "
@@ -285,6 +298,11 @@ private:
                 return QObject::tr("A zero tangent or unresolved regularity prevents this offset.");
             case Status::SingularOffset:
                 return QObject::tr("A singular offset cannot be excluded; reduce the distance.");
+            case Status::SourceSelfIntersection:
+                return QObject::tr(
+                    "Source spline crossing or near-contact cannot be excluded; "
+                    "inside/outside is undefined."
+                );
             case Status::SelfIntersection:
                 return QObject::tr(
                     "Offset crossing or near-contact cannot be excluded; reduce the distance."
@@ -317,6 +335,34 @@ private:
         return a.getDegree() == b.getDegree() && a.isPeriodic() == b.isPeriodic() && samePoles
             && a.getWeights() == b.getWeights() && a.getKnots() == b.getKnots()
             && a.getMultiplicities() == b.getMultiplicities();
+    }
+
+    bool closedSource() const
+    {
+        return sourceCopy && Handle(Geom_BSplineCurve)::DownCast(sourceCopy->handle())->IsClosed();
+    }
+
+    void updateSide()
+    {
+        if (!closedSource()) {
+            return;
+        }
+        double distance = control<Gui::QuantitySpinBox>("BSplineOffsetDistance")->rawValue();
+        if (control<QCheckBox>("BSplineOffsetReverse")->isChecked()) {
+            distance = -distance;
+        }
+        auto label = control<QLabel>("BSplineOffsetSide");
+        if (orientation == 0 || distance == 0.0) {
+            label->setText(
+                QObject::tr("Inside / outside: press Update preview to determine the side.")
+            );
+        }
+        else {
+            label->setText(
+                orientation * distance > 0.0 ? QObject::tr("Side: Outside")
+                                             : QObject::tr("Side: Inside")
+            );
+        }
     }
 
     bool updatePreview()
@@ -378,6 +424,8 @@ private:
                 fail(statusMessage(preview.status));
                 return false;
             }
+            orientation = preview.orientation;
+            updateSide();
             drawEdit(std::vector<Part::Geometry*> {preview.curve.get()});
             setStatus(QObject::tr("Achieved maximum error: %1 (tolerance: %2)")
                           .arg(lengthText(preview.achievedMaxError))
@@ -402,6 +450,8 @@ private:
     void fail(const QString& message)
     {
         preview = {};
+        orientation = 0;
+        updateSide();
         clearEdit();
         setStatus(message);
         restoreSelection(savedSelection);
@@ -506,6 +556,7 @@ private:
     }
 
     bool exiting = false;
+    int orientation = 0;
     const boost::uuids::uuid sourceTag;
     const std::vector<Gui::SelectionObject> savedSelection;
     std::unique_ptr<QObject> connections;

@@ -9,6 +9,8 @@
 
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
+#include <Geom_Circle.hxx>
+#include <GeomConvert.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Mod/Sketcher/App/BSplineOffset.h>
 
@@ -378,24 +380,263 @@ TEST(BSplineOffset, SelfCrossingRawOffsetRejected)
     rejected(source, options, BSplineOffsetStatus::SelfIntersection);
 }
 
-TEST(BSplineOffset, ClosedRejected)
+TEST(BSplineOffset, ClosedSeamCornerRejected)
 {
     Part::GeomBSplineCurve
         source({V(0, 0, 0), V(3, 4, 0), V(7, 4, 0), V(0, 0, 0)}, {1, 1, 1, 1}, {0, 1}, {4, 4}, 3);
-    rejected(source, {}, BSplineOffsetStatus::UnsupportedCurve);
+    rejected(source, {}, BSplineOffsetStatus::SeamCorner);
+    EXPECT_NE(makeBSplineOffset(source).message.find("G0"), std::string::npos);
 }
 
-TEST(BSplineOffset, PeriodicRejected)
+Part::GeomBSplineCurve circle(bool periodic = true)
 {
-    Part::GeomBSplineCurve source(
-        {V(0, 0, 0), V(3, 4, 0), V(7, 4, 0), V(10, 0, 0)},
-        {1, 1, 1, 1},
-        {0, 1, 2, 3, 4},
-        {1, 1, 1, 1, 1},
-        3,
-        true
+    // Exact rational circle with C2 interior and a G1 seam, radius 10.
+    auto c = GeomConvert::CurveToBSplineCurve(
+        new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 10),
+        Convert_QuasiAngular
     );
-    rejected(source, {}, BSplineOffsetStatus::UnsupportedCurve);
+    if (!periodic) {
+        c->Segment(c->FirstParameter(), c->LastParameter());
+    }
+    return Part::GeomBSplineCurve(c);
+}
+
+void checkCircle(bool periodic, double distance, bool reverse = false)
+{
+    auto source = circle(periodic);
+    if (reverse) {
+        handle(source)->Reverse();
+    }
+    const auto poles = source.getPoles();
+    BSplineOffsetOptions options;
+    options.distance = distance;
+    auto result = makeBSplineOffset(source, options);
+    ASSERT_EQ(result.status, BSplineOffsetStatus::Success) << result.message;
+    ASSERT_NE(result.curve, nullptr);
+    auto output = handle(*result.curve);
+    EXPECT_TRUE(output->IsClosed());
+    EXPECT_EQ(output->IsPeriodic(), periodic);
+    EXPECT_EQ(source.getPoles(), poles);
+    EXPECT_LE(result.achievedMaxError, options.tolerance);
+    EXPECT_EQ(result.orientation, reverse ? -1 : 1);
+    gp_Pnt p, q;
+    gp_Vec a, b;
+    output->D1(output->FirstParameter(), p, a);
+    output->D1(output->LastParameter(), q, b);
+    EXPECT_LT(p.Distance(q), 1e-10);
+    EXPECT_LT(a.Angle(b), 1e-7);
+    double radialError = 0;
+    const double radius = 10 + (reverse ? -distance : distance);
+    for (int i = 0; i <= 1000; ++i) {
+        const double u = output->FirstParameter()
+            + (output->LastParameter() - output->FirstParameter()) * i / 1000.0;
+        const auto point = output->Value(u);
+        radialError = std::max(radialError, std::abs(std::hypot(point.X(), point.Y()) - radius));
+    }
+    EXPECT_LE(radialError, result.achievedMaxError);
+    std::cout << "exact radius=" << radius << " radial error=" << radialError
+              << " certified error=" << result.achievedMaxError << std::endl;
+}
+
+TEST(BSplineOffset, PeriodicCircleOutward)
+{
+    checkCircle(true, 1);
+}
+
+TEST(BSplineOffset, PeriodicCircleInward)
+{
+    checkCircle(true, -1);
+}
+
+TEST(BSplineOffset, ClampedClosedCircle)
+{
+    checkCircle(false, 1);
+    checkCircle(false, -1);
+}
+
+TEST(BSplineOffset, ClosedG1UnequalSeamSpeeds)
+{
+    // The seam is geometric G1, not parametric C1: endpoint speeds are 12/24.
+    Part::GeomBSplineCurve source(
+        {V(0, 0, 0), V(3, 0, 0), V(6, 10, 0), V(-6, 0, 0), V(0, 0, 0)},
+        std::vector<double>(5, 1),
+        {0, 1},
+        {5, 5},
+        4
+    );
+    BSplineOffsetOptions options;
+    options.distance = 0.1;
+    checkOffset(source, options);
+    auto result = makeBSplineOffset(source, options);
+    ASSERT_NE(result.curve, nullptr) << result.message;
+    EXPECT_TRUE(handle(*result.curve)->IsClosed());
+    EXPECT_FALSE(handle(*result.curve)->IsPeriodic());
+}
+
+TEST(BSplineOffset, ClosedReversedOrientation)
+{
+    checkCircle(true, 1, true);
+    checkCircle(false, -1, true);
+}
+
+TEST(BSplineOffset, ClosedInwardInversionRejected)
+{
+    BSplineOffsetOptions options;
+    options.distance = -11;
+    rejected(circle(), options, BSplineOffsetStatus::SingularOffset);
+    rejected(circle(false), options, BSplineOffsetStatus::SingularOffset);
+}
+
+TEST(BSplineOffset, SelfCrossingSourceWithSimpleOutwardOffsetRejected)
+{
+    std::vector<V> poles;
+    std::vector<double> knots;
+    for (int i = 0; i < 16; ++i) {
+        const double t = i * std::acos(-1.0) / 8;
+        poles.emplace_back(10 * std::cos(t), 2.5 * std::sin(t) + 3.1 * std::sin(3 * t), 0);
+        knots.push_back(i);
+    }
+    knots.push_back(16);
+    Part::GeomBSplineCurve source(
+        poles, std::vector<double>(16, 1), knots, std::vector<int>(17, 1), 3, true
+    );
+    BSplineOffsetOptions options;
+    options.distance = 0.1;
+    auto result = makeBSplineOffset(source, options);
+    EXPECT_EQ(result.status, BSplineOffsetStatus::SourceSelfIntersection) << result.message;
+    EXPECT_EQ(result.curve, nullptr);
+    EXPECT_EQ(result.orientation, 0);
+    EXPECT_NE(result.message.find("Source"), std::string::npos) << result.message;
+}
+
+Part::GeomBSplineCurve ellipse(bool periodic, bool shifted, bool nonuniform)
+{
+    auto c = handle(circle());
+    for (int i = 1; i <= c->NbPoles(); ++i) {
+        auto p = c->Pole(i);
+        // Rotate the circle before scaling to move the ellipse seam without
+        // introducing the old G1 seam as a low-continuity interior knot.
+        c->SetPole(i, shifted ? gp_Pnt(-p.Y(), p.X() / 10, 0)
+                              : gp_Pnt(p.X(), p.Y() / 10, 0));
+    }
+    if (nonuniform) {
+        // Preserve the exact rational ellipse with unequal knot intervals.
+        const double first = c->FirstParameter(), length = c->LastParameter() - first;
+        c->InsertKnot(first + 0.013 * length, 1, 1e-12);
+        c->InsertKnot(first + 0.371 * length, 1, 1e-12);
+    }
+    if (!periodic) {
+        c->Segment(c->FirstParameter(), c->LastParameter());
+    }
+    return Part::GeomBSplineCurve(c);
+}
+
+void checkEllipse(bool periodic, bool shifted, bool nonuniform)
+{
+    auto source = ellipse(periodic, shifted, nonuniform);
+    auto input = handle(source);
+    ASSERT_TRUE(input->IsRational());
+    ASSERT_EQ(input->IsPeriodic(), periodic);
+    if (!shifted) {
+        EXPECT_LT(input->StartPoint().Distance(gp_Pnt(10, 0, 0)), 1e-10);
+        gp_Pnt p;
+        gp_Vec v, a;
+        input->D2(input->FirstParameter(), p, v, a);
+        EXPECT_NEAR(std::pow(v.Magnitude(), 3) / v.Crossed(a).Magnitude(), 0.1, 1e-10);
+    }
+    else {
+        EXPECT_GT(input->StartPoint().Distance(gp_Pnt(10, 0, 0)), 1);
+    }
+    BSplineOffsetOptions options;
+    options.distance = -0.11;
+    rejected(source, options, BSplineOffsetStatus::SingularOffset);
+    options.distance = -0.09;
+    auto result = makeBSplineOffset(source, options);
+    ASSERT_EQ(result.status, BSplineOffsetStatus::Success) << result.message;
+    ASSERT_NE(result.curve, nullptr);
+    EXPECT_TRUE(handle(*result.curve)->IsClosed());
+    EXPECT_EQ(handle(*result.curve)->IsPeriodic(), periodic);
+    Geom_OffsetCurve exact(input, options.distance, gp_Dir(0, 0, 1));
+    double measured = 0;
+    for (int i = 0; i <= 4000; ++i) {
+        const double u = input->FirstParameter()
+            + (input->LastParameter() - input->FirstParameter()) * i / 4000.0;
+        measured = std::max(measured, handle(*result.curve)->Value(u).Distance(exact.Value(u)));
+    }
+    EXPECT_LE(measured, result.achievedMaxError);
+    EXPECT_LE(result.achievedMaxError, options.tolerance);
+    std::cout << "ellipse periodic=" << periodic << " shifted=" << shifted
+              << " nonuniform=" << nonuniform << " measured error=" << measured
+              << " certified error=" << result.achievedMaxError << std::endl;
+}
+
+TEST(BSplineOffset, PeriodicEllipseSeamCurvature)
+{
+    checkEllipse(true, false, false);
+}
+
+TEST(BSplineOffset, ClampedClosedEllipseSeamCurvature)
+{
+    checkEllipse(false, false, false);
+}
+
+TEST(BSplineOffset, PeriodicEllipseShiftedSeamCurvature)
+{
+    checkEllipse(true, true, false);
+}
+
+TEST(BSplineOffset, ClampedClosedEllipseShiftedSeamCurvature)
+{
+    checkEllipse(false, true, false);
+}
+
+TEST(BSplineOffset, PeriodicNonuniformRationalEllipseSeamCurvature)
+{
+    checkEllipse(true, false, true);
+}
+
+TEST(BSplineOffset, ClampedClosedNonuniformRationalEllipseSeamCurvature)
+{
+    checkEllipse(false, false, true);
+}
+
+TEST(BSplineOffset, ClosedBudgetRejected)
+{
+    BSplineOffsetOptions options;
+    options.maxInputPoles = 3;
+    rejected(circle(), options, BSplineOffsetStatus::ComplexityExceeded);
+    options = {};
+    options.maxOutputPoles = 2;
+    rejected(circle(false), options, BSplineOffsetStatus::ComplexityExceeded);
+}
+
+TEST(BSplineOffset, PeriodicSeamCrossingRejected)
+{
+    // Exact degree-six loop with a transverse crossing at u=0.1 and 0.9:
+    // x=100 u(1-u)(1-2u)((u-.5)^2-.16),
+    // y=100 u^2(1-u)^2((u-.5)^2-.09).
+    // The small loop straddles the seam at 0/1; the two crossing arms are
+    // on opposite ends of the period. A blanket seam-adjacency exemption
+    // must not hide this second contact away from the shared seam point.
+    Part::GeomBSplineCurve source(
+        {V(0, 0, 0),
+         V(1.5, 0, 0),
+         V(-82.0 / 15, 16.0 / 15, 0),
+         V(0, -3.4, 0),
+         V(82.0 / 15, 16.0 / 15, 0),
+         V(-1.5, 0, 0),
+         V(0, 0, 0)},
+        std::vector<double>(7, 1),
+        {0, 1},
+        {7, 7},
+        6
+    );
+    handle(source)->SetPeriodic();
+    ASSERT_LT(handle(source)->Value(0.1).Distance(handle(source)->Value(0.9)), 1e-12);
+    BSplineOffsetOptions options;
+    options.distance = 0.0001;
+    options.tolerance = 0.00001;
+    rejected(source, options, BSplineOffsetStatus::SourceSelfIntersection);
 }
 
 TEST(BSplineOffset, LowContinuityRejected)

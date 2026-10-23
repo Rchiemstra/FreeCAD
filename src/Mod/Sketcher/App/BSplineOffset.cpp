@@ -140,23 +140,48 @@ Span bezier(const Handle(Geom_BSplineCurve) & curve, double first, double last, 
     // de Boor includes every subtraction, division and multiply in knot insertion;
     // no rounded OCCT conversion pole is ever treated as exact. The resulting
     // envelopes feed regularity, crossing AND correspondence-error bounds.
-    std::vector<double> knots;
+    std::vector<Interval> knots;
     for (int i = 1; i <= curve->NbKnots(); ++i) {
-        knots.insert(knots.end(), curve->Multiplicity(i), curve->Knot(i));
+        knots.insert(knots.end(), curve->Multiplicity(i), Interval(curve->Knot(i)));
     }
     const int degree = curve->Degree();
+    if (curve->IsPeriodic()) {
+        // Extend ORIGINAL knots by one period and repeat original poles below.
+        // Enclose the period arithmetic too, rather than treating rounded kernel
+        // conversion poles or extended knots as exact input data.
+        const auto base = knots;
+        const auto period = Interval(curve->LastParameter()) - Interval(curve->FirstParameter());
+        const int extra = degree + 1 - curve->Multiplicity(1);
+        const int count = static_cast<int>(base.size());
+        const int cycle = count - curve->Multiplicity(curve->NbKnots());
+        const auto extended = [&](int index) {
+            int turns = index / cycle;
+            int pole = index % cycle;
+            if (pole < 0) {
+                pole += cycle;
+                --turns;
+            }
+            return base[pole] + period * Interval(static_cast<double>(turns));
+        };
+        for (int i = 0; i < extra; ++i) {
+            knots.insert(knots.begin() + i, extended(i - extra));
+            knots.push_back(extended(count + i));
+        }
+    }
+    const auto& flat = curve->KnotSequence();
     int k = degree;
-    while (k < curve->NbPoles()
-           && !(knots[k] <= first && last <= knots[k + 1] && knots[k] < knots[k + 1])) {
+    const int end = flat.Length() - degree - 1;
+    while (k < end && !(flat(k + 1) <= first && last <= flat(k + 2) && flat(k + 1) < flat(k + 2))) {
         ++k;
     }
-    if (k == curve->NbPoles()) {
+    if (k == end) {
         throw Failure {Status::VerificationFailed, "Could not isolate a spline knot span."};
     }
     std::vector<Pole> original;
     for (int i = k - degree; i <= k; ++i) {
-        auto p = curve->Pole(i + 1);
-        Interval w(curve->Weight(i + 1));
+        const int index = i % curve->NbPoles() + 1;
+        auto p = curve->Pole(index);
+        Interval w(curve->Weight(index));
         // A shared reference point for source AND fit avoids large translation
         // terms in rational derivative bounds. Subtraction is also enclosed;
         // all positions and comparisons remain in the same translated frame.
@@ -174,8 +199,8 @@ Span bezier(const Handle(Geom_BSplineCurve) & curve, double first, double last, 
             const Interval parameter(r <= degree - pole ? first : last);
             for (int j = degree; j >= r; --j) {
                 const int i = k - degree + j;
-                const Interval alpha = (parameter - Interval(knots[i]))
-                    / (Interval(knots[i + degree - r + 1]) - Interval(knots[i]));
+                const Interval alpha = (parameter - knots[i])
+                    / (knots[i + degree - r + 1] - knots[i]);
                 for (size_t c = 0; c < 4; ++c) {
                     work[j][c] = (Interval(1.0) - alpha) * work[j - 1][c] + alpha * work[j][c];
                 }
@@ -286,6 +311,8 @@ struct Validator
     BSplineOffsetComplexity& complexity;
     Vector normal;
     int comparisons = 0;
+    double closedFirst = infinity;
+    double closedLast = -infinity;
 
     void consume()
     {
@@ -399,11 +426,13 @@ struct Validator
         if (disjoint(a.enclosure, b.enclosure)) {
             return;
         }
-        if (a.span.last == b.span.first || b.span.last == a.span.first) {
+        const bool seam = (a.span.first == closedFirst && b.span.last == closedLast)
+            || (b.span.first == closedFirst && a.span.last == closedLast);
+        if (a.span.last == b.span.first || b.span.last == a.span.first || seam) {
             // Adjacent spans necessarily share an endpoint. After refinement a
             // common strict tangent component proves injectivity across that
-            // endpoint; treating its box overlap as a crossing would reject
-            // otherwise regular arcs whose end tangents turn through 90 degrees.
+            // endpoint, including the seam. Otherwise box overlap would reject
+            // regular arcs whose end tangents turn through 90 degrees.
             for (size_t c = 0; c < 3; ++c) {
                 if ((a.enclosure.tangent[c].lo > 0.0 && b.enclosure.tangent[c].lo > 0.0)
                     || (a.enclosure.tangent[c].hi < 0.0 && b.enclosure.tangent[c].hi < 0.0)) {
@@ -448,6 +477,36 @@ struct Validator
                 separate(regions[i], regions[j], offset);
             }
         }
+    }
+
+    int orientation(std::vector<Span> spans)
+    {
+        // Bound the signed area integral, including the entire seam spans.
+        // Only a strict sign is displayed; unresolved orientation fails closed.
+        for (int depth = 0; depth <= options.maxRefinementDepth; ++depth) {
+            Interval area;
+            for (const auto& span : spans) {
+                consume();
+                const auto b = bounds(span);
+                area = area
+                    + dot(cross(b.position, b.tangent), normal)
+                        * (Interval(span.last) - Interval(span.first));
+            }
+            if (area.lo > 0.0 || area.hi < 0.0) {
+                return area.lo > 0.0 ? 1 : -1;
+            }
+            std::vector<Span> refined;
+            for (const auto& span : spans) {
+                auto halves = split(span);
+                refined.push_back(std::move(halves.first));
+                refined.push_back(std::move(halves.second));
+            }
+            spans = std::move(refined);
+        }
+        throw Failure {
+            Status::VerificationFailed,
+            "Closed spline orientation could not be bounded."
+        };
     }
 
     double error(
@@ -520,6 +579,64 @@ std::vector<double> knots(const Handle(Geom_BSplineCurve) & curve)
     return result;
 }
 
+// Use one-sided derivatives: periodic evaluation must not hide a G0 seam by
+// wrapping the last parameter onto the first span.
+gp_Vec seamTangent(const Handle(Geom_BSplineCurve) & curve)
+{
+    gp_Pnt p, q;
+    gp_Vec a, b;
+    const int first = curve->FirstUKnotIndex(), last = curve->LastUKnotIndex();
+    curve->LocalD1(curve->FirstParameter(), first, first + 1, p, a);
+    curve->LocalD1(curve->LastParameter(), last - 1, last, q, b);
+    if (a.Magnitude() <= Precision::Confusion() || b.Magnitude() <= Precision::Confusion()) {
+        throw Failure {
+            Status::ZeroTangent,
+            "A zero tangent prevents checking the closed spline seam."
+        };
+    }
+    if (a.Dot(b) <= 0.0 || a.Crossed(b).Magnitude() > 1e-7 * a.Magnitude() * b.Magnitude()) {
+        throw Failure {
+            Status::SeamCorner,
+            "The closed B-spline has a G0-only corner at the seam; a G1 tangent is required."
+        };
+    }
+    return a.Normalized();
+}
+
+void closeFit(
+    const Handle(Geom_BSplineCurve) & output,
+    const Handle(Geom_OffsetCurve) & exact,
+    const gp_Vec& tangent,
+    bool periodic
+)
+{
+    // ApproxCurve supplies a clamped fit. Make the endpoint and its two handles
+    // share an exact point and tangent. ALL resulting pole changes, including
+    // SetPeriodic, are subsequently covered by independent interval validation.
+    if (output->IsPeriodic()) {
+        output->Segment(output->FirstParameter(), output->LastParameter());
+    }
+    const int n = output->NbPoles();
+    if (n < 4 || output->Multiplicity(1) != output->Degree() + 1
+        || output->Multiplicity(output->NbKnots()) != output->Degree() + 1) {
+        throw Failure {Status::ApproximationFailed, "Unable to close the fitted B-spline seam."};
+    }
+    const auto point = exact->Value(output->FirstParameter());
+    const double firstHandle = gp_Vec(output->Pole(1), output->Pole(2)).Dot(tangent);
+    const double lastHandle = gp_Vec(output->Pole(n - 1), output->Pole(n)).Dot(tangent);
+    if (firstHandle <= 0.0 || lastHandle <= 0.0) {
+        throw Failure {Status::VerificationFailed, "The fitted seam tangent reversed direction."};
+    }
+    output->SetPole(1, point);
+    output->SetPole(n, point);
+    output->SetPole(2, point.Translated(tangent * firstHandle));
+    output->SetPole(n - 1, point.Translated(tangent * -lastHandle));
+    if (periodic) {
+        output->SetPeriodic();
+    }
+    seamTangent(output);
+}
+
 }  // namespace
 
 BSplineOffsetStatus checkBSplineOffsetInput(
@@ -551,7 +668,8 @@ BSplineOffsetResult makeBSplineOffset(
         }
         auto original = Handle(Geom_BSplineCurve)::DownCast(source.handle());
         result.complexity.inputPoles = original->NbPoles();
-        if (original->IsPeriodic() || original->IsClosed() || !original->IsCN(2)) {
+        const bool closed = original->IsPeriodic() || original->IsClosed();
+        if (!original->IsCN(2)) {
             throw Failure {Status::UnsupportedCurve, "Select one open, nonperiodic, C2 B-spline."};
         }
         gp_Dir direction(options.sketchNormal.x, options.sketchNormal.y, options.sketchNormal.z);
@@ -568,14 +686,52 @@ BSplineOffsetResult makeBSplineOffset(
                 };
             }
         }
+        gp_Vec tangent;
+        if (closed) {
+            tangent = seamTangent(original);
+        }
         auto copy = Handle(Geom_BSplineCurve)::DownCast(original->Copy());
         Validator validator {
             options,
             result.complexity,
             {Interval(direction.X()), Interval(direction.Y()), Interval(direction.Z())}
         };
+        if (closed) {
+            validator.closedFirst = original->FirstParameter();
+            validator.closedLast = original->LastParameter();
+        }
         auto sourceKnots = knots(original);
         std::vector<Validator::Region> regions;
+        if (closed) {
+            // Inside/outside is meaningful only for a simple SOURCE. Use the
+            // same interval proof as for the offset, including the seam pair.
+            for (size_t i = 1; i < sourceKnots.size(); ++i) {
+                validator.regularSpans(
+                    bezier(original, sourceKnots[i - 1], sourceKnots[i], origin),
+                    regions,
+                    false
+                );
+            }
+            try {
+                validator.simple(regions, false);
+            }
+            catch (const Failure& failure) {
+                if (failure.status == Status::SelfIntersection) {
+                    throw Failure {
+                        Status::SourceSelfIntersection,
+                        "Source spline crossing or near-contact cannot be excluded; "
+                        "inside/outside is undefined."
+                    };
+                }
+                throw;
+            }
+            std::vector<Span> spans;
+            for (const auto& region : regions) {
+                spans.push_back(region.span);
+            }
+            result.orientation = validator.orientation(std::move(spans));
+            regions.clear();
+        }
         for (size_t i = 1; i < sourceKnots.size(); ++i) {
             validator.regularSpans(
                 bezier(original, sourceKnots[i - 1], sourceKnots[i], origin),
@@ -600,6 +756,9 @@ BSplineOffsetResult makeBSplineOffset(
             };
         }
         auto output = approximation.Curve();
+        if (closed) {
+            closeFit(output, exact, tangent, original->IsPeriodic());
+        }
         result.complexity.outputPoles = output->NbPoles();
         result.complexity.segments = output->NbKnots() - 1;
         result.complexity.degree = output->Degree();

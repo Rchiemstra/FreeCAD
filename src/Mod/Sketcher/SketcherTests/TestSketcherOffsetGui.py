@@ -426,9 +426,40 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
             tuple(self.doc.RedoNames),
         )
 
-    def start_spline_offset(self, *, reversed_source=False, rational=False, closed=False):
+    def start_spline_offset(
+        self, *, reversed_source=False, rational=False, closed=False, smooth_closed=False,
+        periodic=True, self_crossing=False
+    ):
         curve = Part.BSplineCurve()
-        if rational:
+        if self_crossing:
+            import math
+
+            poles = []
+            for i in range(16):
+                t = i * math.pi / 8
+                poles.append(FreeCAD.Vector(
+                    10 * math.cos(t), 2.5 * math.sin(t) + 3.1 * math.sin(3 * t), 0
+                ))
+            curve.buildFromPolesMultsKnots(
+                poles, [1] * 17, list(range(17)), True, 3, [1.0] * 16
+            )
+        elif smooth_closed:
+            import math
+
+            curve.buildFromPolesMultsKnots(
+                [
+                    FreeCAD.Vector(10 * math.cos(i * math.pi / 4),
+                                   10 * math.sin(i * math.pi / 4), 0)
+                    for i in range(8)
+                ],
+                [1] * 9,
+                list(range(9)),
+                True,
+                3,
+            )
+            if not periodic:
+                curve.segment(curve.FirstParameter, curve.LastParameter)
+        elif rational:
             curve.buildFromPolesMultsKnots(
                 [FreeCAD.Vector(10, 0, 0), FreeCAD.Vector(10, 10, 0), FreeCAD.Vector(0, 10, 0)],
                 [3, 3],
@@ -621,10 +652,74 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.start_spline_offset(closed=True)
         before = self.offset_snapshot()
         self.spline_button("Apply")
-        self.assertIn("open", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertIn("G0-only corner", self.spline_control(QtGui.QLabel, "Status").text())
         self.assertEqual(before, self.offset_snapshot())
         self.spline_button("Cancel")
         self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+
+    def check_closed_spline_offset(self, periodic=True, reversed_source=False):
+        source = self.start_spline_offset(
+            smooth_closed=True, periodic=periodic, reversed_source=reversed_source
+        )
+        before = self.offset_snapshot()
+        label = self.spline_control(QtGui.QLabel, "Side")
+        self.assertIsNotNone(label)
+        self.assertIn("Inside / outside", label.text())
+        self.spline_button("Update")
+        self.assertEqual(label.text(), "Side: Inside" if reversed_source else "Side: Outside")
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_control(QtGui.QCheckBox, "Reverse").setChecked(True)
+        self.assertEqual(label.text(), "Side: Outside" if reversed_source else "Side: Inside")
+        self.spline_button("Update")
+        self.assertIn("Achieved maximum error:", self.spline_control(QtGui.QLabel, "Status").text())
+        self.spline_button("Apply")
+        self.assert_spline_distance(source, -1.0)
+        self.assertTrue(self.sketch.Geometry[1].isClosed())
+        self.assertEqual(self.sketch.Geometry[1].isPeriodic(), periodic)
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 1)
+        self.assertEqual(len(self.sketch.Constraints), 0)
+        self.redo_gui_document()
+        self.assertTrue(self.sketch.Geometry[1].isClosed())
+        self.assertEqual(self.sketch.Geometry[1].isPeriodic(), periodic)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+
+    def test_bspline_offset_periodic_closed_apply_undo(self):
+        self.check_closed_spline_offset()
+
+    def test_bspline_offset_clamped_closed_apply_undo(self):
+        self.check_closed_spline_offset(periodic=False)
+
+    def test_bspline_offset_closed_reversed_orientation(self):
+        self.check_closed_spline_offset(reversed_source=True)
+
+    def test_bspline_offset_self_crossing_source_has_no_side(self):
+        self.start_spline_offset(self_crossing=True)
+        self.spline_quantity("Distance", 0.1)
+        before = self.offset_snapshot()
+        for action in ("Update", "Apply"):
+            self.spline_button(action)
+            message = self.spline_control(QtGui.QLabel, "Status").text()
+            self.assertIn("Source", message)
+            self.assertIn("crossing", message)
+            side = self.spline_control(QtGui.QLabel, "Side").text()
+            self.assertNotIn("Side: Outside", side)
+            self.assertNotIn("Side: Inside", side)
+            self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_closed_inversion_preserves_history(self):
+        self.start_spline_offset(smooth_closed=True)
+        self.spline_quantity("Distance", -20.0)
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIn("singular", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
         self.assertEqual(before, self.offset_snapshot())
 
     def test_bspline_offset_mixed_edges_rejected_before_filtering(self):

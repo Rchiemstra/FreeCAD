@@ -22,7 +22,9 @@ enum class BSplineOffsetStatus
     SingularOffset,
     SelfIntersection,
     VerificationFailed,
-    ApproximationFailed
+    ApproximationFailed,
+    SeamCorner,
+    SourceSelfIntersection
 };
 
 struct BSplineOffsetOptions
@@ -59,6 +61,8 @@ struct BSplineOffsetResult
     // Conservative sum of kernel error and independent correspondence bound.
     double achievedMaxError = 0.0;
     BSplineOffsetComplexity complexity;
+    // Signed orientation about sketchNormal for closed curves; zero for open.
+    int orientation = 0;
 };
 
 // Constant-time option and size checks, before copying or extracting poles.
@@ -67,8 +71,9 @@ SketcherExport BSplineOffsetStatus checkBSplineOffsetInput(
     const BSplineOffsetOptions& options = {}
 );
 
-// Accepts one planar, C2, open, nonperiodic spline, including positive rational
-// weights. Never modifies source. No partial geometry is returned on failure.
+// Accepts one planar spline with C2 interior, including positive rational
+// weights. Closed and periodic splines must be simple with a G1 or better seam.
+// Never modifies source. No partial geometry is returned on failure.
 // Tolerance must be >= 1e-7 mm and < |distance| / 2. Limits are finite policies,
 // not a wall-clock timeout for OCCT. No GUI, solver or document side effects.
 SketcherExport BSplineOffsetResult
