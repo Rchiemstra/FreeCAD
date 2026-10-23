@@ -93,6 +93,7 @@ public:
     App::PropertyEnumeration MapMode;  // see AttachEngine::eMapMode
     App::PropertyBool MapReversed;     // inverts Z and X internal axes
     App::PropertyPlacement AttachmentOffset;
+    App::PropertyRotation AttachmentOffsetApplied;
 
     /**
      * @brief MapPathParameter is a parameter value for mmNormalToPath (the
@@ -165,6 +166,9 @@ private:
     _Properties _props;
     _Properties _baseProps;
 
+    // Legacy files lack AttachmentOffsetApplied. Use their saved offset as the baseline
+    // to preserve Placement on open, even if that offset had never been applied.
+    bool _offsetAppliedRestored = false;
     mutable int _active = -1;
 };
 
