@@ -35,6 +35,7 @@
 #if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
 #include <Mod/Part/Gui/DocumentPresentationCapture.h>
 #include <Mod/Part/App/PartFeature.h>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -42,6 +43,7 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopLoc_Location.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 #endif
@@ -402,6 +404,98 @@ TEST_F(PartPresentationCaptureTest, BothCoinProducersRoundTripThreeTriangles)
         scheduler.enqueue(std::move(delta));
         ASSERT_TRUE(scheduler.pump(0).committedRevision);
         EXPECT_EQ(triangleCount(cache.committedCoinRoot()), 3);
+    }
+}
+
+TEST_F(PartPresentationCaptureTest, InfiniteDatumsKeepLocationOrientationAndCacheIdentity)
+{
+    const std::string identity = document->collaborationObjectIdentity(*object);
+    auto* feature = dynamic_cast<Part::Feature*>(object);
+    ASSERT_NE(feature, nullptr);
+    gp_Trsf transform;
+    transform.SetRotation(gp_Ax1(gp::Origin(), gp::DY()), M_PI / 6);
+    transform.SetTranslationPart(gp_Vec(11, 22, 33));
+    const TopLoc_Location location(transform);
+    const auto plane = BRepBuilderAPI_MakeFace(gp_Pln(gp::XOY())).Face();
+    const auto finite = BRepBuilderAPI_MakeFace(gp_Pln(gp::XOY()), 100, 112, 200, 208).Face();
+    for (bool compound : {false, true}) {
+        for (bool reversed : {false, true}) {
+            SCOPED_TRACE(compound);
+            SCOPED_TRACE(reversed);
+            TopoDS_Shape face = plane.Located(location);
+            if (reversed) {
+                face.Reverse();
+            }
+            TopoDS_Shape shape = face;
+            if (compound) {
+                BRep_Builder builder;
+                TopoDS_Compound mixed;
+                builder.MakeCompound(mixed);
+                builder.Add(mixed, face);
+                builder.Add(mixed, finite);
+                shape = mixed;
+            }
+            Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+                if (compound) {
+                    feature->Shape.setValue(shape);
+                }
+                else {
+                    // Set root Placement through the property, as a datum feature does.
+                    const auto placement = Part::TopoShape(shape).getPlacement();
+                    shape.Location(TopLoc_Location());
+                    feature->Shape.setValue(shape);
+                    feature->Placement.setValue(placement);
+                }
+            });
+            for (bool fromProvider : {false, true}) {
+                SCOPED_TRACE(fromProvider);
+                Gui::PresentationRenderBuffer buffer;
+                std::thread owner([&] {
+                    if (fromProvider) {
+                        Gui::ViewProviderPresentationCaptureRequest request;
+                        request.stableObjectIdentity = identity;
+                        EXPECT_TRUE(provider->capturePresentationRenderBuffer(request, buffer));
+                    }
+                    else {
+                        EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+                    }
+                });
+                owner.join();
+                ASSERT_EQ(buffer.topology, (compound ? std::vector<std::uint32_t> {2, 2}
+                                                     : std::vector<std::uint32_t> {2}));
+                ASSERT_EQ(buffer.indices.size(), compound ? 12U : 6U);
+                ASSERT_GE(buffer.vertices.size(), 12U);
+                const auto point = [&](std::uint32_t index) {
+                    return gp_Pnt(buffer.vertices[3 * index], buffer.vertices[3 * index + 1],
+                                  buffer.vertices[3 * index + 2]);
+                };
+                // Root Placement is applied by the consumer; nested locations are in the buffer.
+                const gp_Trsf inverse = compound ? transform.Inverted() : gp_Trsf();
+                for (std::size_t i = 0; i < 6; ++i) {
+                    const auto p = point(buffer.indices[i]).Transformed(inverse);
+                    EXPECT_NEAR(std::abs(p.X()), 50, 1e-4);
+                    EXPECT_NEAR(std::abs(p.Y()), 50, 1e-4);
+                    EXPECT_NEAR(p.Z(), 0, 1e-4);
+                }
+                const auto a = point(buffer.indices[0]).Transformed(inverse);
+                const auto b = point(buffer.indices[1]).Transformed(inverse);
+                const auto c = point(buffer.indices[2]).Transformed(inverse);
+                EXPECT_NEAR(gp_Vec(a, b).Crossed(gp_Vec(a, c)).Z(), reversed ? -10000 : 10000, 0.01);
+                const auto before = PartGui::presentationCaptureCacheStatistics().tessellations;
+                std::thread cached([&] {
+                    if (fromProvider) {
+                        Gui::ViewProviderPresentationCaptureRequest request;
+                        request.stableObjectIdentity = identity;
+                        EXPECT_TRUE(provider->capturePresentationRenderBuffer(request, buffer));
+                    }
+                    else {
+                        EXPECT_TRUE(Gui::PresentationCaptureRegistry::tryCapture(*object, identity, buffer));
+                    }
+                });
+                cached.join();
+                EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before);
+            }
+        }
     }
 }
 

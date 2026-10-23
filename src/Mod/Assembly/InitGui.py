@@ -382,3 +382,6 @@ class AssemblyWorkbench(Workbench):
 
 
 Gui.addWorkbench(AssemblyWorkbench())
+
+# Registered separately so the GUI test runner executes the joint editor tests.
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]

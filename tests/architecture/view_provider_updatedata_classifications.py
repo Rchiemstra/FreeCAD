@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Wave 3 classifications for ViewProvider updateData inventory rows."""
+"""Wave 3 classifications keyed by file, symbol, and 1-based occurrence."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ _UNSUPPORTED_MESH = frozenset(
 _ADAPTED_PARTDESIGN_PREFIX = "src/Mod/PartDesign/Gui/"
 
 
-def classify_provider(file: str, symbol: str, line: int) -> str:
+def classify_provider(file: str, symbol: str, occurrence: int) -> str:
     """Return ``adapted`` or ``unsupported`` for one inventoried provider row."""
     key = (file, symbol)
     if key in _UNSUPPORTED_PART_GUI or key in _UNSUPPORTED_MESH:
@@ -77,7 +77,7 @@ def classify_provider(file: str, symbol: str, line: int) -> str:
 
 
 def _entry_key(entry: dict[str, object]) -> tuple[str, str, int]:
-    return (str(entry["file"]), str(entry["symbol"]), int(entry["line"]))
+    return (str(entry["file"]), str(entry["symbol"]), int(entry["occurrence"]))
 
 
 def load_sidecar_overrides() -> dict[tuple[str, str, int], str]:
@@ -96,12 +96,12 @@ def load_sidecar_overrides() -> dict[tuple[str, str, int], str]:
 def resolve_classification(
     file: str,
     symbol: str,
-    line: int,
+    occurrence: int,
     *,
     overrides: dict[tuple[str, str, int], str] | None = None,
 ) -> str:
-    key = (file, symbol, line)
+    key = (file, symbol, occurrence)
     sidecar = overrides if overrides is not None else load_sidecar_overrides()
     if key in sidecar:
         return sidecar[key]
-    return classify_provider(file, symbol, line)
+    return classify_provider(file, symbol, occurrence)
