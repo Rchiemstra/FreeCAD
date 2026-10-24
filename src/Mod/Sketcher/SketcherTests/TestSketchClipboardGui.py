@@ -113,6 +113,71 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
             count = self.paste()
             self.assert_expression(self.sketch, count, "Variables.width")
 
+    def test_percent_name_and_expression_use_safe_clipboard_text(self):
+        name = "Width % ' \u00b5"
+        self.sketch.renameConstraint(1, name)
+        self.sketch.setExpression("Constraints[1]", "(14 % 5 + 8) * 1 mm")
+        expression = self.sketch.ExpressionEngine[0][1]
+        self.assertIn("%", expression)
+        text = self.copy()
+        self.assertNotIn("%", text)
+        self.assertIn(r"\x25", text)
+        for suffix in ("001", "002"):
+            bindings = len(self.sketch.ExpressionEngine)
+            with patch.object(App.Console, "PrintWarning") as warning:
+                count = self.paste()
+            warning.assert_not_called()
+            self.assertEqual(self.sketch.Constraints[count].Name, name + suffix)
+            self.assertEqual(
+                [value for path, value in self.sketch.ExpressionEngine],
+                [expression] * (bindings + 1),
+            )
+
+    def test_cross_document_drops_external_expression_and_keeps_internal(self):
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "Spreadsheet")
+        sheet.set("A1", "12 mm")
+        sheet.setAlias("A1", "width")
+        self.recompute_gui_document()
+        self.sketch.renameConstraint(1, "Width %")
+        self.sketch.setExpression("Constraints[1]", "Spreadsheet.width")
+        driver = self.sketch.addConstraint(Sketcher.Constraint("Distance", 0, 12.0))
+        self.sketch.setExpression(f"Constraints[{driver}]", "12 mm")
+        follower_geo = self.sketch.addGeometry(
+            Part.LineSegment(App.Vector(0, 20, 0), App.Vector(12, 20, 0)), False
+        )
+        follower = self.sketch.addConstraint(
+            Sketcher.Constraint("Distance", follower_geo, 12.0)
+        )
+        self.sketch.setExpression(f"Constraints[{follower}]", f"Constraints[{driver}]")
+        self.copy(("Edge1", "Edge2", "Edge3"))
+        Gui.activeDocument().resetEdit()
+        other = App.newDocument("ClipboardTarget")
+        self.addCleanup(self.cleanup_gui_document, other)
+        sheet = other.addObject("Spreadsheet::Sheet", "Spreadsheet")
+        sheet.set("A1", "99 mm")
+        sheet.setAlias("A1", "width")
+        target = self.make_sketch(document=other)
+        self.recompute_gui_document(other)
+        self.assertTrue(Gui.activeDocument().setEdit(target.Name))
+        self.flush_gui()
+        count, geometries = target.ConstraintCount, target.GeometryCount
+        with patch.object(App.Console, "PrintWarning") as warning:
+            Gui.runCommand("Sketcher_Paste")
+            self.flush_gui()
+        warning.assert_called_once()
+        self.assertIn("Width %", warning.call_args.args[0])
+        self.assertIn("Spreadsheet.width", warning.call_args.args[0])
+        self.assertEqual(target.GeometryCount, geometries + 3)
+        self.assertEqual(target.ConstraintCount, count + 4)
+        self.assertEqual(len(target.ExpressionEngine), 2)
+        self.assert_expression(target, count + 1, None)
+        self.assertAlmostEqual(target.getDatum(count + 1).Value, 12.0)
+        self.assert_expression(target, count + 2, "12 mm")
+        target.setExpression(f"Constraints[{count + 2}]", None)
+        target.setDatum(count + 2, App.Units.Quantity("24 mm"))
+        self.recompute_gui_document(other)
+        self.assertAlmostEqual(target.getDatum(count + 3).Value, 24.0)
+
     def test_cut_keeps_expression_on_paste(self):
         self.sketch.renameConstraint(1, "Width")
         self.sketch.setExpression("Constraints[1]", "12 mm")
@@ -379,7 +444,8 @@ class TestSketchClipboardGui(SketcherGuiTestCase):
         expression = "<<Dimensions % ' \u00b5>>.width"
         self.sketch.setExpression("Constraints[1]", expression)
         expression = dict(self.sketch.ExpressionEngine)["Constraints[1]"]
-        self.copy()
+        text = self.copy()
+        self.assertNotIn("%", text)
         count = self.paste()
         self.assert_expression(self.sketch, count, expression)
 

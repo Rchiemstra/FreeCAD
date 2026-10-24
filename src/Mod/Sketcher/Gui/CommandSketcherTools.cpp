@@ -233,7 +233,14 @@ public:
     void visit(App::Expression& expression) override
     {
         auto* variable = dynamic_cast<App::VariableExpression*>(&expression);
-        if (!variable || variable->getPath().getProperty() != &sketch->Constraints) {
+        if (!variable) {
+            if (dynamic_cast<App::RangeExpression*>(&expression)) {
+                externalReference = expression.toString();
+            }
+            return;
+        }
+        if (variable->getPath().getProperty() != &sketch->Constraints) {
+            externalReference = variable->getPath().toString();
             return;
         }
         // Resolve the constraint, regardless of local dots, names or object qualifiers.
@@ -257,8 +264,8 @@ public:
             return;
         }
         const std::string marker = prefix + std::to_string(found->second) + "__";
-        replacements.emplace(marker, "'.Constraints[%d]' % (lastConstraintId + "
-            + std::to_string(found->second) + ")");
+        replacements.emplace(marker, "'.Constraints[' + str(lastConstraintId + "
+            + std::to_string(found->second) + ") + ']'");
         variable->setPath(App::ObjectIdentifier(sketch, marker));
     }
 
@@ -273,6 +280,7 @@ public:
 
     std::string unpastedConstraint;
     std::string unresolvedConstraint;
+    std::string externalReference;
 
 private:
     Sketcher::SketchObject* sketch;
@@ -400,16 +408,24 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
                     "        raise ValueError('Reference to unpasted constraint "
                     + Base::Tools::escapeEncodeString(visitor.unpastedConstraint) + "')\n";
             }
+            if (!visitor.externalReference.empty()) {
+                expressionsAsStr +=
+                    "    if objectStr.Document.Name != '"
+                    + Base::Tools::escapeEncodeString(obj->getDocument()->getName()) + "':\n"
+                    "        raise ValueError('Reference outside source document "
+                    + Base::Tools::escapeEncodeString(visitor.externalReference) + "')\n";
+            }
             expressionsAsStr +=
                 "    expression = " + visitor.pythonString(*remapped) + "\n"
                 "    value = objectStr.evalExpression(expression)\n"
                 "    # Constraint values must be numbers or quantities; exclude bool explicitly.\n"
                 "    if isinstance(value, bool) or not isinstance(value, (int, float, App.Units.Quantity)):\n"
                 "        raise TypeError('Expression result must be a number or quantity')\n"
-                "    objectStr.setExpression('Constraints[%d]' % (" + newId + "), expression)\n"
+                "    objectStr.setExpression('Constraints[' + str(" + newId
+                + ") + ']', expression)\n"
                 "except Exception as error:\n"
-                "    App.Console.PrintWarning('Could not paste expression for constraint %s "
-                "(Constraints[%d]): %s\\n' % ('" + Base::Tools::escapeEncodeString(name)
+                "    App.Console.PrintWarning('Could not paste expression for constraint {} "
+                "(Constraints[{}]): {}\\n'.format('" + Base::Tools::escapeEncodeString(name)
                 + "', " + newId + ", error))\n";
         }
     }
@@ -442,10 +458,10 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
             "    uniqueName = name\n"
             "    suffix = 1\n"
             "    if name in constraintNames:\n"
-            "        uniqueName = name + '%03d' % suffix\n"
+            "        uniqueName = name + '{:03d}'.format(suffix)\n"
             "        while uniqueName in reservedNames:\n"
             "            suffix += 1\n"
-            "            uniqueName = name + '%03d' % suffix\n"
+            "            uniqueName = name + '{:03d}'.format(suffix)\n"
             "    objectStr.renameConstraint(lastConstraintId + index, uniqueName)\n"
             "    constraintNames.add(uniqueName)\n"
             "    reservedNames.add(uniqueName)\n");
@@ -455,6 +471,12 @@ bool copySelectionToClipboard(Sketcher::SketchObject* obj)
         exportedData.append(expressionsAsStr);
     }
 
+    // Older versions pass clipboard text as a printf format. Remaining percent signs
+    // occur only in string literals or the source comment; preserve them as Python escapes.
+    for (size_t pos = exportedData.find('%'); pos != std::string::npos;
+         pos = exportedData.find('%', pos + 4)) {
+        exportedData.replace(pos, 1, "\\x25");
+    }
     if (!exportedData.empty()) {
         QClipboard* clipboard = QGuiApplication::clipboard();
         clipboard->setText(QString::fromStdString(exportedData));
