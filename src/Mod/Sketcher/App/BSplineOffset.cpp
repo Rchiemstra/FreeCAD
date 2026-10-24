@@ -790,6 +790,58 @@ struct ChainValidator
         return n;
     }
 
+    static bool finite(const gp_XYZ& value)
+    {
+        return std::isfinite(value.X()) && std::isfinite(value.Y())
+            && std::isfinite(value.Z());
+    }
+
+    static bool direction(const gp_Dir& value)
+    {
+        return finite(value.XYZ()) && std::abs(value.XYZ().SquareModulus() - 1) <= 1e-12;
+    }
+
+    static void validateNative(const Handle(Geom_Line) & line, const Handle(Geom_Circle) & circle)
+    {
+        if (!line.IsNull()) {
+            if (finite(line->Lin().Location().XYZ()) && direction(line->Position().Direction())) {
+                return;
+            }
+        }
+        else {
+            const auto axes = circle->Position();
+            const auto x = axes.XDirection(), y = axes.YDirection(), z = axes.Direction();
+            if (finite(axes.Location().XYZ()) && direction(x) && direction(y) && direction(z)
+                && std::abs(x.Dot(y)) <= 1e-12 && std::abs(x.Dot(z)) <= 1e-12
+                && std::abs(y.Dot(z)) <= 1e-12 && std::isfinite(circle->Radius())
+                && circle->Radius() > 0) {
+                return;
+            }
+        }
+        throw ChainFailure {ChainStatus::InvalidInput, "Invalid native chain geometry."};
+    }
+
+    static void validateSpan(const Handle(Geom_BSplineCurve) & spline, double first, double last)
+    {
+        // A constant rational span has identical active Euclidean poles even
+        // when its positive weights differ. Include periodic wrapped poles.
+        const auto& flat = spline->KnotSequence();
+        const int degree = spline->Degree();
+        for (int k = degree; k < flat.Length() - degree - 1; ++k) {
+            if (flat(k + 1) <= first && last <= flat(k + 2) && flat(k + 1) < flat(k + 2)) {
+                const auto pole = spline->Pole((k - degree) % spline->NbPoles() + 1);
+                for (int j = k - degree + 1; j <= k; ++j) {
+                    const auto other = spline->Pole(j % spline->NbPoles() + 1);
+                    if (pole.X() != other.X() || pole.Y() != other.Y() || pole.Z() != other.Z()) {
+                        return;
+                    }
+                }
+                throw ChainFailure {ChainStatus::InvalidInput, "Degenerate spline span."};
+            }
+        }
+        throw ChainFailure {ChainStatus::InvalidInput, "Invalid spline knot span."};
+    }
+
     std::vector<ChainSpan> spans(const std::vector<const Part::GeomCurve*>& chain)
     {
         std::vector<ChainSpan> output;
@@ -797,7 +849,8 @@ struct ChainValidator
             consume();
             auto curve = Handle(Geom_Curve)::DownCast(geometry->handle());
             const double first = curve->FirstParameter(), last = curve->LastParameter();
-            if (!std::isfinite(first) || !std::isfinite(last) || first >= last) {
+            if (!std::isfinite(first) || !std::isfinite(last) || first >= last
+                || !std::isfinite(last - first)) {
                 throw ChainFailure {ChainStatus::InvalidInput, "Invalid chain parameter interval."};
             }
             auto spline = Handle(Geom_BSplineCurve)::DownCast(curve);
@@ -818,8 +871,15 @@ struct ChainValidator
                         };
                     }
                 }
+                for (int i = 1; i <= spline->NbKnots(); ++i) {
+                    if (!std::isfinite(spline->Knot(i)) || spline->Multiplicity(i) <= 0
+                        || (i > 1 && spline->Knot(i) <= spline->Knot(i - 1))) {
+                        throw ChainFailure {ChainStatus::InvalidInput, "Invalid spline knots."};
+                    }
+                }
                 const auto parameters = knots(spline);
                 for (size_t i = 1; i < parameters.size(); ++i) {
+                    validateSpan(spline, parameters[i - 1], parameters[i]);
                     output.push_back(
                         {bezier(spline, parameters[i - 1], parameters[i], origin), {}, {}, 0}
                     );
@@ -836,6 +896,13 @@ struct ChainValidator
                     throw ChainFailure {
                         ChainStatus::UnsupportedCurve,
                         "Unsupported native chain curve."
+                    };
+                }
+                validateNative(line, circle);
+                if (!circle.IsNull() && (first < -8 || last > 8)) {
+                    throw ChainFailure {
+                        ChainStatus::UnsupportedCurve,
+                        "Circular arc parameter exceeds certified range."
                     };
                 }
                 output.push_back({{first, last, {}}, line, circle, 0});

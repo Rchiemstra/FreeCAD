@@ -3,6 +3,7 @@
 add_executable(Sketcher_tests_run
         BSplineOffset.cpp
         Constraint.cpp
+        OffsetChain.cpp
         SketcherTestHelpers.cpp
         SketchObject.cpp
         SketchObjectChanges.cpp
@@ -10,10 +11,3 @@ add_executable(Sketcher_tests_run
 )
 
 add_subdirectory(planegcs)
-
-add_executable(OffsetChain_tests_run OffsetChain.cpp)
-target_link_libraries(OffsetChain_tests_run
-    GTest::gtest_main
-    ${Python3_LIBRARIES}
-    Sketcher
-)
