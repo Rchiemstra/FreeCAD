@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include <Geom_BSplineCurve.hxx>
@@ -1166,6 +1167,77 @@ TEST(OffsetChainGenerator, FinalCertificateRefusalReturnsNoPartialOutput)
     EXPECT_EQ(exhausted.status, OffsetChainStatus::BudgetExceeded);
     EXPECT_TRUE(exhausted.pieces.empty());
     EXPECT_LE(exhausted.work, options.maxWork);
+}
+
+TEST(OffsetChainSelection, OrdersEveryMixedPieceAndReversesDetachedCopies)
+{
+    auto source = mixed();
+    source[0]->reverse();
+    const auto original = source[0]->pointAtParameter(source[0]->getFirstParameter());
+    auto input = pieces(source);
+    std::swap(input[0], input[2]);
+    const auto ordered = Sketcher::orderOffsetChain(input);
+    ASSERT_EQ(ordered.status, OffsetChainStatus::Success) << ordered.reason;
+    ASSERT_EQ(ordered.pieces.size(), source.size());
+    EXPECT_FALSE(ordered.closed);
+    EXPECT_EQ(source[0]->pointAtParameter(source[0]->getFirstParameter()), original);
+    std::set<std::size_t> identities;
+    std::vector<Sketcher::OffsetChainPiece> output;
+    for (const auto& piece : ordered.pieces) {
+        identities.insert(piece.identity);
+        output.push_back({piece.geometry.get(), piece.identity});
+    }
+    EXPECT_EQ(identities.size(), source.size());
+    const auto generated = Sketcher::makeOffsetChain(output, 1);
+    EXPECT_EQ(generated.status, OffsetChainStatus::Success) << generated.reason;
+}
+
+TEST(OffsetChainSelection, ClosedMixedChain)
+{
+    Chain source;
+    quarter(source, 10);
+    arc(source, 10, std::acos(-1.0) / 2, 2 * std::acos(-1.0));
+    const auto result = Sketcher::orderOffsetChain(pieces(source));
+    EXPECT_EQ(result.status, OffsetChainStatus::Success) << result.reason;
+    EXPECT_TRUE(result.closed);
+    EXPECT_EQ(result.pieces.size(), 2);
+}
+
+TEST(OffsetChainSelection, RefusesDisconnectedBranchedAmbiguousAndDuplicate)
+{
+    for (int kind = 0; kind < 4; ++kind) {
+        SCOPED_TRACE(kind);
+        auto source = mixed();
+        if (kind == 0) {
+            line(source, V(30, 0, 0), V(31, 0, 0));
+        }
+        else if (kind == 1) {
+            line(source, V(10, 0, 0), V(12, 0, 0));
+        }
+        else if (kind == 2) {
+            line(source, V(10, -5, 0), V(10, 0, 0));
+        }
+        auto input = pieces(source);
+        if (kind == 3) {
+            input[1].identity = input[0].identity;
+        }
+        const auto result = Sketcher::orderOffsetChain(input);
+        EXPECT_NE(result.status, OffsetChainStatus::Success);
+        EXPECT_FALSE(result.reason.empty());
+        EXPECT_TRUE(result.pieces.empty());
+    }
+}
+
+TEST(OffsetChainSelection, RefusesNonMixedAndUnsupported)
+{
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    EXPECT_NE(Sketcher::orderOffsetChain(pieces(source)).status, OffsetChainStatus::Success);
+    source.clear();
+    quarter(source, 10);
+    EXPECT_NE(Sketcher::orderOffsetChain(pieces(source)).status, OffsetChainStatus::Success);
+    source.push_back(std::make_unique<Part::GeomCircle>());
+    EXPECT_NE(Sketcher::orderOffsetChain(pieces(source)).status, OffsetChainStatus::Success);
 }
 
 }  // namespace

@@ -122,6 +122,22 @@ struct OffsetChainResult
     int work = 0;
 };
 
+struct OffsetChainSelectionResult
+{
+    OffsetChainStatus status = OffsetChainStatus::InvalidInput;
+    std::string reason;
+    bool closed = false;
+    std::vector<OffsetChainOutputPiece> pieces;
+};
+
+// Classifies and orders a complete mixed selection (spline plus line/arc).
+// Unique identities, finite endpoints and exactly one unambiguous component are
+// required. Returns oriented detached copies; input is never changed or filtered.
+// Endpoint matching uses Precision::Confusion(); G1/topology still need generation.
+SketcherExport OffsetChainSelectionResult orderOffsetChain(
+    const std::vector<OffsetChainPiece>& selection
+);
+
 // Consumes each full native source interval exactly once, in the supplied order.
 // Identities must be unique; no reordering, trimming, extension or omitted pieces.
 // Requires a regular, simple G1 chain in the plane normal to sketchNormal.

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <stdexcept>
 
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Circle.hxx>
@@ -197,6 +198,127 @@ void weldChain(std::vector<OffsetChainOutputPiece>& chain, const OffsetChainOpti
 }
 
 }  // namespace
+
+OffsetChainSelectionResult orderOffsetChain(const std::vector<OffsetChainPiece>& selection)
+{
+    OffsetChainSelectionResult result;
+    try {
+        const auto refuse = [](const char* reason) { throw std::runtime_error(reason); };
+        if (selection.size() < 2 || selection.size() > 256) {
+            refuse("Select between 2 and 256 mixed edges.");
+        }
+        bool spline = false, analytic = false;
+        std::set<std::size_t> identities;
+        std::vector<V> endpoints;
+        for (const auto& piece : selection) {
+            const auto* curve = piece.geometry;
+            if (!curve || !identities.insert(piece.identity).second) {
+                refuse("Null geometry or duplicate selection identity.");
+            }
+            if (const auto* bspline = dynamic_cast<const Part::GeomBSplineCurve*>(curve)) {
+                spline = true;
+                if (checkBSplineOffsetInput(*bspline) != BSplineOffsetStatus::Success) {
+                    refuse("Unsupported source spline.");
+                }
+            }
+            else if (dynamic_cast<const Part::GeomLineSegment*>(curve)
+                     || dynamic_cast<const Part::GeomArcOfCircle*>(curve)) {
+                analytic = true;
+            }
+            else {
+                refuse("Unsupported selected geometry.");
+            }
+            for (bool last : {false, true}) {
+                const V point = endpoint(*curve, last);
+                if (!std::isfinite(point.x) || !std::isfinite(point.y)
+                    || !std::isfinite(point.z)) {
+                    refuse("Nonfinite selection endpoint.");
+                }
+                endpoints.push_back(point);
+            }
+        }
+        if (!spline || !analytic) {
+            refuse("Select a mixed chain containing B-splines and lines or arcs.");
+        }
+        std::vector<int> neighbor(endpoints.size(), -1);
+        for (size_t i = 0; i < endpoints.size(); ++i) {
+            for (size_t j = i + 1; j < endpoints.size(); ++j) {
+                if ((endpoints[i] - endpoints[j]).Length() > Precision::Confusion()) {
+                    continue;
+                }
+                if (i / 2 == j / 2 || neighbor[i] >= 0 || neighbor[j] >= 0) {
+                    refuse("Branched or ambiguous selection endpoints.");
+                }
+                neighbor[i] = static_cast<int>(j);
+                neighbor[j] = static_cast<int>(i);
+            }
+        }
+        const auto openEnds = std::count(neighbor.begin(), neighbor.end(), -1);
+        if (openEnds != 0 && openEnds != 2) {
+            refuse("Disconnected selection.");
+        }
+        result.closed = openEnds == 0;
+        size_t start = result.closed ? 0 : std::find(neighbor.begin(), neighbor.end(), -1)
+            - neighbor.begin();
+        const size_t alternative = result.closed ? 1
+            : std::find(neighbor.begin() + start + 1, neighbor.end(), -1) - neighbor.begin();
+        const auto reversals = [&](size_t entry) {
+            const size_t first = entry;
+            size_t count = 0;
+            for (size_t i = 0; i < selection.size(); ++i) {
+                count += entry % 2;
+                const int next = neighbor[entry ^ 1];
+                if (next < 0 || static_cast<size_t>(next) == first) {
+                    break;
+                }
+                entry = static_cast<size_t>(next);
+            }
+            return count;
+        };
+        // Preserve the prevailing input orientation, independently of selection
+        // order. Unnecessary kernel arc reversals can also move the native seam.
+        if (reversals(alternative) < reversals(start)) {
+            start = alternative;
+        }
+        size_t current = start;
+        std::vector<bool> visited(selection.size(), false);
+        std::vector<OffsetChainOutputPiece> ordered;
+        while (!visited[current / 2]) {
+            const auto index = current / 2;
+            visited[index] = true;
+            auto copy = std::unique_ptr<Part::GeomCurve>(
+                static_cast<Part::GeomCurve*>(selection[index].geometry->clone())
+            );
+            if (current % 2) {
+                copy->reverse();
+            }
+            ordered.push_back({std::move(copy), selection[index].identity});
+            const int next = neighbor[current ^ 1];
+            if (next < 0) {
+                break;
+            }
+            current = static_cast<size_t>(next);
+        }
+        if (ordered.size() != selection.size() || (result.closed && current != start)) {
+            refuse("Disconnected selection or ambiguous cycle.");
+        }
+        result.pieces = std::move(ordered);
+        result.status = OffsetChainStatus::Success;
+    }
+    catch (const Standard_Failure& e) {
+        result.reason = e.GetMessageString();
+    }
+    catch (const Base::Exception& e) {
+        result.reason = e.what();
+    }
+    catch (const std::exception& e) {
+        result.reason = e.what();
+    }
+    catch (...) {
+        result.reason = "Unable to order the selected chain.";
+    }
+    return result;
+}
 
 OffsetChainResult makeOffsetChain(
     const std::vector<OffsetChainPiece>& source,

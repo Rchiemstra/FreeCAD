@@ -885,3 +885,153 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.spline_button("Cancel")
         self.assertEqual(self.selection_before_offset, self.selection_signature())
         self.assertEqual(before, self.offset_snapshot())
+
+    def chain_control(self, widget_type, suffix):
+        controls = FreeCADGui.getMainWindow().findChildren(widget_type, "OffsetChain" + suffix)
+        return next((control for control in controls if control.isVisible()), None)
+
+    def chain_button(self, suffix):
+        self.chain_control(QtGui.QPushButton, suffix).click()
+        self.pump(80)
+
+    def start_mixed_offset(self, *, corner=False, branch=False, closed=False):
+        import math
+
+        spline = Part.BSplineCurve()
+        spline.buildFromPolesMultsKnots(
+            [FreeCAD.Vector(10, 0, 0), FreeCAD.Vector(10, 10, 0), FreeCAD.Vector(0, 10, 0)],
+            [3, 3], [0.0, 1.0], False, 2, [1.0, 2.0**-0.5, 1.0],
+        )
+        circle = Part.Circle(FreeCAD.Vector(), FreeCAD.Vector(0, 0, 1), 10)
+        if closed:
+            # Same supported closed fixture as OffsetChainGenerator: provably
+            # forward sub-confusion gaps at non-algebraic native arc endpoints.
+            spline = Part.ArcOfCircle(circle, 0, math.pi).toBSpline()
+            spline.setPole(1, FreeCAD.Vector(10, 1e-8, 0))
+            spline.setPole(spline.NbPoles, FreeCAD.Vector(-10, 1e-8, 0))
+            geometry = [spline, Part.ArcOfCircle(circle, math.pi, 2 * math.pi)]
+        else:
+            # An exact local zero parameter gives an algebraic junction with
+            # the rational quarter-circle endpoint, matching the App fixture.
+            circle.XAxis = FreeCAD.Vector(0, 1, 0)
+            geometry = [
+                _line((5 if corner else 10, -5), (10, 0)), spline,
+                Part.ArcOfCircle(circle, 0, math.pi / 2),
+            ]
+        if branch:
+            geometry.append(_line((10, 0), (15, 0)))
+        self.sketch.addGeometry(geometry, False)
+        self.recompute_gui_document()
+        self.start_editing()
+        # Non-geometric selection order must still consume every selected edge.
+        self.select_offset_edges(["Edge" + str(i + 1) for i in reversed(range(len(geometry)))])
+        self.assertIsNotNone(self.chain_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(self.offset_mode_combobox())
+        return len(geometry)
+
+    def chain_refusal(self, before, reason=None):
+        for action in ("Update", "Apply"):
+            self.chain_button(action)
+            message = self.chain_control(QtGui.QLabel, "Status").text()
+            self.assertTrue(message.startswith("Mixed-chain offset could not be certified: "))
+            self.assertTrue(message.split(": ", 1)[1])
+            if reason is not None:
+                self.assertIn(reason.lower(), message.lower())
+            self.assertEqual(before, self.offset_snapshot())
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_mixed_offset_apply_blocks_one_undo_redo(self):
+        count = self.start_mixed_offset()
+        before = self.offset_snapshot()
+        self.chain_button("Update")
+        self.assertIn("Certified", self.chain_control(QtGui.QLabel, "Status").text())
+        self.assertEqual(before, self.offset_snapshot())
+        panel = self.chain_control(QtGui.QWidget, "Panel")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.chain_button("Apply")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.assertEqual(self.sketch.GeometryCount, count * 2)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints],
+                         [("Block", i) for i in range(count, count * 2)])
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        after = self.offset_snapshot()
+        self.undo_gui_document()
+        self.assertEqual(self.offset_snapshot()[:3], before[:3])
+        self.redo_gui_document()
+        self.assertEqual(self.offset_snapshot(), after)
+
+    def test_mixed_offset_corner_refuses_without_history_changes(self):
+        self.start_mixed_offset(corner=True)
+        self.chain_refusal(self.offset_snapshot())
+
+    def test_mixed_offset_branch_refuses_without_history_changes(self):
+        self.start_mixed_offset(branch=True)
+        self.chain_refusal(self.offset_snapshot(), "ambiguous")
+
+    def test_mixed_offset_source_edit_refuses_preview_and_apply(self):
+        self.start_mixed_offset()
+        self.chain_button("Update")
+        self.sketch.moveGeometry(0, 1, FreeCAD.Vector(9, -5, 0), False)
+        self.recompute_gui_document()
+        self.chain_refusal(self.offset_snapshot(), "changed")
+
+    def test_mixed_offset_failed_solve_preserves_redo(self):
+        self.start_mixed_offset()
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 10.0))
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 11.0))
+        self.recompute_gui_document()
+        self.assertNotEqual(self.sketch.solve(), 0)
+        self.doc.openTransaction("Mixed redo sentinel")
+        self.doc.addObject("App::FeaturePython", "RedoSentinel")
+        self.doc.commitTransaction()
+        self.undo_gui_document()
+        before = self.offset_snapshot()
+        self.assertGreater(before[4], 0)
+        self.chain_button("Apply")
+        message = self.chain_control(QtGui.QLabel, "Status").text()
+        self.assertIn("Mixed-chain offset could not be certified:", message)
+        self.assertIn("solve", message.lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_mixed_offset_closed_side_and_reverse(self):
+        self.start_mixed_offset(closed=True)
+        self.chain_button("Update")
+        self.assertEqual(self.chain_control(QtGui.QLabel, "Side").text(), "Side: Outside")
+        self.chain_control(QtGui.QCheckBox, "Reverse").setChecked(True)
+        self.chain_button("Update")
+        self.assertEqual(self.chain_control(QtGui.QLabel, "Side").text(), "Side: Inside")
+        self.chain_button("Apply")
+        self.assertEqual(self.sketch.GeometryCount, 4)
+
+    def test_mixed_offset_restricted_options_refuse(self):
+        self.start_mixed_offset()
+        before = self.offset_snapshot()
+        for suffix in ("Intersection", "Clearance", "Driving", "Delete"):
+            control = self.chain_control(QtGui.QCheckBox, suffix)
+            self.assertIsNotNone(control)
+            control.setChecked(True)
+            self.chain_button("Apply")
+            self.assertIn("not supported", self.chain_control(QtGui.QLabel, "Status").text())
+            self.assertEqual(before, self.offset_snapshot())
+            control.setChecked(False)
+        self.chain_button("Cancel")
+
+    def test_mixed_offset_construction_mix_refuses(self):
+        self.start_mixed_offset()
+        self.sketch.toggleConstruction(0)
+        self.recompute_gui_document()
+        self.chain_refusal(self.offset_snapshot(), "construction")
+
+    def test_mixed_offset_disconnected_selection_refuses(self):
+        self.start_mixed_offset()
+        self.chain_button("Cancel")
+        self.sketch.addGeometry(_line((30, 0), (35, 0)))
+        self.recompute_gui_document()
+        self.select_offset_edges(["Edge1", "Edge2", "Edge3", "Edge4"])
+        self.assertIsNotNone(self.chain_control(QtGui.QWidget, "Panel"))
+        self.chain_refusal(self.offset_snapshot(), "disconnected")

@@ -65,6 +65,7 @@
 #include "DrawSketchHandlerTranslate.h"
 #include "DrawSketchHandlerOffset.h"
 #include "DrawSketchHandlerBSplineOffset.h"
+#include "DrawSketchHandlerOffsetChain.h"
 #include "DrawSketchHandlerRotate.h"
 #include "DrawSketchHandlerScale.h"
 #include "DrawSketchHandlerSymmetry.h"
@@ -2478,6 +2479,8 @@ void CmdSketcherOffset::activated(int iMsg)
     if (splineId != GeoEnum::GeoUndef) {
         auto* edit = dynamic_cast<ViewProviderSketch*>(getActiveGuiDocument()->getInEdit());
         size_t edgeCount = 0;
+        bool mixed = false;
+        std::vector<int> chainIds;
         for (const auto& name : subNames) {
             if (!isEdge(name) && !isExternalEdge(name)) {
                 continue;
@@ -2488,11 +2491,20 @@ void CmdSketcherOffset::activated(int iMsg)
                 && std::ranges::any_of(Obj->Constraints.getValues(), [id, splineId](const auto* c) {
                     return c->Type == InternalAlignment && c->First == id && c->Second == splineId;
                 });
+            chainIds.push_back(id);
             if (!helper) {
                 ++edgeCount;
+                const auto* geometry = Obj->getGeometry(id);
+                mixed |= geometry && !GeometryFacade::isInternalAligned(geometry)
+                    && (isLineSegment(*geometry) || isArcOfCircle(*geometry));
             }
         }
-        if (!edit || edit->getSketchObject() != Obj || splineId < 0
+        if (mixed && edit && edit->getSketchObject() == Obj
+            && getSelection().getSelectionEx().size() == 1) {
+            ActivateHandler(getActiveGuiDocument(),
+                            std::make_unique<DrawSketchHandlerOffsetChain>(*Obj, chainIds));
+        }
+        else if (!edit || edit->getSketchObject() != Obj || splineId < 0
             || GeometryFacade::isInternalAligned(Obj->getGeometry(splineId))) {
             Gui::NotifyUserError(Obj,
                 QT_TRANSLATE_NOOP("Notifications", "Invalid selection"),
