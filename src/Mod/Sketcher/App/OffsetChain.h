@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include <Base/Vector3D.h>
+#include <Mod/Part/App/Geometry.h>
+#include <Mod/Sketcher/SketcherGlobal.h>
+
+namespace Sketcher
+{
+
+enum class OffsetChainDistanceStatus
+{
+    Success,
+    InvalidInput,
+    UnsupportedCurve,
+    NotCertified,
+    BudgetExceeded
+};
+
+struct OffsetChainDistanceOptions
+{
+    // Positive follows source tangent cross sketchNormal, as in Geom_OffsetCurve.
+    double distance = 1.0;
+    double tolerance = 0.01;
+    Base::Vector3d sketchNormal {0, 0, 1};
+    // Enclosure/refinement visits; the source cache also has a 65536-node cap.
+    int maxWork = 10000000;
+    int maxDepth = 24;
+};
+
+struct OffsetChainDistanceResult
+{
+    OffsetChainDistanceStatus status = OffsetChainDistanceStatus::NotCertified;
+    std::string message;
+    int work = 0;
+};
+
+// Certifies EVERY candidate point against the ENTIRE source, including endpoints.
+// Side means (q-s).(source tangent cross sketchNormal) has the sign of distance
+// for every nearest source point s (one-sided tangents at span boundaries).
+// Inputs are ordered, oriented, connected chains of line segments, circular arcs
+// and positive-weight B-splines, open or closed. Geometry is borrowed, unmodified.
+// This is only a distance/side certificate: joins, coverage, regularity and
+// simplicity still require the separate topology certificate before generation.
+// Policies: <= 256 curves per chain; spline degree <= 14, <= 1024 poles,
+// <= 256 knot spans; native arc parameters within [-8, 8].
+// Invalid/unsupported inputs, uncertain bounds and exhausted budgets all refuse.
+SketcherExport OffsetChainDistanceResult certifyOffsetChainDistance(
+    const std::vector<const Part::GeomCurve*>& source,
+    const std::vector<const Part::GeomCurve*>& candidate,
+    const OffsetChainDistanceOptions& options = {}
+);
+
+}  // namespace Sketcher

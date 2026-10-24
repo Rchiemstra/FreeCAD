@@ -18,6 +18,7 @@ Part_tests_run
 PartDesign_tests_run
 Points_tests_run
 Sketcher_tests_run
+OffsetChain_tests_run
 Spreadsheet_tests_run
 Start_tests_run
 TechDraw_tests_run

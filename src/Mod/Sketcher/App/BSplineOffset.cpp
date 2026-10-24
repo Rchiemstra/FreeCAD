@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "BSplineOffset.h"
+#include "OffsetChain.h"
 
 #include <algorithm>
 #include <array>
@@ -10,9 +11,13 @@
 #include <vector>
 
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_Circle.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
 #include <Precision.hxx>
+#include <gp_Lin.hxx>
 #include <Standard_Failure.hxx>
 
 namespace Sketcher
@@ -637,7 +642,393 @@ void closeFit(
     seamTangent(output);
 }
 
+// Native lines/arcs retain their exact kernel definitions. In particular, do not
+// certify a rounded arc-to-NURBS conversion as though its poles were exact input.
+struct ChainSpan
+{
+    Span spline;
+    Handle(Geom_Line) line;
+    Handle(Geom_Circle) circle;
+    int depth = 0;
+};
+
+Vector vector(const gp_XYZ& p)
+{
+    return {Interval(p.X()), Interval(p.Y()), Interval(p.Z())};
+}
+
+// Certified Taylor evaluation at a binary64 argument. With |x| <= 8 the
+// degree-79/78 remainders are below 1e-46; the larger padding also encloses them.
+// No assumption about libm sin/cos rounding enters the certificate.
+std::pair<Interval, Interval> sinCos(double x)
+{
+    if (!std::isfinite(x) || std::abs(x) > 8) {
+        throw Failure {Status::UnsupportedCurve, "Circular arc parameter exceeds certified range."};
+    }
+    const auto negativeSquare = Interval(0) - square(Interval(x));
+    Interval sine(x), cosine(1), s(x), c(1);
+    for (int i = 1; i < 40; ++i) {
+        s = s * negativeSquare / Interval(static_cast<double>((2 * i) * (2 * i + 1)));
+        c = c * negativeSquare / Interval(static_cast<double>((2 * i - 1) * (2 * i)));
+        sine = sine + s;
+        cosine = cosine + c;
+    }
+    return {sine + Interval(-1e-40, 1e-40), cosine + Interval(-1e-40, 1e-40)};
+}
+
+Bounds chainBounds(const ChainSpan& span, const gp_Pnt& origin, bool atMidpoint = false)
+{
+    if (!span.spline.poles.empty()) {
+        return bounds(span.spline, atMidpoint);
+    }
+    const auto first = Interval(span.spline.first), last = Interval(span.spline.last);
+    const auto middle = first + (last - first) * Interval(0.5);
+    const Interval parameter = atMidpoint ? middle : Interval(first.lo, last.hi);
+    if (!span.line.IsNull()) {
+        auto tangent = vector(span.line->Lin().Direction().XYZ());
+        auto start = vector(span.line->Lin().Location().XYZ()) - vector(origin.XYZ());
+        return {start + tangent * parameter, tangent, {}};
+    }
+    const double center = span.spline.first + (span.spline.last - span.spline.first) / 2;
+    auto [sine, cosine] = sinCos(center);
+    // sin and cos are globally 1-Lipschitz. This covers the entire parameter
+    // interval, including rounding of the stored center and midpoint.
+    auto delta = parameter - Interval(center);
+    const double radius = std::max(std::abs(delta.lo), std::abs(delta.hi));
+    sine = sine + Interval(-radius, radius);
+    cosine = cosine + Interval(-radius, radius);
+    sine = {std::max(-1.0, sine.lo), std::min(1.0, sine.hi)};
+    cosine = {std::max(-1.0, cosine.lo), std::min(1.0, cosine.hi)};
+    const auto x = vector(span.circle->XAxis().Direction().XYZ());
+    const auto y = vector(span.circle->YAxis().Direction().XYZ());
+    const Interval r(span.circle->Radius());
+    const auto start = vector(span.circle->Location().XYZ()) - vector(origin.XYZ());
+    return {start + (x * cosine + y * sine) * r, (y * cosine - x * sine) * r, {}};
+}
+
+std::pair<ChainSpan, ChainSpan> splitChain(const ChainSpan& span)
+{
+    auto left = span, right = span;
+    if (!span.spline.poles.empty()) {
+        auto halves = split(span.spline);
+        left.spline = std::move(halves.first);
+        right.spline = std::move(halves.second);
+    }
+    else {
+        const double middle = span.spline.first + (span.spline.last - span.spline.first) / 2;
+        if (middle == span.spline.first || middle == span.spline.last) {
+            throw Failure {Status::VerificationFailed, "Parameter refinement budget exhausted."};
+        }
+        left.spline.last = middle;
+        right.spline.first = middle;
+    }
+    ++left.depth;
+    ++right.depth;
+    return {std::move(left), std::move(right)};
+}
+
+struct ChainFailure
+{
+    OffsetChainDistanceStatus status;
+    const char* message;
+};
+
+struct ChainValidator
+{
+    using ChainStatus = OffsetChainDistanceStatus;
+    const OffsetChainDistanceOptions& options;
+    OffsetChainDistanceResult& result;
+    gp_Pnt origin;
+    Vector normal;
+
+    struct Node
+    {
+        ChainSpan span;
+        Bounds box;
+        std::array<Vector, 3> witnesses;
+        std::unique_ptr<Node> left, right;
+    };
+    std::vector<std::unique_ptr<Node>> source;
+    int cachedNodes = 0;
+
+    void consume()
+    {
+        if (result.work >= options.maxWork) {
+            throw ChainFailure {
+                ChainStatus::BudgetExceeded,
+                "Distance certificate work budget exhausted."
+            };
+        }
+        ++result.work;
+    }
+
+    std::unique_ptr<Node> node(ChainSpan span)
+    {
+        consume();
+        if (++cachedNodes > 65536) {
+            throw ChainFailure {
+                ChainStatus::BudgetExceeded,
+                "Source enclosure cache budget exhausted."
+            };
+        }
+        auto n = std::make_unique<Node>();
+        n->span = std::move(span);
+        n->box = chainBounds(n->span, origin);
+        n->witnesses[1] = chainBounds(n->span, origin, true).position;
+        if (!n->span.spline.poles.empty()) {
+            const auto& poles = n->span.spline.poles;
+            n->witnesses[0] = xyz(poles.front()) / poles.front()[3];
+            n->witnesses[2] = xyz(poles.back()) / poles.back()[3];
+        }
+        else {
+            auto endpoint = n->span;
+            endpoint.spline.last = endpoint.spline.first;
+            n->witnesses[0] = chainBounds(endpoint, origin).position;
+            endpoint.spline.first = endpoint.spline.last = n->span.spline.last;
+            n->witnesses[2] = chainBounds(endpoint, origin).position;
+        }
+        return n;
+    }
+
+    std::vector<ChainSpan> spans(const std::vector<const Part::GeomCurve*>& chain)
+    {
+        std::vector<ChainSpan> output;
+        for (const auto* geometry : chain) {
+            consume();
+            auto curve = Handle(Geom_Curve)::DownCast(geometry->handle());
+            const double first = curve->FirstParameter(), last = curve->LastParameter();
+            if (!std::isfinite(first) || !std::isfinite(last) || first >= last) {
+                throw ChainFailure {ChainStatus::InvalidInput, "Invalid chain parameter interval."};
+            }
+            auto spline = Handle(Geom_BSplineCurve)::DownCast(curve);
+            if (!spline.IsNull()) {
+                if (spline->Degree() > 14 || spline->NbPoles() > 1024 || spline->NbKnots() > 257) {
+                    throw ChainFailure {
+                        ChainStatus::UnsupportedCurve,
+                        "Spline complexity exceeds limits."
+                    };
+                }
+                for (int i = 1; i <= spline->NbPoles(); ++i) {
+                    const auto p = spline->Pole(i);
+                    if (!std::isfinite(p.X()) || !std::isfinite(p.Y()) || !std::isfinite(p.Z())
+                        || !std::isfinite(spline->Weight(i)) || spline->Weight(i) <= 0) {
+                        throw ChainFailure {
+                            ChainStatus::InvalidInput,
+                            "Nonfinite poles or invalid weights."
+                        };
+                    }
+                }
+                const auto parameters = knots(spline);
+                for (size_t i = 1; i < parameters.size(); ++i) {
+                    output.push_back(
+                        {bezier(spline, parameters[i - 1], parameters[i], origin), {}, {}, 0}
+                    );
+                }
+            }
+            else {
+                auto trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve);
+                if (!trimmed.IsNull()) {
+                    curve = trimmed->BasisCurve();
+                }
+                auto line = Handle(Geom_Line)::DownCast(curve);
+                auto circle = Handle(Geom_Circle)::DownCast(curve);
+                if (line.IsNull() && circle.IsNull()) {
+                    throw ChainFailure {
+                        ChainStatus::UnsupportedCurve,
+                        "Unsupported native chain curve."
+                    };
+                }
+                output.push_back({{first, last, {}}, line, circle, 0});
+            }
+        }
+        return output;
+    }
+
+    struct Cell
+    {
+        Node* node;
+        double lower;
+        bool side;
+        bool opposite;
+    };
+
+    void clearance(const Vector& middle, double travel, double& lower, double& upper)
+    {
+        std::vector<Cell> cells;
+        upper = infinity;
+        const auto qbox = middle
+            + Vector {Interval(-travel, travel),
+                      Interval(-travel, travel),
+                      Interval(-travel, travel)};
+        const auto add = [&](Node* n) {
+            consume();
+            for (const auto& witness : n->witnesses) {
+                upper = std::min(upper, norm(middle - witness).hi);
+            }
+            const auto side = dot(qbox - n->box.position, cross(n->box.tangent, normal));
+            cells.push_back(
+                {n,
+                 norm(middle - n->box.position).lo,
+                 options.distance > 0 ? side.lo > 0 : side.hi < 0,
+                 options.distance > 0 ? side.hi < 0 : side.lo > 0}
+            );
+        };
+        for (auto& root : source) {
+            add(root.get());
+        }
+        while (true) {
+            consume();
+            // A cell farther than u+2Mh at the midpoint cannot contain a
+            // nearest source point for ANY point of the final span.
+            const double cutoff = (Interval(upper) + Interval(2) * Interval(travel)).hi;
+            cells.erase(
+                std::remove_if(
+                    cells.begin(),
+                    cells.end(),
+                    [cutoff](const Cell& cell) { return cell.lower > cutoff; }
+                ),
+                cells.end()
+            );
+            lower = infinity;
+            bool side = true, opposite = true;
+            for (const auto& cell : cells) {
+                lower = std::min(lower, cell.lower);
+                side &= cell.side;
+                opposite &= cell.opposite;
+            }
+            if (opposite) {
+                throw ChainFailure {
+                    ChainStatus::NotCertified,
+                    "Candidate lies on the wrong source side."
+                };
+            }
+            if (!std::isfinite(lower) || !std::isfinite(upper)) {
+                throw ChainFailure {ChainStatus::NotCertified, "Nonfinite distance enclosure."};
+            }
+            if (upper < (Interval(std::abs(options.distance)) - Interval(options.tolerance)).lo
+                || lower > (Interval(std::abs(options.distance))
+                            + Interval(options.tolerance)).hi) {
+                throw ChainFailure {
+                    ChainStatus::NotCertified,
+                    "Global source clearance violates distance."
+                };
+            }
+            const double bandLow
+                = (Interval(std::abs(options.distance)) - Interval(options.tolerance)).hi;
+            const double bandHigh
+                = (Interval(std::abs(options.distance)) + Interval(options.tolerance)).lo;
+            const bool inside = (Interval(lower) - Interval(travel)).lo >= bandLow
+                && (Interval(upper) + Interval(travel)).hi <= bandHigh;
+            if (side && (inside || (Interval(upper) - Interval(lower)).hi
+                                   <= options.tolerance / 8)) {
+                return;
+            }
+            auto chosen = cells.end();
+            for (auto it = cells.begin(); it != cells.end(); ++it) {
+                // Refine all potential nearest cells with unresolved side;
+                // otherwise refine the lowest box until the minimum is enclosed.
+                if ((!side && it->side) || (chosen != cells.end() && it->lower >= chosen->lower)) {
+                    continue;
+                }
+                chosen = it;
+            }
+            auto* n = chosen->node;
+            if (n->span.depth >= options.maxDepth) {
+                throw ChainFailure {
+                    ChainStatus::BudgetExceeded,
+                    "Distance or requested side refinement budget exhausted."
+                };
+            }
+            cells.erase(chosen);
+            if (!n->left) {
+                auto halves = splitChain(n->span);
+                n->left = node(std::move(halves.first));
+                n->right = node(std::move(halves.second));
+            }
+            add(n->left.get());
+            add(n->right.get());
+        }
+    }
+
+    void certify(const ChainSpan& span)
+    {
+        consume();
+        const auto b = chainBounds(span, origin);
+        const double travel = (norm(b.tangent)
+                               * (Interval(span.spline.last) - Interval(span.spline.first))
+                               * Interval(0.5))
+                                  .hi;
+        if (!std::isfinite(travel)) {
+            throw ChainFailure {ChainStatus::NotCertified, "Nonfinite candidate speed enclosure."};
+        }
+        if (travel <= options.tolerance * 0.45) {
+            double lower, upper;
+            clearance(chainBounds(span, origin, true).position, travel, lower, upper);
+            const double low = (Interval(lower) - Interval(travel)).lo;
+            const double high = (Interval(upper) + Interval(travel)).hi;
+            // Inward-rounded band endpoints ensure acceptance implies the
+            // user's exact-real band, despite subtraction/addition roundoff.
+            if (low >= (Interval(std::abs(options.distance)) - Interval(options.tolerance)).hi
+                && high <= (Interval(std::abs(options.distance))
+                            + Interval(options.tolerance)).lo) {
+                return;
+            }
+        }
+        if (span.depth >= options.maxDepth) {
+            throw ChainFailure {
+                ChainStatus::BudgetExceeded,
+                "Candidate refinement budget exhausted."
+            };
+        }
+        auto halves = splitChain(span);
+        certify(halves.first);
+        certify(halves.second);
+    }
+};
+
 }  // namespace
+
+OffsetChainDistanceResult certifyOffsetChainIntervals(
+    const std::vector<const Part::GeomCurve*>& source,
+    const std::vector<const Part::GeomCurve*>& candidate,
+    const OffsetChainDistanceOptions& options
+)
+{
+    OffsetChainDistanceResult result;
+    try {
+        const auto original = Handle(Geom_Curve)::DownCast(source.front()->handle());
+        ChainValidator validator {
+            options,
+            result,
+            original->Value(original->FirstParameter()),
+            {Interval(options.sketchNormal.x),
+             Interval(options.sketchNormal.y),
+             Interval(options.sketchNormal.z)},
+            {}
+        };
+        for (auto& span : validator.spans(source)) {
+            validator.source.push_back(validator.node(std::move(span)));
+        }
+        for (const auto& span : validator.spans(candidate)) {
+            validator.certify(span);
+        }
+        result.status = OffsetChainDistanceStatus::Success;
+        result.message = "Global source distance and requested side certified.";
+    }
+    catch (const ChainFailure& failure) {
+        result.status = failure.status;
+        result.message = failure.message;
+    }
+    catch (const Failure& failure) {
+        result.status = OffsetChainDistanceStatus::NotCertified;
+        result.message = failure.message;
+    }
+    catch (const Standard_Failure&) {
+        result.status = OffsetChainDistanceStatus::NotCertified;
+        result.message = "Kernel could not supply distance certificate input.";
+    }
+    return result;
+}
 
 BSplineOffsetStatus checkBSplineOffsetInput(
     const Part::GeomBSplineCurve& source,
