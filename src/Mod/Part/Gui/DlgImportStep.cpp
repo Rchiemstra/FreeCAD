@@ -72,6 +72,7 @@ void DlgImportStep::saveSettings()
 #if OCC_VERSION_HEX >= 0x070800
     ui->comboBoxImportCodePage->onSave();
 #endif
+    ui->checkBoxSemanticPMI->onSave();
     ui->checkBoxMergeCompound->onSave();
     ui->checkBoxImportHiddenObj->onSave();
     ui->checkBoxUseLinkGroup->onSave();
@@ -88,6 +89,7 @@ void DlgImportStep::loadSettings()
 #if OCC_VERSION_HEX >= 0x070800
     ui->comboBoxImportCodePage->onRestore();
 #endif
+    ui->checkBoxSemanticPMI->onRestore();
     ui->checkBoxMergeCompound->onRestore();
     ui->checkBoxImportHiddenObj->onRestore();
     ui->checkBoxUseLinkGroup->onRestore();

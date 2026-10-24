@@ -33,6 +33,7 @@
 
 namespace Import
 {
+class StepPmiImport;
 
 class ImportExport ReaderStep
 {
@@ -42,6 +43,11 @@ public:
     {
         codePage = cp;
     }
+    void setReadSemanticPmi(bool enabled, StepPmiImport* importer = nullptr)
+    {
+        readSemanticPmi = enabled;
+        pmiImport = importer;
+    }
     void read(
         Handle(TDocStd_Document) hDoc,
         const Message_ProgressRange& theProgress = Message_ProgressRange()
@@ -50,6 +56,8 @@ public:
 private:
     Base::FileInfo file;
     Resource_FormatType codePage {};
+    bool readSemanticPmi = false;
+    StepPmiImport* pmiImport = nullptr;
 };
 
 }  // namespace Import

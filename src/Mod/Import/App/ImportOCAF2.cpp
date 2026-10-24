@@ -385,6 +385,9 @@ bool ImportOCAF2::createObject(
         feature = doc->addObject<Part::Feature>(tshape.shapeName().c_str());
         feature->Shape.setValue(shape);
     }
+    if (shapeObserver) {
+        shapeObserver(label, shape, feature);
+    }
     applyFaceColors(feature, {info.faceColor});
     applyEdgeColors(feature, {info.edgeColor});
     if (hasFaceColors) {
@@ -509,6 +512,9 @@ App::DocumentObject* ImportOCAF2::loadShapes()
     if (!options.useLinkGroup) {
         ImportLegacy legacy(*this);
         legacy.setMerge(options.merge);
+        if (shapeObserver) {
+            legacy.setShapeObserver(std::move(shapeObserver));
+        }
         legacy.loadShapes();
         return nullptr;
     }
@@ -718,6 +724,9 @@ App::DocumentObject* ImportOCAF2::loadShape(
         }
         setPlacement(info.propPlacement, shape);
         myNames.emplace(label, info.obj->getNameInDocument());
+        if (shapeObserver) {
+            shapeObserver(label, shape, info.obj);
+        }
         return info.obj;
     }
 
@@ -733,6 +742,9 @@ App::DocumentObject* ImportOCAF2::loadShape(
     myNames.emplace(label, link->getNameInDocument());
     if (!shuoColors.empty()) {
         applyElementColors(link, shuoColors);
+    }
+    if (shapeObserver) {
+        shapeObserver(label, shape, link);
     }
     return link;
 }

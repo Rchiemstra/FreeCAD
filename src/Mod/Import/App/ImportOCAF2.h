@@ -42,6 +42,7 @@
 #include "ExportOCAF.h"
 #include "ImportOCAF.h"
 #include "Tools.h"
+#include "StepPmiExport.h"
 
 
 class TDF_Label;
@@ -84,6 +85,14 @@ public:
 
     static ImportOCAFOptions customImportOptions();
     void setImportOptions(ImportOCAFOptions opts);
+    void setShapeObserver(ShapeImportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
+    bool supportsPmiAssociation() const
+    {
+        return !options.merge && options.mode == SingleDoc;
+    }
     void setMerge(bool enable)
     {
         options.merge = enable;
@@ -212,6 +221,7 @@ private:
     Handle(XCAFDoc_ColorTool) aColorTool;
     std::string default_name;
 
+    ShapeImportObserver shapeObserver;
     ImportOCAFOptions options;
     std::string filePath;
 
@@ -262,6 +272,10 @@ public:
         options.keepPlacement = enable;
     }
     void exportObjects(std::vector<App::DocumentObject*>& objs, const char* name = nullptr);
+    void setShapeObserver(ShapeExportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
     bool canFallback(std::vector<App::DocumentObject*> objs);
 
 private:
@@ -298,6 +312,7 @@ private:
     GetShapeColorsFunc getShapeColors;
 
     ExportOCAFOptions options;
+    ShapeExportObserver shapeObserver;
 };
 
 }  // namespace Import

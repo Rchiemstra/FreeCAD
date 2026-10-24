@@ -30,12 +30,14 @@
 namespace Import
 {
 
+class StepPmiExport;
+
 class ImportExport WriterStep
 {
 public:
     explicit WriterStep(const Base::FileInfo& file);
 
-    void write(Handle(TDocStd_Document) hDoc) const;
+    void write(Handle(TDocStd_Document) hDoc, const StepPmiExport* semanticPMI = nullptr) const;
 
 private:
     Base::FileInfo file;

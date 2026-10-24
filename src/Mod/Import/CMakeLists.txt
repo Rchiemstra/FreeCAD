@@ -50,16 +50,44 @@ SET(DXF_Plate
 set(Import_Scripts
     Init.py
     stepZ.py
+    StepPmi.py
+    StepPmiExport.py
+    TestStepPmiExport.py
+    TestStepPmi.py
+    TestStepPmiExtended.py
+)
+
+set(Import_PmiFixtures
+    TestData/StepPmi/semantic.step
+    TestData/StepPmi/independent-inch.step
+    TestData/StepPmi/unmapped-modifier.step
+    TestData/StepPmi/positive-deviations.step
+    TestData/StepPmi/negative-deviations.step
+    TestData/StepPmi/absolute-range.step
+    TestData/StepPmi/conflicting-signs.step
+    TestData/StepPmi/unmatched-signs.step
+    TestData/StepPmi/placed-instances.step
+    TestData/StepPmi/shared-compartment.step
+    TestData/StepPmi/generate.tcl
+    TestData/StepPmi/README.txt
 )
 
 if(BUILD_GUI)
     list (APPEND Import_Scripts InitGui.py)
-    list (APPEND Import_Scripts TestImportGui.py)
+    list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py)
 endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
-    SOURCES ${Import_Scripts} ${DXF_Plate}
+    SOURCES ${Import_Scripts} ${DXF_Plate} ${Import_PmiFixtures}
 )
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_PmiFixtures}
+)
+
+install(FILES ${Import_PmiFixtures} DESTINATION Mod/Import/TestData/StepPmi)
 
 fc_target_copy_resource(ImportScripts
     ${CMAKE_CURRENT_SOURCE_DIR}

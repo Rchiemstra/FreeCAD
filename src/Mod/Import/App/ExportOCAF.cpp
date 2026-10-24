@@ -131,6 +131,14 @@ void ExportOCAF::exportObjects(std::vector<App::DocumentObject*>& objs)
     getPartColors(hierarchical_part, FreeLabels, part_id, Colors);
     reallocateFreeShape(hierarchical_part, FreeLabels, part_id, Colors);
 
+    if (shapeObserver) {
+        for (std::size_t i = 0; i < hierarchical_label.size(); ++i) {
+            const auto label = hierarchical_label[i];
+            shapeObserver(label, hierarchical_part[i],
+                          Part::TopoShape(aShapeTool->GetShape(label)));
+        }
+    }
+
     // Update is not performed automatically anymore:
     // https://tracker.dev.opencascade.org/view.php?id=28055
     XCAFDoc_DocumentTool::ShapeTool(pDoc->Main())->UpdateAssemblies();

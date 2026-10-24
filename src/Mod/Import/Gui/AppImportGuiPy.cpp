@@ -65,6 +65,7 @@
 #include <Mod/Import/App/ReaderGltf.h>
 #include <Mod/Import/App/ReaderIges.h>
 #include <Mod/Import/App/ReaderStep.h>
+#include <Mod/Import/App/StepPmiImport.h>
 #include <Mod/Import/App/WriterGltf.h>
 #include <Mod/Import/App/WriterIges.h>
 #include <Mod/Import/App/WriterStep.h>
@@ -93,12 +94,12 @@ public:
         add_keyword_method(
             "open",
             &Module::insert,
-            "open(string) -- Open the file and create a new document."
+            "open(string, ..., semanticPMI=bool) -- Open a file; overrides ImportSemanticPMI."
         );
         add_keyword_method(
             "insert",
             &Module::insert,
-            "insert(string,string) -- Insert the file into the given document."
+            "insert(string,string, ..., semanticPMI=bool) -- Insert a file; overrides ImportSemanticPMI."
         );
         add_varargs_method("preScanDxf", &Module::preScanDxf, "preScanDxf(filepath) -> dict");
         add_varargs_method(
@@ -120,7 +121,8 @@ public:
         add_keyword_method(
             "export",
             &Module::exporter,
-            "export(list,string) -- Export a list of objects into a single file."
+            "export(list,string,...,semanticPMI=bool) -- Export shapes; opt-in AP242 PMI "
+            "returns per-object status/reason records (ExportSemanticPMI defaults off)."
         );
         add_varargs_method("ocaf", &Module::ocaf, "ocaf(string) -- Browse the ocaf structure.");
         initialize("This module is the ImportGui module.");  // register with Python
@@ -189,8 +191,9 @@ private:
         PyObject* importHidden = Py_None;
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
+        PyObject* semanticPMI = Py_None;
         int mode = -1;
-        static const std::array<const char*, 8> kwd_list {
+        static const std::array<const char*, 9> kwd_list {
             "name",
             "docName",
             "options",
@@ -198,12 +201,13 @@ private:
             "merge",
             "useLinkGroup",
             "mode",
+            "semanticPMI",
             nullptr
         };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!O!i",
+                "et|sO!O!O!O!iO!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -216,7 +220,9 @@ private:
                 &merge,
                 &PyBool_Type,
                 &useLinkGroup,
-                &mode
+                &mode,
+                &PyBool_Type,
+                &semanticPMI
             )) {
             throw Py::Exception();
         }
@@ -226,6 +232,8 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
+            auto pmi = Import::StepPmiImport::create(
+                file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -318,6 +326,9 @@ private:
                         pi = new Part::ProgressIndicator();
                     }
                     Import::ReaderStep reader(file);
+                    if (pmi) {
+                        reader.setReadSemanticPmi(true, pmi.get());
+                    }
 #if OCC_VERSION_HEX >= 0x070800
                     reader.setCodePage(cp);
 #endif
@@ -373,7 +384,13 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
+            if (pmi) {
+                pmi->attach(ocaf);
+            }
             auto ret = ocaf.loadShapes();
+            if (pmi) {
+                pmi->finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
+            }
             hApp->Close(hDoc);
 
             if (ret) {
@@ -492,6 +509,7 @@ private:
                 options.setItem("exportHidden", Py::Boolean(stepSettings.exportHidden));
                 options.setItem("keepPlacement", Py::Boolean(stepSettings.keepPlacement));
                 options.setItem("legacy", Py::Boolean(stepSettings.exportLegacy));
+                options.setItem("semanticPMI", Py::Boolean(stepSettings.semanticPMI));
             }
         }
 
@@ -506,12 +524,14 @@ private:
         PyObject* pyexportHidden = Py_None;
         PyObject* pylegacy = Py_None;
         PyObject* pykeepPlacement = Py_None;
-        static const std::array<const char*, 7>
-            kwd_list {"obj", "name", "options", "exportHidden", "legacy", "keepPlacement", nullptr};
+        PyObject* semanticPMI = Py_None;
+        static const std::array<const char*, 8>
+            kwd_list {"obj", "name", "options", "exportHidden", "legacy", "keepPlacement",
+                      "semanticPMI", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "Oet|O!O!O!O!",
+                "Oet|O!O!O!O!O!",
                 kwd_list,
                 &object,
                 "utf-8",
@@ -523,7 +543,9 @@ private:
                 &PyBool_Type,
                 &pylegacy,
                 &PyBool_Type,
-                &pykeepPlacement
+                &pykeepPlacement,
+                &PyBool_Type,
+                &semanticPMI
             )) {
             throw Py::Exception();
         }
@@ -553,11 +575,16 @@ private:
             if (options.hasKey("exportHidden")) {
                 exportHidden = static_cast<bool>(Py::Boolean(options.getItem("exportHidden")));
             }
+            if (options.hasKey("semanticPMI")) {
+                semanticPMI = Py::Boolean(options.getItem("semanticPMI")) ? Py_True : Py_False;
+            }
             if (options.hasKey("keepPlacement")) {
                 keepPlacement = static_cast<bool>(Py::Boolean(options.getItem("keepPlacement")));
             }
         }
 
+        Import::StepPmiExport pmi(semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+        Py::Object pmiReport = Py::None();
         try {
             Py::Sequence list(object);
             std::vector<App::DocumentObject*> objs;
@@ -574,6 +601,7 @@ private:
             hApp->NewDocument(TCollection_ExtendedString("MDTV-CAF"), hDoc);
 
             Import::ExportOCAF2 ocaf(hDoc, &getShapeColors);
+            ocaf.setShapeObserver(pmi.observer());
             if (!legacyExport || !ocaf.canFallback(objs)) {
                 ocaf.setExportOptions(Import::ExportOCAF2::customExportOptions());
                 ocaf.setExportHiddenObject(exportHidden);
@@ -584,6 +612,7 @@ private:
             else {
                 bool keepExplicitPlacement = true;
                 ExportOCAFGui ocaf(hDoc, keepExplicitPlacement);
+                ocaf.setShapeObserver(pmi.observer());
                 ocaf.exportObjects(objs);
             }
 
@@ -599,7 +628,7 @@ private:
                 }
 
                 Import::WriterStep writer(file);
-                writer.write(hDoc);
+                pmiReport = pmi.write(file, hDoc, objs);
             }
             else if (file.hasExtension({"igs", "iges"})) {
                 Import::WriterIges writer(file);
@@ -620,7 +649,7 @@ private:
             throw Py::Exception();
         }
 
-        return Py::None();
+        return pmiReport;
     }
     Py::Object ocaf(const Py::Tuple& args)
     {
