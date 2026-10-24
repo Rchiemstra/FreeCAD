@@ -198,6 +198,15 @@ static bool addToTopLevelSceneGraph(Gui::Document* document, Gui::ViewProvider* 
     return added;
 }
 
+static bool visibilityBeforeExposure(const Gui::ViewProviderDocumentObject* vp)
+{
+    // Deferred App visibility may not have reached the view property or Coin.
+    // Save its intended state so deactivation cannot resurrect a hidden tool.
+    const Gui::Document* document = vp->getDocument();
+    return document && document->hasDeferredVisibilityChange(vp)
+        ? vp->getObject()->Visibility.getValue() : vp->Gui::ViewProvider::isShow();
+}
+
 void ViewProviderBoolean::exposeViewProvider(
     ActiveBodyExposure& exposure,
     App::DocumentObject* object,
@@ -209,7 +218,7 @@ void ViewProviderBoolean::exposeViewProvider(
         return;
     }
 
-    auto* vp = Gui::Application::Instance->getViewProvider(object);
+    auto* vp = Gui::Application::Instance->getViewProvider<Gui::ViewProviderDocumentObject>(object);
     if (!vp) {
         return;
     }
@@ -223,7 +232,7 @@ void ViewProviderBoolean::exposeViewProvider(
             ViewProviderExposure {
                 .object = App::DocumentObjectWeakPtrT(object),
                 .mode = vp->getActualMode(),
-                .wasVisible = vp->Gui::ViewProvider::isShow(),
+                .wasVisible = visibilityBeforeExposure(vp),
                 .topLevelExposed = false,
             }
         );
@@ -321,7 +330,7 @@ void ViewProviderBoolean::onBodyActivated(const Gui::ViewProviderDocumentObject*
             ActiveBodyExposure {
                 .body = App::DocumentObjectWeakPtrT(matchingMember),
                 .booleanMode = getActualMode(),
-                .booleanWasVisible = Gui::ViewProvider::isShow(),
+                .booleanWasVisible = visibilityBeforeExposure(this),
                 .indirect = indirectActivation,
                 .viewProviders = {},
             }
