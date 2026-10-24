@@ -13,6 +13,7 @@
 #include <GeomConvert.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_TrimmedCurve.hxx>
+#include <Precision.hxx>
 #include <Mod/Sketcher/App/OffsetChain.h>
 
 namespace
@@ -58,7 +59,11 @@ Chain mixed(double distance = 0, double displacement = 0)
     const double radius = 10 + distance;
     line(chain, V(radius + displacement, -5, 0), V(radius + displacement, 0, 0));
     quarter(chain, radius);
-    arc(chain, radius, std::acos(-1.0) / 2, std::acos(-1.0));
+    auto circle = std::make_unique<Part::GeomArcOfCircle>(new Geom_Circle(
+        gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(0, 1, 0)), radius
+    ));
+    circle->setRange(0, std::acos(-1.0) / 2, false);
+    chain.push_back(std::move(circle));
     return chain;
 }
 
@@ -858,6 +863,10 @@ TEST(OffsetChainGenerator, ClosedSplineHalfAndArcHalf)
     auto half = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(
         new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 10), 0, pi
     ), Convert_QuasiAngular);
+    // Native trig endpoints cannot equal rational poles algebraically. Leave
+    // provably forward gaps at both joins instead of welding the source.
+    half->SetPole(1, gp_Pnt(10, 1e-8, 0));
+    half->SetPole(half->NbPoles(), gp_Pnt(-10, 1e-8, 0));
     source.push_back(std::make_unique<Part::GeomBSplineCurve>(half));
     arc(source, 10, pi, 2 * pi);
     OffsetChainOptions options;
@@ -875,6 +884,16 @@ TEST(OffsetChainGenerator, ReversedOrderAndSignKeepSide)
     for (auto& curve : reversed) {
         curve->reverse();
     }
+    // Preserve an algebraic endpoint at zero: kernel reversal maps it to 2*pi,
+    // whose rounded trig endpoint cannot prove an untouched source junction.
+    auto reversedArc = std::make_unique<Part::GeomArcOfCircle>();
+    reversedArc->setHandle(new Geom_TrimmedCurve(new Geom_Circle(
+        gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, -1), gp_Dir(0, 1, 0)), 10
+    ), -std::acos(-1.0) / 2, 0, true, false));
+    Handle(Geom_TrimmedCurve)::DownCast(reversedArc->handle())->SetTrim(
+        -std::acos(-1.0) / 2, 0, true, false
+    );
+    reversed.front() = std::move(reversedArc);
     auto input = pieces(reversed);
     for (size_t i = 0; i < input.size(); ++i) {
         input[i].identity = input.size() - 1 - i;
@@ -962,6 +981,126 @@ TEST(OffsetChainGenerator, GapExceedsJoinTolerance)
         V(10, -5, 0), V(10, -2e-7, 0)
     );
     expectRefused(source, 1);
+}
+
+TEST(OffsetChainGenerator, OverlappingSourceWithinJoinTolerance)
+{
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    line(source, V(1 - std::ldexp(1.0, -25), 0, 0), V(2, 0, 0));
+    const auto result = Sketcher::makeOffsetChain(pieces(source), 1);
+    EXPECT_EQ(result.status, OffsetChainStatus::BudgetExceeded) << result.reason;
+    EXPECT_EQ(result.reason, "Topology certificate budget exhausted.");
+    EXPECT_TRUE(result.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, RoundedJoinAboveTolerance)
+{
+    const double j = std::ldexp(1.0, -24), b = std::ldexp(1.0, -51);
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    line(source, V(1 + j, b, 0), V(2 + j, b, 0));
+    OffsetChainOptions options;
+    options.joinTolerance = j;
+    // sqrt(j*j + b*b) rounds to j, although the exact distance exceeds j.
+    ASSERT_EQ(std::sqrt(j * j + b * b), j);
+    const auto result = Sketcher::makeOffsetChain(pieces(source), 1, options);
+    EXPECT_EQ(result.status, OffsetChainStatus::NotCertified) << result.reason;
+    EXPECT_EQ(result.reason, "Junction gap exceeds join tolerance.");
+    EXPECT_TRUE(result.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, RoundedOutputJoinAboveTolerance)
+{
+    const double gap = std::ldexp(1.0, -25), rise = std::ldexp(1.0, -44);
+    const double b = std::ldexp(1.0, -51);
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    line(source, V(1 + gap, b, 0), V(2 + gap, rise + b, 0));
+    OffsetChainOptions options;
+    options.joinTolerance = gap + rise;
+    // The source gap is safely within tolerance. Its tiny tangent change makes
+    // the offset gap strictly exceed tolerance, while its norm still rounds down.
+    const double j = options.joinTolerance;
+    ASSERT_EQ(std::sqrt(j * j + b * b), j);
+    const auto result = Sketcher::makeOffsetChain(pieces(source), 1, options);
+    EXPECT_EQ(result.status, OffsetChainStatus::NotCertified) << result.reason;
+    EXPECT_EQ(result.reason, "Join requires trimming or extension.");
+    EXPECT_TRUE(result.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, SubToleranceBackwardJoin)
+{
+    const double gap = std::ldexp(1.0, -25);
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    // Disjoint parallel pieces still have a backward junction.
+    line(source, V(1 - gap, gap, 0), V(2, gap, 0));
+    const auto result = Sketcher::makeOffsetChain(pieces(source), 1);
+    EXPECT_EQ(result.status, OffsetChainStatus::BudgetExceeded) << result.reason;
+    EXPECT_EQ(result.reason, "Topology certificate budget exhausted.");
+    EXPECT_TRUE(result.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, ExactBoundaryWeld)
+{
+    const double gap = std::ldexp(1.0, -24);
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    line(source, V(1 + gap, 0, 0), V(2 + gap, 0, 0));
+    OffsetChainOptions options;
+    options.joinTolerance = gap;
+    const auto result = Sketcher::makeOffsetChain(pieces(source), 1, options);
+    ASSERT_EQ(result.status, OffsetChainStatus::Success) << result.reason;
+    ASSERT_EQ(result.pieces.size(), 2);
+    const auto& welded = *result.pieces[1].geometry;
+    const V nominalStart(1 + gap, -1, 0);
+    const V actualStart = welded.value(welded.getFirstParameter());
+    const double displacement = (actualStart - nominalStart).Length();
+    EXPECT_EQ(displacement, gap);
+    EXPECT_LE(displacement, options.joinTolerance);
+    EXPECT_EQ(source[1]->value(source[1]->getFirstParameter()), V(1 + gap, 0, 0));
+    options.joinTolerance = std::nextafter(gap, 0.0);
+    const auto refused = Sketcher::makeOffsetChain(pieces(source), 1, options);
+    EXPECT_EQ(refused.status, OffsetChainStatus::NotCertified) << refused.reason;
+    EXPECT_EQ(refused.reason, "Junction gap exceeds join tolerance.");
+    EXPECT_TRUE(refused.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, NearCuspAndTangentReversalAtJoin)
+{
+    for (double rise : {0.0, std::ldexp(1.0, -30)}) {
+        SCOPED_TRACE(rise);
+        Chain source;
+        line(source, V(0, 0, 0), V(1, 0, 0));
+        line(source, V(1, 0, 0), V(0.5, rise, 0));
+        const auto result = Sketcher::makeOffsetChain(pieces(source), 1);
+        EXPECT_EQ(result.status, OffsetChainStatus::BudgetExceeded) << result.reason;
+        EXPECT_EQ(result.reason, "Topology certificate budget exhausted.");
+        EXPECT_TRUE(result.pieces.empty());
+    }
+}
+
+TEST(OffsetChainGenerator, ConcaveArcCollapseThreshold)
+{
+    Chain source;
+    arc(source, 1, 0, 1);
+    const double threshold = Precision::Confusion() - 1;
+    ASSERT_GT(1 + std::nextafter(threshold, 0.0), Precision::Confusion());
+    ASSERT_LE(1 + threshold, Precision::Confusion());
+    OffsetChainOptions options;
+    options.joinTolerance = 1e-12;
+    const auto below = Sketcher::makeOffsetChain(
+        pieces(source), std::nextafter(threshold, 0.0), options
+    );
+    EXPECT_EQ(below.status, OffsetChainStatus::Success) << below.reason;
+    for (double distance : {threshold, std::nextafter(-1.0, 0.0), -1.0}) {
+        SCOPED_TRACE(distance);
+        const auto result = Sketcher::makeOffsetChain(pieces(source), distance, options);
+        EXPECT_EQ(result.status, OffsetChainStatus::NotCertified) << result.reason;
+        EXPECT_EQ(result.reason, "Offset arc collapses.");
+        EXPECT_TRUE(result.pieces.empty());
+    }
 }
 
 TEST(OffsetChainGenerator, DuplicateIdentityAndOverlappingIntervals)

@@ -128,8 +128,7 @@ struct OffsetChainResult
 // Positive distance follows tangent cross sketchNormal (the single-spline rule).
 // Builds analytic line/arc offsets and makeBSplineOffset fits. Circular offsets
 // use the exact rational conic representation to permit algebraic endpoint welding.
-// Joins of detached source copies are welded for the source topology proof.
-// The distance certificate always uses the untouched original source. Welds endpoints
+// Both source certificates use the untouched original source. Welds output endpoints
 // only within joinTolerance, then certifies distance/side against the WHOLE source
 // and topology on the final geometry, including every welding displacement.
 // Refusals return no pieces. Source geometry is borrowed and never modified.

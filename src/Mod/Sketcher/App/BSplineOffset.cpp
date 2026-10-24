@@ -1259,6 +1259,17 @@ struct TopologyValidator
 // kernel Value() calls and overlapping interval boxes are never equality proofs.
 using ExactPoint = std::array<boost::multiprecision::cpp_rational, 3>;
 
+bool withinTolerance(const ExactPoint& a, const ExactPoint& b, double tolerance)
+{
+    boost::multiprecision::cpp_rational squared = 0;
+    for (size_t i = 0; i < 3; ++i) {
+        const auto delta = a[i] - b[i];
+        squared += delta * delta;
+    }
+    const boost::multiprecision::cpp_rational bound(tolerance);
+    return squared <= bound * bound;
+}
+
 std::optional<ExactPoint> exactEndpoint(const Part::GeomCurve& geometry, bool last)
 {
     auto curve = Handle(Geom_Curve)::DownCast(geometry.handle());
@@ -1303,7 +1314,52 @@ std::optional<ExactPoint> exactEndpoint(const Part::GeomCurve& geometry, bool la
     return result;
 }
 
+Vector endpointEnclosure(const Part::GeomCurve& geometry, bool last)
+{
+    auto curve = Handle(Geom_Curve)::DownCast(geometry.handle());
+    auto spline = Handle(Geom_BSplineCurve)::DownCast(curve);
+    if (!spline.IsNull()) {
+        const int index = last ? spline->LastUKnotIndex() - 1 : spline->FirstUKnotIndex();
+        const auto span = bezier(spline, spline->Knot(index), spline->Knot(index + 1),
+                                 gp_Pnt(0, 0, 0));
+        const auto& pole = last ? span.poles.back() : span.poles.front();
+        return xyz(pole) / pole[3];
+    }
+    const double parameter = last ? curve->LastParameter() : curve->FirstParameter();
+    auto trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve);
+    if (!trimmed.IsNull()) {
+        curve = trimmed->BasisCurve();
+    }
+    ChainSpan point;
+    point.spline.first = point.spline.last = parameter;
+    point.line = Handle(Geom_Line)::DownCast(curve);
+    point.circle = Handle(Geom_Circle)::DownCast(curve);
+    return chainBounds(point, gp_Pnt(0, 0, 0)).position;
+}
+
 }  // namespace
+
+// Shared with the detached generator. Compare native endpoints, including line
+// parameterization and arc conversion rounding, rather than rounded Value() calls.
+bool offsetChainEndpointsWithinTolerance(
+    const Part::GeomCurve& a, bool lastA,
+    const Part::GeomCurve& b, bool lastB, double tolerance
+)
+{
+    try {
+        const auto exactA = exactEndpoint(a, lastA), exactB = exactEndpoint(b, lastB);
+        if (exactA && exactB) {
+            return withinTolerance(*exactA, *exactB, tolerance);
+        }
+        return norm(endpointEnclosure(a, lastA) - endpointEnclosure(b, lastB)).hi <= tolerance;
+    }
+    catch (const Failure&) {
+        return false;
+    }
+    catch (const Standard_Failure&) {
+        return false;
+    }
+}
 
 OffsetChainDistanceResult certifyOffsetChainIntervals(
     const std::vector<const Part::GeomCurve*>& source,
@@ -1413,7 +1469,10 @@ OffsetChainTopologyResult certifyOffsetChainTopologyIntervals(
                 );
                 equal = equal || (!spline.IsNull() && spline->IsPeriodic());
             }
-            if (!equal && !(norm(b - a).hi <= options.joinTolerance)) {
+            const bool bounded = ends[i - 1] && starts[next]
+                ? withinTolerance(*ends[i - 1], *starts[next], options.joinTolerance)
+                : norm(b - a).hi <= options.joinTolerance;
+            if (!equal && !bounded) {
                 throw ChainFailure {
                     OffsetChainTopologyStatus::NotCertified, "Junction gap exceeds join tolerance."
                 };

@@ -30,6 +30,11 @@ OffsetChainTopologyResult certifyOffsetChainTopologyIntervals(
     const OffsetChainTopologyOptions& options
 );
 
+bool offsetChainEndpointsWithinTolerance(
+    const Part::GeomCurve& a, bool lastA,
+    const Part::GeomCurve& b, bool lastB, double tolerance
+);
+
 OffsetChainDistanceResult certifyOffsetChainDistance(
     const std::vector<const Part::GeomCurve*>& source,
     const std::vector<const Part::GeomCurve*>& candidate,
@@ -129,12 +134,11 @@ std::unique_ptr<Part::GeomCurve> weldableCopy(const Part::GeomCurve& curve)
 }
 
 void checkWeldDisplacement(
-    const Part::GeomCurve& curve, const V& first, const V& last, double tolerance
+    const Part::GeomCurve& before, const Part::GeomCurve& after, double tolerance
 )
 {
-    const double a = (first - endpoint(curve, false)).Length();
-    const double b = (last - endpoint(curve, true)).Length();
-    if (!std::isfinite(a) || !std::isfinite(b) || a > tolerance || b > tolerance) {
+    if (!offsetChainEndpointsWithinTolerance(before, false, after, false, tolerance)
+        || !offsetChainEndpointsWithinTolerance(before, true, after, true, tolerance)) {
         throw GenerationFailure {ChainStatus::NotCertified, "Join exceeds welding tolerance."};
     }
 }
@@ -143,10 +147,12 @@ void checkWeldDisplacement(
 // A line interpolates its endpoint movements. Never drop a native interval.
 void weld(Part::GeomCurve& curve, const V& first, const V& last, double tolerance)
 {
-    checkWeldDisplacement(curve, first, last, tolerance);
     if (first == endpoint(curve, false) && last == endpoint(curve, true)) {
         return;
     }
+    const std::unique_ptr<Part::GeomCurve> before(
+        static_cast<Part::GeomCurve*>(curve.copy())
+    );
     if (auto* line = dynamic_cast<Part::GeomLineSegment*>(&curve)) {
         line->setPoints(first, last);
     }
@@ -156,6 +162,7 @@ void weld(Part::GeomCurve& curve, const V& first, const V& last, double toleranc
         native->SetPole(1, gp_Pnt(first.x, first.y, first.z));
         native->SetPole(native->NbPoles(), gp_Pnt(last.x, last.y, last.z));
     }
+    checkWeldDisplacement(*before, curve, tolerance);
 }
 
 void weldChain(std::vector<OffsetChainOutputPiece>& chain, const OffsetChainOptions& options)
@@ -168,7 +175,8 @@ void weldChain(std::vector<OffsetChainOutputPiece>& chain, const OffsetChainOpti
     const size_t joins = options.closed ? chain.size() : chain.size() - 1;
     for (size_t i = 0; i < joins; ++i) {
         const size_t j = (i + 1) % chain.size();
-        if ((last[i] - first[j]).Length() > options.joinTolerance) {
+        if (!offsetChainEndpointsWithinTolerance(
+                *chain[i].geometry, true, *chain[j].geometry, false, options.joinTolerance)) {
             throw GenerationFailure {
                 ChainStatus::NotCertified, "Join requires trimming or extension."
             };
@@ -225,7 +233,6 @@ OffsetChainResult makeOffsetChain(
             ++result.work;
         };
         std::set<std::size_t> identities;
-        std::vector<OffsetChainOutputPiece> joinedSource;
         for (const auto& piece : source) {
             consume();
             if (!piece.geometry || !identities.insert(piece.identity).second) {
@@ -266,22 +273,13 @@ OffsetChainResult makeOffsetChain(
                     ChainStatus::UnsupportedCurve, "Unsupported arc interval."
                 };
             }
-            joinedSource.push_back({weldableCopy(*piece.geometry), piece.identity});
-        }
-        weldChain(joinedSource, options);
-        std::vector<OffsetChainPiece> sourcePieces;
-        for (size_t i = 0; i < joinedSource.size(); ++i) {
-            const auto& piece = joinedSource[i];
-            checkWeldDisplacement(*piece.geometry, endpoint(*source[i].geometry, false),
-                                  endpoint(*source[i].geometry, true), options.joinTolerance);
-            sourcePieces.push_back({piece.geometry.get(), piece.identity});
         }
         consume();
         if (result.work == options.maxWork) {
             throw GenerationFailure {ChainStatus::BudgetExceeded, "Offset work budget exhausted."};
         }
         topologyOptions.maxWork = options.maxWork - result.work;
-        const auto sourceTopology = certifyOffsetChainTopology(sourcePieces, topologyOptions);
+        const auto sourceTopology = certifyOffsetChainTopology(source, topologyOptions);
         result.work += sourceTopology.work;
         if (sourceTopology.status != ChainStatus::Success) {
             result.status = sourceTopology.status;
@@ -381,10 +379,9 @@ OffsetChainResult makeOffsetChain(
             }
             sourceView.push_back(piece.geometry);
         }
-        std::vector<V> nominalFirst, nominalLast;
+        std::vector<std::unique_ptr<Part::GeomCurve>> nominal;
         for (auto& piece : output) {
-            nominalFirst.push_back(endpoint(*piece.geometry, false));
-            nominalLast.push_back(endpoint(*piece.geometry, true));
+            nominal.emplace_back(static_cast<Part::GeomCurve*>(piece.geometry->copy()));
             if (dynamic_cast<const Part::GeomArcOfCircle*>(piece.geometry.get())) {
                 piece.geometry = weldableCopy(*piece.geometry);
             }
@@ -396,8 +393,7 @@ OffsetChainResult makeOffsetChain(
             consume();
             const auto& piece = output[i];
             // Bound conversion plus welding together, against the analytic offset.
-            checkWeldDisplacement(*piece.geometry, nominalFirst[i], nominalLast[i],
-                                  options.joinTolerance);
+            checkWeldDisplacement(*nominal[i], *piece.geometry, options.joinTolerance);
             candidate.push_back(piece.geometry.get());
             finalPieces.push_back({piece.geometry.get(), piece.identity});
         }
