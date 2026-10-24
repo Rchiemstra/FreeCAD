@@ -34,6 +34,7 @@
 #include <App/Application.h>
 #include <Base/Tools.h>
 
+#include "DockWidget.h"
 #include "DockWindowManager.h"
 #include "MainWindow.h"
 #include "OverlayManager.h"
@@ -260,7 +261,7 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
 
     // creates the dock widget as container to embed this widget
     MainWindow* mw = getMainWindow();
-    dw = new QDockWidget(mw);
+    dw = new DockWidget(mw);
 
     if (d->overlayManager) {
         d->overlayManager->setupTitleBar(dw);
