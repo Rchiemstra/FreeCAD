@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -797,4 +798,235 @@ TEST(OffsetChainTopology, DepthExhaustionAndStationaryPoint)
     EXPECT_EQ(stopped.status, OffsetChainTopologyStatus::BudgetExceeded) << stopped.message;
     EXPECT_EQ(stopped.message, "Topology certificate budget exhausted.");
 }
+// Generator tests deliberately exercise the public, detached route.
+using Sketcher::OffsetChainOptions;
+using Sketcher::OffsetChainStatus;
+
+std::vector<const Part::GeomCurve*> generatedView(const Sketcher::OffsetChainResult& result)
+{
+    std::vector<const Part::GeomCurve*> curves;
+    for (const auto& piece : result.pieces) {
+        curves.push_back(piece.geometry.get());
+    }
+    return curves;
+}
+
+void expectGenerated(const Chain& source, double distance, const OffsetChainOptions& options = {})
+{
+    const auto result = Sketcher::makeOffsetChain(pieces(source), distance, options);
+    ASSERT_EQ(result.status, OffsetChainStatus::Success) << result.reason;
+    ASSERT_EQ(result.pieces.size(), source.size());
+    EXPECT_EQ(result.distanceCertificate.status, OffsetChainDistanceStatus::Success);
+    EXPECT_EQ(result.topologyCertificate.status, OffsetChainTopologyStatus::Success);
+    std::vector<Sketcher::OffsetChainPiece> output;
+    for (size_t i = 0; i < result.pieces.size(); ++i) {
+        EXPECT_EQ(result.pieces[i].identity, i);
+        output.push_back({result.pieces[i].geometry.get(), result.pieces[i].identity});
+    }
+    const size_t joins = options.closed ? output.size() : output.size() - 1;
+    for (size_t i = 0; i < joins; ++i) {
+        const auto* a = output[i].geometry;
+        const auto* b = output[(i + 1) % output.size()].geometry;
+        EXPECT_LT((a->value(a->getLastParameter())
+                   - b->value(b->getFirstParameter())).Length(), 1e-12);
+    }
+    OffsetChainDistanceOptions distanceOptions;
+    distanceOptions.distance = distance;
+    EXPECT_EQ(Sketcher::certifyOffsetChainDistance(
+                  view(source), generatedView(result), distanceOptions).status,
+              OffsetChainDistanceStatus::Success);
+    OffsetChainTopologyOptions topologyOptions;
+    topologyOptions.closed = options.closed;
+    EXPECT_EQ(Sketcher::certifyOffsetChainTopology(output, topologyOptions).status,
+              OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainGenerator, OpenMixedOutward)
+{
+    expectGenerated(mixed(), 1);
+}
+
+TEST(OffsetChainGenerator, OpenMixedInward)
+{
+    expectGenerated(mixed(), -1);
+}
+
+TEST(OffsetChainGenerator, ClosedSplineHalfAndArcHalf)
+{
+    Chain source;
+    const double pi = std::acos(-1.0);
+    auto half = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(
+        new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 10), 0, pi
+    ), Convert_QuasiAngular);
+    source.push_back(std::make_unique<Part::GeomBSplineCurve>(half));
+    arc(source, 10, pi, 2 * pi);
+    OffsetChainOptions options;
+    options.closed = true;
+    for (double distance : {1.0, -1.0}) {
+        expectGenerated(source, distance, options);
+    }
+}
+
+TEST(OffsetChainGenerator, ReversedOrderAndSignKeepSide)
+{
+    auto source = mixed();
+    auto reversed = mixed();
+    std::reverse(reversed.begin(), reversed.end());
+    for (auto& curve : reversed) {
+        curve->reverse();
+    }
+    auto input = pieces(reversed);
+    for (size_t i = 0; i < input.size(); ++i) {
+        input[i].identity = input.size() - 1 - i;
+    }
+    for (double distance : {1.0, -1.0}) {
+        const auto forward = Sketcher::makeOffsetChain(pieces(source), distance);
+        const auto backward = Sketcher::makeOffsetChain(input, -distance);
+        ASSERT_EQ(forward.status, OffsetChainStatus::Success) << forward.reason;
+        ASSERT_EQ(backward.status, OffsetChainStatus::Success) << backward.reason;
+        ASSERT_EQ(forward.pieces.size(), backward.pieces.size());
+        for (size_t i = 0; i < forward.pieces.size(); ++i) {
+            const auto& a = forward.pieces[i];
+            const auto& b = backward.pieces[backward.pieces.size() - 1 - i];
+            EXPECT_EQ(a.identity, b.identity);
+            for (int j = 0; j <= 20; ++j) {
+                const double t = j / 20.0;
+                const auto p = a.geometry->value(a.geometry->getFirstParameter() * (1 - t)
+                                                + a.geometry->getLastParameter() * t);
+                const auto q = b.geometry->value(b.geometry->getLastParameter() * (1 - t)
+                                                + b.geometry->getFirstParameter() * t);
+                EXPECT_LT((p - q).Length(), 0.002);
+            }
+        }
+    }
+}
+
+void expectRefused(const Chain& source, double distance, const OffsetChainOptions& options = {})
+{
+    const auto result = Sketcher::makeOffsetChain(pieces(source), distance, options);
+    EXPECT_NE(result.status, OffsetChainStatus::Success);
+    EXPECT_FALSE(result.reason.empty());
+    EXPECT_TRUE(result.pieces.empty());
+}
+
+TEST(OffsetChainGenerator, NonG1Corner)
+{
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    line(source, V(1, 0, 0), V(1, 1, 0));
+    expectRefused(source, 1);
+}
+
+TEST(OffsetChainGenerator, MissingSourceInterval)
+{
+    auto source = mixed();
+    source.erase(source.begin() + 1);
+    expectRefused(source, 1);
+}
+
+TEST(OffsetChainGenerator, CollapsingArc)
+{
+    Chain source;
+    arc(source, 10, 0, 1);
+    for (double distance : {-10.0, -11.0}) {
+        expectRefused(source, distance);
+    }
+}
+
+TEST(OffsetChainGenerator, TinyBudget)
+{
+    OffsetChainOptions options;
+    options.maxWork = 1;
+    const auto result = Sketcher::makeOffsetChain(pieces(mixed()), 1, options);
+    EXPECT_EQ(result.status, OffsetChainStatus::BudgetExceeded);
+    EXPECT_TRUE(result.pieces.empty());
+    EXPECT_NE(result.reason.find("budget"), std::string::npos);
+}
+
+TEST(OffsetChainGenerator, BoundedWeldingLeavesSourceUntouched)
+{
+    auto source = mixed();
+    auto* first = static_cast<Part::GeomLineSegment*>(source.front().get());
+    const V originalEnd(10, -5e-8, 0);
+    first->setPoints(V(10, -5, 0), originalEnd);
+    const V storedEnd = first->getEndPoint();
+    expectGenerated(source, 1);
+    EXPECT_EQ(first->getEndPoint(), storedEnd);
+    EXPECT_EQ(source[1]->value(source[1]->getFirstParameter()), V(10, 0, 0));
+}
+
+TEST(OffsetChainGenerator, GapExceedsJoinTolerance)
+{
+    auto source = mixed();
+    static_cast<Part::GeomLineSegment*>(source.front().get())->setPoints(
+        V(10, -5, 0), V(10, -2e-7, 0)
+    );
+    expectRefused(source, 1);
+}
+
+TEST(OffsetChainGenerator, DuplicateIdentityAndOverlappingIntervals)
+{
+    auto source = mixed();
+    auto input = pieces(source);
+    input[1].identity = input[0].identity;
+    const auto duplicate = Sketcher::makeOffsetChain(input, 1);
+    EXPECT_EQ(duplicate.status, OffsetChainStatus::InvalidInput);
+    EXPECT_TRUE(duplicate.pieces.empty());
+    Chain overlapping;
+    line(overlapping, V(0, 0, 0), V(2, 0, 0));
+    line(overlapping, V(1, 0, 0), V(3, 0, 0));
+    expectRefused(overlapping, 1);
+}
+
+TEST(OffsetChainGenerator, InvalidOptions)
+{
+    const auto source = mixed();
+    for (int kind = 0; kind < 4; ++kind) {
+        OffsetChainOptions options;
+        if (kind == 0) {
+            options.joinTolerance = 1e-6;
+        }
+        else if (kind == 1) {
+            options.joinTolerance = std::numeric_limits<double>::quiet_NaN();
+        }
+        else if (kind == 2) {
+            options.tolerance = 0;
+        }
+        else {
+            options.maxWork = 0;
+        }
+        expectRefused(source, 1, options);
+    }
+}
+
+TEST(OffsetChainGenerator, UnsupportedAndInvalidSpline)
+{
+    Chain source;
+    source.push_back(std::make_unique<Part::GeomBSplineCurve>(
+        std::vector<V> {V(0, 0, 0), V(1, 0, 0), V(1, 1, 0)},
+        std::vector<double> {1, 1, 1}, std::vector<double> {0, 0.5, 1},
+        std::vector<int> {2, 1, 2}, 1
+    ));
+    expectRefused(source, 1);
+    auto native = Handle(Geom_BSplineCurve)::DownCast(source[0]->handle());
+    native->SetPole(2, gp_Pnt(std::numeric_limits<double>::infinity(), 0, 0));
+    expectRefused(source, 1);
+}
+
+TEST(OffsetChainGenerator, FinalCertificateRefusalReturnsNoPartialOutput)
+{
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    const auto complete = Sketcher::makeOffsetChain(pieces(source), 1);
+    ASSERT_EQ(complete.status, OffsetChainStatus::Success) << complete.reason;
+    OffsetChainOptions options;
+    options.maxWork = complete.work - 1;
+    const auto exhausted = Sketcher::makeOffsetChain(pieces(source), 1, options);
+    EXPECT_EQ(exhausted.distanceCertificate.status, OffsetChainDistanceStatus::Success);
+    EXPECT_EQ(exhausted.topologyCertificate.status, OffsetChainTopologyStatus::BudgetExceeded);
+    EXPECT_EQ(exhausted.status, OffsetChainStatus::BudgetExceeded);
+    EXPECT_TRUE(exhausted.pieces.empty());
+    EXPECT_LE(exhausted.work, options.maxWork);
+}
+
 }  // namespace

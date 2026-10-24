@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,53 @@ struct OffsetChainTopologyOptions
 SketcherExport OffsetChainTopologyResult certifyOffsetChainTopology(
     const std::vector<OffsetChainPiece>& chain,
     const OffsetChainTopologyOptions& options = {}
+);
+
+using OffsetChainStatus = OffsetChainDistanceStatus;
+
+struct OffsetChainOptions
+{
+    double tolerance = 0.01;
+    Base::Vector3d sketchNormal {0, 0, 1};
+    bool closed = false;
+    double joinTolerance = 1e-7;  // At most Precision::Confusion().
+    // Shared by source/final certificates and spline validation, never per piece.
+    int maxWork = 10000000;
+    int maxDepth = 24;
+};
+
+struct OffsetChainOutputPiece
+{
+    std::unique_ptr<Part::GeomCurve> geometry;
+    std::size_t identity;
+};
+
+struct OffsetChainResult
+{
+    OffsetChainStatus status = OffsetChainStatus::NotCertified;
+    std::string reason;
+    // Detached, owned geometry, populated only after ALL checks succeed.
+    std::vector<OffsetChainOutputPiece> pieces;
+    OffsetChainDistanceResult distanceCertificate;
+    OffsetChainTopologyResult topologyCertificate;
+    int work = 0;
+};
+
+// Consumes each full native source interval exactly once, in the supplied order.
+// Identities must be unique; no reordering, trimming, extension or omitted pieces.
+// Requires a regular, simple G1 chain in the plane normal to sketchNormal.
+// Positive distance follows tangent cross sketchNormal (the single-spline rule).
+// Builds analytic line/arc offsets and makeBSplineOffset fits. Circular offsets
+// use the exact rational conic representation to permit algebraic endpoint welding.
+// Joins of detached source copies are welded for the source topology proof.
+// The distance certificate always uses the untouched original source. Welds endpoints
+// only within joinTolerance, then certifies distance/side against the WHOLE source
+// and topology on the final geometry, including every welding displacement.
+// Refusals return no pieces. Source geometry is borrowed and never modified.
+SketcherExport OffsetChainResult makeOffsetChain(
+    const std::vector<OffsetChainPiece>& source,
+    double distance,
+    const OffsetChainOptions& options = {}
 );
 
 }  // namespace Sketcher
