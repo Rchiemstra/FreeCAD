@@ -1717,33 +1717,19 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     for (const auto& effect : effects) {
         writeSet.push_back(effect.key);
     }
-    const std::string operationId = Base::Uuid::createUuid();
-    std::unique_ptr<const CollaborativeOperation> operation =
-        std::make_unique<CompatibilityMutationOperation>(
-            std::move(callback),
-            std::move(options.postcondition),
-            std::move(options.transactionLabel));
-    const std::string operationType(operation->typeId());
+    // Compatibility revisions are ephemeral: acquire presentation admission
+    // before capture, then transfer it to the coordinator for normal release
+    // before deferred observers. Ordinary prepared edits retain their fences.
+    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
     for (;;) {
-        const auto currentIdentity = _document.collaborationIdentity();
-        if (currentIdentity.state != DocumentLifecycleState::Live
-            || currentIdentity.instanceId != identity.instanceId
-            || currentIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
-            return rejectedCompatibilityCommit(
-                DocumentCommitStatus::StaleDocument,
-                operationId,
-                "compatibility mutation document changed before admission");
-        }
-        if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
-            const auto* object = _document.getObject(mutation.objectName.c_str());
-            if (!object
-                || _document.collaborationObjectIdentity(*object)
-                    != mutation.stableObjectIdentity) {
-                return rejectedCompatibilityCommit(
-                    DocumentCommitStatus::StaleDocument,
-                    operationId,
-                    "compatibility mutation object changed before admission");
-            }
+        if (auto rejected = _coordinator.rejectCommitPrerequisites(
+                identity.instanceId,
+                identity.lifecycleEpoch,
+                rejectedOperationId,
+                /*requireDetachedPreparationSupport=*/false,
+                /*nestInCallerTransaction=*/false
+            )) {
+            return std::move(*rejected);
         }
         // Capture semantic revisions only after eager compatibility has settled any
         // preexisting mustExecute work. Otherwise settlement recompute publishes
@@ -1771,14 +1757,16 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                     DocumentCommitStatus::Busy,
                     rejectedOperationId,
                     std::string("compatibility mutation could not settle pending recompute work: ")
-                        + exception.what());
+                        + exception.what()
+                );
             }
             catch (const std::exception& exception) {
                 return rejectedCompatibilityCommit(
                     DocumentCommitStatus::Busy,
                     rejectedOperationId,
                     std::string("compatibility mutation could not settle pending recompute work: ")
-                        + exception.what());
+                        + exception.what()
+                );
             }
             const auto settledIdentity = _document.collaborationIdentity();
             if (settledIdentity.state != DocumentLifecycleState::Live
@@ -1787,7 +1775,8 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                 return rejectedCompatibilityCommit(
                     DocumentCommitStatus::StaleDocument,
                     rejectedOperationId,
-                    "compatibility mutation document changed during recompute settlement");
+                    "compatibility mutation document changed during recompute settlement"
+                );
             }
             if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
                 const auto* object = _document.getObject(mutation.objectName.c_str());
@@ -1797,49 +1786,111 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                     return rejectedCompatibilityCommit(
                         DocumentCommitStatus::StaleDocument,
                         rejectedOperationId,
-                        "compatibility mutation object changed during recompute settlement");
+                        "compatibility mutation object changed during recompute settlement"
+                    );
                 }
             }
             if (_document.mustExecute()
                 && !Internal::pendingRecomputeMatchesNativeErrors(
-                    _document, Internal::captureNativeRecomputeErrors(_document))) {
+                    _document,
+                    Internal::captureNativeRecomputeErrors(_document)
+                )) {
                 return rejectedCompatibilityCommit(
                     DocumentCommitStatus::Busy,
                     rejectedOperationId,
-                    "document has pending recompute work outside the prepared operation");
+                    "document has pending recompute work outside the prepared operation"
+                );
             }
         }
-        const auto expected = _document.collaborationRevisions().capture(writeSet);
-        PreparedEdit edit(PreparedEdit::ConstructionKey {},
-                          1,
-                          operationId,
-                          identity.instanceId,
-                          identity.lifecycleEpoch,
-                          operationType,
-                          expected,
-                          {},
-                          writeSet,
-                          effects,
-                          "legacy-gui-compatibility",
-                          std::move(operation));
-        auto result = preserveSerializedCallbackAdmission(
-            _coordinator.commitCompatibilityWithOptions(
-                edit,
-                mutation.scope == CollaborationCompatibilityScope::Structural,
-                options.recomputePolicy));
-        if (!result.presentationAdmissionDeferred) {
-            return result;
+        // Settlement releases the commit mutex and can itself wait for a refresh.
+        if (auto rejected = _coordinator.rejectCommitPrerequisites(
+                identity.instanceId,
+                identity.lifecycleEpoch,
+                rejectedOperationId,
+                /*requireDetachedPreparationSupport=*/false,
+                /*nestInCallerTransaction=*/false
+            )) {
+            return std::move(*rejected);
         }
-        // No callback ran and this internal fence was never exposed to a caller.
-        // Retain the payload, but repeat admission and capture a fresh fence after
-        // the wait. Caller-prepared edits in commitEdit keep their original fence.
-        operation = std::move(edit._operation);
-        lock.unlock();
-        if (!waitForLivePresentationRefresh()) {
-            return result;
+        try {
+            mutationTarget = _coordinator.acquireCompatibilityMutationTarget();
+            break;
         }
-        lock.lock();
+        catch (const LivePresentationRefreshInProgress& exception) {
+            auto result = rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                exception.what()
+            );
+            result.presentationAdmissionDeferred = exception.deferrable();
+            result = preserveSerializedCallbackAdmission(std::move(result));
+            if (!result.presentationAdmissionDeferred) {
+                return result;
+            }
+            lock.unlock();
+            if (const auto hook
+                = _coordinator._preCompatibilityWaitTestHook.load(std::memory_order_acquire)) {
+                hook();
+            }
+            if (!waitForLivePresentationRefresh()) {
+                return result;
+            }
+            lock.lock();
+        }
+        catch (const Base::Exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                exception.what()
+            );
+        }
+        catch (const std::exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                exception.what()
+            );
+        }
     }
+    if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
+        const auto* object = _document.getObject(mutation.objectName.c_str());
+        if (!object
+            || _document.collaborationObjectIdentity(*object) != mutation.stableObjectIdentity) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::StaleDocument,
+                rejectedOperationId,
+                "compatibility mutation object changed during presentation admission"
+            );
+        }
+    }
+    const auto expected = _document.collaborationRevisions().capture(writeSet);
+    const std::string operationId = Base::Uuid::createUuid();
+    auto operation = std::make_unique<CompatibilityMutationOperation>(
+        std::move(callback),
+        std::move(options.postcondition),
+        std::move(options.transactionLabel));
+    const std::string operationType(operation->typeId());
+    PreparedEdit edit(PreparedEdit::ConstructionKey {},
+                      1,
+                      operationId,
+                      identity.instanceId,
+                      identity.lifecycleEpoch,
+                      operationType,
+                      expected,
+                      {},
+                      writeSet,
+                      std::move(effects),
+                      "legacy-gui-compatibility",
+                      std::move(operation));
+    return preserveSerializedCallbackAdmission(_coordinator.commitOnDocumentThreadWithOptions(
+        edit,
+        /*requireDetachedPreparationSupport=*/false,
+        mutation.scope == CollaborationCompatibilityScope::Structural,
+        options.recomputePolicy,
+        /*retainUndoHistory=*/true,
+        /*nestInCallerTransaction=*/false,
+        std::move(mutationTarget)
+    ));
 }
 
 DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(
