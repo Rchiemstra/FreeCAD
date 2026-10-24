@@ -1717,49 +1717,22 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     for (const auto& effect : effects) {
         writeSet.push_back(effect.key);
     }
-    // Capture semantic revisions only after eager compatibility has settled any
-    // preexisting mustExecute work. Otherwise settlement recompute publishes
-    // before reservation and the stale expected set becomes Conflict.
-    if (options.recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
-        && _document.mustExecute()) {
-        try {
-            // Settlement can defer a feature commit until an idle GUI refresh
-            // finishes. That refresh may itself need this mutex and the GIL.
-            lock.unlock();
-            {
-                std::optional<Base::PyGILStateRelease> release;
-                if (Py_IsInitialized() && PyGILState_Check()) {
-                    release.emplace();
-                }
-                bool recomputeError = false;
-                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
-                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
-                }
-            }
-            lock.lock();
-        }
-        catch (const Base::Exception& exception) {
-            return rejectedCompatibilityCommit(
-                DocumentCommitStatus::Busy,
-                rejectedOperationId,
-                std::string("compatibility mutation could not settle pending recompute work: ")
-                    + exception.what());
-        }
-        catch (const std::exception& exception) {
-            return rejectedCompatibilityCommit(
-                DocumentCommitStatus::Busy,
-                rejectedOperationId,
-                std::string("compatibility mutation could not settle pending recompute work: ")
-                    + exception.what());
-        }
-        const auto settledIdentity = _document.collaborationIdentity();
-        if (settledIdentity.state != DocumentLifecycleState::Live
-            || settledIdentity.instanceId != identity.instanceId
-            || settledIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
+    const std::string operationId = Base::Uuid::createUuid();
+    std::unique_ptr<const CollaborativeOperation> operation =
+        std::make_unique<CompatibilityMutationOperation>(
+            std::move(callback),
+            std::move(options.postcondition),
+            std::move(options.transactionLabel));
+    const std::string operationType(operation->typeId());
+    for (;;) {
+        const auto currentIdentity = _document.collaborationIdentity();
+        if (currentIdentity.state != DocumentLifecycleState::Live
+            || currentIdentity.instanceId != identity.instanceId
+            || currentIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
             return rejectedCompatibilityCommit(
                 DocumentCommitStatus::StaleDocument,
-                rejectedOperationId,
-                "compatibility mutation document changed during recompute settlement");
+                operationId,
+                "compatibility mutation document changed before admission");
         }
         if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
             const auto* object = _document.getObject(mutation.objectName.c_str());
@@ -1768,39 +1741,87 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
                     != mutation.stableObjectIdentity) {
                 return rejectedCompatibilityCommit(
                     DocumentCommitStatus::StaleDocument,
-                    rejectedOperationId,
-                    "compatibility mutation object changed during recompute settlement");
+                    operationId,
+                    "compatibility mutation object changed before admission");
             }
         }
-        if (_document.mustExecute()
-            && !Internal::pendingRecomputeMatchesNativeErrors(
-                _document, Internal::captureNativeRecomputeErrors(_document))) {
-            return rejectedCompatibilityCommit(
-                DocumentCommitStatus::Busy,
-                rejectedOperationId,
-                "document has pending recompute work outside the prepared operation");
+        // Capture semantic revisions only after eager compatibility has settled any
+        // preexisting mustExecute work. Otherwise settlement recompute publishes
+        // before reservation and the stale expected set becomes Conflict.
+        if (options.recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
+            && _document.mustExecute()) {
+            try {
+                // Settlement can defer a feature commit until an idle GUI refresh
+                // finishes. That refresh may itself need this mutex and the GIL.
+                lock.unlock();
+                {
+                    std::optional<Base::PyGILStateRelease> release;
+                    if (Py_IsInitialized() && PyGILState_Check()) {
+                        release.emplace();
+                    }
+                    bool recomputeError = false;
+                    for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                        static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                    }
+                }
+                lock.lock();
+            }
+            catch (const Base::Exception& exception) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::Busy,
+                    rejectedOperationId,
+                    std::string("compatibility mutation could not settle pending recompute work: ")
+                        + exception.what());
+            }
+            catch (const std::exception& exception) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::Busy,
+                    rejectedOperationId,
+                    std::string("compatibility mutation could not settle pending recompute work: ")
+                        + exception.what());
+            }
+            const auto settledIdentity = _document.collaborationIdentity();
+            if (settledIdentity.state != DocumentLifecycleState::Live
+                || settledIdentity.instanceId != identity.instanceId
+                || settledIdentity.lifecycleEpoch != identity.lifecycleEpoch) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::StaleDocument,
+                    rejectedOperationId,
+                    "compatibility mutation document changed during recompute settlement");
+            }
+            if (mutation.scope == CollaborationCompatibilityScope::ObjectModel) {
+                const auto* object = _document.getObject(mutation.objectName.c_str());
+                if (!object
+                    || _document.collaborationObjectIdentity(*object)
+                        != mutation.stableObjectIdentity) {
+                    return rejectedCompatibilityCommit(
+                        DocumentCommitStatus::StaleDocument,
+                        rejectedOperationId,
+                        "compatibility mutation object changed during recompute settlement");
+                }
+            }
+            if (_document.mustExecute()
+                && !Internal::pendingRecomputeMatchesNativeErrors(
+                    _document, Internal::captureNativeRecomputeErrors(_document))) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::Busy,
+                    rejectedOperationId,
+                    "document has pending recompute work outside the prepared operation");
+            }
         }
-    }
-    const auto expected = _document.collaborationRevisions().capture(writeSet);
-    const std::string operationId = Base::Uuid::createUuid();
-    auto operation = std::make_unique<CompatibilityMutationOperation>(
-        std::move(callback),
-        std::move(options.postcondition),
-        std::move(options.transactionLabel));
-    const std::string operationType(operation->typeId());
-    PreparedEdit edit(PreparedEdit::ConstructionKey {},
-                      1,
-                      operationId,
-                      identity.instanceId,
-                      identity.lifecycleEpoch,
-                      operationType,
-                      expected,
-                      {},
-                      writeSet,
-                      std::move(effects),
-                      "legacy-gui-compatibility",
-                      std::move(operation));
-    for (;;) {
+        const auto expected = _document.collaborationRevisions().capture(writeSet);
+        PreparedEdit edit(PreparedEdit::ConstructionKey {},
+                          1,
+                          operationId,
+                          identity.instanceId,
+                          identity.lifecycleEpoch,
+                          operationType,
+                          expected,
+                          {},
+                          writeSet,
+                          effects,
+                          "legacy-gui-compatibility",
+                          std::move(operation));
         auto result = preserveSerializedCallbackAdmission(
             _coordinator.commitCompatibilityWithOptions(
                 edit,
@@ -1809,8 +1830,10 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
         if (!result.presentationAdmissionDeferred) {
             return result;
         }
-        // The callback and its revision fence stay in this PreparedEdit.
-        // Admission has not run apply; only this refusal can be redispatched.
+        // No callback ran and this internal fence was never exposed to a caller.
+        // Retain the payload, but repeat admission and capture a fresh fence after
+        // the wait. Caller-prepared edits in commitEdit keep their original fence.
+        operation = std::move(edit._operation);
         lock.unlock();
         if (!waitForLivePresentationRefresh()) {
             return result;
