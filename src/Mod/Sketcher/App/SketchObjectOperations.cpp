@@ -2513,7 +2513,8 @@ int SketchObject::addCopy(
             (void)original;
             inserted.push_back(newgeoVals[copied]);
         }
-        remapLinkedOffsetCopies(inserted);
+        remapLinkedOffsetCopies(
+            inserted, double(x) * displacement + double(y) * perpendicularDisplacement);
 
         // handle geometry constraints
         for (const auto& constr : constrvals) {

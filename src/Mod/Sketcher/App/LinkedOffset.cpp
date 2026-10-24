@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -17,6 +18,7 @@
 #include <Precision.hxx>
 #include <nlohmann/json.hpp>
 #include <App/Document.h>
+#include <Base/Reader.h>
 #include <Base/Writer.h>
 #include "BSplineOffset.h"
 #include "OffsetChain.h"
@@ -176,6 +178,48 @@ std::string signature(const Part::Geometry& geometry)
     return writer.getString();
 }
 
+// Restore the last successful native representation, never the live geometry's
+// direction or edits. Legacy readable records already carry this representation.
+std::unique_ptr<Part::Geometry> savedGeometry(const Part::Geometry& model,
+                                             const std::string& saved)
+{
+    std::unique_ptr<Part::Geometry> restored(model.clone());
+    std::istringstream data("<Root>" + saved + "</Root>");
+    Base::XMLReader reader("LinkedOffsetSignature.xml", data);
+    restored->Restore(reader);
+    return restored;
+}
+
+void checkOpenDirection(const Part::GeomCurve& current, const LinkedOffsetMember& saved)
+{
+    try {
+        const auto previous = savedGeometry(current, saved.signature);
+        const auto* curve = dynamic_cast<const Part::GeomCurve*>(previous.get());
+        if (curve) {
+            const auto chord = [](const Part::GeomCurve& c) {
+                return c.value(c.getLastParameter()) - c.value(c.getFirstParameter());
+            };
+            const auto a = chord(*curve), b = chord(current);
+            // Translation and supported refits retain endpoint direction. A
+            // reversed or indeterminate correspondence must not swap the side or
+            // endpoint references. Large rotations can also need Detach.
+            const double lengths = a.Length() * b.Length();
+            if (std::isfinite(lengths) && lengths > Precision::SquareConfusion()
+                && a.Dot(b) > Precision::Angular() * lengths) {
+                return;
+            }
+        }
+    }
+    catch (const Standard_Failure&) {
+    }
+    catch (const Base::Exception&) {
+    }
+    catch (const std::exception&) {
+    }
+    throw std::invalid_argument(
+        "TopologyChanged: source direction reversed or cannot be established; Detach the offset.");
+}
+
 LinkedOffsetMember member(Part::Geometry* geometry, bool reversed)
 {
     const auto* curve = dynamic_cast<const Part::GeomCurve*>(geometry);
@@ -193,7 +237,8 @@ std::string updateRecord(const std::string&, const LinkedOffsetRelation&);
 std::string outputReason(const SketchObject&, const LinkedOffsetInspection&);
 }  // namespace
 
-void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& copies)
+void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& copies,
+                             const Base::Vector3d& translation)
 {
     std::map<std::string, std::vector<size_t>> identities;
     std::map<std::string, std::vector<std::shared_ptr<const LinkedOffsetExtension>>> groups;
@@ -256,13 +301,24 @@ void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& copies)
                         || extension(geometry)->version != "1") {
                         throw std::invalid_argument("Changed copied member type.");
                     }
-                    entry = member(geometry, entry.reversed);
+                    // Remap identity only. Current geometry may contain an edited
+                    // output or a stale source; neither is a successful generation.
+                    entry.uuid = extension(geometry)->uuid;
+                    if (translation != Base::Vector3d()) {
+                        try {
+                            auto saved = savedGeometry(*geometry, entry.signature);
+                            saved->translate(translation);
+                            entry.signature = signature(*saved);
+                        }
+                        catch (...) {
+                            // Unreadable legacy snapshots remain conservative.
+                        }
+                    }
                 }
             };
             remap(relation.sources);
             remap(relation.outputs);
             relation.id = LinkedOffsetExtension().uuid;
-            relation.parameters.seam = relation.sources.front().seam;
             const auto record = updateRecord(owner->record, relation);
             for (const auto& output : relation.outputs) {
                 for (auto* geometry : copies) {
@@ -637,6 +693,9 @@ void regenerate(std::vector<Part::Geometry*>& geometry, LinkedOffsetInspection& 
                           != relation.sources[i].seam) {
             throw std::invalid_argument("TopologyChanged: source interval or seam changed.");
         }
+        if (!p.closed) {
+            checkOpenDirection(*curve, relation.sources[i]);
+        }
         sources.emplace_back(source->clone());
         auto* oriented = static_cast<Part::GeomCurve*>(sources.back().get());
         if (relation.sources[i].reversed) {
@@ -798,6 +857,15 @@ void operateLinkedOffsets(SketchObject& sketch, const std::vector<std::string>& 
     std::set<std::string> requested(ids.begin(), ids.end());
     if (requested.size() != ids.size()) {
         throw std::invalid_argument("Repeated relation selection.");
+    }
+    // Parsed record IDs are untrusted when membership is ambiguous. Check the
+    // entire selection before resolving IDs: a forged ID can collide with a real
+    // group and otherwise make map iteration order decide which group detaches.
+    for (const auto& item : relations) {
+        if (item.status == LinkedOffsetStatus::Ambiguous
+            && (ids.empty() || requested.count(item.relation.id))) {
+            throw std::invalid_argument(item.reason + " Repair ambiguous membership first.");
+        }
     }
     std::vector<LinkedOffsetInspection> selected;
     for (auto& item : relations) {

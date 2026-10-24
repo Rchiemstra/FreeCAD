@@ -1197,7 +1197,10 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
 
     def linked_state(self):
         return (self.offset_snapshot(), Sketcher.listLinkedOffsets(self.sketch),
-                self.doc.UndoCount, self.doc.RedoCount)
+                self.doc.UndoCount, self.doc.RedoCount,
+                tuple((g.Content, g.Tag) for g in self.sketch.Geometry),
+                tuple(c.Content for c in self.sketch.Constraints),
+                self.doc.getFileChangeState(), self.doc.isTouched(), tuple(self.sketch.State))
 
     def test_linked_refresh_moved_source_identity_reference_undo(self):
         relation = self.linked_fixture()
@@ -1369,3 +1372,89 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.assertEqual(after["parameters"]["seam"], before["parameters"]["seam"])
         self.assertEqual(after["outputIndices"], before["outputIndices"])
         self.assertFalse(after["stale"])
+
+
+    def rework_redo_sentinel(self):
+        self.doc.openTransaction("Sentinel")
+        self.doc.addObject("App::FeaturePython", "Sentinel")
+        self.doc.commitTransaction()
+        self.doc.undo()
+
+    def check_rework_open_reversal(self, mixed):
+        if mixed:
+            count = self.start_mixed_offset()
+            self.chain_button("Apply")
+        else:
+            self.linked_fixture()
+            count = 1
+        geometry = self.sketch.Geometry
+        index = 1 if mixed else 0
+        interval = (geometry[index].FirstParameter, geometry[index].LastParameter)
+        geometry[index].reverse()
+        self.sketch.Geometry = geometry
+        self.assertEqual(interval, (self.sketch.Geometry[index].FirstParameter,
+                                    self.sketch.Geometry[index].LastParameter))
+        self.rework_redo_sentinel()
+        before = self.linked_state()
+        for operation in (lambda: Sketcher.refreshLinkedOffsets(self.sketch),
+                          lambda: Sketcher.editLinkedOffsets(self.sketch, None, -2, .01)):
+            with self.assertRaisesRegex(ValueError, "direction|orientation|TopologyChanged"):
+                operation()
+            self.assertEqual(self.linked_state(), before)
+        self.doc.redo()
+        self.assertIsNotNone(self.doc.getObject("Sentinel"))
+
+    def test_rework_open_spline_reversal_same_interval(self):
+        self.check_rework_open_reversal(False)
+
+    def test_rework_open_mixed_reversal_same_interval(self):
+        self.check_rework_open_reversal(True)
+
+    def test_rework_open_source_refit_supported(self):
+        self.linked_fixture()
+        geometry = self.sketch.Geometry
+        geometry[0].setPole(2, geometry[0].getPole(2) + FreeCAD.Vector(0, .1, 0))
+        self.sketch.Geometry = geometry
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertFalse(Sketcher.listLinkedOffsets(self.sketch)[0]["stale"])
+
+    def rework_edit_dialog(self):
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetEdit", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        return dialog
+
+    def test_rework_edit_signed_unit_entry(self):
+        self.linked_fixture()
+        dialog = self.rework_edit_dialog()
+        for name, text in (("Distance", "-0.2 cm"), ("Tolerance", "0.002 cm")):
+            control = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffset" + name)
+            control.lineEdit().setText(text)
+            control.lineEdit().textEdited.emit(text)
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetRefresh").click()
+        relation, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(relation["parameters"]["distance"], -2)
+        self.assertEqual(relation["parameters"]["tolerance"], .02)
+
+    def check_rework_deleted_edit_target(self, close_document):
+        self.linked_fixture()
+        dialog = self.rework_edit_dialog()
+        FreeCADGui.activeDocument().resetEdit()
+        if close_document:
+            name = self.doc.Name
+            FreeCAD.closeDocument(name)
+            self.doc = None
+        else:
+            self.doc.removeObject(self.sketch.Name)
+        for name in ("Refresh", "Detach"):
+            dialog.findChild(QtGui.QPushButton, "LinkedOffset" + name).click()
+            self.assertIn("deleted", dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+        dialog.reject()
+
+    def test_rework_edit_sketch_deleted(self):
+        self.check_rework_deleted_edit_target(False)
+
+    def test_rework_edit_document_closed(self):
+        self.check_rework_deleted_edit_target(True)

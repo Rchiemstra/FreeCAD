@@ -81,7 +81,10 @@ SketcherExport void attachLinkedOffset(
 );
 SketcherExport std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch);
 // Insertion only: pass one detached copy batch, never snapshots or solver clones.
-SketcherExport void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& copies);
+// Known copy translations apply equally to the last-successful snapshots.
+SketcherExport void remapLinkedOffsetCopies(
+    const std::vector<Part::Geometry*>& copies,
+    const Base::Vector3d& translation = Base::Vector3d());
 // Topology changes cannot inherit source ancestry, even when indices/types survive.
 SketcherExport void invalidateLinkedOffsetAncestry(Part::Geometry& geometry);
 SketcherExport void invalidateLinkedOffsetAncestry(SketchObject& sketch, int index);

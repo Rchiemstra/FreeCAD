@@ -355,8 +355,9 @@ class TestLinkedOffsetOperations(unittest.TestCase):
         self.doc.UndoMode = 1
 
     def state(self):
-        return (tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry),
-                tuple((str(c), c.Value) for c in self.sketch.Constraints),
+        return (tuple((g.toShape().exportBrepToString(), g.Content, g.Tag)
+                      for g in self.sketch.Geometry),
+                tuple(c.Content for c in self.sketch.Constraints),
                 Sketcher.listLinkedOffsets(self.sketch), self.doc.UndoCount,
                 self.doc.RedoCount, tuple(self.doc.UndoNames), tuple(self.doc.RedoNames),
                 self.doc.getFileChangeState(), self.doc.isTouched(), tuple(self.sketch.State))
@@ -603,3 +604,196 @@ class TestLinkedOffsetOperations(unittest.TestCase):
         with self.assertRaises(ValueError):
             Sketcher.refreshLinkedOffsets(self.sketch)
         self.assertEqual(before, self.state())
+
+
+    def redo_sentinel(self):
+        self.doc.openTransaction("Sentinel")
+        self.doc.addObject("App::FeaturePython", "Sentinel")
+        self.doc.commitTransaction()
+        self.doc.undo()
+
+    def complete_copy(self, method):
+        target = self.doc.addObject("Sketcher::SketchObject", "Copied")
+        if method == "insert":
+            target.addGeometry(self.sketch.Geometry)
+            target.addConstraint(self.sketch.Constraints)
+        else:
+            target.carbonCopy(self.sketch.Name, False)
+        return target
+
+    def test_rework_copy_edited_output_requires_detach(self):
+        self.translate(1, FreeCAD.Vector(3, 0, 0))
+        original = self.state()[:3]
+        for method in ("insert", "carbon"):
+            with self.subTest(method=method):
+                target = self.complete_copy(method)
+                relation, = Sketcher.listLinkedOffsets(target)
+                self.redo_sentinel()
+                source = self.sketch
+                self.sketch = target
+                before = self.state()
+                for operation in (lambda: Sketcher.refreshLinkedOffsets(target),
+                                  lambda: Sketcher.editLinkedOffsets(target, None, -3, .01)):
+                    with self.assertRaisesRegex(ValueError, "Detach"):
+                        operation()
+                    self.assertEqual(self.state(), before)
+                self.doc.redo()
+                self.assertIsNotNone(self.doc.getObject("Sentinel"))
+                self.doc.undo()
+                self.assertEqual(relation["outputs"][0]["signature"],
+                                 original[2][0]["outputs"][0]["signature"])
+                point = target.Geometry[1].StartPoint
+                Sketcher.detachLinkedOffsets(target)
+                self.assertEqual(target.Geometry[1].StartPoint, point)
+                self.assertEqual(target.ConstraintCount, 0)
+                self.sketch = source
+                self.assertEqual(self.state()[:3], original)
+
+    def test_rework_copy_stale_source_roundtrip(self):
+        self.translate(0, FreeCAD.Vector(3, 0, 0))
+        original, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertTrue(original["stale"])
+        target = self.doc.addObject("Sketcher::SketchObject", "Carbon")
+        target.carbonCopy(self.sketch.Name, False)
+        copied, = Sketcher.listLinkedOffsets(target)
+        self.assertTrue(copied["stale"])
+        self.assertEqual(copied["sources"][0]["signature"],
+                         original["sources"][0]["signature"])
+        self.assertEqual(copied["parameters"], original["parameters"])
+        self.rewrite_document(lambda root: None)
+        target = self.doc.getObject("Carbon")
+        self.assertEqual(Sketcher.listLinkedOffsets(target), [copied])
+        Sketcher.refreshLinkedOffsets(target)
+        self.assertFalse(Sketcher.listLinkedOffsets(target)[0]["stale"])
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [original])
+
+    def test_rework_fresh_copy_paths(self):
+        original, = Sketcher.listLinkedOffsets(self.sketch)
+        target = self.complete_copy("insert")
+        self.assertFalse(Sketcher.listLinkedOffsets(target)[0]["stale"])
+        Sketcher.refreshLinkedOffsets(target)
+        copied = self.doc.copyObject(self.sketch, False)
+        Sketcher.refreshLinkedOffsets(copied)
+        carbon = self.doc.addObject("Sketcher::SketchObject", "Carbon")
+        carbon.carbonCopy(self.sketch.Name, False)
+        Sketcher.refreshLinkedOffsets(carbon)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [original])
+
+    def check_mismatched_detach(self, collision, selected):
+        self.sketch.addCopy([0, 1], FreeCAD.Vector(100, 0, 0))
+        relations = Sketcher.listLinkedOffsets(self.sketch)
+        original = next(r for r in relations if r["outputIndices"] == [1])
+        other = next(r for r in relations if r["outputIndices"] == [3])
+        forged = other["id"] if collision else "nonexistent-relation"
+        self.sketch.addGeometry(Part.LineSegment(FreeCAD.Vector(200, 0, 0),
+                                                FreeCAD.Vector(210, 0, 0)))
+        self.sketch.addConstraint(Sketcher.Constraint("Block", 4))
+        self.sketch.addGeometry(Part.LineSegment(FreeCAD.Vector(200, 5, 0),
+                                                FreeCAD.Vector(210, 5, 0)))
+        unowned = self.sketch.ConstraintCount - 2
+        def corrupt(root):
+            geometry = root.findall(".//Property[@name='Geometry']/GeometryList/Geometry")
+            extensions = geometry[4].find("GeoExtensions")
+            ET.SubElement(extensions, "GeoExtension", {
+                "type": "Sketcher::LinkedOffsetExtension", "uuid": "future-geometry",
+                "membership": "future-group", "version": "2", "record": "opaque <keep>",
+                "blockToken": "future-token"})
+            extensions.set("count", str(len(extensions)))
+            for ext in root.findall(".//GeoExtension"):
+                if ext.get("membership") == original["id"] and ext.get("record"):
+                    record = json.loads(ext.get("record"))
+                    record["id"] = forged
+                    ext.set("record", json.dumps(record))
+        self.rewrite_document(corrupt)
+        self.doc.UndoMode = 1
+        self.assertTrue(any(r["status"] == "Ambiguous"
+                            for r in Sketcher.listLinkedOffsets(self.sketch)))
+        self.redo_sentinel()
+        before = self.state()
+        try:
+            Sketcher.detachLinkedOffsets(self.sketch, [forged] if selected else None)
+        except ValueError:
+            self.assertEqual(self.state(), before)
+            self.doc.redo()
+            self.assertIsNotNone(self.doc.getObject("Sentinel"))
+            return
+        after = Sketcher.listLinkedOffsets(self.sketch)
+        if selected:
+            # An inconsistent record ID cannot select the unrelated real group.
+            self.assertEqual(after, [other])
+            self.assertEqual(self.sketch.ConstraintCount, unowned + 1)
+        else:
+            self.assertEqual(after, [])
+            self.assertEqual(self.sketch.ConstraintCount, unowned)
+        self.assertEqual(self.state()[0], before[0])
+
+    def test_rework_detach_mismatched_nonexistent_selected(self):
+        self.check_mismatched_detach(False, True)
+
+    def test_rework_detach_mismatched_nonexistent_all(self):
+        self.check_mismatched_detach(False, False)
+
+    def test_rework_detach_mismatched_collision_selected(self):
+        self.check_mismatched_detach(True, True)
+
+    def test_rework_detach_mismatched_collision_all(self):
+        self.check_mismatched_detach(True, False)
+
+    def check_batch_history(self, operation):
+        self.sketch.addCopy([0, 1], FreeCAD.Vector(100, 0, 0))
+        for i in reversed(range(self.sketch.ConstraintCount)):
+            if self.sketch.Constraints[i].Type != "Block":
+                self.sketch.delConstraint(i)
+        if operation == "refresh":
+            self.translate(0, FreeCAD.Vector(3, 0, 0))
+            self.translate(2, FreeCAD.Vector(4, 0, 0))
+        before = self.state()
+        if operation == "edit":
+            Sketcher.editLinkedOffsets(self.sketch, None, -3, .01)
+        else:
+            getattr(Sketcher, operation + "LinkedOffsets")(self.sketch)
+        after = self.state()
+        self.assertEqual(after[3], before[3] + 1)
+        if operation == "detach":
+            self.assertEqual(after[2], [])
+            self.assertEqual(self.sketch.ConstraintCount, 0)
+        else:
+            self.assertEqual(len(after[2]), 2)
+            self.assertTrue(all(not r["stale"] for r in after[2]))
+            self.assertEqual(self.sketch.Geometry[1].StartPoint.y,
+                             3 if operation == "edit" else 2)
+        self.doc.undo()
+        self.assertEqual(self.state()[:3], before[:3])
+        self.assertEqual(self.doc.UndoCount, before[3])
+        self.doc.redo()
+        self.assertEqual(self.state()[:3], after[:3])
+        self.assertEqual(self.doc.UndoCount, after[3])
+
+    def test_rework_batch_refresh_one_undo_redo(self):
+        self.check_batch_history("refresh")
+
+    def test_rework_batch_edit_one_undo_redo(self):
+        self.check_batch_history("edit")
+
+    def test_rework_batch_detach_one_undo_redo(self):
+        self.check_batch_history("detach")
+
+
+    def test_rework_legacy_unreadable_direction_refuses_conservatively(self):
+        def legacy(root):
+            for ext in root.findall(".//GeoExtension"):
+                if ext.get("type") == "Sketcher::LinkedOffsetExtension" and ext.get("record"):
+                    record = json.loads(ext.get("record"))
+                    record["sources"][0]["signature"] = "unavailable legacy direction"
+                    ext.set("record", json.dumps(record))
+        self.rewrite_document(legacy)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["status"], "Ok")
+        self.redo_sentinel()
+        before = self.state()
+        for operation in (lambda: Sketcher.refreshLinkedOffsets(self.sketch),
+                          lambda: Sketcher.editLinkedOffsets(self.sketch, None, -3, .01)):
+            with self.assertRaisesRegex(ValueError, "direction.*cannot be established"):
+                operation()
+            self.assertEqual(self.state(), before)
+        self.doc.redo()
+        self.assertIsNotNone(self.doc.getObject("Sentinel"))
