@@ -84,6 +84,19 @@ for `.FCStd` files, and an MCP server. Measured against `main`: **175 commits,
 | `freecad-mcp` | MCP server submodule for driving FreeCAD from an agent — see its own [README](tools/mcp/freecad-mcp/README.md) | [tools/mcp/freecad-mcp](tools/mcp/freecad-mcp) |
 | Build and launch scripts | `build_freecad.py`, `start_freecad.py`, and Windows release launchers | [build_freecad.py](build_freecad.py), [start_freecad.py](start_freecad.py) |
 
+To launch FreeCAD for Codex, with `uv` and the Codex CLI on `PATH`, run:
+
+```bash
+python start_freecad.py --codex
+```
+
+This syncs the MCP environment from its lockfile, starts the authenticated
+profile in `.freecad-mcp-isolated`, verifies its runtime identity, and registers
+the `freecad` stdio server in Codex. Reload the Codex IDE extension or start a
+new Codex CLI session to load the tools. Use `--freecad PATH` to select a build;
+FreeCAD file arguments can follow the launcher options. An occupied profile
+endpoint is refused; close that FreeCAD instance before launching again.
+
 ### CI and packaging
 
 | Addition | What it does | Source |

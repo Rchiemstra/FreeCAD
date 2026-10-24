@@ -11,6 +11,7 @@ Examples:
 
   python start_freecad.py
   python start_freecad.py --build
+  python start_freecad.py --codex
   python start_freecad.py model.FCStd
   python start_freecad.py --freecad FreeCAD/build/release/bin/FreeCAD.exe
   python start_freecad.py --no-wait-for-mcp
@@ -36,6 +37,8 @@ MCP_RPC_PORT = 9875
 MCP_SETTINGS_FILENAME = "freecad_mcp_settings.json"
 MCP_ADDON_DIRNAME = "FreeCADMCP"
 PIXI_EXTERNAL_MODS = ("freecad.robotcad",)
+WSLG_RUNTIME_DIR = Path("/mnt/wslg/runtime-dir")
+DEFAULT_CURSOR_SIZE = "24"
 
 
 def _is_freecad_repo(path: Path) -> bool:
@@ -300,6 +303,7 @@ def _launch_env(freecad_exe: Path) -> dict[str, str]:
         env.setdefault("CONDA_PREFIX", str(pixi))
         env.update(_qt_plugin_env(pixi))
 
+    env.update(_wslg_display_env(env))
     return env
 
 
@@ -309,6 +313,44 @@ def _qt_plugin_env(pixi_env: Path) -> dict[str, str]:
         "QT_PLUGIN_PATH": str(plugin_root),
         "QT_QPA_PLATFORM_PLUGIN_PATH": str(plugin_root / "platforms"),
     }
+
+
+def _wslg_display_env(
+    env: dict[str, str],
+    wslg_runtime_dir: Path = WSLG_RUNTIME_DIR,
+) -> dict[str, str]:
+    """Display settings that make Qt behave under WSLg.
+
+    FreeCAD runs on X11 (xcb) by default. Without XCURSOR_SIZE, libxcb-cursor
+    sizes the cursor as 1/48 of the whole multi-monitor X screen, which makes
+    it far too large, so a standard size is set.
+
+    Native Wayland stays available with QT_QPA_PLATFORM=wayland. With systemd
+    enabled, WSL mounts a fresh tmpfs over $XDG_RUNTIME_DIR, which hides the
+    wayland-0 socket WSLg publishes there, so WAYLAND_DISPLAY is pointed at the
+    socket WSLg still exposes under /mnt/wslg. Values the user already set are
+    left alone.
+    """
+    if not sys.platform.startswith("linux") or not wslg_runtime_dir.is_dir():
+        return {}
+
+    updates: dict[str, str] = {}
+
+    if env.get("DISPLAY", "").strip() and not env.get("QT_QPA_PLATFORM", "").strip():
+        updates["QT_QPA_PLATFORM"] = "xcb"
+
+    wayland_display = env.get("WAYLAND_DISPLAY", "").strip()
+    if wayland_display and not os.path.isabs(wayland_display):
+        runtime_dir = env.get("XDG_RUNTIME_DIR", "").strip()
+        if not (runtime_dir and (Path(runtime_dir) / wayland_display).exists()):
+            wslg_socket = wslg_runtime_dir / wayland_display
+            if wslg_socket.exists():
+                updates["WAYLAND_DISPLAY"] = str(wslg_socket)
+
+    if not env.get("XCURSOR_SIZE", "").strip():
+        updates["XCURSOR_SIZE"] = DEFAULT_CURSOR_SIZE
+
+    return updates
 
 
 def _pixi_for_freecad(freecad_exe: Path) -> str | None:
@@ -776,6 +818,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Seconds to wait for the MCP RPC server (default: 120)",
     )
     parser.add_argument(
+        "--codex",
+        action="store_true",
+        help=(
+            "Sync the locked MCP environment, launch authenticated FreeCAD, "
+            "and register the freecad MCP server with Codex"
+        ),
+    )
+    parser.add_argument(
         "--authenticated-isolated",
         action="store_true",
         help=(
@@ -813,10 +863,80 @@ def _start_freecad(
     return process
 
 
+def _start_authenticated_isolated(args: argparse.Namespace) -> int:
+    mcp_root = _freecad_mcp_dir()
+    scripts = mcp_root / "scripts"
+    environment = os.environ.copy()
+    environment.update(_wslg_display_env(environment))
+    python = sys.executable
+    codex = None
+
+    if args.codex:
+        codex = shutil.which("codex")
+        uv = shutil.which("uv")
+        if codex is None or uv is None:
+            missing = ", ".join(
+                name for name, executable in (("codex", codex), ("uv", uv))
+                if executable is None
+            )
+            print(f"ERROR: --codex requires {missing} on PATH.", file=sys.stderr)
+            return 1
+        freecad = args.freecad or _default_freecad()
+        if not freecad or not Path(freecad).is_file():
+            print("ERROR: could not find FreeCAD; pass --freecad PATH.", file=sys.stderr)
+            return 1
+        environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(freecad).resolve())
+        print("Syncing the FreeCAD MCP environment from uv.lock.", flush=True)
+        result = subprocess.run(
+            [uv, "sync", "--locked", "--inexact", "--directory", str(mcp_root)]
+        )
+        if result.returncode:
+            return result.returncode
+        python = str(
+            mcp_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        )
+        if not Path(python).is_file():
+            print(f"ERROR: MCP Python environment not found: {python}", file=sys.stderr)
+            return 1
+    elif args.freecad:
+        environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
+
+    print("Starting manifest-bound authenticated isolated MCP profile.", flush=True)
+    setup_result = subprocess.run(
+        [python, str(scripts / "setup_isolated_profile.py")], env=environment
+    )
+    if setup_result.returncode:
+        return setup_result.returncode
+    launch_result = subprocess.run(
+        [python, str(scripts / "start_freecad_isolated.py"), *args.args], env=environment
+    )
+    if launch_result.returncode or codex is None:
+        return launch_result.returncode
+
+    profile = Path(
+        environment.get("FREECAD_MCP_PROFILE_DIR") or _repo_root() / ".freecad-mcp-isolated"
+    ).resolve()
+    result = subprocess.run(
+        [
+            codex, "mcp", "add", "freecad",
+            "--env", "FREECAD_MCP_CLIENT=codex",
+            "--", python, "-m", "freecad_mcp.server",
+            "--instance-manifest", str(profile / "instance-manifest.json"),
+        ]
+    )
+    if result.returncode == 0:
+        print(
+            "FreeCAD MCP is registered with Codex. Reload the Codex IDE extension "
+            "or start a new Codex CLI session to load its tools.",
+            flush=True,
+        )
+    return result.returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
-    if args.authenticated_isolated:
+    if args.authenticated_isolated or args.codex:
         incompatible = [
             flag
             for flag, enabled in (
@@ -828,7 +948,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if incompatible or args.mcp_timeout != 120.0:
             print(
-                "ERROR: --authenticated-isolated owns its readiness and lifecycle; "
+                "ERROR: authenticated launch owns its readiness and lifecycle; "
                 "do not combine it with legacy launcher wait, force, or timeout options.",
                 file=sys.stderr,
             )
@@ -839,20 +959,8 @@ def main(argv: list[str] | None = None) -> int:
         if build_result:
             return build_result
 
-    if args.authenticated_isolated:
-        scripts = _freecad_mcp_dir() / "scripts"
-        setup = scripts / "setup_isolated_profile.py"
-        isolated_launcher = scripts / "start_freecad_isolated.py"
-        environment = os.environ.copy()
-        if args.freecad:
-            environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
-        print("Starting manifest-bound authenticated isolated MCP profile.")
-        setup_result = subprocess.run([sys.executable, str(setup)], env=environment)
-        if setup_result.returncode:
-            return setup_result.returncode
-        return subprocess.run(
-            [sys.executable, str(isolated_launcher), *args.args], env=environment
-        ).returncode
+    if args.authenticated_isolated or args.codex:
+        return _start_authenticated_isolated(args)
 
     # Resolve the default after the optional build so a newly created binary
     # can be selected and launched in the same invocation.
