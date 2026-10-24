@@ -81,6 +81,9 @@ struct OffsetChainTopologyOptions
 // neighbors (including a declared closing seam) may share an endpoint. Each
 // span is regular/injective; all span pairs need separation or a joint local
 // monotonicity proof. Small endpoint gaps must also be provably non-overlapping.
+// Every declared junction requires that local proof, even with disjoint boxes.
+// Each piece's certified length must exceed four times joinTolerance so endpoint
+// welding cannot collapse a piece; closed pieces must pass the same length test.
 // Same curve/complexity policies as the distance certificate above. Refuses
 // discontinuous splines, ambiguous bounds, degeneracies and exhausted budgets.
 SketcherExport OffsetChainTopologyResult certifyOffsetChainTopology(

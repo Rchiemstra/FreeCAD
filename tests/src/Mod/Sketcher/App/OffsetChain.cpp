@@ -500,6 +500,120 @@ void bezierCurve(Chain& chain, const std::vector<V>& poles)
     ));
 }
 
+void nativeLine(Chain& chain, V start, V direction, double length)
+{
+    auto curve = std::make_unique<Part::GeomLineSegment>();
+    curve->setHandle(new Geom_TrimmedCurve(
+        new Geom_Line(gp_Pnt(start.x, start.y, start.z),
+                      gp_Dir(direction.x, direction.y, direction.z)), 0, length
+    ));
+    chain.push_back(std::move(curve));
+}
+
+TEST(OffsetChainTopology, ShortLineCannotClose)
+{
+    Chain chain;
+    nativeLine(chain, V(0, 0, 0), V(1, 0, 0), std::ldexp(1.0, -24));
+    OffsetChainTopologyOptions options;
+    options.closed = true;
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::NotCertified) << result.message;
+    EXPECT_EQ(result.message, "Piece length is not safely above join tolerance.");
+}
+
+TEST(OffsetChainTopology, ToleratedReversedJunction)
+{
+    Chain chain;
+    nativeLine(chain, V(0, 0, 0), V(1, 0, 0), 1);
+    nativeLine(chain, V(1 + std::ldexp(1.0, -24), 0, 0), V(-1, 0, 0),
+               std::ldexp(1.0, -25));
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::NotCertified) << result.message;
+    EXPECT_EQ(result.message, "Piece length is not safely above join tolerance.");
+}
+
+TEST(OffsetChainTopology, DisjointReversedJunctionNeedsLocalProof)
+{
+    // Both pieces are long; disabling the short-piece guard cannot admit this join.
+    Chain chain;
+    nativeLine(chain, V(0, 0, 0), V(1, 0, 0), 1);
+    nativeLine(chain, V(1, std::ldexp(1.0, -24), 0), V(-1, 0, 0), 0.5);
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
+}
+
+TEST(OffsetChainTopology, DisjointReversedClosingSeamNeedsLocalProof)
+{
+    const double gap = std::ldexp(1.0, -24);
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    line(chain, V(1, 0, 0), V(1, -1, 0));
+    line(chain, V(1, -1, 0), V(2, -1, 0));
+    line(chain, V(2, -1, 0), V(2, gap, 0));
+    line(chain, V(2, gap, 0), V(0, gap, 0));
+    OffsetChainTopologyOptions options;
+    options.closed = true;
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
+}
+
+TEST(OffsetChainTopology, PieceLengthAboveJoinTolerance)
+{
+    OffsetChainTopologyOptions options;
+    for (double factor : {3.999, 4.001}) {
+        SCOPED_TRACE(factor);
+        Chain chain;
+        nativeLine(chain, V(0, 0, 0), V(1, 0, 0), factor * options.joinTolerance);
+        const auto result = topology(chain, options);
+        EXPECT_EQ(result.status, factor < 4 ? OffsetChainTopologyStatus::NotCertified
+                                           : OffsetChainTopologyStatus::Success)
+            << result.message;
+        if (factor < 4) {
+            EXPECT_EQ(result.message, "Piece length is not safely above join tolerance.");
+        }
+    }
+}
+
+TEST(OffsetChainTopology, NonAdjacentTouchAndCrossAtExtremeScale)
+{
+    for (double scale : {1e-100, 1e100}) {
+        for (bool cross : {false, true}) {
+            SCOPED_TRACE(scale);
+            SCOPED_TRACE(cross);
+            Chain chain;
+            line(chain, V(0, 0, 0), V(2 * scale, 0, 0));
+            line(chain, V(2 * scale, 0, 0), V(2 * scale, scale, 0));
+            line(chain, V(2 * scale, scale, 0), V(scale, scale, 0));
+            line(chain, V(scale, scale, 0), V(scale, cross ? -scale : 0, 0));
+            OffsetChainTopologyOptions options;
+            options.joinTolerance = 0;
+            const auto result = topology(chain, options);
+            EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+            EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
+        }
+    }
+}
+
+TEST(OffsetChainTopology, NonAdjacentTouchAndCrossAcrossArcSeam)
+{
+    for (bool cross : {false, true}) {
+        SCOPED_TRACE(cross);
+        Chain chain;
+        arc(chain, 1, 5.5, 7);
+        // A forward gap avoids relying on rounded trigonometric endpoint equality.
+        const V start(std::cos(7) - 1e-8 * std::sin(7),
+                      std::sin(7) + 1e-8 * std::cos(7), 0);
+        line(chain, start, V(2, 2, 0));
+        line(chain, V(2, 2, 0), V(cross ? 0.9 : 1, 2, 0));
+        line(chain, V(cross ? 0.9 : 1, 2, 0), V(cross ? 0.9 : 1, -2, 0));
+        const auto result = topology(chain);
+        EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+        EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
+    }
+}
+
 TEST(OffsetChainTopology, ContinuousMixedOpen)
 {
     auto chain = mixed();
@@ -525,7 +639,9 @@ TEST(OffsetChainTopology, SimpleClosed)
     options.closed = true;
     const auto result = topology(chain, options);
     EXPECT_EQ(result.status, OffsetChainTopologyStatus::Success) << result.message;
-    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+    const auto open = topology(chain);
+    EXPECT_EQ(open.status, OffsetChainTopologyStatus::NotCertified) << open.message;
+    EXPECT_EQ(open.message, "Expected distinct open ends.");
 }
 
 TEST(OffsetChainTopology, JoinToleranceBoundary)
@@ -553,7 +669,9 @@ TEST(OffsetChainTopology, AdjacentRecrossingNearJunction)
     bezierCurve(chain, {V(1, 0, 0), V(1 + 1e-5 / 3, 0, 0),
                          V(1 + 2e-5 / 3 - 4e-4 / 3, -1e-7 / 3, 0),
                          V(1 + 1e-5 - 4e-4, 9e-7, 0)});
-    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
 }
 
 TEST(OffsetChainTopology, TinyLoopInsideSingleSpan)
@@ -568,7 +686,9 @@ TEST(OffsetChainTopology, TinyLoopInsideSingleSpan)
     bezierCurve(chain, {V(x0, y0, 0), V(x0 + x1 / 3, y0 + y1 / 3, 0),
                          V(x0 + 2 * x1 / 3 + 1.0 / 3, y0 + 2 * y1 / 3 + y2 / 3, 0),
                          V(x0 + x1 + 1, y0 + y1 + y2 + 1, 0)});
-    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
 }
 
 TEST(OffsetChainTopology, DuplicateOverlappingSpan)
@@ -577,7 +697,9 @@ TEST(OffsetChainTopology, DuplicateOverlappingSpan)
     line(chain, V(0, 0, 0), V(1, 0, 0));
     line(chain, V(1, 0, 0), V(0, 0, 0));
     line(chain, V(0, 0, 0), V(1, 0, 0));
-    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
 }
 
 TEST(OffsetChainTopology, ClosingSeamCrossing)
@@ -589,7 +711,9 @@ TEST(OffsetChainTopology, ClosingSeamCrossing)
     bezierCurve(chain, {V(1, 1, 0), V(0.5, -1, 0), V(0, 0, 0)});
     OffsetChainTopologyOptions options;
     options.closed = true;
-    EXPECT_NE(topology(chain, options).status, OffsetChainTopologyStatus::Success);
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_EQ(result.message, "Topology certificate budget exhausted.");
 }
 
 TEST(OffsetChainTopology, NonAdjacentNearTouchAboveClearance)
@@ -669,6 +793,8 @@ TEST(OffsetChainTopology, DepthExhaustionAndStationaryPoint)
     Chain stationary;
     bezierCurve(stationary, {V(-0.125, 0, 0), V(0.125, 0, 0),
                               V(-0.125, 0, 0), V(0.125, 0, 0)});
-    EXPECT_NE(topology(stationary).status, OffsetChainTopologyStatus::Success);
+    const auto stopped = topology(stationary);
+    EXPECT_EQ(stopped.status, OffsetChainTopologyStatus::BudgetExceeded) << stopped.message;
+    EXPECT_EQ(stopped.message, "Topology certificate budget exhausted.");
 }
 }  // namespace

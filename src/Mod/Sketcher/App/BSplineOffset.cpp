@@ -1149,6 +1149,56 @@ struct TopologyValidator
         return chainBounds(point, reader.origin).position;
     }
 
+    void pieceLength(const std::vector<ChainSpan>& spans)
+    {
+        struct Cell
+        {
+            Region region;
+            Interval length;
+        };
+        std::vector<Cell> cells;
+        const auto add = [&](const Region& r) {
+            if (cells.size() >= 65536) {
+                throw ChainFailure {
+                    ChainStatus::BudgetExceeded, "Topology length budget exhausted."
+                };
+            }
+            const auto speed = norm(enclosure(r).tangent);
+            cells.push_back({r, speed * (Interval(r.span.spline.last)
+                                        - Interval(r.span.spline.first))});
+        };
+        for (const auto& span : spans) {
+            add({span, 0, 1});
+        }
+        // Allow a margin beyond the two endpoint weld tolerances. Bounds on
+        // native speed certify length even for a single closed/periodic piece.
+        const auto minimum = Interval(4) * Interval(options.joinTolerance);
+        while (true) {
+            Interval length(0);
+            auto chosen = cells.begin();
+            for (auto it = cells.begin(); it != cells.end(); ++it) {
+                reader.consume();
+                length = length + it->length;
+                if (it->length.hi > chosen->length.hi) {
+                    chosen = it;
+                }
+            }
+            if (length.lo > minimum.hi) {
+                return;
+            }
+            if (length.hi <= minimum.lo) {
+                throw ChainFailure {
+                    ChainStatus::NotCertified,
+                    "Piece length is not safely above join tolerance."
+                };
+            }
+            auto halves = divide(chosen->region);
+            cells.erase(chosen);
+            add(halves.first);
+            add(halves.second);
+        }
+    }
+
     bool sameEndpoint(double junction) const
     {
         const auto index = static_cast<size_t>(junction);
@@ -1173,8 +1223,9 @@ struct TopologyValidator
         const auto ab = enclosure(a), bb = enclosure(b);
         const bool neighbor = a.last == b.first;
         const bool seam = options.closed && a.first == 0 && b.last == end;
-        const double clearance = neighbor || seam ? 0 : options.clearance;
-        if (norm(ab.position - bb.position).lo > clearance) {
+        // Box separation cannot discharge a declared junction: even disjoint
+        // pieces need the forward-gap and local injectivity proof below.
+        if (!neighbor && !seam && norm(ab.position - bb.position).lo > options.clearance) {
             return;
         }
         // Two intervals in a closed chain can share BOTH ends. A proof at one
@@ -1331,6 +1382,7 @@ OffsetChainTopologyResult certifyOffsetChainTopologyIntervals(
             }
             starts.push_back(exactEndpoint(*piece.geometry, false));
             ends.push_back(exactEndpoint(*piece.geometry, true));
+            validator.pieceLength(spans);
             for (auto& span : spans) {
                 const double first = static_cast<double>(regions.size());
                 regions.push_back({std::move(span), first, first + 1});
