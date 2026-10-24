@@ -24,6 +24,9 @@
  ***************************************************************************/
 
 
+#include <cmath>
+#include <Precision.hxx>
+
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoCoordinate3.h>
 
@@ -121,8 +124,16 @@ void ViewProviderDatumPlane::setExtents(Base::BoundBox3d bbox)
 
     double margin = sqrt(bbox.LengthX() * bbox.LengthY()) * marginFactor();
 
-    pcDatum->Length.setValue(bbox.LengthX() + 2 * margin);
-    pcDatum->Width.setValue(bbox.LengthY() + 2 * margin);
+    const double length = bbox.LengthX() + 2 * margin;
+    const double width = bbox.LengthY() + 2 * margin;
+    // Automatic dimensions are also model properties. Avoid publishing a
+    // model mutation when a presentation refresh leaves their size unchanged.
+    if (std::abs(pcDatum->Length.getValue() - length) > Precision::Confusion()) {
+        pcDatum->Length.setValue(length);
+    }
+    if (std::abs(pcDatum->Width.getValue() - width) > Precision::Confusion()) {
+        pcDatum->Width.setValue(width);
+    }
 
     // Change the coordinates of the line
     pCoords->point.setNum(4);

@@ -76,6 +76,11 @@ if(TARGET PartGui)
     target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PART_CAPTURE_CACHE)
 endif()
 
+if(TARGET PartDesignGui)
+    add_dependencies(Gui_tests_run PartDesignGui)
+    target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PARTDESIGN_DATUM_EXTENTS)
+endif()
+
 target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Collaboration integration tests use the production isolated-recompute
