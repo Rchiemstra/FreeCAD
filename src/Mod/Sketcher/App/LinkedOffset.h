@@ -56,7 +56,8 @@ enum class LinkedOffsetStatus
     MissingSource,
     Ambiguous,
     TypeChanged,
-    MissingOutput
+    MissingOutput,
+    InvalidRecord
 };
 
 struct LinkedOffsetInspection
@@ -77,6 +78,11 @@ SketcherExport void attachLinkedOffset(
     const LinkedOffsetParameters& parameters
 );
 SketcherExport std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch);
+// Insertion only: pass one detached copy batch, never snapshots or solver clones.
+SketcherExport void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& copies);
+// Topology changes cannot inherit source ancestry, even when indices/types survive.
+SketcherExport void invalidateLinkedOffsetAncestry(Part::Geometry& geometry);
+SketcherExport void invalidateLinkedOffsetAncestry(SketchObject& sketch, int index);
 SketcherExport const char* linkedOffsetStatusName(LinkedOffsetStatus status);
 // Detached JSON snapshot shared by the read-only Python adapter.
 SketcherExport std::string linkedOffsetsJson(const SketchObject& sketch);

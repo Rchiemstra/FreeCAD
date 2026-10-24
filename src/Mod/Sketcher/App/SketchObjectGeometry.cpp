@@ -42,6 +42,7 @@
 
 #include "GeoEnum.h"
 #include "SketchObject.h"
+#include "LinkedOffset.h"
 #include "SketchGeometry.h"
 #include "SolverGeometryExtension.h"
 #include "ExternalGeometryFacade.h"
@@ -166,6 +167,8 @@ int SketchObject::addGeometry(const std::vector<Part::Geometry*>& geoList,
         newVals.push_back(copy);
     }
 
+    remapLinkedOffsetCopies({newVals.begin() + vals.size(), newVals.end()});
+
     // On setting geometry the onChanged method will call acceptGeometry(), thereby updating
     // constraint geometry indices and rebuilding the vertex index
     Geometry.setValues(std::move(newVals));
@@ -190,6 +193,7 @@ int SketchObject::addGeometry(std::unique_ptr<Part::Geometry> newgeo, bool const
 
     std::vector<Part::Geometry*> newVals(vals);
 
+    remapLinkedOffsetCopies({newgeo.get()});
     auto* geoNew = newgeo.release();
     generateId(geoNew);
 

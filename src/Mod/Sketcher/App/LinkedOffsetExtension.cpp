@@ -37,13 +37,13 @@ void LinkedOffsetExtension::saveAttributes(Base::Writer& writer) const
     Part::GeometryPersistenceExtension::saveAttributes(writer);
     const auto encode = Base::Persistence::encodeAttribute;
     writer.Stream() << "\" uuid=\"" << encode(uuid) << "\" membership=\"" << encode(membership)
-                    << "\" version=\"" << version << "\" record=\"" << encode(record);
+                    << "\" version=\"" << encode(version) << "\" record=\"" << encode(record);
 }
 
 void LinkedOffsetExtension::restoreAttributes(Base::XMLReader& reader)
 {
     Part::GeometryPersistenceExtension::restoreAttributes(reader);
-    version = reader.hasAttribute("version") ? reader.getAttribute<int>("version") : 0;
+    version = reader.hasAttribute("version") ? reader.getAttribute<const char*>("version") : "";
     uuid = reader.hasAttribute("uuid") ? reader.getAttribute<const char*>("uuid") : "";
     membership = reader.hasAttribute("membership") ? reader.getAttribute<const char*>("membership")
                                                    : "";

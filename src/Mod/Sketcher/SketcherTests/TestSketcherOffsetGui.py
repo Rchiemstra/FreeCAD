@@ -931,6 +931,7 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         return len(geometry)
 
     def chain_refusal(self, before, reason=None):
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
         for action in ("Update", "Apply"):
             self.chain_button(action)
             message = self.chain_control(QtGui.QLabel, "Status").text()
@@ -939,6 +940,7 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
             if reason is not None:
                 self.assertIn(reason.lower(), message.lower())
             self.assertEqual(before, self.offset_snapshot())
+            self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
         self.chain_button("Cancel")
         self.assertEqual(before, self.offset_snapshot())
         self.assertEqual(self.selection_before_offset, self.selection_signature())
@@ -1172,3 +1174,12 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
 
     def test_linked_mixed_creation_undo_redo(self):
         self.check_linked_creation(True)
+
+    def test_linked_spline_refusal_has_no_relation(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        self.spline_quantity("Distance", 0.0)
+        self.spline_button("Apply")
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")

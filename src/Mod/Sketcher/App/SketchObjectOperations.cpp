@@ -36,6 +36,7 @@
 
 #include "GeoEnum.h"
 #include "SketchObject.h"
+#include "LinkedOffset.h"
 
 
 using namespace Sketcher;
@@ -176,6 +177,9 @@ void SketchObject::replaceGeometries(std::vector<int> oldGeoIds, std::vector<Par
         THROWM(ValueError, "Cannot replace external geometries and axes.");
     }
 
+    for (auto* geometry : newGeos) {
+        invalidateLinkedOffsetAncestry(*geometry);
+    }
     auto oldGeoIdIter = oldGeoIds.begin();
     auto newGeoIter = newGeos.begin();
 
@@ -527,6 +531,9 @@ SketchSolveStatus SketchObject::extend(int GeoId, double increment, PointPos end
             arc->setRange(startArc, endArc + increment, true);
             status = SketchSolveStatus::Success;
         }
+    }
+    if (status == SketchSolveStatus::Success) {
+        invalidateLinkedOffsetAncestry(*this, GeoId);
     }
     if (status == SketchSolveStatus::Success && noRecomputes) {
         solve();
@@ -2501,6 +2508,13 @@ int SketchObject::addCopy(
             return;
         }
 
+        std::vector<Part::Geometry*> inserted;
+        for (const auto& [original, copied] : geoIdMap) {
+            (void)original;
+            inserted.push_back(newgeoVals[copied]);
+        }
+        remapLinkedOffsetCopies(inserted);
+
         // handle geometry constraints
         for (const auto& constr : constrvals) {
             auto fit = geoIdMap.find(constr->First);
@@ -3133,6 +3147,7 @@ bool SketchObject::modifyBSplineKnotMultiplicity(int GeoId, int knotIndex, int m
 
     std::vector<Part::Geometry*> newVals(vals);
 
+    invalidateLinkedOffsetAncestry(*bspline);
     GeometryFacade::copyId(geo, bspline.get());
     newVals[GeoId] = bspline.release();
 
@@ -3286,6 +3301,7 @@ bool SketchObject::insertBSplineKnot(int GeoId, double param, int multiplicity)
 
     std::vector<Part::Geometry*> newVals(vals);
 
+    invalidateLinkedOffsetAncestry(*bspline);
     GeometryFacade::copyId(geo, bspline.get());
     newVals[GeoId] = bspline.release();
 

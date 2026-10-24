@@ -8,8 +8,8 @@
 namespace Sketcher
 {
 
-// Identity is sketch-local. Copies deliberately retain UUIDs; duplicating geometry
-// inside the same sketch is ambiguous until a future copy/remapping policy exists.
+// Identity is sketch-local. Snapshot and whole-sketch copies retain UUIDs.
+// Geometry insertion explicitly remaps identities and complete relation groups.
 class SketcherExport LinkedOffsetExtension: public Part::GeometryPersistenceExtension
 {
     TYPESYSTEM_HEADER_WITH_OVERRIDE();
@@ -21,7 +21,7 @@ public:
 
     std::string uuid;
     std::string membership;
-    int version = 1;
+    std::string version = "1";
     // Only the designated output owns the relation. Unknown versions remain opaque
     // through Save/Restore/copy and are ignored by the inspection API.
     std::string record;
