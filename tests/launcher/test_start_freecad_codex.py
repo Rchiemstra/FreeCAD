@@ -37,6 +37,7 @@ class CodexLauncherTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(launcher, "_freecad_mcp_dir", return_value=self.mcp))
         self.stack.enter_context(mock.patch.object(launcher, "_default_freecad", return_value=sys.executable))
         self.stack.enter_context(mock.patch.object(launcher, "_wslg_display_env", return_value={}))
+        self.stack.enter_context(mock.patch.object(launcher.Path, "home", return_value=self.repo / "home"))
         self.which = self.stack.enter_context(
             mock.patch.object(launcher.shutil, "which", side_effect=lambda name: f"/tools/{name}")
         )
@@ -80,6 +81,18 @@ class CodexLauncherTests(unittest.TestCase):
         self.assertEqual(launcher.main(["--codex"]), 1)
         self.run.assert_not_called()
 
+    def test_codex_extension_cli_is_used_when_absent_from_path(self):
+        extension = self.repo / "home/.vscode-server/extensions/openai.chatgpt-26.10.1"
+        executable = extension / "bin/linux-x86_64/codex"
+        executable.parent.mkdir(parents=True)
+        executable.touch(mode=0o755)
+        self.which.side_effect = lambda name: None if name == "codex" else "/tools/uv"
+        with mock.patch.object(launcher.sys, "platform", "linux"), mock.patch.object(
+            launcher.platform, "machine", return_value="x86_64"
+        ):
+            self.assertEqual(launcher.main(["--codex"]), 0)
+        self.assertEqual(self.run.call_args.args[0][0], str(executable))
+
     def test_missing_freecad_stops_before_sync(self):
         with mock.patch.object(launcher, "_default_freecad", return_value=None):
             self.assertEqual(launcher.main(["--codex"]), 1)
@@ -100,6 +113,47 @@ class CodexLauncherTests(unittest.TestCase):
             with self.subTest(flags=flags):
                 self.assertEqual(launcher.main(["--codex", *flags]), 2)
         self.run.assert_not_called()
+
+
+class CodexDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.home = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(mock.patch.object(launcher.Path, "home", return_value=self.home))
+        self.which = self.stack.enter_context(mock.patch.object(launcher.shutil, "which", return_value=None))
+        self.stack.enter_context(mock.patch.object(launcher.sys, "platform", "linux"))
+        self.stack.enter_context(mock.patch.object(launcher.platform, "machine", return_value="x86_64"))
+
+    def extension_cli(self, version, directory=".vscode-server/extensions", target="linux-x86_64"):
+        executable = self.home / directory / f"openai.chatgpt-{version}" / "bin" / target / "codex"
+        executable.parent.mkdir(parents=True)
+        executable.touch(mode=0o755)
+        return executable
+
+    def test_path_takes_precedence_over_bundled_cli(self):
+        self.extension_cli("26.10.1")
+        self.which.return_value = "/usr/local/bin/codex"
+        self.assertEqual(launcher._codex_executable(), "/usr/local/bin/codex")
+
+    def test_newest_extension_version_is_selected_numerically(self):
+        self.extension_cli("26.9.1")
+        newest = self.extension_cli("26.10.1", directory=".vscode/extensions")
+        self.assertEqual(launcher._codex_executable(), str(newest))
+
+    def test_insiders_extension_is_discovered(self):
+        executable = self.extension_cli("26.10.1", directory=".vscode-server-insiders/extensions")
+        self.assertEqual(launcher._codex_executable(), str(executable))
+
+    def test_non_executable_or_foreign_platform_binaries_are_ignored(self):
+        self.extension_cli("26.10.1").chmod(0o644)
+        self.extension_cli("26.10.1", target="darwin-x86_64")
+        self.extension_cli("26.10.1", target="linux-aarch64")
+        with mock.patch.object(launcher.os, "access", side_effect=lambda p, mode: p.stat().st_mode & 0o111):
+            self.assertIsNone(launcher._codex_executable())
+
+    def test_missing_extension_returns_none(self):
+        self.assertIsNone(launcher._codex_executable())
 
 
 if __name__ == "__main__":

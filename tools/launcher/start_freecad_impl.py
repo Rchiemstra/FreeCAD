@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -863,6 +864,41 @@ def _start_freecad(
     return process
 
 
+def _codex_executable() -> str | None:
+    command = shutil.which("codex")
+    if command is not None:
+        return command
+
+    system = {"linux": "linux", "darwin": "darwin", "win32": "windows"}.get(sys.platform)
+    architecture = {
+        "x86_64": "x86_64", "amd64": "x86_64",
+        "aarch64": "aarch64", "arm64": "aarch64",
+    }.get(platform.machine().lower())
+    if system is None or architecture is None:
+        return None
+    executable = "codex.exe" if system == "windows" else "codex"
+    target = f"{system}-{architecture}"
+    candidates: list[tuple[tuple[int, ...], Path]] = []
+    for directory in (
+        ".vscode-server/extensions", ".vscode-server-insiders/extensions",
+        ".vscode/extensions", ".vscode-insiders/extensions",
+    ):
+        for candidate in (Path.home() / directory).glob(
+            f"openai.chatgpt-*/bin/{target}/{executable}"
+        ):
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            version = candidate.parents[2].name.removeprefix("openai.chatgpt-").split("-")[0]
+            try:
+                version_key = tuple(int(part) for part in version.split("."))
+            except ValueError:
+                continue
+            candidates.append((version_key, candidate))
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda item: item[0])[1])
+
+
 def _start_authenticated_isolated(args: argparse.Namespace) -> int:
     mcp_root = _freecad_mcp_dir()
     scripts = mcp_root / "scripts"
@@ -872,20 +908,24 @@ def _start_authenticated_isolated(args: argparse.Namespace) -> int:
     codex = None
 
     if args.codex:
-        codex = shutil.which("codex")
+        codex = _codex_executable()
         uv = shutil.which("uv")
-        if codex is None or uv is None:
-            missing = ", ".join(
-                name for name, executable in (("codex", codex), ("uv", uv))
-                if executable is None
+        if codex is None:
+            print(
+                "ERROR: Codex CLI not found on PATH or in an installed Codex VS Code "
+                "extension. Install the CLI or add its directory to PATH.",
+                file=sys.stderr,
             )
-            print(f"ERROR: --codex requires {missing} on PATH.", file=sys.stderr)
+            return 1
+        if uv is None:
+            print("ERROR: --codex requires uv on PATH.", file=sys.stderr)
             return 1
         freecad = args.freecad or _default_freecad()
         if not freecad or not Path(freecad).is_file():
             print("ERROR: could not find FreeCAD; pass --freecad PATH.", file=sys.stderr)
             return 1
         environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(freecad).resolve())
+        print(f"Using Codex CLI: {codex}", flush=True)
         print("Syncing the FreeCAD MCP environment from uv.lock.", flush=True)
         result = subprocess.run(
             [uv, "sync", "--locked", "--inexact", "--directory", str(mcp_root)]
