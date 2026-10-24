@@ -6,6 +6,7 @@
 #include <FCGlobal.h>
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@ namespace App
 
 class Document;
 class DocumentCollaborationService;
+class CollaborationPreparedMutationTargetScope;
 class PreparedEdit;
 struct CollaborationRollbackResult;
 struct TransactionName;
@@ -76,6 +78,17 @@ private:
     friend class Internal::DocumentCommitCoordinatorTestAccess;
 
     explicit DocumentCommitCoordinator(Document& document) noexcept;
+    [[nodiscard]]
+    std::unique_ptr<CollaborationPreparedMutationTargetScope> acquireCompatibilityMutationTarget();
+
+    // Caller holds the document commit mutex; shared by pre-admission retries.
+    [[nodiscard]] std::optional<DocumentCommitResult> rejectCommitPrerequisites(
+        DocumentInstanceId instanceId,
+        DocumentLifecycleEpoch lifecycleEpoch,
+        const std::string& operationId,
+        bool requireDetachedPreparationSupport,
+        bool nestInCallerTransaction
+    );
 
     DocumentCommitCoordinator(const DocumentCommitCoordinator&) = delete;
     DocumentCommitCoordinator& operator=(const DocumentCommitCoordinator&) = delete;
@@ -144,7 +157,9 @@ private:
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
         bool retainUndoHistory,
-        bool nestInCallerTransaction = false);
+        bool nestInCallerTransaction = false,
+        std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget = {}
+    );
     [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
         const PreparedEdit& edit);
 
@@ -152,6 +167,8 @@ private:
     static std::atomic<PostReservationTestHook> _postReservationTestHook;
     using PreReservationTestHook = void (*)();
     static std::atomic<PreReservationTestHook> _preReservationTestHook;
+
+    inline static std::atomic<PreReservationTestHook> _preCompatibilityWaitTestHook {nullptr};
 
     Document& _document;
 };
