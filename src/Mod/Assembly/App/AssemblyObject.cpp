@@ -33,8 +33,10 @@
 #include <ranges>
 
 
+#include <App/AutoTransaction.h>
 #include <App/Application.h>
 #include <App/Datums.h>
+#include <App/ScopedDocumentMutation.h>
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/GroupExtension.h>
@@ -89,6 +91,7 @@
 #include "AssemblyLink.h"
 #include "AssemblyObject.h"
 #include "AssemblyObjectPy.h"
+#include "MotionSimulationCoordinates.h"
 #include "AssemblyUtils.h"
 #include "Groups.h"
 #include "ReviewNote.h"
@@ -1066,6 +1069,54 @@ void AssemblyObject::cacheSolveStatus()
     }
 }
 
+PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
+{
+    // Python cannot snapshot the solver's frame store, placement journal or
+    // authoritative file-change tracking. Keep this scope on the document thread.
+    auto* doc = getDocument();
+    if (solveInProgress || placementAttemptInProgress || dragActive || dragStartAttempt
+        || doc->hasPendingTransaction() || doc->isTransactionLocked() || doc->transacting()
+        || App::GetApplication().getGlobalTransaction() != 0) {
+        throw Base::RuntimeError("Finish the active solve, drag, simulation or transaction before sweeping");
+    }
+    // A GUI sweep/replay pumps events while a geometry worker runs. Prevent
+    // document close from destroying the state this scope must restore. Mutation
+    // admission below also protects saved solver maps containing raw pointers.
+    App::TransactionLocker lifetime(doc);
+    const bool wasClosable = doc->isClosable();
+    doc->setClosable(false);
+    Base::ScopeGuard restoreClosable([&] { doc->setClosable(wasClosable); });
+    auto solver = mbdAssembly;
+    auto parts = objectPartMap;
+    auto representatives = rigidRepByPart;
+    auto members = rigidMembersByRep;
+    auto masses = objMasses;
+    auto savedMotions = motions;
+    const bool pending = solvePending;
+    PlacementAttempt placements(*this);
+    App::ScopedDocumentMutation admission(*doc);
+    Base::ScopeGuard restore([&] {
+        App::ScopedDocumentMutation::Allow controlled(*doc);
+        // Rollback setters can call Python observers. Run them with a clear
+        // error indicator, then propagate the sweep body's original exception.
+        PyObject *type = nullptr, *value = nullptr, *traceback = nullptr;
+        PyErr_Fetch(&type, &value, &traceback);
+        solvePending = pending;
+        placements.restore();
+        mbdAssembly.swap(solver);
+        objectPartMap.swap(parts);
+        rigidRepByPart.swap(representatives);
+        rigidMembersByRep.swap(members);
+        objMasses.swap(masses);
+        motions.swap(savedMotions);
+        // finish() may touch the assembly for a pre-existing pending solve.
+        placements.restoreFlags();
+        redrawJointPlacements(getJoints());
+        PyErr_Restore(type, value, traceback);
+    });
+    return PyObject_CallNoArgs(callback);
+}
+
 int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 {
     mbdAssembly = makeMbdAssembly();
@@ -1084,6 +1135,8 @@ int AssemblyObject::generateSimulation(App::DocumentObject* sim)
     removeUnconnectedJoints(joints, groundedObjs);
 
     jointParts(joints);
+
+    recordMotionCoordinates(mbdAssembly, sim, joints, motions);
 
     create_mbdSimulationParameters(sim);
 

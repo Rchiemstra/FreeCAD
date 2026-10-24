@@ -83,6 +83,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "ScopedDocumentMutation.h"
 #include "ExternalSourceDependency.h"
 #include "private/PreparedLabelReferenceUpdates.h"
 #include "DocumentPresentationBoundary.h"
@@ -1108,6 +1109,7 @@ void Document::ensureCollaborationStructuralMutationAllowed(
     CollaborationStructuralMutationKind kind,
     const char* mutation) const
 {
+    ScopedDocumentMutation::check(*this);
     if (d->collaborationSpreadsheetDerivedCache) {
         throw Base::RuntimeError("schema callbacks cannot borrow spreadsheet derived cache authority");
     }
@@ -1593,6 +1595,7 @@ bool waitForNotificationReplay(const std::atomic<bool>& replaying)
 
 void Document::ensureCollaborationTransactionControlAllowed() const
 {
+    ScopedDocumentMutation::check(*this);
     if (d->collaborationCommitNotificationBarrier
         && !d->collaborationTransactionControlGranted) {
         if (d->collaborationAtomicPresentationAuditActive
@@ -3866,6 +3869,7 @@ unsigned int Document::getMaxUndoStackSize() const
 
 void Document::onBeforeChange(const Property* prop)
 {
+    ScopedDocumentMutation::check(*this);
     if (!d->collaborationCommitNotificationBarrier
         && !saveBookkeepingPropertySuppressed(*d, prop)) {
         Internal::PreparedLabelReferenceUpdates::noteMutation(*this);
@@ -4019,6 +4023,7 @@ void Document::captureInverseTransactionProperty(const TransactionalObject* who,
 
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
+    ScopedDocumentMutation::check(*this);
     // ViewProvider properties reach the owning App document here even though
     // their PropertyContainer is a GUI type.  Enforce before transaction
     // capture or the property's value change so a foreign document cannot

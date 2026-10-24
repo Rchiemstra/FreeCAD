@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <Base/BoundBox.h>
+#include <Base/Matrix.h>
 #include <Base/Vector3D.h>
 #include <Mod/Part/App/InterferenceDetection.h>
 #include <TopoDS_Shape.hxx>
@@ -61,6 +62,7 @@ struct InterferenceLeaf
     /** Stable source-definition identity (document#name of linked definition). */
     std::string sourceId;
     TopoDS_Shape worldShape;
+    Base::Matrix4D worldTransform;
     Base::BoundBox3d worldBoundBox;
     bool visible = true;
     bool shapeValid = true;
@@ -176,6 +178,10 @@ struct InterferencePairResult
     std::size_t leafIndexB = 0;
     /** Component-level solid classification (Penetration / Clear / …). */
     Part::InterferenceResult detection;
+    /** Whole-solid measurement before face-rule aggregation (never a governing face gap). */
+    Part::InterferenceResult solidDetection;
+    /** Retain even a distant Clear pair when explicitly measuring a selected pair. */
+    bool distanceMeasured = false;
     /**
      * True when the pair has at least one exclusion-suppressed violation.
      * Does not imply InvalidInput/Inconclusive details are hidden.
@@ -267,6 +273,8 @@ struct InterferenceScanOptions
      * evaluate a deterministic nearest-AABB subset and emit a visible diagnostic.
      */
     std::size_t maxFacePairCandidates = 10000;
+    /** Selected A×B path only: measure and retain all valid leaf pairs, even distant clears. */
+    bool measureSelectedPairDistances = false;
     /**
      * Test hook: when non-null, replaces whole-solid OCCT classification so
      * solid-Inconclusive aggregation can be exercised without flaky OCCT failures.
@@ -408,6 +416,12 @@ AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefi
     const App::DocumentObject* root,
     const std::string& occurrencePrefix,
     bool includeHidden
+);
+
+/** Repose document-independent geometry using current occurrence transforms only. */
+AssemblyExport std::vector<InterferenceLeaf> reposeInterferenceLeaves(
+    const App::DocumentObject* root,
+    const std::vector<InterferenceLeaf>& ownedLeaves
 );
 
 /**
