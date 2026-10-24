@@ -28,6 +28,7 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchEditFailures.py
     SketcherTests/TestSketchMalformedConstraints.py
     SketcherTests/TestSketcherEllipse.py
+    SketcherTests/TestSketchExternalProjection.py
     SketcherTests/TestSketchReferenceRepair.py
 )
 
