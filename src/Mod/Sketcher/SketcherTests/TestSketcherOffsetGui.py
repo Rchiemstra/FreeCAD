@@ -1146,3 +1146,29 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.assertTrue(any("Select the whole mixed chain" in text for text in warnings), warnings)
         self.assertTrue(self.offset_mode_combobox() is not None)
         FreeCADGui.activeDocument().resetEdit()
+
+
+    def check_linked_creation(self, mixed):
+        count = self.start_mixed_offset() if mixed else 1
+        if not mixed:
+            self.start_spline_offset()
+        button = self.chain_button if mixed else self.spline_button
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        before = self.doc.UndoCount
+        button("Apply")
+        relations = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0]["status"], "Ok")
+        self.assertEqual(len(relations[0]["sources"]), count)
+        self.assertEqual(len(relations[0]["outputs"]), count)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.undo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.redo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), relations)
+
+    def test_linked_spline_creation_undo_redo(self):
+        self.check_linked_creation(False)
+
+    def test_linked_mixed_creation_undo_redo(self):
+        self.check_linked_creation(True)

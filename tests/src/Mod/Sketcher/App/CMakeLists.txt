@@ -3,6 +3,7 @@
 add_executable(Sketcher_tests_run
         BSplineOffset.cpp
         Constraint.cpp
+        LinkedOffset.cpp
         OffsetChain.cpp
         SketcherTestHelpers.cpp
         SketchObject.cpp

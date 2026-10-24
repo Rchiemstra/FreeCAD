@@ -56,6 +56,11 @@ SOURCE_GROUP("Properties" FILES ${Properties_SRCS})
 
 
 SET(Features_SRCS
+    LinkedOffset.cpp
+    LinkedOffset.h
+    LinkedOffsetExtension.cpp
+    LinkedOffsetExtension.h
+    LinkedOffsetPy.cpp
     BSplineOffset.cpp
     BSplineOffset.h
     OffsetChain.cpp

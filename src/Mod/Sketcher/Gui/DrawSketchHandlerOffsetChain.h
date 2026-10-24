@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <Mod/Sketcher/App/LinkedOffset.h>
+
 #include <QCheckBox>
 #include <QFormLayout>
 #include <QLabel>
@@ -132,7 +134,7 @@ private:
         panel->setProperty("computationCount", 0);
         auto layout = new QVBoxLayout(panel.get());
         auto description = new QLabel(QObject::tr(
-            "Independent offset of one G1 mixed chain. The result is blocked."), panel.get());
+            "Persistent G1 chain offset snapshot. Refresh is not automatic."), panel.get());
         description->setWordWrap(true);
         layout->addWidget(description);
         auto form = new QFormLayout();
@@ -327,7 +329,13 @@ private:
                     throw std::runtime_error(ordered.reason);
                 }
                 input.clear();
+                orderedSources.clear();
+                linkedClosed = ordered.closed;
                 for (const auto& piece : ordered.pieces) {
+                    const auto original = std::find_if(sources.begin(), sources.end(),
+                        [&](const auto& source) { return source.identity == piece.identity; });
+                    orderedSources.emplace_back(piece.identity,
+                        !sameGeometry(*original->geometry, *piece.geometry));
                     input.push_back({piece.geometry.get(), piece.identity});
                 }
                 Sketcher::OffsetChainOptions options;
@@ -431,8 +439,12 @@ private:
             // Prepare the complete property lists before opening a transaction,
             // which clears redo. Only property installation belongs inside it.
             auto newGeometry = sketch->Geometry.getValues();
-            auto newConstraints = sketch->Constraints.getValues();
             std::vector<std::unique_ptr<Part::Geometry>> additions;
+            for (auto*& curve : newGeometry) {
+                additions.emplace_back(curve->clone());
+                curve = additions.back().get();
+            }
+            auto newConstraints = sketch->Constraints.getValues();
             for (auto* curve : output) {
                 additions.emplace_back(curve->copy());
                 auto facade = Sketcher::GeometryFacade::getFacade(additions.back().get());
@@ -441,6 +453,28 @@ private:
                 facade->setBlocked(true);
                 newGeometry.push_back(additions.back().get());
             }
+            std::vector<std::pair<int, bool>> linkedSources;
+            for (const auto& [identity, reversed] : orderedSources) {
+                const auto found = std::find_if(newGeometry.begin(), newGeometry.begin() + first,
+                    [&](const auto* curve) {
+                        return size_t(Sketcher::GeometryFacade::getId(curve)) == identity;
+                    });
+                if (found == newGeometry.begin() + first) {
+                    throw std::runtime_error("Offset source is missing.");
+                }
+                linkedSources.emplace_back(int(found - newGeometry.begin()), reversed);
+            }
+            std::vector<int> linkedOutputs;
+            for (int i = first; i < int(newGeometry.size()); ++i) {
+                linkedOutputs.push_back(i);
+            }
+            Sketcher::LinkedOffsetParameters parameters;
+            parameters.generator = "Chain";
+            parameters.distance = distance();
+            parameters.tolerance = control<Gui::QuantitySpinBox>("Tolerance")->rawValue();
+            parameters.closed = linkedClosed;
+            parameters.orientation = orientation;
+            Sketcher::attachLinkedOffset(newGeometry, linkedSources, linkedOutputs, parameters);
             for (const auto& block : blocks) {
                 newConstraints.push_back(block.get());
             }
@@ -519,6 +553,8 @@ private:
     };
     bool exiting = false;
     int orientation = 0;
+    bool linkedClosed = false;
+    std::vector<std::pair<size_t, bool>> orderedSources;
     std::string initialReason;
     std::vector<Source> sources;
     const std::vector<Gui::SelectionObject> savedSelection;

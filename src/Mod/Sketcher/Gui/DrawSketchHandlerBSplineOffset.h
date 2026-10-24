@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include <Mod/Sketcher/App/LinkedOffset.h>
+
 #include <QCheckBox>
 #include <QFormLayout>
 #include <QLabel>
@@ -122,7 +124,8 @@ private:
         panel->setProperty("computationCount", 0);
         auto layout = new QVBoxLayout(panel.get());
         auto description = new QLabel(
-            QObject::tr("Independent approximation. The source is preserved; the result is blocked."),
+            QObject::tr("Persistent offset snapshot. The result is blocked. "
+                        "Refresh is not automatic."),
             panel.get()
         );
         description->setWordWrap(true);
@@ -504,6 +507,31 @@ private:
                     );
                 }
             }
+            auto linkedGeometry = sketch->Geometry.getValues();
+            const auto sourcePosition
+                = std::find(linkedGeometry.begin(), linkedGeometry.end(), source());
+            if (sourcePosition == linkedGeometry.end()) {
+                throw std::runtime_error("Offset source is missing.");
+            }
+            const int sourceId = int(sourcePosition - linkedGeometry.begin());
+            std::vector<std::unique_ptr<Part::Geometry>> linkedCopies;
+            for (auto*& curve : linkedGeometry) {
+                linkedCopies.emplace_back(curve->clone());
+                curve = linkedCopies.back().get();
+            }
+            linkedCopies.emplace_back(preview.curve->copy());
+            auto facade = Sketcher::GeometryFacade::getFacade(linkedCopies.back().get());
+            facade->setId(0);
+            facade->setConstruction(false);
+            facade->setBlocked(true);
+            linkedGeometry.push_back(linkedCopies.back().get());
+            Sketcher::LinkedOffsetParameters parameters;
+            parameters.distance = previewDistance;
+            parameters.tolerance = previewTolerance;
+            parameters.closed = closedSource();
+            parameters.orientation = preview.orientation;
+            Sketcher::attachLinkedOffset(
+                linkedGeometry, {{sourceId, false}}, {resultId}, parameters);
             openCommand(QT_TRANSLATE_NOOP("Command", "Approximate B-spline offset"));
             if (currentTransactionID == App::NullTransaction) {
                 throw std::runtime_error(
@@ -514,8 +542,8 @@ private:
             // These are the only document mutations. Core clears redo on the
             // first mutation; an exceptional allocation/add failure must abort,
             // but cannot restore redo without changing App::Document.
-            const int id = sketch->addGeometry(preview.curve.get(), false);
-            if (id != resultId || sketch->addConstraint(std::move(block)) < 0) {
+            sketch->Geometry.setValues(linkedGeometry);
+            if (sketch->addConstraint(std::move(block)) < 0) {
                 throw std::runtime_error(
                     QObject::tr("Unable to add and block the offset curve.").toStdString()
                 );
