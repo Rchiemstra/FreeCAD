@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import json
 import os
 import platform
@@ -28,9 +29,11 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -352,6 +355,115 @@ def _wslg_display_env(
         updates["XCURSOR_SIZE"] = DEFAULT_CURSOR_SIZE
 
     return updates
+
+
+def _appearance_parameters(root: ET.Element) -> dict[tuple[str, ...], ET.Element]:
+    """Select appearance values without copying documents, layout, or MCP settings."""
+    result: dict[tuple[str, ...], ET.Element] = {}
+
+    def visit(group: ET.Element, path: tuple[str, ...] = ()) -> None:
+        if group.tag == "FCParamGroup":
+            path = (*path, group.get("Name", ""))
+        for child in group:
+            if child.tag == "FCParamGroup":
+                visit(child, path)
+                continue
+            if path[:3] != ("Root", "BaseApp", "Preferences"):
+                continue
+            name = child.get("Name", "")
+            section = path[3:]
+            if (
+                section[:1] in (("Themes",), ("StyleParameters",))
+                or (section[:1] == ("Editor",) and child.tag == "FCUInt")
+                or "color" in name.lower()
+                or "font" in name.lower()
+                or (section == ("MainWindow",) and name in {
+                    "Theme", "StyleSheet", "OverlayActiveStyleSheet", "QtStyle", "IconSize",
+                })
+                or (section == ("View",) and name in {
+                    "Gradient", "RadialGradient", "Simple", "UseBackgroundColorMid",
+                })
+            ):
+                result[(*path, name)] = child
+
+    visit(root)
+    return result
+
+
+def _sync_appearance_config(source: Path, destination: Path) -> bool:
+    """Refresh only visual preferences in a stopped isolated profile, atomically."""
+    if not source.is_file() or source.resolve() == destination.resolve():
+        return False
+    try:
+        source_root = ET.parse(source).getroot()
+        target_root = (
+            ET.parse(destination).getroot() if destination.is_file()
+            else ET.Element("FCParameters")
+        )
+    except (ET.ParseError, OSError) as exc:
+        raise SystemExit(f"Cannot read FreeCAD appearance preferences: {exc}") from exc
+    if source_root.tag != "FCParameters" or target_root.tag != "FCParameters":
+        raise SystemExit("Appearance settings must be FreeCAD parameter files.")
+    source_values = _appearance_parameters(source_root)
+    target_values = _appearance_parameters(target_root)
+    if source_values.keys() == target_values.keys() and all(
+        source_values[key].tag == target_values[key].tag
+        and source_values[key].attrib == target_values[key].attrib
+        and (source_values[key].text or "") == (target_values[key].text or "")
+        for key in source_values
+    ):
+        return False
+
+    for key in source_values.keys() | target_values.keys():
+        group = target_root
+        for name in key[:-1]:
+            child_group = next((
+                child for child in group
+                if child.tag == "FCParamGroup" and child.get("Name") == name
+            ), None)
+            if child_group is None:
+                child_group = ET.SubElement(group, "FCParamGroup", Name=name)
+            group = child_group
+        for child in list(group):
+            if child.tag != "FCParamGroup" and child.get("Name") == key[-1]:
+                group.remove(child)
+        if key in source_values:
+            group.append(copy.deepcopy(source_values[key]))
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".appearance-", delete=False) as handle:
+            temporary = Path(handle.name)
+            ET.indent(target_root)
+            ET.ElementTree(target_root).write(handle, encoding="utf-8", xml_declaration=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if destination.exists():
+            os.chmod(temporary, destination.stat().st_mode & 0o777)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return True
+
+
+def _sync_appearance_preferences(freecad: Path, profile: Path) -> None:
+    # --get-config exits during argument processing, before any GUI is started.
+    # Query the executable's own path resolution, including versioned profiles.
+    command = freecad.with_name("FreeCADCmd.exe" if freecad.suffix.lower() == ".exe" else "FreeCADCmd")
+    if not command.is_file():
+        command = freecad
+    result = subprocess.run(
+        [str(command), "--get-config", "UserConfigPath"],
+        env=_launch_env(freecad), capture_output=True, text=True, timeout=15,
+    )
+    config_path = result.stdout.strip()
+    if result.returncode or not config_path:
+        raise SystemExit("Cannot resolve the normal FreeCAD profile for appearance settings.")
+    source = Path(config_path) / "user.cfg"
+    if _sync_appearance_config(source, profile / "user.cfg"):
+        print(f"Using the normal FreeCAD appearance from: {source}", flush=True)
 
 
 def _pixi_for_freecad(freecad_exe: Path) -> str | None:

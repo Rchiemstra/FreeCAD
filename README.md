@@ -101,6 +101,10 @@ new Codex CLI session to load the tools. Use `--freecad PATH` to select a build;
 FreeCAD file arguments can follow the launcher options. An occupied profile
 endpoint is refused; close that FreeCAD instance before launching again.
 
+Both launch modes use the same FreeCAD appearance. Before an authenticated launch,
+the isolated profile refreshes its theme, fonts, and colors from the normal FreeCAD
+profile. Its MCP credentials, document history, and window layout remain separate.
+
 ### CI and packaging
 
 | Addition | What it does | Source |
