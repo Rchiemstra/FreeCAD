@@ -477,7 +477,12 @@ private:
             // Validate both solves and source/result stability before any transaction.
             auto geometry = sketch->getCompleteGeometry();
             geometry.insert(geometry.begin() + resultId, preview.curve.get());
-            auto constraints = sketch->Constraints.getValues();
+            std::vector<Sketcher::Constraint*> constraints;
+            std::vector<std::unique_ptr<Sketcher::Constraint>> constraintCopies;
+            for (const auto* constraint : sketch->Constraints.getValues()) {
+                constraintCopies.emplace_back(constraint->clone());
+                constraints.push_back(constraintCopies.back().get());
+            }
             constraints.push_back(block.get());
             Sketcher::Sketch validation;
             const int dof
@@ -532,6 +537,7 @@ private:
             parameters.orientation = preview.orientation;
             Sketcher::attachLinkedOffset(
                 linkedGeometry, {{sourceId, false}}, {resultId}, parameters);
+            Sketcher::ownLinkedOffsetBlocks(linkedGeometry, {block.get()});
             openCommand(QT_TRANSLATE_NOOP("Command", "Approximate B-spline offset"));
             if (currentTransactionID == App::NullTransaction) {
                 throw std::runtime_error(

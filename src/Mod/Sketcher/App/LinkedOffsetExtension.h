@@ -21,6 +21,10 @@ public:
 
     std::string uuid;
     std::string membership;
+    // Optional version-1 ownership proof survives a missing designated output.
+    std::string blockToken;
+    // A tombstone explains topology refusals; it is never a resolving identity.
+    std::string invalidatedUuid;
     std::string version = "1";
     // Only the designated output owns the relation. Unknown versions remain opaque
     // through Save/Restore/copy and are ignored by the inspection API.

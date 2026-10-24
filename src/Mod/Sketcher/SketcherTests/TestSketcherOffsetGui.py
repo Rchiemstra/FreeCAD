@@ -1183,3 +1183,189 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
         self.assertEqual(before, self.offset_snapshot())
         self.spline_button("Cancel")
+
+
+    def linked_fixture(self):
+        self.start_spline_offset()
+        self.spline_button("Apply")
+        return Sketcher.listLinkedOffsets(self.sketch)[0]
+
+    def translate_linked_geometry(self, index, vector):
+        geometry = self.sketch.Geometry
+        geometry[index].translate(vector)
+        self.sketch.Geometry = geometry
+
+    def linked_state(self):
+        return (self.offset_snapshot(), Sketcher.listLinkedOffsets(self.sketch),
+                self.doc.UndoCount, self.doc.RedoCount)
+
+    def test_linked_refresh_moved_source_identity_reference_undo(self):
+        relation = self.linked_fixture()
+        output = relation["outputIndices"][0]
+        dimension = Sketcher.Constraint("DistanceX", output, 1, 1.0, True, False)
+        ref = self.sketch.addConstraint(dimension)
+        self.translate_linked_geometry(0, FreeCAD.Vector(3, 0, 0))
+        old_point = self.sketch.Geometry[output].StartPoint
+        before = self.doc.UndoCount
+        Sketcher.refreshLinkedOffsets(self.sketch, [relation["id"]])
+        refreshed, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(refreshed["outputs"][0]["uuid"], relation["outputs"][0]["uuid"])
+        self.assertEqual(refreshed["outputIndices"], relation["outputIndices"])
+        self.assertAlmostEqual(self.sketch.Geometry[output].StartPoint.x, old_point.x + 3)
+        self.assertAlmostEqual(self.sketch.Constraints[ref].Value,
+                               self.sketch.Geometry[output].StartPoint.x)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.Geometry[output].StartPoint, old_point)
+        self.redo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [refreshed])
+
+    def test_linked_edit_signed_parameters_and_invalid_refusals(self):
+        relation = self.linked_fixture()
+        before = self.doc.UndoCount
+        Sketcher.editLinkedOffsets(self.sketch, [relation["id"]], -1.0, 0.02)
+        edited, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(edited["parameters"]["distance"], -1)
+        self.assertEqual(edited["parameters"]["tolerance"], 0.02)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        for distance, tolerance in ((0, .01), (float("nan"), .01), (1, -1),
+                                    (1, float("inf")), (1, .6)):
+            before = self.linked_state()
+            with self.assertRaises(ValueError):
+                Sketcher.editLinkedOffsets(self.sketch, [relation["id"]], distance, tolerance)
+            self.assertEqual(self.linked_state(), before)
+
+    def test_linked_direct_edits_require_detach(self):
+        relation = self.linked_fixture()
+        output = relation["outputIndices"][0]
+        self.translate_linked_geometry(output, FreeCAD.Vector(2, 0, 0))
+        before = self.linked_state()
+        with self.assertRaisesRegex(ValueError, "Detach"):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(self.linked_state(), before)
+        point = self.sketch.Geometry[output].StartPoint
+        before = self.doc.UndoCount
+        Sketcher.detachLinkedOffsets(self.sketch, [relation["id"]])
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(self.sketch.Geometry[output].StartPoint, point)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.assertEqual(self.sketch.ConstraintCount, 0)
+
+    def test_linked_refresh_all_partial_failure_is_atomic(self):
+        relation = self.linked_fixture()
+        self.sketch.addCopy([0, 1], FreeCAD.Vector(100, 0, 0))
+        self.translate_linked_geometry(0, FreeCAD.Vector(3, 0, 0))
+        self.sketch.delGeometry(2)
+        before = self.linked_state()
+        with self.assertRaises(ValueError):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(self.linked_state(), before)
+        Sketcher.refreshLinkedOffsets(self.sketch, [relation["id"]])
+        self.assertEqual(len(Sketcher.listLinkedOffsets(self.sketch)), 2)
+
+    def test_linked_real_gui_commands(self):
+        relation = self.linked_fixture()
+        for name in ("Refresh", "RefreshAll", "Edit", "Detach"):
+            self.assertIn("Sketcher_LinkedOffset" + name, FreeCADGui.listCommands())
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+        before = self.doc.UndoCount
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetEdit", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        status = dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus")
+        self.assertIn("Explicit refresh", status.text())
+        distance = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffsetDistance")
+        tolerance = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffsetTolerance")
+        distance.setProperty("rawValue", -2.0)
+        tolerance.setProperty("rawValue", .02)
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetRefresh").click()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["parameters"]["distance"], -2)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefreshAll", 0)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetDetach", 0)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+
+    def test_linked_refit_changed_poles_keeps_tag_id_and_reference(self):
+        relation = self.linked_fixture()
+        tag = self.sketch.Geometry[1].Tag
+        identity = self.sketch.GeometryFacadeList[1].Id
+        count = self.sketch.Geometry[1].NbPoles
+        dimension = Sketcher.Constraint("DistanceX", 1, 1, 1.0, True, False)
+        ref = self.sketch.addConstraint(dimension)
+        Sketcher.editLinkedOffsets(self.sketch, None, 2.0, .001)
+        self.assertNotEqual(self.sketch.Geometry[1].NbPoles, count)
+        self.assertEqual(self.sketch.Geometry[1].Tag, tag)
+        self.assertEqual(self.sketch.GeometryFacadeList[1].Id, identity)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["outputs"][0]["uuid"],
+                         relation["outputs"][0]["uuid"])
+        self.assertFalse(self.sketch.Constraints[ref].Driving)
+
+    def test_linked_invalid_fit_retains_output_and_redo(self):
+        self.linked_fixture()
+        geometry = self.sketch.Geometry
+        geometry[0].setPole(2, geometry[0].getPole(1))
+        self.sketch.Geometry = geometry
+        self.doc.openTransaction("Sentinel")
+        self.doc.addObject("App::FeaturePython", "Sentinel")
+        self.doc.commitTransaction()
+        self.doc.undo()
+        before = self.linked_state()
+        with self.assertRaises(ValueError):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(before, self.linked_state())
+        self.doc.redo()
+        self.assertIsNotNone(self.doc.getObject("Sentinel"))
+
+    def test_linked_mixed_refresh_preserves_order_reversal_and_seam(self):
+        count = self.start_mixed_offset()
+        self.chain_button("Apply")
+        relation, = Sketcher.listLinkedOffsets(self.sketch)
+        for index in range(count):
+            self.translate_linked_geometry(index, FreeCAD.Vector(3, 0, 0))
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        after, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(after["parameters"], relation["parameters"])
+        self.assertEqual([(s["uuid"], s["reversed"], s["seam"]) for s in after["sources"]],
+                         [(s["uuid"], s["reversed"], s["seam"]) for s in relation["sources"]])
+        self.assertFalse(after["stale"])
+
+    def test_linked_gui_refusal_offers_detach_and_keeps_edits(self):
+        self.linked_fixture()
+        self.translate_linked_geometry(1, FreeCAD.Vector(2, 0, 0))
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.doc.Name, self.sketch.Name, "Edge2")
+        before = self.linked_state()
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        self.assertIn("Detach", dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+        self.assertEqual(before, self.linked_state())
+        point = self.sketch.Geometry[1].StartPoint
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetDetach").click()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(self.sketch.Geometry[1].StartPoint, point)
+
+    def test_linked_internal_helper_references_refuse_refit(self):
+        self.linked_fixture()
+        self.sketch.exposeInternalGeometry(1)
+        self.assertGreater(self.sketch.GeometryCount, 2)
+        before = self.linked_state()
+        with self.assertRaisesRegex(ValueError, "Detach"):
+            Sketcher.editLinkedOffsets(self.sketch, None, 2.0, .001)
+        self.assertEqual(before, self.linked_state())
+
+    def test_linked_closed_mixed_refresh_and_signed_edit(self):
+        count = self.start_mixed_offset(closed=True)
+        self.chain_button("Apply")
+        before, = Sketcher.listLinkedOffsets(self.sketch)
+        for index in range(count):
+            self.translate_linked_geometry(index, FreeCAD.Vector(3, 0, 0))
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        Sketcher.editLinkedOffsets(self.sketch, None, -1.0, .01)
+        after, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(after["parameters"]["orientation"], before["parameters"]["orientation"])
+        self.assertEqual(after["parameters"]["seam"], before["parameters"]["seam"])
+        self.assertEqual(after["outputIndices"], before["outputIndices"])
+        self.assertFalse(after["stale"])

@@ -21,6 +21,8 @@ std::unique_ptr<Part::GeometryExtension> LinkedOffsetExtension::copy() const
     copyAttributes(result.get());
     result->uuid = uuid;
     result->membership = membership;
+    result->blockToken = blockToken;
+    result->invalidatedUuid = invalidatedUuid;
     result->version = version;
     result->record = record;
     return result;
@@ -37,6 +39,8 @@ void LinkedOffsetExtension::saveAttributes(Base::Writer& writer) const
     Part::GeometryPersistenceExtension::saveAttributes(writer);
     const auto encode = Base::Persistence::encodeAttribute;
     writer.Stream() << "\" uuid=\"" << encode(uuid) << "\" membership=\"" << encode(membership)
+                    << "\" invalidatedUuid=\"" << encode(invalidatedUuid)
+                    << "\" blockToken=\"" << encode(blockToken)
                     << "\" version=\"" << encode(version) << "\" record=\"" << encode(record);
 }
 
@@ -47,5 +51,9 @@ void LinkedOffsetExtension::restoreAttributes(Base::XMLReader& reader)
     uuid = reader.hasAttribute("uuid") ? reader.getAttribute<const char*>("uuid") : "";
     membership = reader.hasAttribute("membership") ? reader.getAttribute<const char*>("membership")
                                                    : "";
+    invalidatedUuid = reader.hasAttribute("invalidatedUuid")
+        ? reader.getAttribute<const char*>("invalidatedUuid") : "";
+    blockToken = reader.hasAttribute("blockToken") ? reader.getAttribute<const char*>("blockToken")
+                                                  : "";
     record = reader.hasAttribute("record") ? reader.getAttribute<const char*>("record") : "";
 }

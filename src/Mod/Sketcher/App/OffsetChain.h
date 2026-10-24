@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "BSplineOffset.h"
 #include <Base/Vector3D.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/SketcherGlobal.h>
@@ -96,6 +97,7 @@ using OffsetChainStatus = OffsetChainDistanceStatus;
 
 struct OffsetChainOptions
 {
+    BSplineOffsetOptions splineOptions;
     double tolerance = 0.01;
     Base::Vector3d sketchNormal {0, 0, 1};
     bool closed = false;

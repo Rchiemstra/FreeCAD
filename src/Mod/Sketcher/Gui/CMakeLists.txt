@@ -84,6 +84,8 @@ SET(SketcherGui_SRCS
     CommandConstraints.cpp
     CommandSketcherTools.h
     CommandSketcherTools.cpp
+    CommandSketcherLinkedOffset.h
+    CommandSketcherLinkedOffset.cpp
     CommandSketcherBSpline.cpp
     CommandSketcherOverlay.cpp
     CommandSketcherVirtualSpace.cpp

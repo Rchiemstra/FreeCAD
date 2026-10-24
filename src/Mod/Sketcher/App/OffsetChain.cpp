@@ -384,7 +384,7 @@ OffsetChainResult makeOffsetChain(
                 };
             }
             if (const auto* spline = dynamic_cast<const Part::GeomBSplineCurve*>(piece.geometry)) {
-                BSplineOffsetOptions splineOptions;
+                auto splineOptions = options.splineOptions;
                 splineOptions.distance = distance;
                 splineOptions.tolerance = options.tolerance;
                 splineOptions.sketchNormal = n;
@@ -480,7 +480,7 @@ OffsetChainResult makeOffsetChain(
                     }
                 }
                 consume();
-                BSplineOffsetOptions splineOptions;
+                auto splineOptions = options.splineOptions;
                 splineOptions.distance = distance;
                 splineOptions.tolerance = options.tolerance;
                 splineOptions.sketchNormal = normal;

@@ -44,4 +44,4 @@ from SketcherTests.TestSketcherSolver import CreateSlotPlateSet
 
 from SketcherTests.TestSketchReferenceRepair import TestSketchReferenceRepair
 
-from SketcherTests.TestLinkedOffset import TestLinkedOffset
+from SketcherTests.TestLinkedOffset import TestLinkedOffset, TestLinkedOffsetOperations

@@ -475,9 +475,12 @@ private:
             parameters.closed = linkedClosed;
             parameters.orientation = orientation;
             Sketcher::attachLinkedOffset(newGeometry, linkedSources, linkedOutputs, parameters);
+            std::vector<Sketcher::Constraint*> ownedBlocks;
             for (const auto& block : blocks) {
                 newConstraints.push_back(block.get());
+                ownedBlocks.push_back(block.get());
             }
+            Sketcher::ownLinkedOffsetBlocks(newGeometry, ownedBlocks);
             // A property notification can throw after taking ownership. Relinquish
             // only objects actually installed, including on the abort path.
             const auto releaseInstalled = [&]() {

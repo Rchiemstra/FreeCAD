@@ -55,6 +55,7 @@
 #include <App/Services.h>
 
 #include "CommandSketcherTools.h"
+#include "CommandSketcherLinkedOffset.h"
 #include "DrawSketchHandler.h"
 #include "SketchRectangularArrayDialog.h"
 #include "Utils.h"
@@ -2684,6 +2685,7 @@ void CreateSketcherCommandsConstraintAccel()
     rcCmdMgr.addCommand(new CmdSketcherRestoreInternalAlignmentGeometry());
     rcCmdMgr.addCommand(new CmdSketcherTranslate());
     rcCmdMgr.addCommand(new CmdSketcherOffset());
+    SketcherGui::createLinkedOffsetCommands();
     rcCmdMgr.addCommand(new CmdSketcherRotate());
     rcCmdMgr.addCommand(new CmdSketcherScale());
     rcCmdMgr.addCommand(new CmdSketcherSymmetry());

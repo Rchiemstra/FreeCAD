@@ -11,6 +11,7 @@
 namespace Sketcher
 {
 class SketchObject;
+class Constraint;
 
 struct LinkedOffsetMember
 {
@@ -54,6 +55,7 @@ enum class LinkedOffsetStatus
 {
     Ok,
     MissingSource,
+    TopologyChanged,
     Ambiguous,
     TypeChanged,
     MissingOutput,
@@ -84,6 +86,16 @@ SketcherExport void remapLinkedOffsetCopies(const std::vector<Part::Geometry*>& 
 SketcherExport void invalidateLinkedOffsetAncestry(Part::Geometry& geometry);
 SketcherExport void invalidateLinkedOffsetAncestry(SketchObject& sketch, int index);
 SketcherExport const char* linkedOffsetStatusName(LinkedOffsetStatus status);
+enum class LinkedOffsetOperation { Refresh, Edit, Detach };
+// Empty ids selects all relations. Stages the entire batch before one transaction.
+SketcherExport void operateLinkedOffsets(
+    SketchObject& sketch, const std::vector<std::string>& ids, LinkedOffsetOperation operation,
+    double distance = 1, double tolerance = 0.01
+);
+// Only freshly created detached Blocks may be claimed as relation-owned.
+SketcherExport void ownLinkedOffsetBlocks(
+    const std::vector<Part::Geometry*>& geometry, const std::vector<Constraint*>& blocks
+);
 // Detached JSON snapshot shared by the read-only Python adapter.
 SketcherExport std::string linkedOffsetsJson(const SketchObject& sketch);
 void registerLinkedOffsetPython(PyObject* module);
