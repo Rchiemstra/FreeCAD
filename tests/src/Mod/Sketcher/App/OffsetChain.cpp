@@ -9,6 +9,7 @@
 
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Circle.hxx>
+#include <GeomConvert.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Mod/Sketcher/App/OffsetChain.h>
@@ -471,5 +472,203 @@ TEST(OffsetChainDistance, InvalidInput)
         Sketcher::certifyOffsetChainDistance({nullptr}, {}, {}).status,
         OffsetChainDistanceStatus::InvalidInput
     );
+}
+
+using Sketcher::OffsetChainTopologyOptions;
+using Sketcher::OffsetChainTopologyStatus;
+
+std::vector<Sketcher::OffsetChainPiece> pieces(const Chain& chain)
+{
+    std::vector<Sketcher::OffsetChainPiece> result;
+    for (size_t i = 0; i < chain.size(); ++i) {
+        result.push_back({chain[i].get(), i});
+    }
+    return result;
+}
+
+auto topology(const Chain& chain, OffsetChainTopologyOptions options = {})
+{
+    return Sketcher::certifyOffsetChainTopology(pieces(chain), options);
+}
+
+void bezierCurve(Chain& chain, const std::vector<V>& poles)
+{
+    const int degree = static_cast<int>(poles.size()) - 1;
+    chain.push_back(std::make_unique<Part::GeomBSplineCurve>(
+        poles, std::vector<double>(poles.size(), 1), std::vector<double> {0, 1},
+        std::vector<int> {degree + 1, degree + 1}, degree
+    ));
+}
+
+TEST(OffsetChainTopology, ContinuousMixedOpen)
+{
+    auto chain = mixed();
+    // Rotate the arc's native frame: its start parameter is exactly zero,
+    // so the spline/arc junction is algebraically equal, without a rounded pi/2.
+    auto circle = std::make_unique<Part::GeomArcOfCircle>(new Geom_Circle(
+        gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(0, 1, 0)), 10
+    ));
+    circle->setRange(0, std::acos(-1.0) / 2, false);
+    chain.back() = std::move(circle);
+    const auto result = topology(chain);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::Success) << result.message;
+}
+
+TEST(OffsetChainTopology, SimpleClosed)
+{
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    line(chain, V(1, 0, 0), V(1, 1, 0));
+    line(chain, V(1, 1, 0), V(0, 1, 0));
+    line(chain, V(0, 1, 0), V(0, 0, 0));
+    OffsetChainTopologyOptions options;
+    options.closed = true;
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::Success) << result.message;
+    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainTopology, JoinToleranceBoundary)
+{
+    OffsetChainTopologyOptions options;
+    options.joinTolerance = 5e-8;
+    for (double factor : {0.999, 1.001}) {
+        SCOPED_TRACE(factor);
+        Chain chain;
+        line(chain, V(0, 0, 0), V(1, 0, 0));
+        line(chain, V(1 + factor * options.joinTolerance, 0, 0), V(2, 0, 0));
+        const auto result = topology(chain, options);
+        EXPECT_EQ(result.status, factor < 1 ? OffsetChainTopologyStatus::Success
+                                           : OffsetChainTopologyStatus::NotCertified)
+            << result.message;
+    }
+}
+
+TEST(OffsetChainTopology, AdjacentRecrossingNearJunction)
+{
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    // G1 at the junction, then crosses the line again at t=0.1:
+    // x(t) = 1 + 1e-5*t - 4e-4*t^2, y(t) = 1e-6*t^2*(t-0.1).
+    bezierCurve(chain, {V(1, 0, 0), V(1 + 1e-5 / 3, 0, 0),
+                         V(1 + 2e-5 / 3 - 4e-4 / 3, -1e-7 / 3, 0),
+                         V(1 + 1e-5 - 4e-4, 9e-7, 0)});
+    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainTopology, TinyLoopInsideSingleSpan)
+{
+    Chain chain;
+    // Cubic (u^2, u^3-epsilon^2*u), u=t-a, has a loop at u=+-epsilon.
+    // All of it lies inside ONE native knot span, away from common sample grids.
+    const double a = 0.37123456789, e = 1e-8;
+    const double x0 = a * a, x1 = -2 * a;
+    const double y0 = -a * a * a + e * e * a;
+    const double y1 = 3 * a * a - e * e, y2 = -3 * a;
+    bezierCurve(chain, {V(x0, y0, 0), V(x0 + x1 / 3, y0 + y1 / 3, 0),
+                         V(x0 + 2 * x1 / 3 + 1.0 / 3, y0 + 2 * y1 / 3 + y2 / 3, 0),
+                         V(x0 + x1 + 1, y0 + y1 + y2 + 1, 0)});
+    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainTopology, DuplicateOverlappingSpan)
+{
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    line(chain, V(1, 0, 0), V(0, 0, 0));
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    EXPECT_NE(topology(chain).status, OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainTopology, ClosingSeamCrossing)
+{
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    line(chain, V(1, 0, 0), V(1, 1, 0));
+    // Last piece crosses the first at x=1/3 before returning to the seam.
+    bezierCurve(chain, {V(1, 1, 0), V(0.5, -1, 0), V(0, 0, 0)});
+    OffsetChainTopologyOptions options;
+    options.closed = true;
+    EXPECT_NE(topology(chain, options).status, OffsetChainTopologyStatus::Success);
+}
+
+TEST(OffsetChainTopology, NonAdjacentNearTouchAboveClearance)
+{
+    OffsetChainTopologyOptions options;
+    options.clearance = 1e-6;
+    const double gap = options.clearance * 1.001;
+    Chain chain;
+    line(chain, V(0, 0, 0), V(1, 0, 0));
+    line(chain, V(1, 0, 0), V(1, 1, 0));
+    line(chain, V(1, 1, 0), V(0, 1, 0));
+    line(chain, V(0, 1, 0), V(0, gap, 0));
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::Success) << result.message;
+}
+
+TEST(OffsetChainTopology, TinyWorkBudget)
+{
+    OffsetChainTopologyOptions options;
+    options.maxWork = 1;
+    const auto result = topology(mixed(), options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded);
+    EXPECT_NE(result.message.find("budget"), std::string::npos) << result.message;
+}
+
+TEST(OffsetChainTopology, SingleClosedSplineAndPeriodicSeam)
+{
+    for (bool periodic : {false, true}) {
+        auto native = GeomConvert::CurveToBSplineCurve(
+            new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 10),
+            Convert_QuasiAngular
+        );
+        if (!periodic) {
+            native->Segment(native->FirstParameter(), native->LastParameter());
+        }
+        Chain chain;
+        chain.push_back(std::make_unique<Part::GeomBSplineCurve>(native));
+        OffsetChainTopologyOptions options;
+        options.closed = true;
+        const auto result = topology(chain, options);
+        EXPECT_EQ(result.status, OffsetChainTopologyStatus::Success) << result.message;
+    }
+}
+
+TEST(OffsetChainTopology, InvalidDefinitionsAndIdentities)
+{
+    auto chain = mixed();
+    auto input = pieces(chain);
+    input[1].identity = input[0].identity;
+    EXPECT_EQ(Sketcher::certifyOffsetChainTopology(input).status,
+              OffsetChainTopologyStatus::InvalidInput);
+    OffsetChainTopologyOptions options;
+    options.joinTolerance = 1e-6;
+    EXPECT_EQ(topology(chain, options).status, OffsetChainTopologyStatus::InvalidInput);
+    EXPECT_EQ(topology({}).status, OffsetChainTopologyStatus::InvalidInput);
+    EXPECT_EQ(Sketcher::certifyOffsetChainTopology({{nullptr, 0}}).status,
+              OffsetChainTopologyStatus::InvalidInput);
+    Chain degenerate;
+    bezierCurve(degenerate, {V(1, 0, 0), V(1, 0, 0)});
+    EXPECT_EQ(topology(degenerate).status, OffsetChainTopologyStatus::InvalidInput);
+    auto native = Handle(Geom_BSplineCurve)::DownCast(chain[1]->handle());
+    native->SetPole(2, gp_Pnt(std::numeric_limits<double>::infinity(), 0, 0));
+    EXPECT_EQ(topology(chain).status, OffsetChainTopologyStatus::InvalidInput);
+}
+
+TEST(OffsetChainTopology, DepthExhaustionAndStationaryPoint)
+{
+    Chain chain;
+    quarter(chain, 10);
+    arc(chain, 10, std::acos(-1.0) / 2, 2 * std::acos(-1.0));
+    OffsetChainTopologyOptions options;
+    options.closed = true;
+    options.maxDepth = 1;
+    const auto result = topology(chain, options);
+    EXPECT_EQ(result.status, OffsetChainTopologyStatus::BudgetExceeded) << result.message;
+    EXPECT_NE(result.message.find("budget"), std::string::npos);
+    Chain stationary;
+    bezierCurve(stationary, {V(-0.125, 0, 0), V(0.125, 0, 0),
+                              V(-0.125, 0, 0), V(0.125, 0, 0)});
+    EXPECT_NE(topology(stationary).status, OffsetChainTopologyStatus::Success);
 }
 }  // namespace

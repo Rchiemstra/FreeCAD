@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,38 @@ SketcherExport OffsetChainDistanceResult certifyOffsetChainDistance(
     const std::vector<const Part::GeomCurve*>& source,
     const std::vector<const Part::GeomCurve*>& candidate,
     const OffsetChainDistanceOptions& options = {}
+);
+
+struct OffsetChainPiece
+{
+    const Part::GeomCurve* geometry;
+    // Caller-owned identity, unique even when geometry pointers differ.
+    std::size_t identity;
+};
+
+using OffsetChainTopologyStatus = OffsetChainDistanceStatus;
+using OffsetChainTopologyResult = OffsetChainDistanceResult;
+
+struct OffsetChainTopologyOptions
+{
+    bool closed = false;
+    double joinTolerance = 1e-7;  // At most Precision::Confusion().
+    // Strict minimum separation for spans without a common ordered endpoint.
+    double clearance = 0.0;
+    int maxWork = 1000000;
+    int maxDepth = 24;
+};
+
+// Certifies the supplied order and orientation; never reorders or welds input.
+// Every piece's full native parameter interval is included. Only declared
+// neighbors (including a declared closing seam) may share an endpoint. Each
+// span is regular/injective; all span pairs need separation or a joint local
+// monotonicity proof. Small endpoint gaps must also be provably non-overlapping.
+// Same curve/complexity policies as the distance certificate above. Refuses
+// discontinuous splines, ambiguous bounds, degeneracies and exhausted budgets.
+SketcherExport OffsetChainTopologyResult certifyOffsetChainTopology(
+    const std::vector<OffsetChainPiece>& chain,
+    const OffsetChainTopologyOptions& options = {}
 );
 
 }  // namespace Sketcher

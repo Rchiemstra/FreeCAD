@@ -3,6 +3,7 @@
 #include "OffsetChain.h"
 
 #include <cmath>
+#include <set>
 
 #include <Precision.hxx>
 
@@ -14,6 +15,11 @@ OffsetChainDistanceResult certifyOffsetChainIntervals(
     const std::vector<const Part::GeomCurve*>& source,
     const std::vector<const Part::GeomCurve*>& candidate,
     const OffsetChainDistanceOptions& options
+);
+
+OffsetChainTopologyResult certifyOffsetChainTopologyIntervals(
+    const std::vector<OffsetChainPiece>& chain,
+    const OffsetChainTopologyOptions& options
 );
 
 OffsetChainDistanceResult certifyOffsetChainDistance(
@@ -46,6 +52,33 @@ OffsetChainDistanceResult certifyOffsetChainDistance(
         }
     }
     return certifyOffsetChainIntervals(source, candidate, options);
+}
+
+OffsetChainTopologyResult certifyOffsetChainTopology(
+    const std::vector<OffsetChainPiece>& chain,
+    const OffsetChainTopologyOptions& options
+)
+{
+    using Status = OffsetChainTopologyStatus;
+    if (chain.empty() || chain.size() > 256 || !std::isfinite(options.joinTolerance)
+        || options.joinTolerance < 0 || options.joinTolerance > Precision::Confusion()
+        || !std::isfinite(options.clearance) || options.clearance < 0
+        || options.maxWork < 1 || options.maxWork > 10000000
+        || options.maxDepth < 1 || options.maxDepth > 24) {
+        return {Status::InvalidInput, "Invalid topology certificate input or options."};
+    }
+    std::set<std::size_t> identities;
+    for (const auto& piece : chain) {
+        if (!piece.geometry || !identities.insert(piece.identity).second) {
+            return {Status::InvalidInput, "Null geometry or duplicate piece identity."};
+        }
+        if (!dynamic_cast<const Part::GeomLineSegment*>(piece.geometry)
+            && !dynamic_cast<const Part::GeomArcOfCircle*>(piece.geometry)
+            && !dynamic_cast<const Part::GeomBSplineCurve*>(piece.geometry)) {
+            return {Status::UnsupportedCurve, "Unsupported topology certificate geometry."};
+        }
+    }
+    return certifyOffsetChainTopologyIntervals(chain, options);
 }
 
 }  // namespace Sketcher

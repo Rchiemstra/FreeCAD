@@ -7,6 +7,9 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
+
+#include <boost/multiprecision/cpp_int.hpp>
 #include <utility>
 #include <vector>
 
@@ -1053,6 +1056,202 @@ struct ChainValidator
     }
 };
 
+// Reuse the distance certificate's original-data enclosures without changing
+// that certificate. Logical parameters retain adjacency through subdivision;
+// geometry pointers and coincident boxes never create an adjacency exemption.
+struct TopologyValidator
+{
+    using ChainStatus = OffsetChainTopologyStatus;
+    const OffsetChainTopologyOptions& options;
+    ChainValidator& reader;
+    double end = 0;
+    std::vector<bool> equalJunction;
+
+    struct Region
+    {
+        ChainSpan span;
+        double first, last;
+    };
+    std::vector<Region> leaves;
+
+    static bool finite(const Vector& box)
+    {
+        return std::all_of(box.begin(), box.end(), [](Interval v) {
+            return std::isfinite(v.lo) && std::isfinite(v.hi) && v.lo <= v.hi;
+        });
+    }
+
+    Bounds enclosure(const Region& r)
+    {
+        reader.consume();
+        auto b = chainBounds(r.span, reader.origin);
+        if (!finite(b.position) || !finite(b.tangent)) {
+            throw ChainFailure {ChainStatus::NotCertified, "Nonfinite topology enclosure."};
+        }
+        return b;
+    }
+
+    std::pair<Region, Region> divide(const Region& r)
+    {
+        if (r.span.depth >= options.maxDepth) {
+            throw ChainFailure {ChainStatus::BudgetExceeded, "Topology depth budget exhausted."};
+        }
+        auto halves = splitChain(r.span);
+        const double middle = r.first + (r.last - r.first) / 2;
+        return {{std::move(halves.first), r.first, middle},
+                {std::move(halves.second), middle, r.last}};
+    }
+
+    static Vector direction(const Vector& tangent)
+    {
+        Vector result;
+        double scale = 0;
+        for (size_t i = 0; i < 3; ++i) {
+            const double v = tangent[i].lo / 2 + tangent[i].hi / 2;
+            result[i] = Interval(v);
+            scale = std::max(scale, std::abs(v));
+        }
+        if (scale > 0) {
+            for (auto& v : result) {
+                // Rounded coefficients are exact choices of projection axis.
+                v = Interval(v.lo / scale);
+            }
+        }
+        return result;
+    }
+
+    void regular(const Region& r)
+    {
+        const auto b = enclosure(r);
+        if (dot(b.tangent, direction(b.tangent)).lo > 0
+            && !(options.closed && r.first == 0 && r.last == end)) {
+            // Strict monotonic projection proves both nonzero speed and
+            // injectivity on this entire parameter interval, not at samples.
+            if (leaves.size() >= 65536) {
+                throw ChainFailure {ChainStatus::BudgetExceeded, "Topology leaf budget exhausted."};
+            }
+            leaves.push_back(r);
+            return;
+        }
+        auto halves = divide(r);
+        regular(halves.first);
+        regular(halves.second);
+    }
+
+    Vector endpoint(const Region& r, bool last) const
+    {
+        if (!r.span.spline.poles.empty()) {
+            const auto& pole = last ? r.span.spline.poles.back() : r.span.spline.poles.front();
+            return xyz(pole) / pole[3];
+        }
+        auto point = r.span;
+        point.spline.first = point.spline.last = last ? r.span.spline.last : r.span.spline.first;
+        return chainBounds(point, reader.origin).position;
+    }
+
+    bool sameEndpoint(double junction) const
+    {
+        const auto index = static_cast<size_t>(junction);
+        return junction != static_cast<double>(index) || equalJunction[index];
+    }
+
+    bool local(const Region& a, const Region& b, const Bounds& ab, const Bounds& bb) const
+    {
+        // A separating projection increases strictly through both intervals.
+        // Equal endpoints give a common separating plane. For unequal endpoints
+        // require a rigorously forward gap; tolerance alone cannot justify this.
+        const auto axis = direction(direction(ab.tangent) + direction(bb.tangent));
+        if (!(dot(ab.tangent, axis).lo > 0 && dot(bb.tangent, axis).lo > 0)) {
+            return false;
+        }
+        return sameEndpoint(a.last)
+            || dot(endpoint(b, false) - endpoint(a, true), axis).lo > 0;
+    }
+
+    void separate(const Region& a, const Region& b)
+    {
+        const auto ab = enclosure(a), bb = enclosure(b);
+        const bool neighbor = a.last == b.first;
+        const bool seam = options.closed && a.first == 0 && b.last == end;
+        const double clearance = neighbor || seam ? 0 : options.clearance;
+        if (norm(ab.position - bb.position).lo > clearance) {
+            return;
+        }
+        // Two intervals in a closed chain can share BOTH ends. A proof at one
+        // junction cannot exempt the other; subdivide before applying local().
+        if (neighbor && !seam && local(a, b, ab, bb)) {
+            return;
+        }
+        if (seam && !neighbor && local(b, a, bb, ab)) {
+            return;
+        }
+        // Split the spatially larger box, unless its depth is exhausted. Every
+        // child product is visited, including products adjacent to the seam.
+        const double as = norm(ab.position - ab.position).hi;
+        const double bs = norm(bb.position - bb.position).hi;
+        if ((as >= bs && a.span.depth < options.maxDepth)
+            || b.span.depth >= options.maxDepth) {
+            auto halves = divide(a);
+            separate(halves.first, b);
+            separate(halves.second, b);
+        }
+        else {
+            auto halves = divide(b);
+            separate(a, halves.first);
+            separate(a, halves.second);
+        }
+    }
+};
+
+// Exact binary-rational endpoint equality is used only where the native
+// definition makes it algebraic (lines, clamped splines, arcs at zero). Rounded
+// kernel Value() calls and overlapping interval boxes are never equality proofs.
+using ExactPoint = std::array<boost::multiprecision::cpp_rational, 3>;
+
+std::optional<ExactPoint> exactEndpoint(const Part::GeomCurve& geometry, bool last)
+{
+    auto curve = Handle(Geom_Curve)::DownCast(geometry.handle());
+    auto spline = Handle(Geom_BSplineCurve)::DownCast(curve);
+    if (!spline.IsNull()) {
+        const int knot = last ? spline->NbKnots() : 1;
+        if (spline->IsPeriodic() || spline->Multiplicity(knot) != spline->Degree() + 1) {
+            return {};
+        }
+        const auto p = spline->Pole(last ? spline->NbPoles() : 1);
+        return ExactPoint {p.X(), p.Y(), p.Z()};
+    }
+    const double parameter = last ? curve->LastParameter() : curve->FirstParameter();
+    auto trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve);
+    if (!trimmed.IsNull()) {
+        curve = trimmed->BasisCurve();
+    }
+    auto line = Handle(Geom_Line)::DownCast(curve);
+    if (line.IsNull()) {
+        auto circle = Handle(Geom_Circle)::DownCast(curve);
+        if (circle.IsNull() || parameter != 0) {
+            return {};
+        }
+        ExactPoint result;
+        const auto p = circle->Location();
+        const auto x = circle->XAxis().Direction();
+        for (int i = 1; i <= 3; ++i) {
+            result[i - 1] = boost::multiprecision::cpp_rational(p.Coord(i))
+                + boost::multiprecision::cpp_rational(x.Coord(i))
+                    * boost::multiprecision::cpp_rational(circle->Radius());
+        }
+        return result;
+    }
+    ExactPoint result;
+    const auto p = line->Lin().Location();
+    const auto d = line->Position().Direction();
+    for (int i = 1; i <= 3; ++i) {
+        result[i - 1] = boost::multiprecision::cpp_rational(p.Coord(i))
+            + boost::multiprecision::cpp_rational(d.Coord(i))
+                * boost::multiprecision::cpp_rational(parameter);
+    }
+    return result;
+}
+
 }  // namespace
 
 OffsetChainDistanceResult certifyOffsetChainIntervals(
@@ -1093,6 +1292,107 @@ OffsetChainDistanceResult certifyOffsetChainIntervals(
     catch (const Standard_Failure&) {
         result.status = OffsetChainDistanceStatus::NotCertified;
         result.message = "Kernel could not supply distance certificate input.";
+    }
+    return result;
+}
+
+OffsetChainTopologyResult certifyOffsetChainTopologyIntervals(
+    const std::vector<OffsetChainPiece>& chain,
+    const OffsetChainTopologyOptions& options
+)
+{
+    OffsetChainTopologyResult result;
+    try {
+        OffsetChainDistanceOptions parsing;
+        parsing.maxWork = options.maxWork;
+        ChainValidator reader {parsing, result, gp_Pnt(0, 0, 0), {}, {}};
+        TopologyValidator validator {options, reader, 0, {}, {}};
+        std::vector<TopologyValidator::Region> regions;
+        std::vector<size_t> firstSpan;
+        std::vector<std::optional<ExactPoint>> starts, ends;
+        for (const auto& piece : chain) {
+            firstSpan.push_back(regions.size());
+            if (piece.geometry->handle().IsNull()) {
+                throw ChainFailure {OffsetChainTopologyStatus::InvalidInput, "Null native curve."};
+            }
+            const auto spline = Handle(Geom_BSplineCurve)::DownCast(piece.geometry->handle());
+            auto spans = reader.spans({piece.geometry});
+            if (spans.empty()) {
+                throw ChainFailure {OffsetChainTopologyStatus::InvalidInput, "Empty piece domain."};
+            }
+            if (!spline.IsNull()) {
+                for (int i = 2; i < spline->NbKnots(); ++i) {
+                    if (spline->Multiplicity(i) > spline->Degree()) {
+                        throw ChainFailure {
+                            OffsetChainTopologyStatus::InvalidInput, "Discontinuous spline."
+                        };
+                    }
+                }
+            }
+            starts.push_back(exactEndpoint(*piece.geometry, false));
+            ends.push_back(exactEndpoint(*piece.geometry, true));
+            for (auto& span : spans) {
+                const double first = static_cast<double>(regions.size());
+                regions.push_back({std::move(span), first, first + 1});
+            }
+        }
+        validator.end = static_cast<double>(regions.size());
+        validator.equalJunction.resize(regions.size() + 1, true);
+        for (size_t i = 1; i <= chain.size(); ++i) {
+            if (i == chain.size() && !options.closed) {
+                // Open ends must remain distinct, even within join tolerance.
+                if (!(norm(validator.endpoint(regions.back(), true)
+                           - validator.endpoint(regions.front(), false)).lo
+                      > options.joinTolerance)) {
+                    throw ChainFailure {
+                        OffsetChainTopologyStatus::NotCertified, "Expected distinct open ends."
+                    };
+                }
+                continue;
+            }
+            const size_t next = i % chain.size();
+            const size_t boundary = i == chain.size() ? regions.size() : firstSpan[i];
+            const auto a = validator.endpoint(regions[boundary - 1], true);
+            const auto b = validator.endpoint(regions[firstSpan[next]], false);
+            bool equal = ends[i - 1] && starts[next] && *ends[i - 1] == *starts[next];
+            if (i == chain.size() && chain.size() == 1) {
+                const auto spline = Handle(Geom_BSplineCurve)::DownCast(
+                    chain[0].geometry->handle()
+                );
+                equal = equal || (!spline.IsNull() && spline->IsPeriodic());
+            }
+            if (!equal && !(norm(b - a).hi <= options.joinTolerance)) {
+                throw ChainFailure {
+                    OffsetChainTopologyStatus::NotCertified, "Junction gap exceeds join tolerance."
+                };
+            }
+            validator.equalJunction[boundary] = equal;
+        }
+        for (const auto& region : regions) {
+            validator.regular(region);
+        }
+        for (size_t i = 0; i < validator.leaves.size(); ++i) {
+            for (size_t j = i + 1; j < validator.leaves.size(); ++j) {
+                validator.separate(validator.leaves[i], validator.leaves[j]);
+            }
+        }
+        result.status = OffsetChainTopologyStatus::Success;
+        result.message = "Ordered regular simple chain certified.";
+    }
+    catch (const ChainFailure& failure) {
+        result.status = failure.status;
+        result.message = failure.message;
+        if (result.status == OffsetChainTopologyStatus::BudgetExceeded) {
+            result.message = "Topology certificate budget exhausted.";
+        }
+    }
+    catch (const Failure& failure) {
+        result.status = OffsetChainTopologyStatus::NotCertified;
+        result.message = failure.message;
+    }
+    catch (const Standard_Failure&) {
+        result.status = OffsetChainTopologyStatus::NotCertified;
+        result.message = "Kernel could not supply topology certificate input.";
     }
     return result;
 }
