@@ -418,7 +418,7 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
     def offset_snapshot(self):
         return (
             tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry),
-            tuple(str(c) for c in self.sketch.Constraints),
+            tuple((str(c), c.Value) for c in self.sketch.Constraints),
             tuple(self.sketch.getConstruction(i) for i in range(self.sketch.GeometryCount)),
             self.doc.UndoCount,
             self.doc.RedoCount,
@@ -1035,3 +1035,114 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         self.select_offset_edges(["Edge1", "Edge2", "Edge3", "Edge4"])
         self.assertIsNotNone(self.chain_control(QtGui.QWidget, "Panel"))
         self.chain_refusal(self.offset_snapshot(), "disconnected")
+
+    def test_mixed_offset_refusal_preserves_reference_values_and_redo(self):
+        self.start_mixed_offset()
+        self.chain_button("Update")
+        self.sketch.addGeometry(_line((30, 0), (31, 0)))
+        self.recompute_gui_document()
+        self.doc.openTransaction("Reference redo sentinel")
+        self.doc.addObject("App::FeaturePython", "RedoSentinel")
+        self.doc.commitTransaction()
+        self.undo_gui_document()
+        # Do not recompute: the detached solve must reject the moved unrelated
+        # line without writing the solved reference dimension back to the sketch.
+        self.sketch.addConstraint([
+            Sketcher.Constraint("DistanceX", 3, 2.0),
+            Sketcher.Constraint("DistanceX", 3, 1.0, True, False),
+        ])
+        before = self.offset_snapshot()
+        self.assertEqual(self.sketch.Constraints[1].Value, 1.0)
+        self.assertGreater(before[4], 0)
+        self.chain_button("Apply")
+        self.assertIn("solve the sketch first", self.chain_control(QtGui.QLabel, "Status").text())
+        self.assertEqual(self.sketch.Constraints[1].Value, 1.0)
+        self.assertEqual(before, self.offset_snapshot())
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.redo_gui_document()
+        self.assertIsNotNone(self.doc.getObject("RedoSentinel"))
+
+    def test_mixed_offset_late_helper_refuses_preview_and_apply(self):
+        self.start_mixed_offset()
+        for action in ("Update", "Apply"):
+            self.chain_button("Update")
+            self.assertIn("Certified", self.chain_control(QtGui.QLabel, "Status").text())
+            geometry = self.sketch.GeometryFacadeList
+            geometry[0].InternalType = "EllipseMajorDiameter"
+            self.sketch.GeometryFacadeList = geometry
+            before = self.offset_snapshot()
+            self.chain_button(action)
+            self.assertIn("helper", self.chain_control(QtGui.QLabel, "Status").text())
+            self.assertEqual(before, self.offset_snapshot())
+            geometry[0].InternalType = "None"
+            self.sketch.GeometryFacadeList = geometry
+        self.chain_button("Cancel")
+
+    def check_mixed_permutations(self, tie):
+        from itertools import permutations
+
+        if tie:
+            spline = Part.BSplineCurve()
+            spline.buildFromPolesMultsKnots(
+                [FreeCAD.Vector(x, 0, 0) for x in (2, 1.75, 1.25, 1)],
+                [4, 4], [0.0, 1.0], False, 3,
+            )
+            self.sketch.addGeometry([_line((0, 0), (1, 0)), spline])
+            self.recompute_gui_document()
+            self.start_editing()
+            count, expected = 2, (0, -1)
+        else:
+            count = self.start_mixed_offset()
+            self.chain_button("Cancel")
+            expected = (11, -5)
+        for selection in permutations(range(count)):
+            with self.subTest(selection=selection):
+                self.select_offset_edges(["Edge" + str(i + 1) for i in selection])
+                self.chain_button("Apply")
+                self.assertEqual(self.sketch.GeometryCount, count * 2)
+                point = self.sketch.Geometry[count].StartPoint
+                self.assertAlmostEqual(point.x, expected[0], places=7)
+                self.assertAlmostEqual(point.y, expected[1], places=7)
+                self.undo_gui_document()
+                self.assertEqual(self.sketch.GeometryCount, count)
+
+    def test_mixed_offset_tied_permutations_keep_geometric_side(self):
+        self.check_mixed_permutations(tie=True)
+
+    def test_mixed_offset_open_permutations_keep_geometric_side(self):
+        self.check_mixed_permutations(tie=False)
+
+    def test_mixed_offset_chain_link_refuses_partial_analytic_selection(self):
+        self.start_mixed_offset()
+        self.chain_button("Cancel")
+        self.select_offset_edges(["Edge1"])
+        before = self.offset_snapshot()
+        self.set_offset_checkbox("Chain link", True, fallback_index=2)
+        view = FreeCADGui.activeDocument().activeView()
+        viewport = view.graphicsView().viewport()
+        point = self.in_view_offset_screen_point(view, FreeCAD.Vector(11, -2, 0))
+        preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/NotificationArea")
+        previous = preferences.GetBool("NonIntrusiveNotificationsEnabled", True)
+        preferences.SetBool("NonIntrusiveNotificationsEnabled", False)
+        warnings = []
+        timer = QtCore.QTimer()
+
+        def dismiss_warning():
+            dialog = QtGui.QApplication.activeModalWidget()
+            if isinstance(dialog, QtGui.QMessageBox):
+                warnings.append(dialog.text())
+                dialog.accept()
+
+        timer.timeout.connect(dismiss_warning)
+        timer.start(10)
+        try:
+            self.move(viewport, point)
+            self.click(viewport, point)
+        finally:
+            timer.stop()
+            preferences.SetBool("NonIntrusiveNotificationsEnabled", previous)
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertTrue(any("Select the whole mixed chain" in text for text in warnings), warnings)
+        self.assertTrue(self.offset_mode_combobox() is not None)
+        FreeCADGui.activeDocument().resetEdit()

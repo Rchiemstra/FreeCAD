@@ -63,8 +63,10 @@ public:
                     break;
                 }
             }
-            sources.push_back({curve->getTag(), std::unique_ptr<Part::GeomCurve>(
-                static_cast<Part::GeomCurve*>(curve->clone()))});
+            sources.push_back({
+                curve->getTag(), static_cast<size_t>(Sketcher::GeometryFacade::getId(curve)),
+                std::unique_ptr<Part::GeomCurve>(static_cast<Part::GeomCurve*>(curve->clone()))
+            });
         }
     }
 
@@ -270,6 +272,9 @@ private:
             const auto found = std::find_if(geometry.begin(), geometry.end(), [&](const auto* g) {
                 return g->getTag() == source.tag;
             });
+            if (found != geometry.end() && Sketcher::GeometryFacade::isInternalAligned(*found)) {
+                throw std::runtime_error("Internal helper geometry is not supported.");
+            }
             if (found != geometry.end() && Sketcher::GeometryFacade::getConstruction(*found)) {
                 throw std::runtime_error("Construction geometry is not supported.");
             }
@@ -314,8 +319,8 @@ private:
             }
             if (preview.pieces.empty()) {
                 std::vector<Sketcher::OffsetChainPiece> input;
-                for (size_t i = 0; i < sources.size(); ++i) {
-                    input.push_back({sources[i].geometry.get(), i});
+                for (const auto& source : sources) {
+                    input.push_back({source.geometry.get(), source.identity});
                 }
                 auto ordered = Sketcher::orderOffsetChain(input);
                 if (ordered.status != Sketcher::OffsetChainStatus::Success) {
@@ -384,7 +389,13 @@ private:
             auto* sketch = getSketchObject();
             const int first = sketch->Geometry.getSize();
             auto geometry = sketch->getCompleteGeometry();
-            auto constraints = sketch->Constraints.getValues();
+            std::vector<Sketcher::Constraint*> constraints;
+            std::vector<std::unique_ptr<Sketcher::Constraint>> validationConstraints;
+            for (const auto* constraint : sketch->Constraints.getValues()) {
+                // solve() writes reference dimensions, even in a detached Sketch.
+                validationConstraints.emplace_back(constraint->clone());
+                constraints.push_back(validationConstraints.back().get());
+            }
             std::vector<std::unique_ptr<Sketcher::Constraint>> blocks;
             std::vector<Part::Geometry*> output;
             for (const auto& piece : preview.pieces) {
@@ -417,20 +428,55 @@ private:
                         "Solving would change geometry; solve the sketch first.");
                 }
             }
+            // Prepare the complete property lists before opening a transaction,
+            // which clears redo. Only property installation belongs inside it.
+            auto newGeometry = sketch->Geometry.getValues();
+            auto newConstraints = sketch->Constraints.getValues();
+            std::vector<std::unique_ptr<Part::Geometry>> additions;
+            for (auto* curve : output) {
+                additions.emplace_back(curve->copy());
+                auto facade = Sketcher::GeometryFacade::getFacade(additions.back().get());
+                facade->setId(0); // onGeometryChanged assigns a fresh sketch identity.
+                facade->setConstruction(false);
+                facade->setBlocked(true);
+                newGeometry.push_back(additions.back().get());
+            }
+            for (const auto& block : blocks) {
+                newConstraints.push_back(block.get());
+            }
+            // A property notification can throw after taking ownership. Relinquish
+            // only objects actually installed, including on the abort path.
+            const auto releaseInstalled = [&]() {
+                const auto& installedGeometry = sketch->Geometry.getValues();
+                const auto& installedConstraints = sketch->Constraints.getValues();
+                for (auto& curve : additions) {
+                    if (std::find(installedGeometry.begin(), installedGeometry.end(), curve.get())
+                        != installedGeometry.end()) {
+                        curve.release();
+                    }
+                }
+                for (auto& block : blocks) {
+                    if (std::find(installedConstraints.begin(), installedConstraints.end(),
+                                  block.get()) != installedConstraints.end()) {
+                        block.release();
+                    }
+                }
+            };
             checkSources();
             openCommand(QT_TRANSLATE_NOOP("Command", "Mixed-chain offset"));
             if (currentTransactionID == App::NullTransaction) {
                 throw std::runtime_error("Unable to open the offset transaction.");
             }
             transactionOpen = true;
-            if (sketch->addGeometry(output, false) != first + static_cast<int>(output.size()) - 1) {
-                throw std::runtime_error("Unable to add the offset chain.");
+            try {
+                sketch->Geometry.setValues(std::move(newGeometry));
+                sketch->Constraints.setValues(std::move(newConstraints));
             }
-            for (auto& block : blocks) {
-                if (sketch->addConstraint(std::move(block)) < 0) {
-                    throw std::runtime_error("Unable to block the offset chain.");
-                }
+            catch (...) {
+                releaseInstalled();
+                throw;
             }
+            releaseInstalled();
             commitCommand();
             transactionOpen = false;
         }
@@ -468,6 +514,7 @@ private:
     struct Source
     {
         boost::uuids::uuid tag;
+        size_t identity;
         std::unique_ptr<Part::GeomCurve> geometry;
     };
     bool exiting = false;

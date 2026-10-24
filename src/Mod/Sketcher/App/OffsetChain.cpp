@@ -199,14 +199,20 @@ void weldChain(std::vector<OffsetChainOutputPiece>& chain, const OffsetChainOpti
 
 }  // namespace
 
-OffsetChainSelectionResult orderOffsetChain(const std::vector<OffsetChainPiece>& selection)
+OffsetChainSelectionResult orderOffsetChain(const std::vector<OffsetChainPiece>& input)
 {
     OffsetChainSelectionResult result;
     try {
         const auto refuse = [](const char* reason) { throw std::runtime_error(reason); };
-        if (selection.size() < 2 || selection.size() > 256) {
+        if (input.size() < 2 || input.size() > 256) {
             refuse("Select between 2 and 256 mixed edges.");
         }
+        // Canonicalize before finding endpoints or choosing a cycle seam. In an
+        // orientation tie, the smallest stable source identity decides the side.
+        auto selection = input;
+        std::sort(selection.begin(), selection.end(), [](const auto& a, const auto& b) {
+            return a.identity < b.identity;
+        });
         bool spline = false, analytic = false;
         std::set<std::size_t> identities;
         std::vector<V> endpoints;

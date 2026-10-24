@@ -1192,6 +1192,45 @@ TEST(OffsetChainSelection, OrdersEveryMixedPieceAndReversesDetachedCopies)
     EXPECT_EQ(generated.status, OffsetChainStatus::Success) << generated.reason;
 }
 
+// Assert coordinates after generation: counting pieces cannot detect a side flip.
+void expectPermutationSide(const Chain& source, double x, double y)
+{
+    auto input = pieces(source);
+    do {
+        const auto ordered = Sketcher::orderOffsetChain(input);
+        ASSERT_EQ(ordered.status, OffsetChainStatus::Success) << ordered.reason;
+        std::vector<Sketcher::OffsetChainPiece> chain;
+        for (const auto& piece : ordered.pieces) {
+            chain.push_back({piece.geometry.get(), piece.identity});
+        }
+        const auto generated = Sketcher::makeOffsetChain(chain, 1);
+        ASSERT_EQ(generated.status, OffsetChainStatus::Success) << generated.reason;
+        const auto first = generated.pieces.front().geometry.get();
+        const auto point = first->value(first->getFirstParameter());
+        EXPECT_NEAR(point.x, x, 1e-7);
+        EXPECT_NEAR(point.y, y, 1e-7);
+    } while (std::next_permutation(input.begin(), input.end(), [](const auto& a, const auto& b) {
+        return a.identity < b.identity;
+    }));
+}
+
+TEST(OffsetChainSelection, TiedOrientationPermutationsKeepGeometricSide)
+{
+    Chain source;
+    line(source, V(0, 0, 0), V(1, 0, 0));
+    source.push_back(std::make_unique<Part::GeomBSplineCurve>(
+        std::vector<V> {V(2, 0, 0), V(1.75, 0, 0), V(1.25, 0, 0), V(1, 0, 0)},
+        std::vector<double> {1, 1, 1, 1}, std::vector<double> {0, 1},
+        std::vector<int> {4, 4}, 3
+    ));
+    expectPermutationSide(source, 0, -1);
+}
+
+TEST(OffsetChainSelection, OpenMixedPermutationsKeepGeometricSide)
+{
+    expectPermutationSide(mixed(), 11, -5);
+}
+
 TEST(OffsetChainSelection, ClosedMixedChain)
 {
     Chain source;
