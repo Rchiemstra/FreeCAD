@@ -157,9 +157,17 @@ private:
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
         bool retainUndoHistory,
-        bool nestInCallerTransaction = false,
-        std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget = {}
-    );
+        bool nestInCallerTransaction = false);
+    // The scope type is incomplete in this header. The unique_ptr overload is
+    // separate so its empty scope is created only where the type is complete.
+    [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithOptions(
+        const PreparedEdit& edit,
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy,
+        bool retainUndoHistory,
+        bool nestInCallerTransaction,
+        std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget);
     [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
         const PreparedEdit& edit);
 

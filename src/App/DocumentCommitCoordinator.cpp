@@ -938,6 +938,24 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
     const bool retainUndoHistory,
+    const bool nestInCallerTransaction)
+{
+    return commitOnDocumentThreadWithOptions(
+        edit,
+        requireDetachedPreparationSupport,
+        structuralCompatibility,
+        recomputePolicy,
+        retainUndoHistory,
+        nestInCallerTransaction,
+        {});
+}
+
+DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(
+    const PreparedEdit& edit,
+    const bool requireDetachedPreparationSupport,
+    const bool structuralCompatibility,
+    const CollaborationCompatibilityRecomputePolicy recomputePolicy,
+    const bool retainUndoHistory,
     const bool nestInCallerTransaction,
     std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget
 )
