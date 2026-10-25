@@ -420,12 +420,17 @@ void cameraData(const Handle(StepVisual_CameraModelD3)& camera,
             reason += "rotated window; ";
         }
         bool centered = true;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 2; ++i) {
             centered = centered && std::abs(o[i] + right[i]*window->SizeInX()*factor/2
                                           + up[i]*window->SizeInY()*factor/2) <= 1e-7;
         }
         if (!centered) {
             reason += "asymmetric window; ";
+        }
+        // Part 46 view_volume: placement Z is the VRS view-plane distance.
+        // The XY coordinates locate the lower-left corner on that plane.
+        if (std::abs(o[2] - volume->ViewPlaneDistance()*factor) > 1e-7) {
+            reason += "window is not on view plane; ";
         }
     }
 }

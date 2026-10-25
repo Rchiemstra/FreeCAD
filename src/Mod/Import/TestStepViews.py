@@ -65,6 +65,16 @@ class TestStepViews(unittest.TestCase):
         doc.recompute()
         return doc
 
+    def test_centered_window_on_view_plane(self):
+        for unit in ("mm", "inch", "metre"):
+            doc = self.load("centered-" + unit)
+            for record in self.records(doc.StepViews):
+                self.assertEqual(record.PresentationStatus, "data available",
+                                 record.UnavailableReason)
+            doc = self.variant([("#303=CARTESIAN_POINT('',(-7.,-5.,0.));",
+                                 "#303=CARTESIAN_POINT('',(-9.,-6.,0.));")])
+            self.assertIn("view plane", self.records(doc.StepViews)[0].UnavailableReason)
+
     def test_conflicting_units_followed_by_angles(self):
         doc = self.variant([
             ("#330=DRAUGHTING_MODEL('views',(#315,#316,#322,#329),#80);",
@@ -225,9 +235,9 @@ class TestStepViews(unittest.TestCase):
 
     def test_window_rotation_and_center_policy(self):
         for origin, placement, expected in (
-                ("-9.,-6.,0.", "#30,#31", ""),
-                ("6.,-9.,0.", "#30,#32", "rotated window"),
-                ("-9.,-6.,0.", "#30,#32", "asymmetric window")):
+                ("-9.,-6.,4.", "#30,#31", ""),
+                ("6.,-9.,4.", "#30,#32", "rotated window"),
+                ("-9.,-6.,4.", "#30,#32", "asymmetric window")):
             with self.subTest(origin=origin, placement=placement):
                 doc = self.variant([
                     ("#303=CARTESIAN_POINT('',(-7.,-5.,0.));",
@@ -242,7 +252,7 @@ class TestStepViews(unittest.TestCase):
                     self.assertEqual(view.PresentationStatus, "data available")
                 self.vector(view.WindowOrigin, [float(v) for v in origin.split(",")])
                 self.vector(view.WindowRight, (0, 1, 0) if "#32" in placement else (1, 0, 0))
-                if origin == "6.,-9.,0.":
+                if origin == "6.,-9.,4.":
                     self.assertNotIn("asymmetric", view.UnavailableReason)
 
     def test_duplicate_names_keep_source_identity(self):

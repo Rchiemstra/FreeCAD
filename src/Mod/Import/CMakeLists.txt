@@ -79,13 +79,16 @@ set(Import_ViewFixtures
     TestData/StepViews/views-inch.step
     TestData/StepViews/views-metre.step
     TestData/StepViews/views-nested.step
+    TestData/StepViews/views-centered-mm.step
+    TestData/StepViews/views-centered-inch.step
+    TestData/StepViews/views-centered-metre.step
     TestData/StepViews/README.txt
 )
 install(FILES ${Import_ViewFixtures} DESTINATION Mod/Import/TestData/StepViews)
 
 if(BUILD_GUI)
-    list (APPEND Import_Scripts InitGui.py)
-    list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py)
+    list (APPEND Import_Scripts InitGui.py StepViewsGui.py)
+    list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py TestStepViewsGui.py)
 endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
