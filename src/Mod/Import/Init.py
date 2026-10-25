@@ -28,7 +28,7 @@
 
 import FreeCAD
 
-FreeCAD.__unit_test__ += ["TestStepPmi", "TestStepViews"]
+FreeCAD.__unit_test__ += ["TestStepPmi", "TestStepViews", "TestStepAttributes"]
 
 translate = FreeCAD.Qt.translate
 

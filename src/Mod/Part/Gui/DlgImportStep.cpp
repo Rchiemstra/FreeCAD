@@ -74,6 +74,7 @@ void DlgImportStep::saveSettings()
 #endif
     ui->checkBoxSemanticPMI->onSave();
     ui->checkBoxSavedViews->onSave();
+    ui->checkBoxUserAttributes->onSave();
     ui->checkBoxMergeCompound->onSave();
     ui->checkBoxImportHiddenObj->onSave();
     ui->checkBoxUseLinkGroup->onSave();
@@ -92,6 +93,7 @@ void DlgImportStep::loadSettings()
 #endif
     ui->checkBoxSemanticPMI->onRestore();
     ui->checkBoxSavedViews->onRestore();
+    ui->checkBoxUserAttributes->onRestore();
     ui->checkBoxMergeCompound->onRestore();
     ui->checkBoxImportHiddenObj->onRestore();
     ui->checkBoxUseLinkGroup->onRestore();
@@ -106,6 +108,7 @@ StepImportSettings DlgImportStep::getSettings() const
 {
     StepImportSettings set;
     set.savedViews = ui->checkBoxSavedViews->isChecked();
+    set.userAttributes = ui->checkBoxUserAttributes->isChecked();
     Part::OCAF::ImportExportSettings settings;
     set.merge = settings.getReadShapeCompoundMode();
     set.useLinkGroup = settings.getUseLinkGroup();

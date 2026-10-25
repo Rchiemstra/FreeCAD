@@ -35,6 +35,7 @@ namespace Import
 {
 class StepPmiImport;
 class StepViewsImport;
+class StepAttributesImport;
 
 class ImportExport ReaderStep
 {
@@ -50,6 +51,7 @@ public:
         pmiImport = importer;
     }
     void setViewsImport(StepViewsImport* importer) { viewsImport = importer; }
+    void setAttributesImport(StepAttributesImport* importer) { attributesImport = importer; }
     void read(
         Handle(TDocStd_Document) hDoc,
         const Message_ProgressRange& theProgress = Message_ProgressRange()
@@ -61,6 +63,7 @@ private:
     bool readSemanticPmi = false;
     StepPmiImport* pmiImport = nullptr;
     StepViewsImport* viewsImport = nullptr;
+    StepAttributesImport* attributesImport = nullptr;
 };
 
 }  // namespace Import

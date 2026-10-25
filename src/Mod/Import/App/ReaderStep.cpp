@@ -32,6 +32,7 @@
 #include "ReaderStep.h"
 #include "StepPmiImport.h"
 #include "StepViewsImport.h"
+#include "StepAttributesImport.h"
 #include <Base/Exception.h>
 #include <Mod/Part/App/encodeFilename.h>
 
@@ -78,7 +79,9 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     if (viewsImport) {
         aReader.SetViewMode(StepViewsImport::canReadXcaf(aReader));
     }
+    if (attributesImport) { attributesImport->captureSourceScalars(file); }
     aReader.Transfer(hDoc, theProgress);
+    if (attributesImport) { attributesImport->capture(aReader, hDoc); }
     if (viewsImport) {
         viewsImport->capture(aReader, hDoc);
     }

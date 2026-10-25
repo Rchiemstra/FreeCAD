@@ -58,6 +58,73 @@ class StepPmiGuiTest(unittest.TestCase):
                                         for selected in Gui.Selection.getSelectionEx()))
             Gui.updateGui()
 
+    def test_user_attribute_options_and_dialog(self):
+        from PySide import QtCore, QtWidgets
+        fixture = os.path.join(os.path.dirname(__file__), 'TestData', 'StepAttributes', 'attributes-mm.step')
+        saved = {x[1]: x[2] for x in self.prefs.GetContents() or []}
+        try:
+            self.prefs.SetBool('ImportUserAttributes', True)
+            ImportGui.insert(fixture, self.doc.Name, merge=False, useLinkGroup=True, mode=0)
+            self.assertIsNotNone(self.doc.getObject('StepAttributes'), 'GUI attribute preference ignored')
+            self.prefs.RemBool('ImportUserAttributes')
+            ImportGui.insert(fixture, self.doc.Name, merge=False, useLinkGroup=False, mode=0,
+                             userAttributes=False)
+            self.assertEqual(len([o for o in self.doc.Objects
+                                  if getattr(o, 'MetadataKind', '') == 'UserAttributes']), 1)
+            self.step_prefs.SetBool('VisibleImportDialog', True)
+            observed, errors = [], []
+            def accept_dialog():
+                dialog = QtWidgets.QApplication.activeModalWidget()
+                try:
+                    checkbox = dialog.findChild(QtWidgets.QCheckBox, 'checkBoxUserAttributes')
+                    self.assertIsNotNone(checkbox)
+                    observed.append(checkbox.isChecked())
+                    checkbox.setChecked(True)
+                    dialog.accept()
+                except Exception as error:
+                    errors.append(error)
+                    if dialog is not None:
+                        dialog.reject()
+            for _ in range(2):
+                QtCore.QTimer.singleShot(0, accept_dialog)
+                options = ImportGui.importOptions(fixture)
+                self.assertFalse(errors, errors)
+                self.assertTrue(options['userAttributes'])
+                self.assertTrue(self.prefs.GetBool('ImportUserAttributes', False))
+            self.assertEqual(observed, [False, True])
+            options.update(merge=False, useLinkGroup=False, mode=0)
+            ImportGui.insert(fixture, self.doc.Name, options=options, userAttributes=False)
+            self.assertEqual(len([o for o in self.doc.Objects
+                                  if getattr(o, 'MetadataKind', '') == 'UserAttributes']), 1)
+            self.prefs.SetBool('ImportUserAttributes', False)
+            ImportGui.open(fixture, options=options, merge=False, useLinkGroup=True, mode=0)
+            opened = App.ActiveDocument
+            try:
+                self.assertIsNotNone(opened.getObject('StepAttributes'))
+                self.assertAlmostEqual(next(r for r in opened.StepAttributes.Group
+                                            if r.SupplierName == 'span').Value.Value, 2)
+                import json
+                import FreeCADGui as Gui
+                import StepAttributes
+                active = App.ActiveDocument
+                camera = Gui.activeDocument().activeView().getCamera()
+                records = [json.loads(r.RawMetadata)['record'] for r in opened.StepAttributes.Group]
+                for record in records:
+                    record['ObjectName'] = ''
+                    record['OwnerReason'] = 'no imported owner in this materialization'
+                # Creating data in a different document must not activate it or a camera.
+                StepAttributes.create(self.doc, records)
+                self.assertEqual(App.ActiveDocument, active)
+                self.assertEqual(Gui.activeDocument().activeView().getCamera(), camera)
+            finally:
+                if opened != self.doc:
+                    close_document(opened)
+        finally:
+            if 'ImportUserAttributes' in saved:
+                self.prefs.SetBool('ImportUserAttributes', saved['ImportUserAttributes'])
+            else:
+                self.prefs.RemBool('ImportUserAttributes')
+
     def test_preference_and_selection(self):
         self.prefs.SetBool("ImportSemanticPMI", True)
         ImportGui.insert(self.fixture, self.doc.Name, merge=False, useLinkGroup=False, mode=0)
@@ -274,7 +341,7 @@ class StepPmiGuiTest(unittest.TestCase):
 
         existing = set(App.listDocuments())
         text = Path(__file__).with_name("TestData").joinpath(
-            "StepViews", "views-nested.step").read_text()
+            "StepAttributes", "attributes-nested.step").read_text()
         # Independently authored surface style: RGB (0.8, 0.2, 0.1) on solid #11.
         style = """
 #500=COLOUR_RGB('supplier red',0.8,0.2,0.1);
@@ -313,7 +380,8 @@ class StepPmiGuiTest(unittest.TestCase):
                     for enabled in (False, True):
                         doc = App.newDocument("ColorViewParity")
                         ImportGui.insert(str(path), doc.Name, merge=False, useLinkGroup=links,
-                                         mode=0, savedViews=enabled, semanticPMI=enabled)
+                                         mode=0, savedViews=enabled, semanticPMI=enabled,
+                                         userAttributes=enabled)
                         recompute_document(doc)
                         signature, colors = model(doc)
                         self.assertTrue(signature)
@@ -324,6 +392,7 @@ class StepPmiGuiTest(unittest.TestCase):
                         if enabled:
                             self.assertEqual(len(doc.StepPMI.Group), 5)
                             self.assertEqual(len(doc.StepViews.Group), 4)
+                            self.assertEqual(len(doc.StepAttributes.Group), 11)
                     self.assertEqual(signatures[0], signatures[1])
         finally:
             for name in set(App.listDocuments()) - existing:

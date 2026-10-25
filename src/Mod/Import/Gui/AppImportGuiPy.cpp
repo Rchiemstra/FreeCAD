@@ -94,12 +94,12 @@ public:
         add_keyword_method(
             "open",
             &Module::insert,
-            "open(string, ..., semanticPMI=bool, savedViews=bool) -- Open a file; overrides ImportSemanticPMI."
+            "open(string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Open a file; overrides ImportSemanticPMI."
         );
         add_keyword_method(
             "insert",
             &Module::insert,
-            "insert(string,string, ..., semanticPMI=bool, savedViews=bool) -- Insert a file; overrides ImportSemanticPMI."
+            "insert(string,string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Insert a file; overrides ImportSemanticPMI."
         );
         add_varargs_method("preScanDxf", &Module::preScanDxf, "preScanDxf(filepath) -> dict");
         add_varargs_method(
@@ -180,6 +180,7 @@ private:
             options.setItem("mode", Py::Long(stepSettings.mode));
             options.setItem("codePage", Py::Long(stepSettings.codePage));
             options.setItem("savedViews", Py::Boolean(stepSettings.savedViews));
+            options.setItem("userAttributes", Py::Boolean(stepSettings.userAttributes));
         }
         return options;
     }
@@ -194,8 +195,9 @@ private:
         PyObject* useLinkGroup = Py_None;
         PyObject* semanticPMI = Py_None;
         PyObject* savedViews = Py_None;
+        PyObject* userAttributes = Py_None;
         int mode = -1;
-        static const std::array<const char*, 10> kwd_list {
+        static const std::array<const char*, 11> kwd_list {
             "name",
             "docName",
             "options",
@@ -205,12 +207,13 @@ private:
             "mode",
             "semanticPMI",
             "savedViews",
+            "userAttributes",
             nullptr
         };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!O!iO!O!",
+                "et|sO!O!O!O!iO!O!O!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -227,7 +230,9 @@ private:
                 &PyBool_Type,
                 &semanticPMI,
                 &PyBool_Type,
-                &savedViews
+                &savedViews,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -243,9 +248,20 @@ private:
                     savedViews = Py::Boolean(options.getItem("savedViews")) ? Py_True : Py_False;
                 }
             }
+            if (userAttributes == Py_None && pyoptions) {
+                Py::Dict options(pyoptions);
+                if (options.hasKey("userAttributes")) {
+                    auto option = options.getItem("userAttributes");
+                    if (!PyBool_Check(option.ptr())) {
+                        throw Py::TypeError("userAttributes must be bool");
+                    }
+                    userAttributes = Py::Boolean(option) ? Py_True : Py_False;
+                }
+            }
             Import::StepMetadataImport metadata(file,
                 semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI),
-                savedViews == Py_None ? -1 : Base::asBoolean(savedViews));
+                savedViews == Py_None ? -1 : Base::asBoolean(savedViews),
+                userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -342,6 +358,7 @@ private:
                         reader.setReadSemanticPmi(true, metadata.pmiReader());
                     }
                     reader.setViewsImport(metadata.viewsReader());
+                    reader.setAttributesImport(metadata.attributesReader());
 #if OCC_VERSION_HEX >= 0x070800
                     reader.setCodePage(cp);
 #endif
@@ -399,7 +416,8 @@ private:
             }
             metadata.attach(ocaf);
             auto ret = ocaf.loadShapes();
-            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
+            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation(),
+                            ocaf.supportsAttributeAssociation());
             hApp->Close(hDoc);
 
             if (ret) {

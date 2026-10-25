@@ -28,6 +28,8 @@ SET(Import_SRCS
     StepPmiImport.cpp
     StepMetadataImport.cpp
     StepMetadataImport.h
+    StepAttributesImport.cpp
+    StepAttributesImport.h
     StepViewsImport.cpp
     StepViewsImport.h
     StepPmiImport.h

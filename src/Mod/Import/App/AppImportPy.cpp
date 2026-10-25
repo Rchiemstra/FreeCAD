@@ -85,13 +85,13 @@ public:
         add_keyword_method(
             "open",
             &Module::importer,
-            "open(string, ..., semanticPMI=bool, savedViews=bool) -- Open a file; semanticPMI overrides "
+            "open(string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Open a file; semanticPMI overrides "
             "the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
             "insert",
             &Module::importer,
-            "insert(string,string, ..., semanticPMI=bool, savedViews=bool) -- Insert into a document; "
+            "insert(string,string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Insert into a document; "
             "semanticPMI overrides the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
@@ -133,14 +133,15 @@ private:
         PyObject* useLinkGroup = Py_None;
         PyObject* semanticPMI = Py_None;
         PyObject* savedViews = Py_None;
+        PyObject* userAttributes = Py_None;
         int mode = -1;
-        static const std::array<const char*, 9>
+        static const std::array<const char*, 10>
             kwd_list {"name", "docName", "importHidden", "merge", "useLinkGroup", "mode",
-                      "semanticPMI", "savedViews", nullptr};
+                      "semanticPMI", "savedViews", "userAttributes", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!iO!O!",
+                "et|sO!O!O!iO!O!O!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -155,7 +156,9 @@ private:
                 &PyBool_Type,
                 &semanticPMI,
                 &PyBool_Type,
-                &savedViews
+                &savedViews,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -167,7 +170,8 @@ private:
             Base::FileInfo file(Utf8Name.c_str());
             StepMetadataImport metadata(file,
                 semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI),
-                savedViews == Py_None ? -1 : Base::asBoolean(savedViews));
+                savedViews == Py_None ? -1 : Base::asBoolean(savedViews),
+                userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -188,6 +192,7 @@ private:
                         reader.setReadSemanticPmi(true, metadata.pmiReader());
                     }
                     reader.setViewsImport(metadata.viewsReader());
+                    reader.setAttributesImport(metadata.attributesReader());
                     reader.read(hDoc);
                 }
                 catch (OSD_Exception& e) {
@@ -235,7 +240,8 @@ private:
             }
             metadata.attach(ocaf);
             ocaf.loadShapes();
-            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
+            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation(),
+                            ocaf.supportsAttributeAssociation());
 
             hApp->Close(hDoc);
 

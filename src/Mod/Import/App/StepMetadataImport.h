@@ -2,6 +2,7 @@
 #pragma once
 
 #include "StepViewsImport.h"
+#include "StepAttributesImport.h"
 
 namespace Import
 {
@@ -9,7 +10,7 @@ namespace Import
 class ImportExport StepMetadataImport
 {
 public:
-    StepMetadataImport(const Base::FileInfo& file, int semanticPmi, int savedViews);
+    StepMetadataImport(const Base::FileInfo& file, int semanticPmi, int savedViews, int userAttributes = -1);
     StepPmiImport* pmiReader() const
     {
         return pmi.get();
@@ -18,10 +19,11 @@ public:
     {
         return views.get();
     }
+    StepAttributesImport* attributesReader() const { return attributes.get(); }
     template<class Converter>
     void attach(Converter& converter) noexcept
     {
-        if (!views) {
+        if (!views && !attributes) {
             if (pmi) {
                 pmi->attach(converter);
             }
@@ -30,27 +32,31 @@ public:
         converter.setModelShapesOnly(true);
         try {
             auto first = pmi ? pmi->observer() : ShapeImportObserver();
-            auto second = views->observer();
-            converter.setShapeObserver([first, second](const TDF_Label& label,
+            auto second = views ? views->observer() : ShapeImportObserver();
+            auto third = attributes ? attributes->observer() : ShapeImportObserver();
+            converter.setShapeObserver([first, second, third](const TDF_Label& label,
                 const TopoDS_Shape& shape, App::DocumentObject* object) {
                 if (first) {
                     first(label, shape, object);
                 }
-                second(label, shape, object);
+                if (second) { second(label, shape, object); }
+                if (third) { third(label, shape, object); }
             });
         }
         catch (...) {
-            views->discard();
+            if (views) { views->discard(); }
+            if (attributes) { attributes->discard(); }
             if (pmi) {
                 pmi->attach(converter);
             }
         }
     }
     void finish(const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
-                App::Document* target, bool supported) const noexcept;
+                App::Document* target, bool supported, bool attributesSupported) const noexcept;
 
 private:
     std::unique_ptr<StepPmiImport> pmi;
     std::unique_ptr<StepViewsImport> views;
+    std::unique_ptr<StepAttributesImport> attributes;
 };
 }  // namespace Import

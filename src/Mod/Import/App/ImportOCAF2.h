@@ -94,6 +94,10 @@ public:
     {
         return !options.merge && options.mode == SingleDoc;
     }
+    bool supportsAttributeAssociation() const
+    {
+        return supportsPmiAssociation() && !options.reduceObjects && !options.expandCompound;
+    }
     void setMerge(bool enable)
     {
         options.merge = enable;

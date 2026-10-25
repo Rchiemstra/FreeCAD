@@ -10,7 +10,7 @@
 
 using namespace Import;
 
-StepMetadataImport::StepMetadataImport(const Base::FileInfo& file, int semanticPmi, int savedViews)
+StepMetadataImport::StepMetadataImport(const Base::FileInfo& file, int semanticPmi, int savedViews, int userAttributes)
     : pmi(StepPmiImport::create(file, semanticPmi))
 {
     try {
@@ -24,13 +24,25 @@ StepMetadataImport::StepMetadataImport(const Base::FileInfo& file, int semanticP
     catch (...) {
         Base::Console().warning("STEP saved views: initialization unavailable; geometry kept.\n");
     }
+    try {
+        if (file.hasExtension({"step", "stp"}) && (userAttributes < 0
+                ? App::GetApplication().GetParameterGroupByPath(
+                    "User parameter:BaseApp/Preferences/Mod/Import")
+                    ->GetBool("ImportUserAttributes", false) : userAttributes != 0)) {
+            attributes = std::make_unique<StepAttributesImport>();
+        }
+    }
+    catch (...) {
+        Base::Console().warning("STEP attributes: initialization unavailable; geometry kept.\n");
+    }
 }
 
 void StepMetadataImport::finish(const Base::FileInfo& file,
-    const Handle(TDocStd_Document)& source, App::Document* target, bool supported) const noexcept
+    const Handle(TDocStd_Document)& source, App::Document* target, bool supported, bool attributesSupported) const noexcept
 {
     auto pmiGroup = pmi ? dynamic_cast<App::DocumentObjectGroup*>(
         pmi->finish(file, source, target, supported)) : nullptr;
+    if (attributes) { attributes->finish(target, attributesSupported); }
     if (views) {
         try {
             // Only members of the exact group returned by this PMI import may bind.
