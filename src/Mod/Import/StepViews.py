@@ -14,7 +14,8 @@ RawMetadata preserves supplier values even when presentation is unavailable.
 Source-prefixed fields retain unscaled camera values and typed source identities.
 SourceClippingTree retains typed adjacency independently of the depth-64 adapter.
 Window dimensions and view-plane distance must be positive. Clip distances must
-be nonnegative; enabled front/back planes must be ordered. Central projection
+be nonnegative; enabled front/back planes must be ahead of the eye and ordered
+in the direction from the projection point to the view plane. Central projection
 must not lie on the view plane. Only centered, axis-aligned windows on the view
 plane are available;
 rotated and asymmetric windows retain placement/dimensions with explicit reasons.

@@ -378,10 +378,16 @@ void cameraData(const Handle(StepVisual_CameraModelD3)& camera,
                         - volume->ViewPlaneDistance()) <= 1e-12)) {
         reason += "invalid view plane distance; ";
     }
+    // Front/back are VRS coordinates. Ordering follows the direction from the
+    // projection point to the view plane, including eyes on the opposite side.
+    const double forwardSign = volume->ViewPlaneDistance()*factor >= projection[2] ? 1 : -1;
+    const double eye = volume->ProjectionPoint()->CoordinatesValue(3);
     if (!std::isfinite(volume->FrontPlaneDistance()) || !std::isfinite(volume->BackPlaneDistance())
         || volume->FrontPlaneDistance() < 0 || volume->BackPlaneDistance() < 0
+        || (volume->FrontPlaneClipping() && forwardSign*(volume->FrontPlaneDistance()-eye) < 0)
+        || (volume->BackPlaneClipping() && forwardSign*(volume->BackPlaneDistance()-eye) <= 0)
         || (volume->FrontPlaneClipping() && volume->BackPlaneClipping()
-            && volume->BackPlaneDistance() <= volume->FrontPlaneDistance())) {
+            && forwardSign*(volume->BackPlaneDistance()-volume->FrontPlaneDistance()) <= 0)) {
         reason += "invalid clipping distances; ";
     }
     auto window = volume->ViewWindow();

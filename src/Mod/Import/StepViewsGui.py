@@ -15,6 +15,7 @@ import FreeCADGui as Gui
 from pivy import coin
 
 _states = {}
+_baseline_property = "_FreeCAD_TransientCameraBaseline"
 
 
 def _document(record):
@@ -31,7 +32,10 @@ def _view_document(view):
     # Enumerate native live views BEFORE calling any method on the supplied wrapper.
     # A closed view's Python wrapper may outlive the native view.
     for name, doc in App.listDocuments().items():
-        gui = Gui.getDocument(name)
+        try:
+            gui = Gui.getDocument(name)
+        except NameError:
+            continue  # The GUI document can disappear before the App close notification.
         if gui and any(v is view for v in gui.mdiViewsOfType("Gui::View3DInventor")):
             return doc
     raise ValueError("An existing live 3D target view is required")
@@ -247,18 +251,47 @@ def _install_nodes(root, nodes):
     root.insertChild(nodes, 0)
 
 
+def _live(state):
+    # QObject properties remain independent of Quarter's render manager. The
+    # native destructor marks it unavailable BEFORE any destroyed callback can
+    # delete a record/plane and re-enter our document observer.
+    try:
+        if state["widget"].property("_FreeCAD_RendererUnavailable"):
+            return False
+        return _view_document(state["view"]) is state["document"]
+    except (ValueError, RuntimeError, ReferenceError):
+        return False
+
+
 def _drop(key, restore=False):
     state = _states.get(key)
     if state is None:
         return
-    if restore:
-        _write_camera(state["view"], state["baseline"])
-    _states.pop(key)
     root, nodes = state["root"], state["nodes"]
-    if root.findChild(nodes) >= 0:
-        root.removeChild(nodes)
+    index = root.findChild(nodes)
+    live = restore and _live(state)
+    snapshot = state["view"].getCameraNode().copy() if restore and live else None
     try:
-        state["widget"].destroyed.disconnect(state["closed"])
+        if snapshot is not None:
+            _write_camera(state["view"], state["baseline"])
+        if index >= 0:
+            root.removeChild(nodes)
+        if live:
+            state["widget"].setProperty(_baseline_property, None)
+    except Exception:
+        # Keep ownership until every operation succeeds, including failures
+        # raised AFTER a camera mutation or scene removal. Restore exact order.
+        if index >= 0 and root.findChild(nodes) < 0:
+            root.insertChild(nodes, index)
+        if snapshot is not None:
+            _write_camera(state["view"], snapshot)
+        if live:
+            state["widget"].setProperty(_baseline_property, state["baseline_text"])
+        raise
+    _states.pop(key)
+    try:
+        if not state["widget"].property("_FreeCAD_RendererUnavailable"):
+            state["widget"].destroyed.disconnect(state["closed"])
     except (RuntimeError, TypeError):
         pass  # The target widget may already be in its destroyed callback.
 
@@ -285,6 +318,8 @@ def activate(record, targetView):
     if existing + nodes.getNumChildren() > 6:
         raise ValueError("Existing clipping leaves insufficient plane capacity")
     snapshot = targetView.getCameraNode().copy()
+    baseline_text = previous["baseline_text"] if previous else targetView.getCamera()
+    widget, closed = None, None
     try:
         _apply_camera(targetView, camera)
         _install_nodes(root, nodes)
@@ -296,7 +331,11 @@ def activate(record, targetView):
             closed = lambda *_: _drop(key)
             widget.destroyed.connect(closed)
             state = dict(view=targetView, document=doc, record=record, root=root, nodes=nodes,
-                         baseline=snapshot, planes=tuple(record.Planes), widget=widget, closed=closed)
+                         baseline=snapshot, baseline_text=baseline_text,
+                         planes=tuple(record.Planes), widget=widget, closed=closed)
+            # SaveDocFile reads this GUI-only baseline without changing the live
+            # camera, even when save fails or the document is not active.
+            widget.setProperty(_baseline_property, baseline_text)
         _states[key] = state
     except Exception:
         if root.findChild(nodes) >= 0:
@@ -304,6 +343,10 @@ def activate(record, targetView):
         if previous and root.findChild(previous["nodes"]) < 0:
             root.insertChild(previous["nodes"], old_index)
         _write_camera(targetView, snapshot)
+        if widget is not None:
+            widget.setProperty(_baseline_property, None)
+            if closed is not None:
+                widget.destroyed.disconnect(closed)
         raise
     return True
 

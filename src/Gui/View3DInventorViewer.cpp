@@ -4540,6 +4540,9 @@ bool View3DInventorViewer::applyCameraState(const SoCamera& sourceCamera)
         }
 
         const auto& sourcePerspective = static_cast<const SoPerspectiveCamera&>(sourceCamera);
+        targetPerspective->viewportMapping = sourcePerspective.viewportMapping;
+        targetPerspective->aspectRatio = sourcePerspective.aspectRatio;
+        targetPerspective->heightAngle = sourcePerspective.heightAngle;
         targetPerspective->position = sourcePerspective.position;
         targetPerspective->orientation = sourcePerspective.orientation;
         targetPerspective->nearDistance = sourcePerspective.nearDistance;

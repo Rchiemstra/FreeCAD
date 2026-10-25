@@ -3811,15 +3811,26 @@ void Document::SaveDocFile(Base::Writer& writer) const
     writer.Stream() << writer.ind() << "</ViewProviderData>" << std::endl;
     writer.decInd();  // indentation for 'ViewProviderData Count'
 
+    // Transient presentations supply a GUI-only baseline for serialization.
+    // Never swap the displayed camera around save: failed saves have no finish hook.
+    const auto persistentCamera = [](MDIViewWithCamera* view) -> std::string {
+        if (auto* inventor = freecad_cast<View3DInventor*>(view)) {
+            const auto baseline = inventor->getViewer()->property("_FreeCAD_TransientCameraBaseline");
+            if (baseline.isValid()) {
+                return baseline.toString().toStdString();
+            }
+        }
+        return view->getCamera();
+    };
     // Save the active view belonging to this document, with a deterministic fallback.
     bool cameraSaved = false;
     if (auto* activeCamera = freecad_cast<MDIViewWithCamera*>(getActiveView())) {
-        cameraSaved = saveCameraSettings(activeCamera->getCamera().c_str());
+        cameraSaved = saveCameraSettings(persistentCamera(activeCamera).c_str());
     }
     if (!cameraSaved) {
         for (const auto& it : getMDIViews()) {
             if (auto* viewCamera = freecad_cast<MDIViewWithCamera*>(it)) {
-                if (saveCameraSettings(viewCamera->getCamera().c_str())) {
+                if (saveCameraSettings(persistentCamera(viewCamera).c_str())) {
                     break;
                 }
             }

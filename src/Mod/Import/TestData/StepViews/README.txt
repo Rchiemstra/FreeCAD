@@ -80,7 +80,13 @@ failures propagate after camera and scene rollback. A tree context action,
 creates views, fits geometry, edits preferences or writes document properties.
 Import remains default off. Import/recompute/native restore/copy/undo/redo never
 activate a saved view. Deleting an activated record or linked plane restores its view; view or
-document closure releases the owned presentation nodes. Pre-existing clipping
+document closure releases the owned presentation nodes. A native Quarter lifetime
+marker precedes rendering teardown: even an earlier destroyed callback deleting
+a record/plane releases owned nodes without calling the unavailable viewer.
+Native Qt wrappers invalidate during destruction, so deferred cleanup from an
+earlier view cannot invalidate a new live widget at a reused native address.
+Clear rolls back camera type/fields, node order and activation state together on
+failure, retaining ownership for retry. Pre-existing clipping
 nodes and tools survive activation, replacement, failure and clear.
 
 Supported: finite mm camera data with a verified positive source unit factor;
@@ -112,8 +118,15 @@ expression, missing/duplicate/foreign plane ownership. The portable limit is six
 active scene clipping planes including pre-existing tools. Aspect outside
 (1e-7,1e7), perspective angle outside (1e-7,pi-1e-7), focal distance <=1e-7 mm,
 or scalars outside the finite +/-1e30 range are unavailable. The schema-1 reader
-also conservatively refuses negative clipping coordinates and enabled back<=front;
-activation does not reinterpret unavailable source records.
+also refuses negative clipping coordinates, enabled planes behind the eye and
+front/back order inconsistent with the eye-to-view-plane direction.
+
+Save and Save As serialize the pre-activation camera via a GUI-only widget
+property read by SaveDocFile. The displayed camera, clipping and activation state
+stay installed throughout successful or failed serialization. Replacement keeps
+the first baseline, clear removes the override, and source-free reopen is inactive
+with that baseline. Perspective restore retains angle, aspect and viewport mapping.
+No document records or preferences store this transient override.
 
 Independent activation fixtures views-centered-{mm,inch,metre}.step were authored
 by literal Part 21 substitutions in the original supplier-independent fixtures:
@@ -122,11 +135,19 @@ No FreeCAD/OCCT writer or activation output supplied these expectations. VRS is
 still O=(10,20,30), X=(0,1,0), Y=(0,0,1), Z=(1,0,0). Expected eye is O,
 forward=(1,0,0), up=(0,0,1), right=(0,-1,0), focal=4, height=12, aspect=1.5,
 perspective angle=2*atan(1.5). All lengths scale by 1, 25.4, 1000 into mm.
-Plane #310 retains x>=5*scale, #312 retains x<=5*scale. Enabled front retains
+Plane #310 retains x>=5*scale; #312 uses independent point #317=(100,0,0)
+and retains x<=100*scale. Enabled front retains
 x>=12*scale and back x<=90*scale. Perspective front is disabled. A further
 hand-authored test variant moves #302 to (0,0,100) and disables depth clipping:
 eye=(110,20,30), forward=(-1,0,0), right=(0,1,0), focal=96, central angle=
-2*atan(6/96). Rotated/asymmetric and unsupported operand variants remain refused.
+2*atan(6/96). Another variant enables both depth planes for both projections and
+both eye sides: eye Z=0 uses front/back 2/80; eye Z=100 uses 80/2. The common
+retained region is 12<=world X<=90 (before scaling), with expected inside point
+(50,20,30) and outside points (4,20,30), (101,20,30), (11,20,30), (91,20,30).
+This off-origin VRS rotates local Z onto world X; both parallel and perspective
+windows contain the inside point. Tests check individual half-spaces as well as
+their full intersection in mm, inch and metre sources.
+Rotated/asymmetric and unsupported operand variants remain refused.
 
 Mapping reference: ISO 10303-46 view_volume attribute definitions and propositions:
 https://www.steptools.com/stds/smrl/data/resource_docs/visual_presentation/sys/4_schema.htm

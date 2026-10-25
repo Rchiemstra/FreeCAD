@@ -240,6 +240,8 @@ class TestStepViews(unittest.TestCase):
                 ("-9.,-6.,4.", "#30,#32", "asymmetric window")):
             with self.subTest(origin=origin, placement=placement):
                 doc = self.variant([
+                    ("#302=CARTESIAN_POINT('',(2.,3.,40.));",
+                     "#302=CARTESIAN_POINT('',(0.,0.,0.));"),
                     ("#303=CARTESIAN_POINT('',(-7.,-5.,0.));",
                      "#303=CARTESIAN_POINT('',(" + origin + "));"),
                     ("#304=AXIS2_PLACEMENT_3D('',#303,#30,#31);",
