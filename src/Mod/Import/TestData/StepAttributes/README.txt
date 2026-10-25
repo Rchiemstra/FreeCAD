@@ -52,7 +52,7 @@ Integer/Boolean/unitless-real and complex aggregates/references are outside this
 slice; source types and reasons are preserved. Export is a later slice.
 
 Native schema 1 records use generated object names; exact SupplierName is a
-separate property. Value is editable (String/Length/Angle). RawMetadata retains
+separate property. Value is editable (String/Distance/Import::PropertyUnwrappedAngle). RawMetadata retains
 source context and is never replayed over live values or native links. Native
 Owner links govern copy/remapping/omission, save/reopen, undo/redo and import
 isolation. No source model/file or GUI activation survives capture.
@@ -79,3 +79,55 @@ that representation's exact diagnostic item position/entity reference. The
 original unsupported source type/name remains owned data. OCCT material and
 validation defaults remain untouched; the opt-in model-label guard excludes
 camera/annotation auxiliary labels from the legacy geometry traversal.
+
+Slice 3 rework acceptance (job342): native PropertyLength clamps signed lengths
+and PropertyAngle clamps unwrapped angles. PropertyDistance preserves signed mm;
+Import::PropertyUnwrappedAngle is a native PropertyQuantity with a fixed angle
+unit in its constructor, an ordinary unit editor, and native copy/restore.
+A generic dynamic PropertyQuantity was rejected after runtime verification:
+its assigned unit does not survive native save/reopen. No restore proxy, raw
+metadata replay, or expression substitutes for editable live values.
+The lifecycle test imports -2 mm / 450 deg and edits -2000 mm / 810 deg,
+undoes/redoes, deletes the source, saves/reopens, and copies native owner links;
+subsequent -3 m / -1080 deg edits retain units and immutable provenance.
+GUI acceptance types signed lengths and large angles into native unit editors.
+
+Independent unit_chain variants add #680 -> #681 -> #683 -> #684 -> base.
+Length calculation: 2 source * 2 outer factor * 3 inner factor = 12 base units:
+12 mm, 304.8 mm for inches (12 * 25.4), 12000 mm for metres (12 * 1000).
+Angle calculation: 12 radians * 180/pi = 687.5493541569879 degrees;
+a separate degree terminal (pi/180 rad) gives 12 degrees. Expectations are
+hand calculated and never derived from importer output. Unit display names
+'outer supplier', 'inner supplier', 'degrees' are provenance, never evidence
+of dimensions or conversion. Every conversion hop validates its exact factor
+ID, source numeric token (retained with its comments in SourceUnit), typed
+value/type, reader failures and all seven
+explicit dimensional exponents. SI conversion is used only at the terminal;
+visited identities and a maximum depth of 16 bound traversal. Missing, cyclic,
+excessive, conflicting and malformed intermediate chains remain unavailable
+with reasons; independent strings and geometry survive supported reader input.
+
+The scanner validates comment-masked numeric text and retains the original
+SourceToken, including comments. Quoted text, doubled quotes, embedded comment
+markers and semicolons cannot become zero or change record boundaries.
+Duplicate IDs, including leading-zero equivalents and owners, are unavailable;
+an ambiguous owner ID cannot bind a transferred object. A multiline record
+over 64 KiB is unavailable while valid siblings survive. A separate 59 KiB
+comment inside a complete numeric token is accepted by iterative lexical
+scans, preserving the literal without recursive regular-expression parsing. OCCT 7.6 rejects the
+unfinished-record fixture at file-read time; acceptance asserts that error and
+checks the preexisting document records remain intact.
+
+Already-passing acceptance is kept distinct from corrected cases: explicit
+mm/inch/metre and radians/degrees, quoted numeric rejection, source-free native
+owner remapping/partial copies, Unicode duplicate order, root/definition/exact
+occurrence paths, omitted/repeated/nested/ambiguous owners, actual ReduceObjects
+imports (separate from merging), option default-off and GUI dialog overrides,
+repeated inserts/two documents, geometry/colors/placements/hierarchy and PMI/
+view coexistence. Scanner duplicate-ID and comment-numeric acceptance and
+signed/unwrapped lifecycle assertions are named independently.
+
+The merged color-result regression verifies returned objects are live geometry,
+with the same volume and placement when attributes are enabled or disabled.
+Intermediate features deleted by merging cannot remain in the color-result map
+when owned metadata objects are created.

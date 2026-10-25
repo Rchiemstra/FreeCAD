@@ -86,7 +86,7 @@ class TestStepAttributes(unittest.TestCase):
                     span = self.by_name(doc, 'span')
                     self.assertEqual(span.ValueKind, 'Length')
                     self.assertAlmostEqual(span.Value.Value, 2 * scale)
-                    self.assertEqual(span.getTypeIdOfProperty('Value'), 'App::PropertyLength')
+                    self.assertEqual(span.getTypeIdOfProperty('Value'), 'App::PropertyDistance')
                     self.assertEqual(span.SourceValue, '2')
                     self.assertIn('LENGTH_MEASURE', span.SourceType)
                     self.assertIn('#81', span.SourceUnit)
@@ -339,7 +339,7 @@ class TestStepAttributes(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.load(userAttributes='yes')
 
-    def test_merged_and_reduced_owners_unavailable(self):
+    def test_merged_owners_unavailable(self):
         self.group(self.load())
         for links in (False, True):
             doc = self.load('nested', links, merge=True)
@@ -364,3 +364,277 @@ class TestStepAttributes(unittest.TestCase):
             self.assertTrue(model(enabled))
             self.assertEqual(len(enabled.StepPMI.Group), len(disabled.StepPMI.Group))
             self.assertEqual(len(enabled.StepViews.Group), len(disabled.StepViews.Group))
+
+    def test_signed_length_and_unwrapped_angle_import(self):
+        doc = self.variant([('LENGTH_MEASURE(2.)', 'LENGTH_MEASURE(-2.)'),
+                            ("PLANE_ANGLE_MEASURE(1.5707963267948966),#84) PLANE_ANGLE_MEASURE_WITH_UNIT() REPRESENTATION_ITEM('angle')",
+                             "PLANE_ANGLE_MEASURE(7.853981633974483),#84) PLANE_ANGLE_MEASURE_WITH_UNIT() REPRESENTATION_ITEM('angle')")])
+        self.assertEqual(self.by_name(doc, 'span').Value.Value, -2)
+        self.assertAlmostEqual(self.by_name(doc, 'angle').Value.Value, 450)
+
+    def test_signed_and_unwrapped_live_lifecycle(self):
+        source = Path(self.temp.name) / 'editable.step'
+        shutil.copyfile(DATA / 'attributes-mm.step', source)
+        doc = self.load(path=source, links=True)
+        span, angle = self.by_name(doc, 'span'), self.by_name(doc, 'angle')
+        raw = (span.RawMetadata, angle.RawMetadata)
+        doc.openTransaction('signed and unwrapped edits')
+        span.Value, angle.Value = '-2000 mm', '810 deg'
+        doc.recompute()
+        doc.commitTransaction()
+        self.assertEqual(span.Value.Value, -2000)
+        self.assertEqual(angle.Value.Value, 810)
+        doc.undo()
+        self.assertEqual(span.Value.Value, 2)
+        self.assertAlmostEqual(angle.Value.Value, 90)
+        doc.redo()
+        self.assertEqual(span.Value.Value, -2000)
+        self.assertEqual(angle.Value.Value, 810)
+        source.unlink()
+        path = Path(self.temp.name) / 'editable.FCStd'
+        doc.saveAs(str(path))
+        App.closeDocument(doc.Name)
+        restored = App.openDocument(str(path))
+        dest = App.newDocument('SignedCopy')
+        copied = dest.copyObject(self.group(restored), True)
+        for target in (restored, dest):
+            target.recompute()
+            s, a = self.by_name(target, 'span'), self.by_name(target, 'angle')
+            self.assertEqual((s.RawMetadata, a.RawMetadata), raw)
+            self.assertEqual(s.Value.Value, -2000)
+            self.assertEqual(a.Value.Value, 810)
+            self.assertEqual(s.Value.Unit, App.Units.Unit('mm'))
+            self.assertEqual(a.Value.Unit, App.Units.Unit('deg'))
+            self.assertEqual(s.Owner.Document, target)
+            self.assertEqual(a.Owner.Document, target)
+            s.Value, a.Value = '-3 m', '-1080 deg'
+            target.recompute()
+            self.assertEqual(s.Value.Value, -3000)
+            self.assertEqual(a.Value.Value, -1080)
+            with self.assertRaises(Exception):
+                a.Value = '2 mm'
+            self.assertNotIn('ReadOnly', a.getEditorMode('Value'))
+        self.assertTrue(copied.Group)
+
+    def test_numeric_comments_preserve_literal(self):
+        token = '/*supplier; \'quoted\'*/2.'
+        doc = self.variant([('LENGTH_MEASURE(2.)', 'LENGTH_MEASURE(' + token + ')')])
+        span = self.by_name(doc, 'span')
+        self.assertEqual(span.ValueStatus, 'available', span.UnavailableReason)
+        self.assertEqual(span.Value.Value, 2)
+        self.assertEqual(span.SourceToken, token)
+        self.assertEqual(json.loads(span.RawMetadata)['record']['SourceToken'], token)
+
+    def unit_chain(self, angle=False, base='mm', factor='2.', dimensions=None, extra='',
+                   replacements=()):
+        kind = 'PLANE_ANGLE' if angle else 'LENGTH'
+        dims = dimensions or ('0.,0.,0.,0.,0.,0.,0.' if angle else '1.,0.,0.,0.,0.,0.,0.')
+        terminal = '#84' if angle else '#81'
+        old = ("PLANE_ANGLE_MEASURE(1.5707963267948966),#84) PLANE_ANGLE_MEASURE_WITH_UNIT() REPRESENTATION_ITEM('angle')" if angle
+               else 'LENGTH_MEASURE(2.),#81')
+        chain = f"""
+#680=(CONVERSION_BASED_UNIT('outer supplier',#681) {kind}_UNIT() NAMED_UNIT(#682));
+#681={kind}_MEASURE_WITH_UNIT({kind}_MEASURE({factor}),#683);
+#682=DIMENSIONAL_EXPONENTS({dims});
+#683=(CONVERSION_BASED_UNIT('inner supplier',#684) {kind}_UNIT() NAMED_UNIT(#685));
+#684={kind}_MEASURE_WITH_UNIT({kind}_MEASURE(3.),{terminal});
+#685=DIMENSIONAL_EXPONENTS({dims});
+""" + extra
+        if angle:
+            chain = chain.replace('PLANE_ANGLE_UNIT() NAMED_UNIT(#682)', 'NAMED_UNIT(#682) PLANE_ANGLE_UNIT()')
+            chain = chain.replace('PLANE_ANGLE_UNIT() NAMED_UNIT(#685)', 'NAMED_UNIT(#685) PLANE_ANGLE_UNIT()')
+        for before, after in replacements:
+            self.assertEqual(chain.count(before), 1, before)
+            chain = chain.replace(before, after)
+        return self.variant([(old, kind + '_MEASURE(2.),#680' + (") PLANE_ANGLE_MEASURE_WITH_UNIT() REPRESENTATION_ITEM('angle')" if angle else ''))], chain, fixture=base)
+
+    def test_independent_multistep_length_and_angle_units(self):
+        # 2 source * 2 outer * 3 inner * base: 12 mm, 304.8 mm, 12000 mm.
+        for base, expected in (('mm', 12), ('inch', 304.8), ('metre', 12000)):
+            with self.subTest(base=base):
+                span = self.by_name(self.unit_chain(base=base), 'span')
+                self.assertEqual(span.ValueStatus, 'available', span.UnavailableReason)
+                self.assertAlmostEqual(span.Value.Value, expected)
+        # 12 rad = 687.5493541569879 deg; 12 degree units = 12 deg.
+        angle = self.by_name(self.unit_chain(angle=True), 'angle')
+        self.assertAlmostEqual(angle.Value.Value, 687.5493541569879)
+        degree = """
+#687=(CONVERSION_BASED_UNIT('degrees',#688) NAMED_UNIT(#689) PLANE_ANGLE_UNIT());
+#688=PLANE_ANGLE_MEASURE_WITH_UNIT(PLANE_ANGLE_MEASURE(0.017453292519943295),#84);
+#689=DIMENSIONAL_EXPONENTS(0.,0.,0.,0.,0.,0.,0.);
+"""
+        angle = self.by_name(self.unit_chain(angle=True, extra=degree,
+                             replacements=[('MEASURE(3.),#84', 'MEASURE(3.),#687')]), 'angle')
+        self.assertAlmostEqual(angle.Value.Value, 12)
+
+    def test_intermediate_factor_verification(self):
+        for token in ('2.bad', "'bad'", '$', '1.E999', '0.', '-2.'):
+            with self.subTest(token=token):
+                doc = self.unit_chain(replacements=[('MEASURE(3.)', 'MEASURE(' + token + ')')])
+                span = self.by_name(doc, 'span')
+                self.assertEqual(span.ValueStatus, 'unavailable', token)
+                self.assertNotIn('Value', span.PropertiesList)
+                self.assertIn('#684', span.UnavailableReason)
+                self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+        span = self.by_name(self.unit_chain(factor='/*factor*/2.'), 'span')
+        self.assertEqual(span.Value.Value, 12)
+        self.assertIn('/*factor*/2.', span.SourceUnit)
+
+    def test_every_unit_dimension_and_missing_chain(self):
+        cases = [
+            [('DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n#683',
+              'DIMENSIONAL_EXPONENTS(0.,0.,0.,0.,0.,0.,0.);\n#683')],
+            [('#685=DIMENSIONAL_EXPONENTS(1.', '#685=DIMENSIONAL_EXPONENTS(2.')],
+            [('#685=DIMENSIONAL_EXPONENTS(1.', '#685=DIMENSIONAL_EXPONENTS($')],
+            [('LENGTH_MEASURE(3.)', 'PLANE_ANGLE_MEASURE(3.)')],
+            [('MEASURE(3.),#81', 'MEASURE(3.),#84')],
+            [('MEASURE(3.),#81', 'MEASURE(3.),$')],
+            [("'inner supplier',#684", "'inner supplier',$")],
+            [('MEASURE(3.),#81', 'MEASURE(3.),#680')],
+        ]
+        for replacements in cases:
+            with self.subTest(replacements=replacements):
+                doc = self.unit_chain(replacements=replacements)
+                span = self.by_name(doc, 'span')
+                self.assertEqual(span.ValueStatus, 'unavailable')
+                self.assertTrue(span.UnavailableReason)
+                self.assertNotIn('Value', span.PropertiesList)
+                self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+                self.assertTrue(any(o.isDerivedFrom('Part::Feature') for o in doc.Objects))
+
+    def test_excessive_unit_chain_is_unavailable(self):
+        extra = []
+        for index in range(20):
+            unit, measure = 700 + index * 2, 701 + index * 2
+            terminal = '#81' if index == 19 else '#' + str(unit + 2)
+            extra += [f"#{unit}=(CONVERSION_BASED_UNIT('chain',#{measure}) LENGTH_UNIT() NAMED_UNIT(#682));",
+                      f'#{measure}=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.),{terminal});']
+        doc = self.unit_chain(extra='\n'.join(extra),
+                              replacements=[('MEASURE(3.),#81', 'MEASURE(3.),#700')])
+        span = self.by_name(doc, 'span')
+        self.assertEqual(span.ValueStatus, 'unavailable')
+        self.assertIn('chain', span.UnavailableReason)
+        self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+
+    def test_scanner_strings_comments_and_partial_input(self):
+        doc = self.variant([("'supplier label'", "'a; b ''quoted'' /*text*/'")],
+                           "/* semicolon; 'quote' #606=MEASURE_WITH_UNIT(LENGTH_MEASURE(9.),#81); */")
+        self.assertEqual(self.by_name(doc, 'Label').Value, "a; b 'quoted' /*text*/")
+        self.assertEqual(self.by_name(doc, 'span').Value.Value, 2)
+        for token in ("'2.'", "'bad; ''quoted'''", "'2.'/*comment*/"):
+            with self.subTest(token=token):
+                doc = self.variant([('LENGTH_MEASURE(2.)', 'LENGTH_MEASURE(' + token + ')')])
+                span = next(r for r in self.records(doc) if '/#606/' in r.SourceId)
+                self.assertEqual(span.ValueStatus, 'unavailable')
+                self.assertNotIn('Value', span.PropertiesList)
+                self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+        # An unrelated unfinished entity must not discard previously complete records.
+        doc = self.load()
+        with self.assertRaises(OSError):
+            self.variant(extra='#699=MEASURE_WITH_UNIT(LENGTH_MEASURE(', doc=doc)
+        self.assertEqual(self.by_name(doc, 'span').Value.Value, 2)
+        self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+
+    def test_scanner_duplicate_ids_and_oversized_records(self):
+        for extra, replacements in [
+            ("#606=DESCRIPTIVE_REPRESENTATION_ITEM('duplicate','unrelated');", []),
+            ('', [('LENGTH_MEASURE(2.)', 'LENGTH_MEASURE(/*' + ('x' * 100 + '\n') * 660 + '*/2.)')]),
+        ]:
+            with self.subTest(extra=extra[:30], oversized=bool(replacements)):
+                doc = self.variant(replacements, extra)
+                span = self.by_name(doc, 'span')
+                self.assertEqual(span.ValueStatus, 'unavailable')
+                self.assertNotIn('Value', span.PropertiesList)
+                self.assertTrue(span.UnavailableReason)
+                self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+
+    def test_actual_reduced_owners_unavailable(self):
+        step = self.prefs
+        previous = {x[1]: x[2] for x in step.GetContents() or []}
+        try:
+            step.SetBool('ReduceObjects', True)
+            doc = self.load('assembly', links=True)
+            self.assertTrue(any(getattr(o, 'ElementCount', 0) == 3 for o in doc.Objects),
+                            'reduced import must create the repeated-instance array')
+            self.assertTrue(self.records(doc))
+            for record in self.records(doc):
+                self.assertFalse(record.Owner)
+                self.assertIn('reduced', record.UnavailableReason)
+        finally:
+            if 'ReduceObjects' in previous:
+                step.SetBool('ReduceObjects', previous['ReduceObjects'])
+            else:
+                step.RemBool('ReduceObjects')
+
+    def test_duplicate_owner_id_never_binds(self):
+        doc = self.variant(extra="#7=PRODUCT_DEFINITION('duplicate','',#6,#8);")
+        record = self.by_name(doc, 'Label')
+        self.assertEqual(record.AssociationStatus, 'unavailable')
+        self.assertFalse(record.Owner)
+        self.assertIn('duplicate', record.UnavailableReason)
+        self.assertEqual(record.Value, 'supplier label')
+
+    def test_duplicate_numeric_id_with_leading_zero(self):
+        doc = self.variant(extra="#0606=DESCRIPTIVE_REPRESENTATION_ITEM('duplicate','unrelated');")
+        span = self.by_name(doc, 'span')
+        self.assertEqual(span.ValueStatus, 'unavailable')
+        self.assertNotIn('Value', span.PropertiesList)
+        self.assertIn('duplicate', span.UnavailableReason)
+
+    def test_angle_intermediate_dimensions_and_factors(self):
+        for replacements in (
+            [('MEASURE(3.)', "MEASURE('bad')")],
+            [('#685=DIMENSIONAL_EXPONENTS(0.', '#685=DIMENSIONAL_EXPONENTS(1.')],
+            [('PLANE_ANGLE_MEASURE(3.)', 'LENGTH_MEASURE(3.)')],
+            [('MEASURE(3.),#84', 'MEASURE(3.),#81')],
+        ):
+            with self.subTest(replacements=replacements):
+                doc = self.unit_chain(angle=True, replacements=replacements)
+                angle = self.by_name(doc, 'angle')
+                self.assertEqual(angle.ValueStatus, 'unavailable')
+                self.assertNotIn('Value', angle.PropertiesList)
+                self.assertTrue(angle.UnavailableReason)
+                self.assertEqual(self.by_name(doc, 'span').Value.Value, 2)
+
+    def test_merged_color_results_reference_live_geometry(self):
+        signatures = []
+        for enabled in (False, True):
+            doc = App.newDocument('MergedColors')
+            result = Import.insert(str(DATA / 'attributes-nested.step'), doc.Name,
+                                   merge=True, useLinkGroup=True, mode=0,
+                                   userAttributes=enabled, savedViews=True, semanticPMI=True)
+            doc.recompute()
+            self.assertTrue(result)
+            for obj, colors in result:
+                self.assertIs(doc.getObject(obj.Name), obj)
+                self.assertTrue(obj.isDerivedFrom('Part::Feature'))
+                self.assertTrue(obj.Shape.Solids)
+                self.assertIn(len(colors), (0, len(obj.Shape.Faces)))
+            geometry = [obj for obj in doc.Objects if obj.isDerivedFrom('Part::Feature')]
+            self.assertEqual(len(geometry), 1)
+            signatures.append((round(geometry[0].Shape.Volume, 5), str(geometry[0].Placement)))
+            if enabled:
+                for record in self.records(doc):
+                    self.assertFalse(record.Owner)
+                    self.assertIn('merged', record.UnavailableReason)
+        self.assertEqual(signatures[0], signatures[1])
+
+    def test_scanner_comment_below_limit(self):
+        token = '/*' + ('x' * 100 + '\n') * 590 + '*/2.'
+        doc = self.variant([('LENGTH_MEASURE(2.)', 'LENGTH_MEASURE(' + token + ')')])
+        span = self.by_name(doc, 'span')
+        self.assertEqual(span.ValueStatus, 'available', span.UnavailableReason)
+        self.assertEqual(span.Value.Value, 2)
+        self.assertEqual(span.SourceToken, token)
+        self.assertEqual(self.by_name(doc, 'Label').Value, 'supplier label')
+
+    def test_missing_owner_keeps_independent_value(self):
+        doc = self.variant([("PROPERTY_DEFINITION('supplier set','revision context',#7)",
+                             "PROPERTY_DEFINITION('supplier set','revision context',$)")])
+        record = self.by_name(doc, 'Label')
+        self.assertEqual(record.Value, 'supplier label')
+        self.assertEqual(record.ValueStatus, 'available')
+        self.assertEqual(record.AssociationStatus, 'unavailable')
+        self.assertFalse(record.Owner)
+        self.assertTrue(record.UnavailableReason)
+        self.assertEqual(self.by_name(doc, 'orphan').Value, 'no shape')

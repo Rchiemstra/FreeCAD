@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "StepAttributesImport.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <locale>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <CXX/Objects.hxx>
@@ -15,10 +16,15 @@
 #include <STEPCAFControl_Reader.hxx>
 #include <STEPConstruct_UnitContext.hxx>
 #include <StepBasic_ConversionBasedUnit.hxx>
+#include <StepBasic_ConversionBasedUnitAndLengthUnit.hxx>
+#include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_DimensionalExponents.hxx>
 #include <StepBasic_MeasureValueMember.hxx>
 #include <StepBasic_MeasureWithUnit.hxx>
 #include <StepBasic_ProductDefinition.hxx>
 #include <StepBasic_SiUnit.hxx>
+#include <StepBasic_SiUnitAndLengthUnit.hxx>
+#include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
 #include <StepData_GlobalFactors.hxx>
 #include <StepData_StepModel.hxx>
 #include <StepData_UndefinedEntity.hxx>
@@ -48,6 +54,19 @@
 
 namespace Import
 {
+TYPESYSTEM_SOURCE(Import::PropertyUnwrappedAngle, App::PropertyQuantity)
+
+PropertyUnwrappedAngle::PropertyUnwrappedAngle()
+{
+    setUnit(Base::Unit::Angle);
+}
+App::Property* PropertyUnwrappedAngle::Copy() const
+{
+    auto copy = new PropertyUnwrappedAngle();
+    copy->setValue(getValue());
+    return copy;
+}
+
 namespace
 {
 std::string text(const Handle(TCollection_HAsciiString)& value)
@@ -104,24 +123,138 @@ std::map<std::string, StepAttributeScalar> sourceScalars(const Base::FileInfo& f
 {
     Base::ifstream input(file, std::ios::binary);
     std::map<std::string, StepAttributeScalar> result;
-    std::string raw, mask;
+    std::string raw, mask, numericMask;
     bool quoted = false, comment = false, oversized = false;
-    const std::regex entity(R"(^\s*#([0-9]+)\s*=)");
-    const std::regex measure(R"(MEASURE_WITH_UNIT\s*\(\s*([A-Z_][A-Z_0-9]*)\s*\(([^()]*)\))");
-    const std::regex numeric(R"(^\s*[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([Ee][+-]?[0-9]+)?\s*$)");
-    auto append = [&](char value, bool hidden) {
+    std::set<std::string> seen;
+    auto spaces = [](const std::string& text, size_t& pos) {
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) { ++pos; }
+    };
+    auto digits = [](const std::string& text, size_t& pos) {
+        const auto begin = pos;
+        while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') { ++pos; }
+        return pos != begin;
+    };
+    auto append = [&](char value, bool hidden, bool numericHidden = false) {
         if (raw.size() < 65536) {
             raw += value;
             mask += hidden ? ' ' : value;
+            // Hide comments only. Quoted text must never become numeric whitespace.
+            numericMask += numericHidden ? ' ' : value;
         }
         else { oversized = true; }
+    };
+    auto parse = [&](const std::string& token, double& value) {
+        size_t pos = 0;
+        spaces(token, pos);
+        if (pos < token.size() && (token[pos] == '+' || token[pos] == '-')) { ++pos; }
+        bool mantissa = digits(token, pos);
+        if (pos < token.size() && token[pos] == '.') {
+            ++pos;
+            mantissa = digits(token, pos) || mantissa;
+        }
+        bool exponent = true;
+        if (pos < token.size() && (token[pos] == 'E' || token[pos] == 'e')) {
+            ++pos;
+            if (pos < token.size() && (token[pos] == '+' || token[pos] == '-')) { ++pos; }
+            exponent = digits(token, pos);
+        }
+        spaces(token, pos);
+        if (!mantissa || !exponent || pos != token.size()) {
+            return std::string("malformed source numeric token");
+        }
+        std::istringstream number(token);
+        number.imbue(std::locale::classic());
+        number >> value;
+        return !number || !std::isfinite(value)
+            ? std::string("nonfinite or out-of-range source numeric token") : std::string();
+    };
+    auto finish = [&](bool complete) {
+        size_t pos = 0;
+        spaces(mask, pos);
+        if (pos == mask.size() || mask[pos++] != '#') { return; }
+        const auto beginId = pos;
+        if (!digits(mask, pos)) { return; }
+        auto identity = mask.substr(beginId, pos - beginId);
+        spaces(mask, pos);
+        if (pos == mask.size() || mask[pos] != '=') { return; }
+        const auto significant = identity.find_first_not_of('0');
+        identity = significant == std::string::npos ? "0" : identity.substr(significant);
+        const auto key = "#" + identity;
+        if (!seen.insert(key).second) {
+            result[key].reason = "duplicate source entity ID";
+            return;
+        }
+        auto& scalar = result[key];
+        if (!complete) { scalar.reason = "incomplete source entity"; }
+        else if (oversized) { scalar.reason = "source entity exceeds scalar validation limit"; }
+        else {
+            // Iterative token scans keep long, legal comments below the size
+            // limit independent of the regular-expression implementation's stack.
+            constexpr const char* measure = "MEASURE_WITH_UNIT";
+            size_t search = 0;
+            int count = 0;
+            while ((search = mask.find(measure, search)) != std::string::npos) {
+                size_t cursor = search + std::char_traits<char>::length(measure);
+                search = cursor;
+                spaces(mask, cursor);
+                if (cursor == mask.size() || mask[cursor++] != '(') { continue; }
+                spaces(mask, cursor);
+                const auto typeBegin = cursor;
+                while (cursor < mask.size() && ((mask[cursor] >= 'A' && mask[cursor] <= 'Z')
+                    || mask[cursor] == '_' || (cursor > typeBegin && mask[cursor] >= '0' && mask[cursor] <= '9'))) {
+                    ++cursor;
+                }
+                const auto type = mask.substr(typeBegin, cursor - typeBegin);
+                spaces(mask, cursor);
+                if (type.empty() || cursor == mask.size() || mask[cursor++] != '(') { continue; }
+                const auto close = mask.find(')', cursor);
+                if (close == std::string::npos || mask.find('(', cursor) < close) { continue; }
+                scalar.type = type;
+                scalar.token = raw.substr(cursor, close - cursor);
+                scalar.reason = parse(numericMask.substr(cursor, close - cursor), scalar.value);
+                if (++count > 1) { scalar.reason = "ambiguous source scalar tokens"; }
+            }
+            constexpr const char* dimensions = "DIMENSIONAL_EXPONENTS";
+            auto dim = mask.find(dimensions);
+            if (dim != std::string::npos) {
+                dim += std::char_traits<char>::length(dimensions);
+                spaces(mask, dim);
+                if (dim < mask.size() && mask[dim++] == '(') {
+                    const auto close = mask.find(')', dim);
+                    if (close != std::string::npos && mask.find('(', dim) > close) {
+                        scalar.type = "DIMENSIONAL_EXPONENTS";
+                        scalar.token = raw.substr(dim, close - dim);
+                        std::vector<double> components;
+                        while (dim <= close) {
+                            const auto end = std::min(numericMask.find(',', dim), close);
+                            double component = 0;
+                            auto reason = parse(numericMask.substr(dim, end - dim), component);
+                            if (!reason.empty()) { scalar.reason = reason; }
+                            components.push_back(component);
+                            dim = end + 1;
+                        }
+                        if (components.size() != 7) { scalar.reason = "invalid dimensional exponents"; }
+                        else {
+                            // Both supported dimensions require the other six
+                            // source exponents to be exactly zero. Preserve the
+                            // length exponent for comparison with the typed unit.
+                            scalar.value = components.front();
+                            if (std::any_of(components.begin() + 1, components.end(),
+                                [](double exponent) { return exponent != 0; })) {
+                                scalar.reason = "unsupported dimensional exponents";
+                            }
+                        }
+                    }
+                }
+            }
+        }
     };
     char c;
     while (input.get(c)) {
         if (comment) {
-            append(c, true);
+            append(c, true, true);
             if (c == '*' && input.peek() == '/') {
-                input.get(c); append(c, true); comment = false;
+                input.get(c); append(c, true, true); comment = false;
             }
             continue;
         }
@@ -134,39 +267,15 @@ std::map<std::string, StepAttributeScalar> sourceScalars(const Base::FileInfo& f
             continue;
         }
         if (c == '/' && input.peek() == '*') {
-            append(c, true); input.get(c); append(c, true); comment = true; continue;
+            append(c, true, true); input.get(c); append(c, true, true); comment = true; continue;
         }
         if (c == '\'') { append(c, true); quoted = true; continue; }
         append(c, false);
         if (c != ';') { continue; }
-        std::smatch identity;
-        if (std::regex_search(mask, identity, entity)) {
-            const auto key = "#" + identity[1].str();
-            if (oversized) { result[key].reason = "source entity exceeds scalar validation limit"; }
-            else {
-                std::sregex_iterator first(mask.begin(), mask.end(), measure), last;
-                for (auto match = first; match != last; ++match) {
-                    StepAttributeScalar scalar;
-                    scalar.type = (*match)[1].str();
-                    scalar.token = raw.substr((*match).position(2), (*match).length(2));
-                    if (!std::regex_match(scalar.token, numeric)) {
-                        scalar.reason = "malformed source numeric token";
-                    }
-                    else {
-                        std::istringstream number(scalar.token);
-                        number.imbue(std::locale::classic());
-                        number >> scalar.value;
-                        if (!number || !std::isfinite(scalar.value)) {
-                            scalar.reason = "nonfinite or out-of-range source numeric token";
-                        }
-                    }
-                    if (result.count(key)) { scalar.reason = "ambiguous source scalar tokens"; }
-                    result[key] = std::move(scalar);
-                }
-            }
-        }
-        raw.clear(); mask.clear(); oversized = false;
+        finish(true);
+        raw.clear(); mask.clear(); numericMask.clear(); oversized = false;
     }
+    if (!raw.empty()) { finish(false); }
     return result;
 }
 
@@ -212,7 +321,8 @@ std::string undefinedName(const Handle(StepData_UndefinedEntity)& item)
 }
 
 std::string unitDescription(const Handle(StepBasic_NamedUnit)& unit,
-    const Handle(StepData_StepModel)& model, int depth = 0)
+    const Handle(StepData_StepModel)& model,
+    const std::map<std::string, StepAttributeScalar>& scalars, int depth = 0)
 {
     if (unit.IsNull()) { return "missing unit"; }
     if (depth > 16) { return "cyclic or excessive unit chain"; }
@@ -227,21 +337,93 @@ std::string unitDescription(const Handle(StepBasic_NamedUnit)& unit,
         result += " " + text(conversion->Name());
         auto measure = conversion->ConversionFactor();
         if (!measure.IsNull()) {
-            result += " factor=" + number(measure->ValueComponent()) + " "
-                + unitDescription(measure->UnitComponent().NamedUnit(), model, depth + 1);
+            result += " factor=" + id(model, measure) + " " + number(measure->ValueComponent());
+            auto source = scalars.find(id(model, measure));
+            if (source != scalars.end()) { result += " token=" + source->second.token; }
+            result += " " + unitDescription(measure->UnitComponent().NamedUnit(), model, scalars, depth + 1);
         }
     }
     return result;
 }
-// Validate recursion before entering OCCT's recursive conversion routine.
-bool validUnit(const Handle(StepBasic_NamedUnit)& unit, int depth = 0)
+// Validate every link against owned source tokens and reader diagnostics before
+// conversion. OCCT's conversion routine only handles a single conversion hop;
+// multiply verified hops here and ask it only for the terminal SI factor.
+std::string unitFactor(Handle(StepBasic_NamedUnit) unit, bool angle,
+    const Handle(StepData_StepModel)& model,
+    const std::map<std::string, std::string>& bad,
+    const std::map<std::string, StepAttributeScalar>& scalars, double& factor)
 {
-    if (unit.IsNull() || depth > 16) { return false; }
-    auto conversion = Handle(StepBasic_ConversionBasedUnit)::DownCast(unit);
-    if (conversion.IsNull()) { return !Handle(StepBasic_SiUnit)::DownCast(unit).IsNull(); }
-    auto measure = conversion->ConversionFactor();
-    return !measure.IsNull() && std::isfinite(measure->ValueComponent())
-        && measure->ValueComponent() > 0 && validUnit(measure->UnitComponent().NamedUnit(), depth + 1);
+    factor = 1;
+    std::set<const Standard_Transient*> visited;
+    for (int depth = 0; depth <= 16; ++depth) {
+        if (unit.IsNull()) { return "missing explicit unit in conversion chain"; }
+        const auto key = id(model, unit);
+        auto fail = [&](const std::string& reason) { return key + ": " + reason; };
+        if (!visited.insert(unit.get()).second) { return fail("cyclic unit chain"); }
+        if (bad.count(key)) { return fail("reader diagnostic on unit"); }
+        auto source = scalars.find(key);
+        if (source == scalars.end()) { return fail("source unit unavailable for verification"); }
+        if (!source->second.reason.empty()) { return fail(source->second.reason); }
+        auto conversion = Handle(StepBasic_ConversionBasedUnit)::DownCast(unit);
+        auto si = Handle(StepBasic_SiUnit)::DownCast(unit);
+        if (!si.IsNull()) {
+            const bool correct = angle
+                ? !Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(unit).IsNull()
+                : !Handle(StepBasic_SiUnitAndLengthUnit)::DownCast(unit).IsNull();
+            STEPConstruct_UnitContext context;
+            if (!correct || context.ComputeFactors(si) != 0
+                || (angle ? !context.PlaneAngleDone() || context.LengthDone()
+                          : !context.LengthDone() || context.PlaneAngleDone())) {
+                return fail("conflicting measure type and SI unit");
+            }
+            factor *= angle ? context.PlaneAngleFactor() * 180 / M_PI
+                : context.LengthFactor() * StepData_GlobalFactors::Intance().CascadeUnit(); // codespell:ignore intance
+            return std::isfinite(factor) && factor > 0 ? "" : fail("invalid converted unit factor");
+        }
+        if (conversion.IsNull()) { return fail("unsupported explicit unit"); }
+        const bool correct = angle
+            ? !Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit)::DownCast(unit).IsNull()
+            : !Handle(StepBasic_ConversionBasedUnitAndLengthUnit)::DownCast(unit).IsNull();
+        if (!correct) { return fail("conflicting conversion unit dimension"); }
+        auto dims = unit->Dimensions();
+        if (dims.IsNull()) { return fail("missing conversion dimensions"); }
+        const auto dimKey = id(model, dims);
+        auto dimSource = scalars.find(dimKey);
+        if (bad.count(dimKey) || dimSource == scalars.end()
+            || !dimSource->second.reason.empty() || dimSource->second.type != "DIMENSIONAL_EXPONENTS") {
+            return fail(dimKey + ": unverifiable conversion dimensions");
+        }
+        const double typed[] = {dims->LengthExponent(), dims->MassExponent(), dims->TimeExponent(),
+            dims->ElectricCurrentExponent(), dims->ThermodynamicTemperatureExponent(),
+            dims->AmountOfSubstanceExponent(), dims->LuminousIntensityExponent()};
+        for (int i = 0; i < 7; ++i) {
+            const double expected = !angle && i == 0 ? 1 : 0;
+            const double source = i == 0 ? dimSource->second.value : 0;
+            if (source != typed[i] || typed[i] != expected) {
+                return fail(dimKey + ": conflicting conversion dimensions");
+            }
+        }
+        auto measure = conversion->ConversionFactor();
+        if (measure.IsNull()) { return fail("missing conversion factor"); }
+        const auto measureKey = id(model, measure);
+        auto scalar = scalars.find(measureKey);
+        if (bad.count(measureKey) || scalar == scalars.end()
+            || !scalar->second.reason.empty() || measure->ValueComponentMember().IsNull()) {
+            return fail(measureKey + ": unverifiable conversion factor"
+                + (scalar == scalars.end() ? "" : ": " + scalar->second.reason));
+        }
+        const std::string type = measure->ValueComponentMember()->Name();
+        const std::string expected = angle ? "PLANE_ANGLE_MEASURE" : "LENGTH_MEASURE";
+        if ((type != expected && type != "POSITIVE_" + expected)
+            || scalar->second.type != type || scalar->second.value != measure->ValueComponent()
+            || !std::isfinite(measure->ValueComponent()) || measure->ValueComponent() <= 0) {
+            return fail(measureKey + ": invalid conversion factor type or value");
+        }
+        factor *= measure->ValueComponent();
+        if (!std::isfinite(factor) || factor <= 0) { return fail(measureKey + ": invalid conversion product"); }
+        unit = measure->UnitComponent().NamedUnit();
+    }
+    return "excessive unit chain (limit 16)";
 }
 void value(const Handle(Standard_Transient)& sourceItem,
     const Handle(StepData_StepModel)& model, StepAttributeRecord& record,
@@ -258,6 +440,11 @@ void value(const Handle(Standard_Transient)& sourceItem,
     if (diagnostic != bad.end()) { fields["SourceFailure"] = diagnostic->second; }
     auto scalar = scalars.find(id(model, sourceItem));
     if (scalar != scalars.end()) { fields["SourceToken"] = scalar->second.token; }
+    if (scalar != scalars.end() && scalar->second.reason == "duplicate source entity ID") {
+        fields["ValueReason"] = scalar->second.reason;
+        fields["SourceValue"] = scalar->second.token;
+        return;
+    }
     auto undefined = Handle(StepData_UndefinedEntity)::DownCast(sourceItem);
     if (!undefined.IsNull()) {
         fields["SupplierName"] = undefinedName(undefined);
@@ -290,7 +477,7 @@ void value(const Handle(Standard_Transient)& sourceItem,
     fields["SourceType"] += " " + type;
     fields["SourceValue"] = number(measure->ValueComponent());
     auto unit = measure->UnitComponent().NamedUnit();
-    fields["SourceUnit"] = unitDescription(unit, model);
+    fields["SourceUnit"] = unitDescription(unit, model, scalars);
     if (unit.IsNull() && !unknownUnits.empty()) {
         fields["SourceUnit"] += "; unassociated unsupported declarations: " + unknownUnits;
     }
@@ -310,26 +497,15 @@ void value(const Handle(Standard_Transient)& sourceItem,
         fields["ValueReason"] = "unsupported measure type " + type;
         return;
     }
-    if (!validUnit(unit)) {
-        fields["ValueReason"] = "unknown or invalid explicit unit";
-        return;
-    }
     if (diagnostic != bad.end()) {
         fields["ValueReason"] = "malformed source item";
         return;
     }
-    STEPConstruct_UnitContext context;
-    if (context.ComputeFactors(unit) != 0) {
-        fields["ValueReason"] = "unsupported explicit unit";
-        return;
-    }
     const bool angle = type.find("PLANE_ANGLE") != std::string::npos;
-    double factor = angle ? context.PlaneAngleFactor() * 180 / M_PI
-        : context.LengthFactor() * StepData_GlobalFactors::Intance().CascadeUnit(); // codespell:ignore intance
-    if ((angle ? !context.PlaneAngleDone() || context.LengthDone()
-               : !context.LengthDone() || context.PlaneAngleDone())
-        || !std::isfinite(factor) || factor <= 0) {
-        fields["ValueReason"] = "conflicting measure type and unit";
+    double factor = 0;
+    auto reason = unitFactor(unit, angle, model, bad, scalars, factor);
+    if (!reason.empty()) {
+        fields["ValueReason"] = reason;
         return;
     }
     record.value = measure->ValueComponent() * factor;
@@ -440,6 +616,20 @@ void StepAttributesImport::capture(const STEPCAFControl_Reader& reader,
                     else { path = id(model, parent) + "/" + id(model, occurrence); }
                 }
                 else { ownerReason = "unsupported or external owner"; }
+                // Duplicate/partial source identities cannot establish an exact
+                // association, even if OCCT transferred one of the declarations.
+                std::vector<Handle(Standard_Transient)> ownerChain {owner, pds, property, chain, rep};
+                if (!occurrence.IsNull()) { ownerChain.push_back(occurrence->RelatingProductDefinition()); }
+                for (const auto& entity : ownerChain) {
+                    if (entity.IsNull()) { continue; }
+                    const auto key = id(model, entity);
+                    auto sourceScalar = scalars.find(key);
+                    if (sourceScalar != scalars.end() && !sourceScalar->second.reason.empty()) {
+                        ownerReason = key + ": " + sourceScalar->second.reason;
+                        break;
+                    }
+                    if (entity != rep && bad.count(key)) { ownerReason = key + ": malformed source owner chain"; }
+                }
                 std::string label = labels[owner.get()];
                 if (!reader.ExternFiles().IsEmpty()) {
                     ownerReason = "external owner correspondence unavailable";

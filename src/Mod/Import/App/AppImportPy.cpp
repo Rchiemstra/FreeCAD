@@ -49,6 +49,7 @@
 #endif
 
 #include <chrono>
+#include <set>
 #include "dxf/ImpExpDxf.h"
 #include "SketchExportHelper.h"
 #include <App/Application.h>
@@ -240,6 +241,17 @@ private:
             }
             metadata.attach(ocaf);
             ocaf.loadShapes();
+            // Merging removes intermediate features. Drop their color results
+            // before metadata allocations can reuse an old object's address.
+            if (!ocaf.partColors.empty()) {
+                std::set<const App::DocumentObject*> live;
+                for (auto document : App::GetApplication().getDocuments()) {
+                    for (auto object : document->getObjects()) { live.insert(object); }
+                }
+                std::erase_if(ocaf.partColors, [&live](const auto& color) {
+                    return !live.contains(color.first);
+                });
+            }
             metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation(),
                             ocaf.supportsAttributeAssociation());
 

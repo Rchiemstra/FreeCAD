@@ -58,6 +58,67 @@ class StepPmiGuiTest(unittest.TestCase):
                                         for selected in Gui.Selection.getSelectionEx()))
             Gui.updateGui()
 
+    def test_user_attribute_native_unit_editors(self):
+        from PySide import QtCore, QtGui, QtWidgets
+        import FreeCADGui as Gui
+
+        fixture = os.path.join(os.path.dirname(__file__), 'TestData', 'StepAttributes', 'attributes-mm.step')
+        ImportGui.insert(fixture, self.doc.Name, merge=False, useLinkGroup=True, mode=0,
+                         userAttributes=True, semanticPMI=True, savedViews=True)
+        recompute_document(self.doc)
+        view = Gui.getMainWindow().findChild(QtWidgets.QTreeView, 'propertyEditorData')
+        self.assertIsNotNone(view)
+        for name, text, expected, unit in (('span', '-3 mm', -3, 'mm'),
+                                           ('angle', '810 deg', 810, 'deg')):
+            record = next(r for r in self.doc.StepAttributes.Group if r.SupplierName == name)
+            raw = record.RawMetadata
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(record)
+            Gui.updateGui()
+            model = view.model()
+            def find_property(name, parent=QtCore.QModelIndex()):
+                for row in range(model.rowCount(parent)):
+                    index = model.index(row, 0, parent)
+                    if str(index.data()).replace(' ', '') == name:
+                        return model.index(row, 1, parent)
+                    child = find_property(name, index)
+                    if child.isValid():
+                        return child
+                return QtCore.QModelIndex()
+            supplier = find_property('SupplierName')
+            deadline = QtCore.QDeadlineTimer(2000)
+            while (not supplier.isValid() or supplier.data() != name) and not deadline.hasExpired():
+                QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                Gui.updateGui()
+                supplier = find_property('SupplierName')
+            self.assertEqual(supplier.data(), name, 'property panel must show this exact record')
+            index = find_property('Value')
+            self.assertTrue(index.isValid(), 'native Value missing from property editor')
+            self.assertTrue(index.flags() & QtCore.Qt.ItemIsEditable)
+            view.clicked.emit(index)
+            spinboxes = view.findChildren(QtWidgets.QAbstractSpinBox)
+            self.assertEqual(len(spinboxes), 1)
+            line = spinboxes[0].findChild(QtWidgets.QLineEdit)
+            self.assertIsNotNone(line)
+            line.selectAll()
+            line.setText(text)
+            QtWidgets.QApplication.sendEvent(line, QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress, QtCore.Qt.Key_Return, QtCore.Qt.NoModifier))
+            Gui.Selection.clearSelection()
+            deadline = QtCore.QDeadlineTimer(2000)
+            QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+            while record.Value.Value != expected and not deadline.hasExpired():
+                QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                Gui.updateGui()
+            self.assertEqual(record.Value.Value, expected)
+            Gui.updateGui()
+            recompute_document(self.doc, timeout_seconds=10)
+            self.assertEqual(record.Value.Value, expected)
+            self.assertEqual(record.Value.Unit, App.Units.Unit(unit))
+            self.assertEqual(record.RawMetadata, raw)
+        self.assertEqual(len(self.doc.StepPMI.Group), 5)
+        self.assertEqual(len(self.doc.StepViews.Group), 4)
+
     def test_user_attribute_options_and_dialog(self):
         from PySide import QtCore, QtWidgets
         fixture = os.path.join(os.path.dirname(__file__), 'TestData', 'StepAttributes', 'attributes-mm.step')

@@ -2,11 +2,22 @@
 #pragma once
 
 #include "StepPmiImport.h"
+#include <App/PropertyUnits.h>
 
 class STEPCAFControl_Reader;
 
 namespace Import
 {
+// A fixed native angle unit survives restore without replaying source metadata.
+// App::PropertyAngle clamps edits; generic PropertyQuantity does not persist its unit.
+class ImportExport PropertyUnwrappedAngle : public App::PropertyQuantity
+{
+    TYPESYSTEM_HEADER_WITH_OVERRIDE();
+public:
+    PropertyUnwrappedAngle();
+    App::Property* Copy() const override;
+};
+
 // Owned values only: no source model, label, binder or shape survives capture.
 struct StepAttributeRecord
 {

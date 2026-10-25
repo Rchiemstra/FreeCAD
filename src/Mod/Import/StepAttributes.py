@@ -16,7 +16,9 @@ import math
 
 
 def _property(obj, kind, name, value, description='Owned STEP user attribute data'):
-    obj.addProperty('App::Property' + kind, name, 'STEP user attributes', description)
+    native = {'Length': 'App::PropertyDistance',
+              'Angle': 'Import::PropertyUnwrappedAngle'}.get(kind, 'App::Property' + kind)
+    obj.addProperty(native, name, 'STEP user attributes', description)
     setattr(obj, name, value)
     if name != 'Value':
         obj.setEditorMode(name, 1)
