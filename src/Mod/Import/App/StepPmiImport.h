@@ -87,7 +87,7 @@ public:
             failed = true;
         }
     }
-    void finish(const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
+    App::DocumentObject* finish(const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
                 App::Document* target, bool supportedAssociation) const noexcept;
     void captureReadWarnings(const Handle(StepData_StepModel)& model) noexcept;
     ShapeImportObserver observer();
@@ -96,7 +96,7 @@ public:
         App::Document* target,
         bool supportedAssociation
     ) const;
-    void materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const;
+    App::DocumentObject* materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const;
 
 private:
     struct Association

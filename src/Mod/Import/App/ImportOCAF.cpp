@@ -109,7 +109,8 @@ void ImportOCAF::loadShapes()
 {
     std::vector<App::DocumentObject*> lValue;
     myRefShapes.clear();
-    loadShapes(pDoc->Main(), TopLoc_Location(), default_name, "", false, lValue);
+    loadShapes(modelShapesOnly ? XCAFDoc_DocumentTool::ShapesLabel(pDoc->Main()) : pDoc->Main(),
+               TopLoc_Location(), default_name, "", false, lValue);
     lValue.clear();
 }
 

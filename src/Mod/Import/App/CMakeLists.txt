@@ -26,6 +26,10 @@ SET(Import_SRCS
     ReaderStep.cpp
     ReaderStep.h
     StepPmiImport.cpp
+    StepMetadataImport.cpp
+    StepMetadataImport.h
+    StepViewsImport.cpp
+    StepViewsImport.h
     StepPmiImport.h
     StepPmiExport.cpp
     StepPmiExport.h

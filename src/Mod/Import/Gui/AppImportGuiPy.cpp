@@ -65,7 +65,7 @@
 #include <Mod/Import/App/ReaderGltf.h>
 #include <Mod/Import/App/ReaderIges.h>
 #include <Mod/Import/App/ReaderStep.h>
-#include <Mod/Import/App/StepPmiImport.h>
+#include <Mod/Import/App/StepMetadataImport.h>
 #include <Mod/Import/App/WriterGltf.h>
 #include <Mod/Import/App/WriterIges.h>
 #include <Mod/Import/App/WriterStep.h>
@@ -94,12 +94,12 @@ public:
         add_keyword_method(
             "open",
             &Module::insert,
-            "open(string, ..., semanticPMI=bool) -- Open a file; overrides ImportSemanticPMI."
+            "open(string, ..., semanticPMI=bool, savedViews=bool) -- Open a file; overrides ImportSemanticPMI."
         );
         add_keyword_method(
             "insert",
             &Module::insert,
-            "insert(string,string, ..., semanticPMI=bool) -- Insert a file; overrides ImportSemanticPMI."
+            "insert(string,string, ..., semanticPMI=bool, savedViews=bool) -- Insert a file; overrides ImportSemanticPMI."
         );
         add_varargs_method("preScanDxf", &Module::preScanDxf, "preScanDxf(filepath) -> dict");
         add_varargs_method(
@@ -179,6 +179,7 @@ private:
             options.setItem("expandCompound", Py::Boolean(stepSettings.expandCompound));
             options.setItem("mode", Py::Long(stepSettings.mode));
             options.setItem("codePage", Py::Long(stepSettings.codePage));
+            options.setItem("savedViews", Py::Boolean(stepSettings.savedViews));
         }
         return options;
     }
@@ -192,8 +193,9 @@ private:
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
         PyObject* semanticPMI = Py_None;
+        PyObject* savedViews = Py_None;
         int mode = -1;
-        static const std::array<const char*, 9> kwd_list {
+        static const std::array<const char*, 10> kwd_list {
             "name",
             "docName",
             "options",
@@ -202,12 +204,13 @@ private:
             "useLinkGroup",
             "mode",
             "semanticPMI",
+            "savedViews",
             nullptr
         };
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!O!iO!",
+                "et|sO!O!O!O!iO!O!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -222,7 +225,9 @@ private:
                 &useLinkGroup,
                 &mode,
                 &PyBool_Type,
-                &semanticPMI
+                &semanticPMI,
+                &PyBool_Type,
+                &savedViews
             )) {
             throw Py::Exception();
         }
@@ -232,8 +237,15 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
-            auto pmi = Import::StepPmiImport::create(
-                file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+            if (savedViews == Py_None && pyoptions) {
+                Py::Dict options(pyoptions);
+                if (options.hasKey("savedViews")) {
+                    savedViews = Py::Boolean(options.getItem("savedViews")) ? Py_True : Py_False;
+                }
+            }
+            Import::StepMetadataImport metadata(file,
+                semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI),
+                savedViews == Py_None ? -1 : Base::asBoolean(savedViews));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -326,9 +338,10 @@ private:
                         pi = new Part::ProgressIndicator();
                     }
                     Import::ReaderStep reader(file);
-                    if (pmi) {
-                        reader.setReadSemanticPmi(true, pmi.get());
+                    if (metadata.pmiReader()) {
+                        reader.setReadSemanticPmi(true, metadata.pmiReader());
                     }
+                    reader.setViewsImport(metadata.viewsReader());
 #if OCC_VERSION_HEX >= 0x070800
                     reader.setCodePage(cp);
 #endif
@@ -384,13 +397,9 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
-            if (pmi) {
-                pmi->attach(ocaf);
-            }
+            metadata.attach(ocaf);
             auto ret = ocaf.loadShapes();
-            if (pmi) {
-                pmi->finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
-            }
+            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
             hApp->Close(hDoc);
 
             if (ret) {

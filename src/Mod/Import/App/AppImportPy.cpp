@@ -68,7 +68,7 @@
 #include "ReaderGltf.h"
 #include "ReaderIges.h"
 #include "ReaderStep.h"
-#include "StepPmiImport.h"
+#include "StepMetadataImport.h"
 #include "WriterGltf.h"
 #include "WriterIges.h"
 #include "WriterStep.h"
@@ -85,13 +85,13 @@ public:
         add_keyword_method(
             "open",
             &Module::importer,
-            "open(string, ..., semanticPMI=bool) -- Open a file; semanticPMI overrides "
+            "open(string, ..., semanticPMI=bool, savedViews=bool) -- Open a file; semanticPMI overrides "
             "the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
             "insert",
             &Module::importer,
-            "insert(string,string, ..., semanticPMI=bool) -- Insert into a document; "
+            "insert(string,string, ..., semanticPMI=bool, savedViews=bool) -- Insert into a document; "
             "semanticPMI overrides the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
@@ -132,14 +132,15 @@ private:
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
         PyObject* semanticPMI = Py_None;
+        PyObject* savedViews = Py_None;
         int mode = -1;
-        static const std::array<const char*, 8>
+        static const std::array<const char*, 9>
             kwd_list {"name", "docName", "importHidden", "merge", "useLinkGroup", "mode",
-                      "semanticPMI", nullptr};
+                      "semanticPMI", "savedViews", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!iO!",
+                "et|sO!O!O!iO!O!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -152,7 +153,9 @@ private:
                 &useLinkGroup,
                 &mode,
                 &PyBool_Type,
-                &semanticPMI
+                &semanticPMI,
+                &PyBool_Type,
+                &savedViews
             )) {
             throw Py::Exception();
         }
@@ -162,8 +165,9 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
-            auto pmi = StepPmiImport::create(
-                file, semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+            StepMetadataImport metadata(file,
+                semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI),
+                savedViews == Py_None ? -1 : Base::asBoolean(savedViews));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -180,9 +184,10 @@ private:
             if (file.hasExtension({"stp", "step"})) {
                 try {
                     Import::ReaderStep reader(file);
-                    if (pmi) {
-                        reader.setReadSemanticPmi(true, pmi.get());
+                    if (metadata.pmiReader()) {
+                        reader.setReadSemanticPmi(true, metadata.pmiReader());
                     }
+                    reader.setViewsImport(metadata.viewsReader());
                     reader.read(hDoc);
                 }
                 catch (OSD_Exception& e) {
@@ -228,13 +233,9 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
-            if (pmi) {
-                pmi->attach(ocaf);
-            }
+            metadata.attach(ocaf);
             ocaf.loadShapes();
-            if (pmi) {
-                pmi->finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
-            }
+            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation());
 
             hApp->Close(hDoc);
 

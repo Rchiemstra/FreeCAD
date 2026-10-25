@@ -51,6 +51,8 @@ set(Import_Scripts
     Init.py
     stepZ.py
     StepPmi.py
+    TestStepViews.py
+    StepViews.py
     StepPmiExport.py
     TestStepPmiExport.py
     TestStepPmi.py
@@ -72,6 +74,15 @@ set(Import_PmiFixtures
     TestData/StepPmi/README.txt
 )
 
+set(Import_ViewFixtures
+    TestData/StepViews/views-mm.step
+    TestData/StepViews/views-inch.step
+    TestData/StepViews/views-metre.step
+    TestData/StepViews/views-nested.step
+    TestData/StepViews/README.txt
+)
+install(FILES ${Import_ViewFixtures} DESTINATION Mod/Import/TestData/StepViews)
+
 if(BUILD_GUI)
     list (APPEND Import_Scripts InitGui.py)
     list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py)
@@ -79,6 +90,12 @@ endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
     SOURCES ${Import_Scripts} ${DXF_Plate} ${Import_PmiFixtures}
+)
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_ViewFixtures}
 )
 
 fc_target_copy_resource(ImportScripts

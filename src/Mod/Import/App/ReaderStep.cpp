@@ -31,6 +31,7 @@
 
 #include "ReaderStep.h"
 #include "StepPmiImport.h"
+#include "StepViewsImport.h"
 #include <Base/Exception.h>
 #include <Mod/Part/App/encodeFilename.h>
 
@@ -53,6 +54,9 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     aReader.SetNameMode(true);
     aReader.SetLayerMode(true);
     aReader.SetSHUOMode(true);
+    if (viewsImport) {
+        aReader.SetViewMode(true);
+    }
     // Off leaves OCCT's own default GDT mode unchanged (default-on in OCCT 7.6).
     if (readSemanticPmi) {
         aReader.SetGDTMode(true);
@@ -72,4 +76,7 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
         pmiImport->captureReadWarnings(aReader.Reader().StepModel());
     }
     aReader.Transfer(hDoc, theProgress);
+    if (viewsImport) {
+        viewsImport->capture(aReader, hDoc);
+    }
 }

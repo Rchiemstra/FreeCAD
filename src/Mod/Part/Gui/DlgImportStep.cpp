@@ -73,6 +73,7 @@ void DlgImportStep::saveSettings()
     ui->comboBoxImportCodePage->onSave();
 #endif
     ui->checkBoxSemanticPMI->onSave();
+    ui->checkBoxSavedViews->onSave();
     ui->checkBoxMergeCompound->onSave();
     ui->checkBoxImportHiddenObj->onSave();
     ui->checkBoxUseLinkGroup->onSave();
@@ -90,6 +91,7 @@ void DlgImportStep::loadSettings()
     ui->comboBoxImportCodePage->onRestore();
 #endif
     ui->checkBoxSemanticPMI->onRestore();
+    ui->checkBoxSavedViews->onRestore();
     ui->checkBoxMergeCompound->onRestore();
     ui->checkBoxImportHiddenObj->onRestore();
     ui->checkBoxUseLinkGroup->onRestore();
@@ -103,6 +105,7 @@ void DlgImportStep::loadSettings()
 StepImportSettings DlgImportStep::getSettings() const
 {
     StepImportSettings set;
+    set.savedViews = ui->checkBoxSavedViews->isChecked();
     Part::OCAF::ImportExportSettings settings;
     set.merge = settings.getReadShapeCompoundMode();
     set.useLinkGroup = settings.getUseLinkGroup();

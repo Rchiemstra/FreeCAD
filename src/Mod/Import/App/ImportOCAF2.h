@@ -85,6 +85,7 @@ public:
 
     static ImportOCAFOptions customImportOptions();
     void setImportOptions(ImportOCAFOptions opts);
+    void setModelShapesOnly(bool value) { modelShapesOnly = value; }
     void setShapeObserver(ShapeImportObserver observer)
     {
         shapeObserver = std::move(observer);
@@ -221,6 +222,7 @@ private:
     Handle(XCAFDoc_ColorTool) aColorTool;
     std::string default_name;
 
+    bool modelShapesOnly = false;
     ShapeImportObserver shapeObserver;
     ImportOCAFOptions options;
     std::string filePath;

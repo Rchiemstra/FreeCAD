@@ -37,6 +37,7 @@ namespace PartGui
 
 struct StepImportSettings
 {
+    bool savedViews = false;
     bool merge = false;
     bool useLinkGroup = false;
     bool useBaseName = true;

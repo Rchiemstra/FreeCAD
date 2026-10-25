@@ -341,7 +341,7 @@ std::unique_ptr<StepPmiImport> StepPmiImport::create(const Base::FileInfo& file,
     return nullptr;
 }
 
-void StepPmiImport::finish(
+App::DocumentObject* StepPmiImport::finish(
     const Base::FileInfo& file, const Handle(TDocStd_Document)& source,
     App::Document* target, bool supportedAssociation) const noexcept
 {
@@ -351,10 +351,11 @@ void StepPmiImport::finish(
         }
         // StepPmi.create owns its explicit object list and rolls it back itself.
         // A document snapshot cannot distinguish PMI from objects added by observers.
-        materialize(target, extract(source, target, supportedAssociation));
+        return materialize(target, extract(source, target, supportedAssociation));
     }
     catch (...) {
         warn(file);
+        return nullptr;
     }
 }
 
@@ -714,10 +715,10 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
     return records;
 }
 
-void StepPmiImport::materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const
+App::DocumentObject* StepPmiImport::materialize(App::Document* target, const std::vector<StepPmiRecord>& records) const
 {
     if (records.empty() && sourceWarnings.empty()) {
-        return;
+        return nullptr;
     }
     Py::List data;
     for (const auto& record : records) {
@@ -728,6 +729,8 @@ void StepPmiImport::materialize(App::Document* target, const std::vector<StepPmi
     args.setItem(0, Py::asObject(target->getPyObject()));
     args.setItem(1, data);
     args.setItem(2, strings(sourceWarnings));
-    Py::Callable(module.getAttr("create")).apply(args);
+    const auto group = Py::Callable(module.getAttr("create")).apply(args);
+    const auto name = Py::String(group.getAttr("Name")).as_std_string();
+    return target->getObject(name.c_str());
 }
 }  // namespace Import

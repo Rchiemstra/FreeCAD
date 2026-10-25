@@ -194,3 +194,75 @@ class StepPmiGuiTest(unittest.TestCase):
             for key, value in runtime.items():
                 Part.setStaticValue(key, value)
             Part.setStaticValue("write.step.unit", runtime_unit)
+
+    def test_saved_views_options_and_dialog(self):
+        """The same native option works in GUI open, insert and import dialog."""
+        from PySide import QtCore, QtWidgets
+        import FreeCADGui as Gui
+        from unittest.mock import patch
+        import StepViews
+
+        prefs = self.prefs
+        saved = {x[1]: x[2] for x in prefs.GetContents() or []}
+        existing = set(App.listDocuments())
+        path = os.path.join(os.path.dirname(__file__), "TestData", "StepViews", "views-mm.step")
+        observed, errors = [], []
+
+        def accept_dialog():
+            dialog = QtWidgets.QApplication.activeModalWidget()
+            try:
+                box = dialog.findChild(QtWidgets.QCheckBox, "checkBoxSavedViews")
+                self.assertIsNotNone(box)
+                observed.append(box.isChecked())
+                box.setChecked(True)
+                dialog.accept()
+            except Exception as error:
+                errors.append(error)
+                if dialog is not None:
+                    dialog.reject()
+
+        try:
+            prefs.RemBool("ImportSavedViews")
+            self.step_prefs.SetBool("VisibleImportDialog", True)
+            for _ in range(2):
+                QtCore.QTimer.singleShot(0, accept_dialog)
+                options = ImportGui.importOptions(path)
+                self.assertFalse(errors, errors)
+                self.assertTrue(options["savedViews"])
+            self.assertEqual(observed, [False, True])
+            options.update(merge=False, useLinkGroup=False, mode=0)
+            ImportGui.insert(path, self.doc.Name, options=options, savedViews=False)
+            self.assertFalse(any(getattr(o, "MetadataKind", "") == "SavedViews" for o in self.doc.Objects))
+            for links in (False, True):
+                options["useLinkGroup"] = links
+                ImportGui.insert(path, self.doc.Name, options=options, semanticPMI=True)
+                group = [o for o in self.doc.Objects if getattr(o, "MetadataKind", "") == "SavedViews"][-1]
+                views = [o for o in group.Group if o.RecordType == "SavedView"]
+                self.assertEqual(len(views), 2)
+                self.assertTrue(all(o.Shapes and o.Pmi for o in views))
+            # Metadata creation must itself leave camera and active document untouched.
+            camera = Gui.activeDocument().activeView().getCamera()
+            active = App.ActiveDocument
+            records = [__import__("json").loads(o.RawMetadata)["record"] for o in group.Group]
+            StepViews.create(self.doc, records)
+            self.assertEqual(Gui.activeDocument().activeView().getCamera(), camera)
+            self.assertEqual(App.ActiveDocument, active)
+            original = StepViews._property
+            def fail(obj, kind, name, *args):
+                if name == "CameraPosition":
+                    raise RuntimeError("injected GUI view failure")
+                return original(obj, kind, name, *args)
+            before = len([o for o in self.doc.Objects if getattr(o, "MetadataKind", "") == "SavedViews"])
+            with patch.object(StepViews, "_property", side_effect=fail):
+                ImportGui.insert(path, self.doc.Name, savedViews=True, semanticPMI=True,
+                                 merge=False, useLinkGroup=False)
+            self.assertEqual(len([o for o in self.doc.Objects if getattr(o, "MetadataKind", "") == "SavedViews"]), before)
+            ImportGui.open(path, savedViews=True, merge=False, useLinkGroup=True)
+            self.assertTrue(App.ActiveDocument.StepViews.Group)
+        finally:
+            for name in set(App.listDocuments()) - existing:
+                close_document(App.getDocument(name))
+            if "ImportSavedViews" in saved:
+                prefs.SetBool("ImportSavedViews", saved["ImportSavedViews"])
+            else:
+                prefs.RemBool("ImportSavedViews")

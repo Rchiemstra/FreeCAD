@@ -65,6 +65,7 @@ public:
     virtual ~ImportOCAF();
     void loadShapes();
     void setMerge(bool);
+    void setModelShapesOnly(bool value) { modelShapesOnly = value; }
     void setShapeObserver(ShapeImportObserver observer)
     {
         shapeObserver = std::move(observer);
@@ -100,6 +101,7 @@ private:
     static void tryPlacementFromMatrix(App::GeoFeature*, const Base::Matrix4D&);
 
 private:
+    bool modelShapesOnly = false;
     ShapeImportObserver shapeObserver;
     Handle(TDocStd_Document) pDoc;
     App::Document* doc;
