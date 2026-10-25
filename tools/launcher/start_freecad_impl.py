@@ -43,6 +43,7 @@ MCP_ADDON_DIRNAME = "FreeCADMCP"
 PIXI_EXTERNAL_MODS = ("freecad.robotcad",)
 WSLG_RUNTIME_DIR = Path("/mnt/wslg/runtime-dir")
 DEFAULT_CURSOR_SIZE = "24"
+LOCAL_LAUNCHER_SETTINGS = ".freecad-launcher.json"
 
 
 def _is_freecad_repo(path: Path) -> bool:
@@ -308,6 +309,7 @@ def _launch_env(freecad_exe: Path) -> dict[str, str]:
         env.update(_qt_plugin_env(pixi))
 
     env.update(_wslg_display_env(env))
+    env.update(_wslg_graphics_env(env))
     return env
 
 
@@ -354,6 +356,70 @@ def _wslg_display_env(
     if not env.get("XCURSOR_SIZE", "").strip():
         updates["XCURSOR_SIZE"] = DEFAULT_CURSOR_SIZE
 
+    return updates
+
+
+def _wslg_graphics_env(
+    env: dict[str, str],
+    settings_path: Path | None = None,
+    wslg_runtime_dir: Path = WSLG_RUNTIME_DIR,
+) -> dict[str, str]:
+    """Apply an optional, repository-local WSLg Mesa policy to the child only.
+
+    Mesa's software winsys can choose llvmpipe before trying D3D12. Explicit
+    D3D12 selection belongs in this shared launch environment, not FreeCAD's
+    Qt software-OpenGL preference. Hardware names belong in the ignored local
+    settings file, and explicit caller driver selections take precedence.
+    """
+    if not sys.platform.startswith("linux") or not wslg_runtime_dir.is_dir():
+        return {}
+
+    path = (
+        settings_path
+        if settings_path is not None
+        else _repo_root() / LOCAL_LAUNCHER_SETTINGS
+    )
+    if not path.exists():
+        return {}
+
+    def invalid(reason: str) -> None:
+        raise SystemExit(f"ERROR: invalid WSLg graphics settings in {path}: {reason}")
+
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        invalid(str(exc))
+    if not isinstance(settings, dict):
+        invalid("the top level must be a JSON object")
+    graphics = settings.get("wslg", {})
+    if not isinstance(graphics, dict):
+        invalid("wslg must be a JSON object")
+    unknown = graphics.keys() - {"renderer", "adapter"}
+    if unknown:
+        invalid(f"unknown wslg setting: {', '.join(sorted(unknown))}")
+    renderer = graphics.get("renderer", "auto")
+    if renderer not in ("auto", "d3d12", "software"):
+        invalid("wslg.renderer must be auto, d3d12, or software")
+    adapter = graphics.get("adapter")
+    if "adapter" in graphics and (not isinstance(adapter, str) or not adapter.strip()):
+        invalid("wslg.adapter must be a nonempty adapter-name string")
+
+    if renderer == "auto":
+        return {}
+    if "GALLIUM_DRIVER" in env or "MESA_LOADER_DRIVER_OVERRIDE" in env:
+        return {}
+
+    # LIBGL_ALWAYS_SOFTWARE alone does not override an explicitly selected
+    # D3D12 driver in this Mesa software-winsys path. Select llvmpipe instead.
+    software_requested = env.get("LIBGL_ALWAYS_SOFTWARE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if renderer == "software" or software_requested:
+        return {"GALLIUM_DRIVER": "llvmpipe"}
+
+    updates = {"GALLIUM_DRIVER": "d3d12"}
+    if adapter is not None and "MESA_D3D12_DEFAULT_ADAPTER_NAME" not in env:
+        updates["MESA_D3D12_DEFAULT_ADAPTER_NAME"] = adapter.strip()
     return updates
 
 
