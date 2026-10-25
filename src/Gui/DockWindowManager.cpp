@@ -161,6 +161,7 @@ struct DockWindowManagerP
     ParameterGrp::handle _hPref;
     fastsignals::advanced_scoped_connection _connParam;
     QTimer _timer;
+    FloatingDockWindowEventFilter _floatingDockWindowEventFilter;
     DockWidgetEventFilter _dockWidgetEventFilter;
     QPointer<OverlayManager> overlayManager;
 };
@@ -186,6 +187,9 @@ DockWindowManager::DockWindowManager()
 {
     d = new DockWindowManagerP;
     d->_hPref = App::GetApplication().GetUserParameter().GetGroup("BaseApp/MainWindow/DockWindows");
+    // Plain add-on docks and Qt-created floating tab groups bypass our
+    // DockWidget subclass. Their WSLg handling must not depend on overlays.
+    qApp->installEventFilter(&d->_floatingDockWindowEventFilter);
 
     auto grp = App::GetApplication().GetUserParameter().GetGroup("BaseApp/Preferences/DockWindows");
     if (grp->GetBool("ActivateOverlay", true)) {
@@ -195,6 +199,9 @@ DockWindowManager::DockWindowManager()
 
 DockWindowManager::~DockWindowManager()
 {
+    if (qApp) {
+        qApp->removeEventFilter(&d->_floatingDockWindowEventFilter);
+    }
     d->_dockedWindows.clear();
     delete d;
 }

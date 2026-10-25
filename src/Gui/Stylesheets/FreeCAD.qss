@@ -188,13 +188,13 @@ QMainWindow::separator:horizontal:hover {
 }
 
 QMainWindow::separator:horizontal {
-  width: 4px;
+  width: 8px;
   margin-top: 0.1px;
   margin-bottom: 0.1px;
 }
 
 QMainWindow::separator:vertical {
-  height: 4px;
+  height: 8px;
   margin-left: 0.1px;
   margin-right: 0.1px;
 }
