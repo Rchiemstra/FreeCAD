@@ -73,6 +73,7 @@
 #include "WriterGltf.h"
 #include "WriterIges.h"
 #include "WriterStep.h"
+#include "StepAttributesExport.h"
 
 namespace Import
 {
@@ -98,8 +99,8 @@ public:
         add_keyword_method(
             "export",
             &Module::exporter,
-            "export(list,string,...,semanticPMI=bool) -- Export shapes; opt-in AP242 PMI "
-            "returns per-object status/reason records (ExportSemanticPMI defaults off)."
+            "export(list,string,...,semanticPMI=bool,userAttributes=bool) -- Export shapes; opt-in AP242 PMI "
+            "returns per-object status/reason records (ExportSemanticPMI and ExportUserAttributes default off)."
         );
         add_varargs_method(
             "readDXF",
@@ -291,13 +292,14 @@ private:
         PyObject* pylegacy = Py_None;
         PyObject* pykeepPlacement = Py_None;
         PyObject* semanticPMI = Py_None;
-        static const std::array<const char*, 7>
+        PyObject* userAttributes = Py_None;
+        static const std::array<const char*, 8>
             kwd_list {"obj", "name", "exportHidden", "legacy", "keepPlacement",
-                      "semanticPMI", nullptr};
+                      "semanticPMI", "userAttributes", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "Oet|O!O!O!O!",
+                "Oet|O!O!O!O!O!",
                 kwd_list,
                 &object,
                 "utf-8",
@@ -309,7 +311,9 @@ private:
                 &PyBool_Type,
                 &pykeepPlacement,
                 &PyBool_Type,
-                &semanticPMI
+                &semanticPMI,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -330,6 +334,7 @@ private:
         // clang-format on
 
         StepPmiExport pmi(semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+        StepAttributesExport attributes(userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
         Py::Object pmiReport = Py::None();
         try {
             Py::Sequence list(object);
@@ -377,6 +382,7 @@ private:
 
             Import::ExportOCAF2 ocaf(hDoc, getShapeColors);
             ocaf.setShapeObserver(pmi.observer());
+            ocaf.setAttributeObserver(attributes.observer());
             if (!legacyExport || !ocaf.canFallback(objs)) {
                 ocaf.setExportOptions(ExportOCAF2::customExportOptions());
                 ocaf.setExportHiddenObject(exportHidden);
@@ -388,6 +394,7 @@ private:
                 bool keepExplicitPlacement = true;
                 ExportOCAFCmd ocaf(hDoc, keepExplicitPlacement);
                 ocaf.setShapeObserver(pmi.observer());
+                ocaf.setAttributeObserver(attributes.observer());
                 ocaf.setPartColorsMap(partColor);
                 ocaf.exportObjects(objs);
             }
@@ -395,7 +402,7 @@ private:
             Base::FileInfo file(Utf8Name.c_str());
             if (file.hasExtension({"stp", "step"})) {
                 Import::WriterStep writer(file);
-                pmiReport = pmi.write(file, hDoc, objs);
+                pmiReport = pmi.write(file, hDoc, objs, &attributes);
             }
             else if (file.hasExtension({"igs", "iges"})) {
                 Import::WriterIges writer(file);

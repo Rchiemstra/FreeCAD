@@ -250,7 +250,8 @@ class StepPmiGuiTest(unittest.TestCase):
 
         prefs = self.prefs
         general = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part/General")
-        touched = [(prefs, {"ExportSemanticPMI": "Bool", "ExportHiddenObject": "Bool",
+        touched = [(prefs, {"ExportSemanticPMI": "Bool", "ExportUserAttributes": "Bool",
+                            "ExportHiddenObject": "Bool",
                             "ExportLegacy": "Bool", "ExportKeepPlacement": "Bool"}),
                    (self.step_prefs, {"VisibleExportDialog": "Bool", "Scheme": "String",
                                       "Unit": "Int"}),
@@ -310,6 +311,92 @@ class StepPmiGuiTest(unittest.TestCase):
                     self.assertEqual(len(restored.StepPMI.Group), 3)
                     self.assertTrue(all(o.ResolutionStatus == "resolved"
                                         for o in restored.StepPMI.Group))
+                finally:
+                    close_document(restored)
+        finally:
+            for group, keys, values in saved:
+                for key, kind in keys.items():
+                    if key in values:
+                        getattr(group, "Set" + kind)(key, values[key])
+                    else:
+                        getattr(group, "Rem" + kind)(key)
+            for key, value in runtime.items():
+                Part.setStaticValue(key, value)
+            Part.setStaticValue("write.step.unit", runtime_unit)
+
+    def test_attribute_export_dialog_option_and_override(self):
+        import tempfile
+        import Part
+        from PySide import QtCore, QtWidgets
+
+        prefs = self.prefs
+        general = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part/General")
+        touched = [(prefs, {"ExportUserAttributes": "Bool", "ExportSemanticPMI": "Bool",
+                            "ExportHiddenObject": "Bool",
+                            "ExportLegacy": "Bool", "ExportKeepPlacement": "Bool"}),
+                   (self.step_prefs, {"VisibleExportDialog": "Bool", "Scheme": "String",
+                                      "Unit": "Int"}),
+                   (general, {"WriteSurfaceCurveMode": "Int"})]
+        saved = [(group, keys, {item[1]: item[2] for item in group.GetContents() or []})
+                 for group, keys in touched]
+        runtime_unit = Part.exportUnits()["write.step.unit"]
+        runtime = {}
+        observed, errors = [], []
+
+        def accept_dialog():
+            dialog = QtWidgets.QApplication.activeModalWidget()
+            try:
+                checkbox = dialog.findChild(QtWidgets.QCheckBox, "checkBoxUserAttributes")
+                self.assertIsNotNone(checkbox)
+                if not runtime:
+                    # Absent preferences expose the live OCCT settings here.
+                    schema = dialog.findChild(QtWidgets.QComboBox, "comboBoxSchema")
+                    runtime["write.step.schema"] = bytes(schema.currentData()).decode("ascii")
+                    runtime["write.surfacecurve.mode"] = int(dialog.findChild(
+                        QtWidgets.QCheckBox, "checkBoxPcurves").isChecked())
+                observed.append(checkbox.isChecked())
+                checkbox.setChecked(True)
+                dialog.accept()
+            except Exception as error:
+                errors.append(error)
+                if dialog is not None:
+                    dialog.reject()
+
+        try:
+            for group, keys in touched:
+                for key, kind in keys.items():
+                    getattr(group, "Rem" + kind)(key)
+            Part.setStaticValue("write.step.unit", "INCH")
+            self.step_prefs.SetBool("VisibleExportDialog", True)
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "export.step")
+                for _ in range(2):
+                    QtCore.QTimer.singleShot(0, accept_dialog)
+                    options = ImportGui.exportOptions(path)
+                    self.assertFalse(errors, errors)
+                    self.assertTrue(options["userAttributes"])
+                self.assertEqual(observed, [False, True])
+                fixture = os.path.join(os.path.dirname(__file__), 'TestData', 'StepAttributes', 'attributes-mm.step')
+                ImportGui.insert(fixture, self.doc.Name, merge=False,
+                                 useLinkGroup=False, userAttributes=True, semanticPMI=False)
+                shapes = [o for o in self.doc.Objects if o.isDerivedFrom("Part::Feature")]
+                report = ImportGui.export(shapes, path, options=options)
+                self.assertEqual(sum(r["status"] == "written" for r in report), 5)
+                # Explicit false overrides the saved preference when no options dict is passed.
+                self.assertIsNone(ImportGui.export(shapes, path, userAttributes=False, semanticPMI=False))
+                report = ImportGui.export(shapes, path, userAttributes=True, semanticPMI=False)
+                self.assertEqual(sum(r["status"] == "written" for r in report), 5)
+                restored = App.newDocument("GuiPmiRestored")
+                try:
+                    ImportGui.insert(path, restored.Name, merge=False,
+                                     useLinkGroup=False, userAttributes=True, semanticPMI=False)
+                    self.assertEqual(len(restored.StepAttributes.Group), 5)
+                    self.assertTrue(all(o.Owner for o in restored.StepAttributes.Group))
+                    # An explicit keyword also overrides an options dictionary.
+                    self.assertIsNone(ImportGui.export(shapes, path, options=options,
+                                                       userAttributes=False, semanticPMI=False))
+                    with self.assertRaises(TypeError):
+                        ImportGui.export(shapes, path, options={'userAttributes': 'yes'})
                 finally:
                     close_document(restored)
         finally:

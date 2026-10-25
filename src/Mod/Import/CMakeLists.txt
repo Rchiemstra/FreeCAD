@@ -54,6 +54,8 @@ set(Import_Scripts
     TestStepViews.py
     TestStepAttributes.py
     StepAttributes.py
+    StepAttributesExport.py
+    TestStepAttributesExport.py
     StepViews.py
     StepPmiExport.py
     TestStepPmiExport.py

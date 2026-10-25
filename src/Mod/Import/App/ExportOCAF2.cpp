@@ -210,6 +210,10 @@ void ExportOCAF2::setupObject(
 )
 {
     setName(label, obj, name);
+    if (attributeObserver) {
+        // Reduced array entries do not identify a native occurrence object.
+        attributeObserver(label, name ? nullptr : obj, shape);
+    }
     if (shapeObserver) {
         TDF_Label definition = label;
         if (aShapeTool->IsComponent(label)) {

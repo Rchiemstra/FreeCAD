@@ -69,6 +69,7 @@
 #include <Mod/Import/App/WriterGltf.h>
 #include <Mod/Import/App/WriterIges.h>
 #include <Mod/Import/App/WriterStep.h>
+#include <Mod/Import/App/StepAttributesExport.h>
 #include <Mod/Part/App/ImportIges.h>
 #include <Mod/Part/App/ImportStep.h>
 #include <Mod/Part/App/Interface.h>
@@ -121,8 +122,8 @@ public:
         add_keyword_method(
             "export",
             &Module::exporter,
-            "export(list,string,...,semanticPMI=bool) -- Export shapes; opt-in AP242 PMI "
-            "returns per-object status/reason records (ExportSemanticPMI defaults off)."
+            "export(list,string,...,semanticPMI=bool,userAttributes=bool) -- Export shapes; opt-in AP242 PMI "
+            "returns per-object status/reason records (ExportSemanticPMI and ExportUserAttributes default off)."
         );
         add_varargs_method("ocaf", &Module::ocaf, "ocaf(string) -- Browse the ocaf structure.");
         initialize("This module is the ImportGui module.");  // register with Python
@@ -537,6 +538,7 @@ private:
                 options.setItem("keepPlacement", Py::Boolean(stepSettings.keepPlacement));
                 options.setItem("legacy", Py::Boolean(stepSettings.exportLegacy));
                 options.setItem("semanticPMI", Py::Boolean(stepSettings.semanticPMI));
+                options.setItem("userAttributes", Py::Boolean(stepSettings.userAttributes));
             }
         }
 
@@ -552,13 +554,14 @@ private:
         PyObject* pylegacy = Py_None;
         PyObject* pykeepPlacement = Py_None;
         PyObject* semanticPMI = Py_None;
-        static const std::array<const char*, 8>
+        PyObject* userAttributes = Py_None;
+        static const std::array<const char*, 9>
             kwd_list {"obj", "name", "options", "exportHidden", "legacy", "keepPlacement",
-                      "semanticPMI", nullptr};
+                      "semanticPMI", "userAttributes", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "Oet|O!O!O!O!O!",
+                "Oet|O!O!O!O!O!O!",
                 kwd_list,
                 &object,
                 "utf-8",
@@ -572,7 +575,9 @@ private:
                 &PyBool_Type,
                 &pykeepPlacement,
                 &PyBool_Type,
-                &semanticPMI
+                &semanticPMI,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -602,6 +607,11 @@ private:
             if (options.hasKey("exportHidden")) {
                 exportHidden = static_cast<bool>(Py::Boolean(options.getItem("exportHidden")));
             }
+            if (options.hasKey("userAttributes") && userAttributes == Py_None) {
+                const auto option = options.getItem("userAttributes");
+                if (!PyBool_Check(option.ptr())) { throw Py::TypeError("userAttributes must be bool"); }
+                userAttributes = Base::asBoolean(option.ptr()) ? Py_True : Py_False;
+            }
             if (options.hasKey("semanticPMI")) {
                 semanticPMI = Py::Boolean(options.getItem("semanticPMI")) ? Py_True : Py_False;
             }
@@ -611,6 +621,7 @@ private:
         }
 
         Import::StepPmiExport pmi(semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+        Import::StepAttributesExport attributes(userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
         Py::Object pmiReport = Py::None();
         try {
             Py::Sequence list(object);
@@ -629,6 +640,7 @@ private:
 
             Import::ExportOCAF2 ocaf(hDoc, &getShapeColors);
             ocaf.setShapeObserver(pmi.observer());
+            ocaf.setAttributeObserver(attributes.observer());
             if (!legacyExport || !ocaf.canFallback(objs)) {
                 ocaf.setExportOptions(Import::ExportOCAF2::customExportOptions());
                 ocaf.setExportHiddenObject(exportHidden);
@@ -640,6 +652,7 @@ private:
                 bool keepExplicitPlacement = true;
                 ExportOCAFGui ocaf(hDoc, keepExplicitPlacement);
                 ocaf.setShapeObserver(pmi.observer());
+                ocaf.setAttributeObserver(attributes.observer());
                 ocaf.exportObjects(objs);
             }
 
@@ -655,7 +668,7 @@ private:
                 }
 
                 Import::WriterStep writer(file);
-                pmiReport = pmi.write(file, hDoc, objs);
+                pmiReport = pmi.write(file, hDoc, objs, &attributes);
             }
             else if (file.hasExtension({"igs", "iges"})) {
                 Import::WriterIges writer(file);

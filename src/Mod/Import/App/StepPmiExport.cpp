@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "StepPmiExport.h"
 #include "WriterStep.h"
+#include "StepAttributesExport.h"
 
 #include <algorithm>
 #include <numbers>
@@ -445,11 +446,13 @@ void StepPmiExport::complete(const Handle(StepData_StepModel)& model) const
 
 Py::Object StepPmiExport::write(const Base::FileInfo& file,
                               const Handle(TDocStd_Document)& document,
-                              const std::vector<App::DocumentObject*>& objects)
+                              const std::vector<App::DocumentObject*>& objects,
+                              StepAttributesExport* attributes)
 {
+    if (attributes) { attributes->prepare(objects); }
     if (!enabled) {
-        WriterStep(file).write(document);
-        return Py::None();
+        WriterStep(file).write(document, nullptr, attributes);
+        return attributes ? attributes->report(Py::None()) : Py::None();
     }
     Py::List owners;
     for (auto owner : objects) {
@@ -483,7 +486,7 @@ Py::Object StepPmiExport::write(const Base::FileInfo& file,
         else {
             document->AbortCommand();
         }
-        WriterStep(file).write(document, hasPmi ? this : nullptr);
+        WriterStep(file).write(document, hasPmi ? this : nullptr, attributes);
         if (hasPmi) {
             document->CommitCommand();
         }
@@ -522,7 +525,7 @@ Py::Object StepPmiExport::write(const Base::FileInfo& file,
                 }
             }
         }
-        WriterStep(file).write(document);
+        WriterStep(file).write(document, nullptr, attributes);
     }
     Part::Interface::writeStepScheme(originalScheme.c_str());
     for (const auto& value : report) {
@@ -532,6 +535,6 @@ Py::Object StepPmiExport::write(const Base::FileInfo& file,
                                     str(row, "reason"));
         }
     }
-    return report;
+    return attributes ? attributes->report(report) : report;
 }
 }  // namespace Import

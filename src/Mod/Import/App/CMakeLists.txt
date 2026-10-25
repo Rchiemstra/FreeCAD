@@ -35,6 +35,8 @@ SET(Import_SRCS
     StepPmiImport.h
     StepPmiExport.cpp
     StepPmiExport.h
+    StepAttributesExport.cpp
+    StepAttributesExport.h
     StepPmiSigns.cpp
     StepPmiRead.cpp
     StepShape.pyi

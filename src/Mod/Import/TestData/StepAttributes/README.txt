@@ -49,7 +49,7 @@ MeasureWithUnit::ValueComponentMember/UnitComponent, STEPConstruct_UnitContext,
 and Reader::GetShapeLabelMap with exact transfer binders. No NamedData bridge,
 ShapeTool search, geometric equality, or display-name matching establishes owners.
 Integer/Boolean/unitless-real and complex aggregates/references are outside this
-slice; source types and reasons are preserved. Export is a later slice.
+slice; source types and reasons are preserved.
 
 Native schema 1 records use generated object names; exact SupplierName is a
 separate property. Value is editable (String/Distance/Import::PropertyUnwrappedAngle). RawMetadata retains
@@ -131,3 +131,46 @@ The merged color-result regression verifies returned objects are live geometry,
 with the same volume and placement when attributes are enabled or disabled.
 Intermediate features deleted by merging cannot remain in the color-result map
 when owned metadata objects are created.
+
+Slice 4 export (job346, FreeCAD contributors / Codex, 2026-10-25):
+Import[Gui].export(..., userAttributes=True) and ExportUserAttributes (Mod/Import,
+default false) emit descriptive Unicode strings, finite signed lengths and
+unwrapped angles. The STEP export dialog saves the same option. Explicit
+userAttributes overrides preferences and the GUI options dictionary. Disabled
+export preserves the previous None/semanticPMI report return convention. Enabled
+export appends one {object, kind: userAttribute, status, reason} row per native
+attribute to any existing PMI report. It does not classify PMI or material as
+user attributes. Current native Value and Owner govern export, including edits,
+undo/redo, recompute, source-free restore, deep copy and omitted-link copies.
+RawMetadata is not read. Supplier property names, descriptions, representation
+names, contexts, duplicate names and item order survive supported output.
+Provenance separates property sets with identical names; it never binds owners.
+
+Separate converter observations retain exact definition/component labels. A
+writer transfer binder supplies the corresponding product definition or exact
+NAUO under its observed free parent. Missing/deleted/out-of-selection owners,
+shared definitions, repeated/nested scope without an exact path and unsupported
+encodings are skipped with reasons. Object names, labels, imported STEP IDs and
+geometric equality alone never establish ownership. Integer/Boolean/unitless
+real, aggregates, references, saved-view export and authored PMI remain outside
+this slice. Legacy converters may omit assembly/component observations; these
+records remain explicitly unavailable.
+
+Output measures use explicit typed LENGTH_MEASURE or PLANE_ANGLE_MEASURE selects
+and units: millimetre SI, metre SI, inch conversion (25.4 mm), or radian SI.
+Representation context text is preserved independently of explicit measure units.
+An emission exception discards the partial writer model and retries a fresh
+writer with valid geometry and PMI. Tests inject a later numeric-record failure
+after descriptive items entered the model, and compare timestamp-normalized
+bytes with the disabled export. The tests parse emitted property graphs, owner
+targets and unit encodings independently before import roundtrips. Existing
+independent supplier fixtures above supply the expectations; no new fixture
+is derived from the writer. Geometry, hierarchy, placement, colors, PMI and views
+have separate parity/isolation checks, with preferences restored by each test.
+
+The export test's independent literal variant adds #680 PROPERTY_DEFINITION,
+#681 PROPERTY_DEFINITION_REPRESENTATION and #682 REPRESENTATION, using #7 as
+owner, #80 as context and #603 as its single descriptive item. Author/date/
+license: FreeCAD contributors (Codex), 2026-10-25, LGPL-2.1-or-later. Expected:
+two distinct identically named property sets, six emitted records, including
+two Label strings 'supplier label', both owned by the exact observed definition.

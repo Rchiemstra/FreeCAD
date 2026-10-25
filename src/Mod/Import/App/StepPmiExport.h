@@ -26,6 +26,8 @@ using ShapeExportObserver = std::function<void(
     const TDF_Label&, App::DocumentObject*, const Part::TopoShape&)>;
 
 // Per-export state; no source XCAF document or global report is retained.
+class StepAttributesExport;
+
 class ImportExport StepPmiExport
 {
 public:
@@ -33,7 +35,8 @@ public:
     ShapeExportObserver observer();
     void complete(const Handle(StepData_StepModel)& model) const;
     Py::Object write(const Base::FileInfo& file, const Handle(TDocStd_Document)& document,
-                     const std::vector<App::DocumentObject*>& objects);
+                     const std::vector<App::DocumentObject*>& objects,
+                     StepAttributesExport* attributes = nullptr);
 private:
     struct Association
     {

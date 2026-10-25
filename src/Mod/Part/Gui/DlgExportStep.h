@@ -41,6 +41,7 @@ struct StepSettings
     bool exportHidden = false;
     bool keepPlacement = false;
     bool semanticPMI = false;
+    bool userAttributes = false;
 };
 
 // ----------------------------------------------------------------------------

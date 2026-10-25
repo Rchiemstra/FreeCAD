@@ -79,6 +79,10 @@ public:
         options.keepPlacement = enable;
     }
     void exportObjects(std::vector<App::DocumentObject*>& objs, const char* name = nullptr);
+    void setAttributeObserver(ShapeExportObserver observer)
+    {
+        attributeObserver = std::move(observer);
+    }
     void setShapeObserver(ShapeExportObserver observer)
     {
         shapeObserver = std::move(observer);
@@ -120,6 +124,7 @@ private:
 
     ExportOCAFOptions options;
     ShapeExportObserver shapeObserver;
+    ShapeExportObserver attributeObserver;
 };
 
 }  // namespace Import

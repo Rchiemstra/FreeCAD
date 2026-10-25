@@ -31,13 +31,15 @@ namespace Import
 {
 
 class StepPmiExport;
+class StepAttributesExport;
 
 class ImportExport WriterStep
 {
 public:
     explicit WriterStep(const Base::FileInfo& file);
 
-    void write(Handle(TDocStd_Document) hDoc, const StepPmiExport* semanticPMI = nullptr) const;
+    void write(Handle(TDocStd_Document) hDoc, const StepPmiExport* semanticPMI = nullptr,
+               StepAttributesExport* attributes = nullptr) const;
 
 private:
     Base::FileInfo file;

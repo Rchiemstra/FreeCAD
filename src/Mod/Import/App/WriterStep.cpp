@@ -29,6 +29,7 @@
 
 #include "WriterStep.h"
 #include "StepPmiExport.h"
+#include "StepAttributesExport.h"
 #include <Base/Exception.h>
 #include <App/Application.h>
 #include <Mod/Part/App/encodeFilename.h>
@@ -41,51 +42,89 @@ WriterStep::WriterStep(const Base::FileInfo& file)  // NOLINT
 {}
 
 void WriterStep::write(Handle(TDocStd_Document) hDoc,
-                       const StepPmiExport* semanticPMI) const  // NOLINT
+                       const StepPmiExport* semanticPMI, StepAttributesExport* attributes) const  // NOLINT
 {
     std::string utf8Name = file.filePath();
     std::string name8bit = Part::encodeFilename(utf8Name);
 
-    STEPCAFControl_Writer writer;
-    if (semanticPMI) {
-        writer.SetDimTolMode(true);
+    const std::string originalScheme = Part::Interface::writeStepScheme();
+    struct RestoreSchema {
+        std::string scheme;
+        ~RestoreSchema() { Part::Interface::writeStepScheme(scheme.c_str()); }
+    } restore {originalScheme};
+    if (attributes && attributes->hasCandidates()) {
+        Part::Interface::writeStepScheme("AP242DIS");
     }
+    const auto attempt = [&](StepAttributesExport* attributes) {
+        STEPCAFControl_Writer writer;
+        if (semanticPMI) {
+            writer.SetDimTolMode(true);
+        }
 #if OCC_VERSION_HEX >= 0x070900
-    // Temporary workaround for OCCT 7.9+, see: https://github.com/Open-Cascade-SAS/OCCT/issues/1327
-    // TODO: Remove or refine the guards or remove when the issue is fixed in OCCT 8.0.1
-    writer.SetShapeFixParameters(DESTEP_Parameters::GetDefaultShapeFixParameters());
-    ShapeProcess::OperationsFlags aFlags;
-    aFlags.set(ShapeProcess::Operation::SplitCommonVertex);
-    aFlags.set(ShapeProcess::Operation::DirectFaces);
-    writer.SetShapeProcessFlags(aFlags);
+        // Temporary workaround for OCCT 7.9+, see: https://github.com/Open-Cascade-SAS/OCCT/issues/1327
+        // TODO: Remove or refine the guards or remove when the issue is fixed in OCCT 8.0.1
+        writer.SetShapeFixParameters(DESTEP_Parameters::GetDefaultShapeFixParameters());
+        ShapeProcess::OperationsFlags aFlags;
+        aFlags.set(ShapeProcess::Operation::SplitCommonVertex);
+        aFlags.set(ShapeProcess::Operation::DirectFaces);
+        writer.SetShapeProcessFlags(aFlags);
 #endif
-    Part::Interface::writeStepAssembly(Part::Interface::Assembly::On);
-    writer.Transfer(hDoc, STEPControl_AsIs);
-    if (semanticPMI) {
-        semanticPMI->complete(writer.ChangeWriter().Model());
-    }
+        Part::Interface::writeStepAssembly(Part::Interface::Assembly::On);
+        writer.Transfer(hDoc, STEPControl_AsIs);
+        if (semanticPMI) {
+            semanticPMI->complete(writer.ChangeWriter().Model());
+        }
 
-    APIHeaderSection_MakeHeader makeHeader(writer.ChangeWriter().Model());
-    Base::Reference<ParameterGrp> hGrp = App::GetApplication()
-                                             .GetUserParameter()
-                                             .GetGroup("BaseApp")
-                                             ->GetGroup("Preferences")
-                                             ->GetGroup("Mod/Part")
-                                             ->GetGroup("STEP");
+        if (attributes) {
+            try {
+                attributes->complete(writer, hDoc);
+            }
+            catch (...) {
+                attributes->fail("attribute emission failed; geometry/PMI kept");
+                return false;
+            }
+        }
 
-    // Don't set name because STEP doesn't support UTF-8
-    // https://forum.freecad.org/viewtopic.php?f=8&t=52967
-    makeHeader.SetAuthorValue(
-        1,
-        new TCollection_HAsciiString(hGrp->GetASCII("Author", "Author").c_str())
-    );
-    makeHeader.SetOrganizationValue(1, new TCollection_HAsciiString(hGrp->GetASCII("Company").c_str()));
-    makeHeader.SetOriginatingSystem(
-        new TCollection_HAsciiString(App::Application::getExecutableName().c_str())
-    );
-    makeHeader.SetDescriptionValue(1, new TCollection_HAsciiString("FreeCAD Model"));
-    IFSelect_ReturnStatus ret = writer.Write(name8bit.c_str());
-    if (ret == IFSelect_RetError || ret == IFSelect_RetFail || ret == IFSelect_RetStop) {
-        throw Base::FileException("Cannot open file: ", file);
+        APIHeaderSection_MakeHeader makeHeader(writer.ChangeWriter().Model());
+        Base::Reference<ParameterGrp> hGrp = App::GetApplication()
+                                                 .GetUserParameter()
+                                                 .GetGroup("BaseApp")
+                                                 ->GetGroup("Preferences")
+                                                 ->GetGroup("Mod/Part")
+                                                 ->GetGroup("STEP");
+
+        // Don't set name because STEP doesn't support UTF-8
+        // https://forum.freecad.org/viewtopic.php?f=8&t=52967
+        makeHeader.SetAuthorValue(
+            1,
+            new TCollection_HAsciiString(hGrp->GetASCII("Author", "Author").c_str())
+        );
+        makeHeader.SetOrganizationValue(1, new TCollection_HAsciiString(hGrp->GetASCII("Company").c_str()));
+        makeHeader.SetOriginatingSystem(
+            new TCollection_HAsciiString(App::Application::getExecutableName().c_str())
+        );
+        makeHeader.SetDescriptionValue(1, new TCollection_HAsciiString("FreeCAD Model"));
+        IFSelect_ReturnStatus ret;
+        try {
+            ret = writer.Write(name8bit.c_str());
+        }
+        catch (...) {
+            if (!attributes || !attributes->hasCandidates()) { throw; }
+            attributes->fail("attribute serialization failed; geometry/PMI kept");
+            return false;
+        }
+        if (ret == IFSelect_RetError || ret == IFSelect_RetFail || ret == IFSelect_RetStop) {
+            if (attributes && attributes->hasCandidates()) {
+                attributes->fail("attribute serialization failed; geometry/PMI kept");
+                return false;
+            }
+            throw Base::FileException("Cannot open file: ", file);
+        }
+        return true;
+    };
+    if (!attempt(attributes)) {
+        // The partial writer has been destroyed; the XCAF document retains valid PMI.
+        Part::Interface::writeStepScheme(originalScheme.c_str());
+        attempt(nullptr);
     }
 }

@@ -139,6 +139,13 @@ void ExportOCAF::exportObjects(std::vector<App::DocumentObject*>& objs)
         }
     }
 
+    if (attributeObserver) {
+        for (std::size_t i = 0; i < hierarchical_label.size(); ++i) {
+            attributeObserver(hierarchical_label[i], hierarchical_part[i],
+                              Part::TopoShape(aShapeTool->GetShape(hierarchical_label[i])));
+        }
+    }
+
     // Update is not performed automatically anymore:
     // https://tracker.dev.opencascade.org/view.php?id=28055
     XCAFDoc_DocumentTool::ShapeTool(pDoc->Main())->UpdateAssemblies();
