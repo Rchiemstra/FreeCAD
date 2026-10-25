@@ -25,6 +25,7 @@
 
 #include <Mod/Import/ImportGlobal.h>
 #include <Base/FileInfo.h>
+#include <Base/Exception.h>
 #include <TDocStd_Document.hxx>
 
 namespace Import
@@ -36,6 +37,11 @@ class StepAttributesExport;
 class ImportExport WriterStep
 {
 public:
+    class RecoveryError : public Base::FileException
+    {
+    public:
+        using Base::FileException::FileException;
+    };
     explicit WriterStep(const Base::FileInfo& file);
 
     void write(Handle(TDocStd_Document) hDoc, const StepPmiExport* semanticPMI = nullptr,

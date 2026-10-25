@@ -6,6 +6,7 @@
 #include <numbers>
 #include <set>
 #include <stdexcept>
+#include <Standard_Failure.hxx>
 #include <STEPCAFControl_Writer.hxx>
 #include <STEPConstruct.hxx>
 #include <StepData_StepModel.hxx>
@@ -78,7 +79,12 @@ ShapeExportObserver StepAttributesExport::observer()
     if (!enabled) { return {}; }
     return [this](const TDF_Label& label, App::DocumentObject* owner,
                   const Part::TopoShape&) noexcept {
-        try { associations.push_back({label, owner}); }
+        try {
+            if (!testStage("observation", false, associations.size())) {
+                throw std::runtime_error("converter observation unavailable");
+            }
+            associations.push_back({label, owner});
+        }
         catch (...) { captureFailed = true; }
     };
 }
@@ -94,7 +100,7 @@ void StepAttributesExport::prepare(const std::vector<App::DocumentObject*>& obje
         Py::Tuple args(1);
         args[0] = owners;
         candidates = Py::List(Py::Callable(module.getAttr("prepare")).apply(args));
-        if (captureFailed) { throw std::runtime_error("converter observation unavailable"); }
+        if (captureFailed) { fail("converter observation unavailable; geometry/PMI kept"); }
     }
     catch (...) {
         PyErr_Clear();
@@ -107,13 +113,23 @@ void StepAttributesExport::prepare(const std::vector<App::DocumentObject*>& obje
                 bool attribute = false;
                 for (auto group : obj->getInList()) {
                     const auto kind = dynamic_cast<App::PropertyString*>(group->getPropertyByName("MetadataKind"));
-                    if (kind && std::string(kind->getValue()) == "UserAttributes") { attribute = true; }
+                    const auto members = dynamic_cast<App::PropertyLinkList*>(group->getPropertyByName("Group"));
+                    if (kind && std::string(kind->getValue()) == "UserAttributes" && members) {
+                        const auto& values = members->getValues();
+                        if (std::find(values.begin(), values.end(), obj) != values.end()) { attribute = true; }
+                    }
                 }
-                if (attribute && obj->getPropertyByName("SupplierName") && obj->getPropertyByName("ValueKind")
-                    && obj->getPropertyByName("Owner")) {
+                if (attribute) {
                     Py::Dict item;
                     item["object"] = Py::asObject(obj->getPyObject());
-                    item["reason"] = Py::String("attribute preparation unavailable");
+                    std::string reason = "attribute preparation unavailable";
+                    for (const char* field : {"SupplierName", "Owner", "ValueKind"}) {
+                        if (!obj->getPropertyByName(field)) {
+                            reason = std::string("missing native field: ") + field;
+                            break;
+                        }
+                    }
+                    item["reason"] = Py::String(reason);
                     candidates.append(item);
                 }
             }
@@ -123,9 +139,26 @@ void StepAttributesExport::prepare(const std::vector<App::DocumentObject*>& obje
 }
 bool StepAttributesExport::hasCandidates() const
 {
-    return std::any_of(candidates.begin(), candidates.end(), [](const Py::Object& value) {
+    return !captureFailed && std::any_of(candidates.begin(), candidates.end(), [](const Py::Object& value) {
         return text(Py::Dict(value), "reason").empty();
     });
+}
+bool StepAttributesExport::testStage(const char* stage, bool fallback, int entities) const
+{
+    if (!enabled) { return true; }
+    // Only consult an already loaded helper. Production does not install this hook.
+    auto module = PyDict_GetItemString(PyImport_GetModuleDict(), "StepAttributesExport");
+    if (!module || module == Py_None) { return true; }
+    auto callback = PyObject_GetAttrString(module, "_testExportStage");
+    if (!callback) { PyErr_Clear(); return true; }
+    Py::Callable hook(callback, true);
+    Py::Tuple args(3);
+    args[0] = Py::String(stage);
+    args[1] = Py::Boolean(fallback);
+    args[2] = Py::Long(entities);
+    const auto fault = Py::String(hook.apply(args)).as_std_string();
+    if (fault == "exception") { throw Standard_Failure("injected STEP writer exception"); }
+    return fault != "false";
 }
 void StepAttributesExport::fail(const std::string& reason)
 {
@@ -156,6 +189,10 @@ void StepAttributesExport::complete(STEPCAFControl_Writer& writer,
                                    const Handle(TDocStd_Document)& document)
 {
     if (!enabled) { return; }
+    if (captureFailed) {
+        fail("converter observation unavailable; geometry/PMI kept");
+        return;
+    }
     results = Py::List();
     const auto shapes = XCAFDoc_DocumentTool::ShapeTool(document->Main());
     const auto model = writer.ChangeWriter().Model();

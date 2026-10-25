@@ -491,6 +491,11 @@ Py::Object StepPmiExport::write(const Base::FileInfo& file,
             document->CommitCommand();
         }
     }
+    catch (const WriterStep::RecoveryError&) {
+        document->AbortCommand();
+        Part::Interface::writeStepScheme(originalScheme.c_str());
+        throw;
+    }
     catch (...) {
         document->AbortCommand();
         Part::Interface::writeStepScheme(originalScheme.c_str());

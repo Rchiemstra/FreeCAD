@@ -174,3 +174,26 @@ owner, #80 as context and #603 as its single descriptive item. Author/date/
 license: FreeCAD contributors (Codex), 2026-10-25, LGPL-2.1-or-later. Expected:
 two distinct identically named property sets, six emitted records, including
 two Label strings 'supplier label', both owned by the exact observed definition.
+
+Slice 4 recovery rework (job348, FreeCAD contributors / Codex, 2026-10-25):
+The attribute attempt handles transfer false/exception before serialization and
+retries a new writer while retaining the valid XCAF PMI transaction. Serialization
+return/exception and emission failures also discard the partial model. A failed
+fallback raises a file error; the outer PMI handler cannot turn it into success.
+The private, normally absent StepAttributesExport._testExportStage callback
+injects transfer and serialization results/exceptions and converter observation
+failure. Tests observe entity counts after real transfer and after attribute
+emission, compare recovery bytes with disabled export, and compare valid PMI
+reports. Both geometry-only and valid-PMI attempts exercise successful and failed
+fallbacks, including schema/unit restoration and absence of a third attempt.
+The instrumented pre-fix transfer run retains the ignored false result and the
+escaping exception to establish behavioral failures independently of hook setup.
+
+Native enumeration uses actual Group membership, excluding ImportedObjects owner
+links, and visits each member once even with multiple native group memberships.
+Missing SupplierName, Owner or ValueKind produces a concrete per-record reason
+with the helper present or unavailable. Malformed native text fields are rejected
+inside record preparation so valid sibling values, geometry and PMI survive.
+Converter observation failure makes eligible records unavailable without losing
+valid PMI. Legacy nested assembly root/occurrence mappings remain explicitly
+unavailable in native records and export report rows; no mapping is inferred.

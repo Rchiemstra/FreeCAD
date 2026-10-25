@@ -242,6 +242,19 @@ class TestStepAttributesExport(AttributeImportTests):
                 self.assertEqual(occurrence.OwnerScope, 'occurrence')
                 self.assertAlmostEqual(occurrence.Owner.Shape.BoundBox.XMin, 101.6)
 
+    def test_legacy_unavailable_assembly_mappings_have_report_rows(self):
+        doc = self.load('nested', links=False)
+        selected = [o for o in doc.Objects if o.isDerivedFrom('Part::Feature') and o.Shape.Solids]
+        self.assertTrue(selected, 'setup: legacy fixture contains geometry')
+        path, report = self.emit(doc, selected, legacy=True)
+        for name in ('root', 'override'):
+            record = self.by_name(doc, name)
+            self.assertFalse(record.Owner, 'legacy converter cannot observe this exact assembly scope')
+            row = next(r for r in report if r['object'] == record.Name)
+            self.assertEqual(row['status'], 'skipped')
+            self.assertIn('owner', row['reason'])
+        self.assertTrue(path.is_file())
+
     def test_emission_failure_discards_partial_model_retains_pmi(self):
         import StepAttributesExport
         doc = self.load(semanticPMI=True, savedViews=True)
@@ -266,6 +279,160 @@ class TestStepAttributesExport(AttributeImportTests):
         self.assertEqual(len(restored.StepPMI.Group), len(doc.StepPMI.Group))
         self.assertFalse(hasattr(restored, 'StepViews'))
         self.assertFalse(hasattr(restored, 'StepAttributes'))
+
+    def test_missing_native_fields_are_reported_with_and_without_helper(self):
+        import sys
+        from contextlib import nullcontext
+        for helper in (True, False):
+            for field in ('SupplierName', 'Owner', 'ValueKind'):
+                with self.subTest(helper=helper, field=field):
+                    doc = self.load(semanticPMI=True)
+                    selected = self.owners(doc)
+                    record = self.by_name(doc, 'Label')
+                    self.assertTrue(record.removeProperty(field), 'setup: removable native field')
+                    # Membership in two native groups must still yield one row.
+                    group = doc.addObject('App::FeaturePython', 'OtherAttributes')
+                    group.addProperty('App::PropertyString', 'MetadataKind')
+                    group.MetadataKind = 'UserAttributes'
+                    group.addProperty('App::PropertyLinkList', 'Group')
+                    group.Group = [record]
+                    context = nullcontext() if helper else patch.dict(
+                        sys.modules, {'StepAttributesExport': None})
+                    with context:
+                        path, report = self.emit(doc, selected, semanticPMI=True)
+                    rows = [r for r in report if r['object'] == record.Name]
+                    self.assertEqual(len(rows), 1, 'missing native member must be reported once')
+                    self.assertEqual(rows[0]['status'], 'skipped')
+                    self.assertIn(field, rows[0]['reason'])
+                    self.assertTrue(all(r['status'] == 'written' for r in report
+                                        if r.get('kind') != 'userAttribute'), report)
+                    restored = self.load(path=path, semanticPMI=True)
+                    self.assertEqual(len(restored.StepPMI.Group), 5)
+                    if helper:
+                        self.assertEqual(self.by_name(restored, 'span').Value.Value, 2)
+                    else:
+                        self.assertFalse(hasattr(restored, 'StepAttributes'))
+
+    def test_malformed_native_text_fields_preserve_valid_siblings(self):
+        for field in ('SupplierName', 'PropertySet', 'ContextType'):
+            with self.subTest(field=field):
+                doc = self.load(semanticPMI=True)
+                record = self.by_name(doc, 'Label')
+                self.assertTrue(record.removeProperty(field), 'setup: removable native field')
+                record.addProperty('App::PropertyInteger', field)
+                setattr(record, field, 42)
+                path, report = self.emit(doc, semanticPMI=True)
+                row = next(r for r in report if r['object'] == record.Name)
+                self.assertEqual(row['status'], 'skipped')
+                self.assertIn(field, row['reason'], 'malformed native field needs a concrete reason')
+                self.assertEqual(sum(r['status'] == 'written' for r in report
+                                     if r.get('kind') == 'userAttribute'), 4,
+                                 'malformed record must preserve valid siblings')
+                restored = self.load(path=path, semanticPMI=True)
+                self.assertEqual(self.by_name(restored, 'span').Value.Value, 2)
+                self.assertEqual(len(restored.StepPMI.Group), 5)
+
+    def check_writer_fault(self, stage, fault, semantic, fallback_fault=None):
+        import StepAttributesExport
+        doc = self.load(semanticPMI=True, savedViews=True)
+        selected = self.owners(doc)
+        path = Path(self.temp.name) / 'export.step'
+        baseline_report = Import.export(selected, str(path), userAttributes=False,
+                                        semanticPMI=semantic)
+        expected = self.text(path)
+        if semantic:
+            self.assertEqual([r['status'] for r in baseline_report], ['written'] * 5,
+                             'setup: valid PMI must be present before retry')
+        observed = []
+        def inject(at, fallback, count):
+            observed.append((at, fallback, count))
+            if at == stage and not fallback:
+                return fault
+            if at == stage and fallback:
+                return fallback_fault or ''
+            return ''
+        with patch.object(StepAttributesExport, '_testExportStage', inject, create=True):
+            if fallback_fault:
+                with self.assertRaises(Exception, msg='unsuccessful fallback must reach caller') as caught:
+                    Import.export(selected, str(path), userAttributes=True, semanticPMI=semantic)
+                self.assertIn('fallback failed', str(caught.exception))
+                self.assertEqual(sum(at == 'transfer' for at, _, _ in observed), 2,
+                                 'a failed fallback must not trigger another export')
+            else:
+                try:
+                    _, report = self.emit(doc, selected, semanticPMI=semantic)
+                except Exception as error:
+                    self.fail('attribute writer failure must recover before caller: ' + str(error))
+        if fallback_fault:
+            self.assertEqual(Part.exportUnits()['write.step.unit'], self.units['write.step.unit'])
+            Import.export(selected, str(path), userAttributes=False, semanticPMI=semantic)
+            self.assertEqual(self.text(path), expected, 'schema restored after failed fallback')
+            return
+        rows = [r for r in report if r.get('kind') == 'userAttribute']
+        self.assertTrue(all(r['status'] == 'skipped' and r['reason'] for r in rows),
+                        'writer fault must discard attribute attempt and report skipped records')
+        self.assertEqual(self.text(path), expected, 'fresh fallback must match disabled bytes')
+        self.assertEqual([r for r in report if r.get('kind') != 'userAttribute'],
+                         baseline_report or [], 'retry must retain valid PMI report')
+        transfer = [count for at, _, count in observed if at == 'transfer']
+        self.assertEqual(len(transfer), 2, 'one fresh transfer per attempt')
+        self.assertGreater(transfer[0], 0, 'fault follows a partially populated transfer')
+        self.assertEqual(transfer[0], transfer[1], 'fallback cannot reuse partial model')
+        if stage == 'serialization':
+            counts = [count for at, _, count in observed if at == stage]
+            self.assertGreater(counts[0], counts[1], 'attribute entities discarded before retry')
+        restored = self.load(path=path, semanticPMI=True, savedViews=True)
+        self.assertFalse(hasattr(restored, 'StepAttributes'))
+        self.assertFalse(hasattr(restored, 'StepViews'))
+        self.assertEqual(len(restored.StepPMI.Group) if semantic else 0, 5 if semantic else 0)
+        self.assertEqual(Part.exportUnits()['write.step.unit'], self.units['write.step.unit'])
+        Import.export(selected, str(path), userAttributes=False, semanticPMI=semantic)
+        self.assertEqual(self.text(path), expected, 'schema restored after retry')
+
+    def test_attribute_transfer_false_and_exception_recovery(self):
+        for semantic in (False, True):
+            for fault in ('false', 'exception'):
+                with self.subTest(semantic=semantic, fault=fault):
+                    self.check_writer_fault('transfer', fault, semantic)
+
+    def test_attribute_serialization_return_and_exception_recovery(self):
+        for semantic in (False, True):
+            for fault in ('false', 'exception'):
+                with self.subTest(semantic=semantic, fault=fault):
+                    self.check_writer_fault('serialization', fault, semantic)
+
+    def test_attribute_unsuccessful_fallback_propagates(self):
+        for semantic in (False, True):
+            for stage in ('transfer', 'serialization'):
+                for fault in ('false', 'exception'):
+                    with self.subTest(semantic=semantic, stage=stage, fault=fault):
+                        self.check_writer_fault(stage, fault, semantic, fault)
+
+    def test_converter_observation_failure_keeps_geometry_and_valid_pmi(self):
+        import StepAttributesExport
+        doc = self.load(semanticPMI=True)
+        selected = self.owners(doc)
+        path = Path(self.temp.name) / 'export.step'
+        baseline = Import.export(selected, str(path), semanticPMI=True, userAttributes=False)
+        expected = self.text(path)
+        eligible = {i['object'].Name for i in StepAttributesExport.prepare(selected) if not i['reason']}
+        self.assertEqual(len(eligible), 5, 'setup: five valid attribute records')
+        observed = []
+        def inject(stage, fallback, count):
+            if stage == 'observation':
+                observed.append(count)
+                return 'exception'
+            return ''
+        with patch.object(StepAttributesExport, '_testExportStage', inject, create=True):
+            _, report = self.emit(doc, selected, semanticPMI=True)
+        rows = [r for r in report if r.get('kind') == 'userAttribute']
+        self.assertTrue(all(r['status'] == 'skipped' for r in rows),
+                        'failed converter observation must make every attribute unavailable')
+        self.assertTrue(observed, 'converter callback was reached')
+        self.assertTrue(all('observation' in r['reason'] for r in rows
+                            if r['object'] in eligible), rows)
+        self.assertEqual([r for r in report if r.get('kind') != 'userAttribute'], baseline)
+        self.assertEqual(self.text(path), expected)
 
     def test_geometry_placement_hierarchy_and_pmi_view_isolation(self):
         from StepPmiExport import fingerprint

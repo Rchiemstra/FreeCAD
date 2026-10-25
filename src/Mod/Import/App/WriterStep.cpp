@@ -25,6 +25,7 @@
 #include <APIHeaderSection_MakeHeader.hxx>
 #include <NCollection_Vector.hxx>
 #include <STEPCAFControl_Writer.hxx>
+#include <StepData_StepModel.hxx>
 
 
 #include "WriterStep.h"
@@ -52,10 +53,12 @@ void WriterStep::write(Handle(TDocStd_Document) hDoc,
         std::string scheme;
         ~RestoreSchema() { Part::Interface::writeStepScheme(scheme.c_str()); }
     } restore {originalScheme};
-    if (attributes && attributes->hasCandidates()) {
+    const bool recoverAttributes = attributes && attributes->hasCandidates();
+    if (recoverAttributes) {
         Part::Interface::writeStepScheme("AP242DIS");
     }
-    const auto attempt = [&](StepAttributesExport* attributes) {
+    const auto attempt = [&](bool fallback) {
+        auto activeAttributes = fallback ? nullptr : attributes;
         STEPCAFControl_Writer writer;
         if (semanticPMI) {
             writer.SetDimTolMode(true);
@@ -70,14 +73,29 @@ void WriterStep::write(Handle(TDocStd_Document) hDoc,
         writer.SetShapeProcessFlags(aFlags);
 #endif
         Part::Interface::writeStepAssembly(Part::Interface::Assembly::On);
-        writer.Transfer(hDoc, STEPControl_AsIs);
+        try {
+            bool transferred = writer.Transfer(hDoc, STEPControl_AsIs);
+            const auto model = writer.ChangeWriter().Model();
+            if (recoverAttributes && !attributes->testStage(
+                    "transfer", fallback, model.IsNull() ? 0 : model->NbEntities())) {
+                transferred = false;
+            }
+            if (!transferred && recoverAttributes) {
+                throw Base::FileException("STEP transfer failed: ", file);
+            }
+        }
+        catch (...) {
+            if (!recoverAttributes || fallback) { throw; }
+            attributes->fail("attribute transfer failed; geometry/PMI kept");
+            return false;
+        }
         if (semanticPMI) {
             semanticPMI->complete(writer.ChangeWriter().Model());
         }
 
-        if (attributes) {
+        if (activeAttributes) {
             try {
-                attributes->complete(writer, hDoc);
+                activeAttributes->complete(writer, hDoc);
             }
             catch (...) {
                 attributes->fail("attribute emission failed; geometry/PMI kept");
@@ -106,15 +124,18 @@ void WriterStep::write(Handle(TDocStd_Document) hDoc,
         makeHeader.SetDescriptionValue(1, new TCollection_HAsciiString("FreeCAD Model"));
         IFSelect_ReturnStatus ret;
         try {
-            ret = writer.Write(name8bit.c_str());
+            ret = recoverAttributes && !attributes->testStage(
+                "serialization", fallback, writer.ChangeWriter().Model()->NbEntities())
+                ? IFSelect_RetFail : writer.Write(name8bit.c_str());
         }
         catch (...) {
-            if (!attributes || !attributes->hasCandidates()) { throw; }
+            if (!recoverAttributes || fallback) { throw; }
             attributes->fail("attribute serialization failed; geometry/PMI kept");
             return false;
         }
-        if (ret == IFSelect_RetError || ret == IFSelect_RetFail || ret == IFSelect_RetStop) {
-            if (attributes && attributes->hasCandidates()) {
+        if (ret == IFSelect_RetError || ret == IFSelect_RetFail || ret == IFSelect_RetStop
+            || (recoverAttributes && ret != IFSelect_RetDone)) {
+            if (recoverAttributes && !fallback) {
                 attributes->fail("attribute serialization failed; geometry/PMI kept");
                 return false;
             }
@@ -122,9 +143,15 @@ void WriterStep::write(Handle(TDocStd_Document) hDoc,
         }
         return true;
     };
-    if (!attempt(attributes)) {
+    if (!attempt(false)) {
         // The partial writer has been destroyed; the XCAF document retains valid PMI.
         Part::Interface::writeStepScheme(originalScheme.c_str());
-        attempt(nullptr);
+        try {
+            if (!attempt(true)) { throw RecoveryError("STEP attribute fallback failed: ", file); }
+        }
+        catch (...) {
+            PyErr_Clear();
+            throw RecoveryError("STEP attribute fallback failed: ", file);
+        }
     }
 }

@@ -19,6 +19,8 @@ public:
     void complete(STEPCAFControl_Writer& writer, const Handle(TDocStd_Document)& document);
     void fail(const std::string& reason);
     Py::Object report(const Py::Object& pmi) const;
+    // Private Python test callback, absent in normal exports; no saved preference.
+    bool testStage(const char* stage, bool fallback, int entities) const;
 private:
     struct Association { TDF_Label label; App::DocumentObject* owner; };
     bool enabled;
