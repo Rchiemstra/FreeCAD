@@ -75,6 +75,9 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     if (readSemanticPmi && pmiImport) {
         pmiImport->captureReadWarnings(aReader.Reader().StepModel());
     }
+    if (viewsImport) {
+        aReader.SetViewMode(StepViewsImport::canReadXcaf(aReader));
+    }
     aReader.Transfer(hDoc, theProgress);
     if (viewsImport) {
         viewsImport->capture(aReader, hDoc);

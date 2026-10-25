@@ -266,3 +266,65 @@ class StepPmiGuiTest(unittest.TestCase):
                 prefs.SetBool("ImportSavedViews", saved["ImportSavedViews"])
             else:
                 prefs.RemBool("ImportSavedViews")
+
+    def test_saved_views_geometry_colors_hierarchy_parity(self):
+        """Combined metadata capture preserves native geometry in both converters."""
+        import tempfile
+        from pathlib import Path
+
+        existing = set(App.listDocuments())
+        text = Path(__file__).with_name("TestData").joinpath(
+            "StepViews", "views-nested.step").read_text()
+        # Independently authored surface style: RGB (0.8, 0.2, 0.1) on solid #11.
+        style = """
+#500=COLOUR_RGB('supplier red',0.8,0.2,0.1);
+#501=FILL_AREA_STYLE_COLOUR('',#500);
+#502=FILL_AREA_STYLE('',(#501));
+#503=SURFACE_STYLE_FILL_AREA(#502);
+#504=SURFACE_SIDE_STYLE('',(#503));
+#505=SURFACE_STYLE_USAGE(.BOTH.,#504);
+#506=PRESENTATION_STYLE_ASSIGNMENT((#505));
+#507=STYLED_ITEM('',(#506),#11);
+#508=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#507),#80);
+"""
+        text = text.replace("ENDSEC;\nEND-ISO-10303-21;", style + "ENDSEC;\nEND-ISO-10303-21;")
+
+        def model(doc):
+            result, colors = [], []
+            for obj in doc.Objects:
+                solid = obj.isDerivedFrom("Part::Feature") and obj.Shape.Solids
+                if not solid and obj.TypeId not in ("App::Part", "App::Link", "App::LinkGroup"):
+                    continue
+                children = getattr(obj, "Group", getattr(obj, "ElementList", []))
+                hierarchy = sorted((o.TypeId, o.Label) for o in children)
+                appearance = tuple(tuple(c) for c in getattr(obj.ViewObject, "DiffuseColor", []))
+                colors.extend(appearance)
+                result.append((obj.TypeId, obj.Label, str(getattr(obj, "Placement", None)),
+                               round(obj.Shape.Volume, 5) if solid else None,
+                               hierarchy, appearance))
+            return sorted(result), colors
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="gui-step-views-") as directory:
+                path = Path(directory, "colored-views.step")
+                path.write_text(text)
+                for links in (False, True):
+                    signatures = []
+                    for enabled in (False, True):
+                        doc = App.newDocument("ColorViewParity")
+                        ImportGui.insert(str(path), doc.Name, merge=False, useLinkGroup=links,
+                                         mode=0, savedViews=enabled, semanticPMI=enabled)
+                        recompute_document(doc)
+                        signature, colors = model(doc)
+                        self.assertTrue(signature)
+                        self.assertTrue(any(all(abs(a-b) < 1e-5 for a, b in
+                                                zip(color[:3], (0.8, 0.2, 0.1)))
+                                            for color in colors), colors)
+                        signatures.append(signature)
+                        if enabled:
+                            self.assertEqual(len(doc.StepPMI.Group), 5)
+                            self.assertEqual(len(doc.StepViews.Group), 4)
+                    self.assertEqual(signatures[0], signatures[1])
+        finally:
+            for name in set(App.listDocuments()) - existing:
+                close_document(App.getDocument(name))

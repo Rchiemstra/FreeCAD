@@ -30,6 +30,7 @@ struct StepViewRecord
 class ImportExport StepViewsImport
 {
 public:
+    static bool canReadXcaf(const STEPCAFControl_Reader& reader) noexcept;
     void capture(const STEPCAFControl_Reader& reader,
                  const Handle(TDocStd_Document)& source) noexcept;
     ShapeImportObserver observer();

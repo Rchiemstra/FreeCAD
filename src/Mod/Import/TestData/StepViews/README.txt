@@ -26,3 +26,43 @@ and the installed 7.6.3 XCAFView_Object/XCAFDoc_ViewTool headers. ReadViews
 loses VRS origin/window placement and leaves scalar lengths in source units;
 our raw STEP camera adapter must retain them and convert using view context.
 No view activation, rendering, union evaluation or capping is implemented.
+
+Rework variants (TestStepViews.variant) are independently authored Part 21
+substitutions/additions to views-mm.step, written to temporary source files;
+no importer/exporter output supplies their expected values:
+- Conflicting context #340 declares mm #81, metre #341, radian #84, steradian
+  #85, in that order. Even though the final angle units are valid, no unique
+  length conversion exists: source origin stays (10,20,30), factor is 0, all
+  four declarations survive, and view/planes are unavailable.
+- Camera #315 is shared by models #330 and #343. #343 maps representation
+  #340 (independent solid #351/shell #352) of product #348 and associates
+  angular dimension #114 via
+  callout #347; #330 maps #10 and dimension #104 via #329. Neither shape nor
+  PMI may bind for #315; both roles retain ambiguity reasons. #316 belongs
+  only to #330 and must retain that model's links.
+- Centered windows (0,12), (-18,12), (18,-12) are unavailable. View plane
+  distance 0, front -2, and enabled front/back 80/2 are also unavailable.
+  Raw dimensions remain unchanged. Positive 18x12 at (-9,-6,0) is available.
+  A +90-degree window has right (0,1,0), up (-1,0,0): its centered origin is
+  (6,-9,0). It retains rotation and is unavailable for rotation alone; origin
+  (-9,-6,0) with that rotation is also asymmetric. Centering uses window axes.
+- Alternating union/intersection nodes #400..#469 exceed adapter depth 64.
+  #315 retains its identity, full typed adjacency, reason and valid sibling
+  planes #310/#312; #316 retains its original camera and clipping expression.
+  A missing #315 volume or unsupported clipping operand #323 similarly keeps
+  both cameras and the two valid planes, with individual unavailable reasons.
+  The optional OCCT view pass is skipped when its required data is incomplete;
+  raw capture still runs, and incomplete XCAF tables never supply owner links.
+- Duplicate camera names retain distinct STEP/XCAF identities (native display
+  labels may be uniquified). A last orphan camera #340 makes the XCAF table
+  incomplete: all three raw cameras survive, no shape/PMI links are guessed.
+
+TestStepPmiGui adds a hand-authored solid surface style #500..#508 to the
+nested source: RGB (0.8,0.2,0.1), on solid #11. Both converters must retain
+colors, placements, real geometry and hierarchy with combined metadata enabled.
+Partial-copy tests omit owners, then add matching names and save/reopen: no
+provenance is replayed. Native copy rules remain authoritative. Observer-created
+objects survive metadata rollback; multi-document modes refuse both link roles.
+Schema remains 1: extra source fields are additive owned data. Unsupported
+operands discarded by OCCT's typed reader retain an explicit missing operand;
+source camera identity is retained, without inferring an owner from names.

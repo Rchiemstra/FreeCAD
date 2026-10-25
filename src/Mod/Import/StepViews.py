@@ -9,6 +9,13 @@ CameraPosition = Origin + Right*x + Up*y + Backward*z for ProjectionPoint in VRS
 ViewDirection is backward (+Z), UpDirection is +Y. ViewPlaneDistance is a length,
 not a zoom ratio. Planes store n.x + Offset = 0 with positive retained half-space.
 RawMetadata preserves supplier values even when presentation is unavailable.
+Source-prefixed fields retain unscaled camera values and typed source identities.
+SourceClippingTree retains typed adjacency independently of the depth-64 adapter.
+Window dimensions and view-plane distance must be positive. Clip distances must
+be nonnegative; enabled front/back planes must be ordered. Central projection
+must not lie on the view plane. Only centered, axis-aligned windows are available;
+rotated and asymmetric windows retain placement/dimensions with explicit reasons.
+If OCCT cannot read a complete view table, all shape/PMI associations are refused.
 Native links are authoritative after document copy; provenance names are not
 replayed on restore, undo or redo. No source file or Python proxy is required.
 """
@@ -112,7 +119,7 @@ def create(document, records, pmi_names=()):
                     if len(candidates) == 1 and not reason:
                         pmi.append(candidates[0])
                     else:
-                        reason = "PMI disabled, omitted or ambiguous in this import"
+                        reason = reason or "PMI disabled, omitted or ambiguous in this import"
                 else:
                     reason = "unsupported association role"
                 if reason:
