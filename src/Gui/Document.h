@@ -283,6 +283,9 @@ public:
      * recorded keep their scene state (e.g. scene-only temporary visibility).
      */
     void noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider);
+    /** True while a visibility change has not yet reached the live scene. */
+    [[nodiscard]] bool hasDeferredVisibilityChange(
+        const ViewProviderDocumentObject* viewProvider) const;
     /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
     void publishSharedPresentationSchemaMutation(
         const Gui::ViewProvider& viewProvider,
