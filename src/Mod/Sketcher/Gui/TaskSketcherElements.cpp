@@ -36,6 +36,7 @@
 #include <QTimer>
 #include <QWidgetAction>
 #include <boost/core/ignore_unused.hpp>
+#include <array>
 #include <format>
 #include <limits>
 #include <cstring>
@@ -44,6 +45,8 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentWouldBlock.h>
+#include <App/MutationClassification.h>
+#include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
@@ -247,19 +250,7 @@ public:
 
     bool isVisible() const
     {
-        if (State != GeometryState::External && State != GeometryState::ConstructionExternal) {
-            const auto geo = sketchView->getSketchObject()->getGeometry(ElementNbr);
-            if (geo) {
-                auto layer = getSafeGeomLayerId(geo);
-
-                return layer != static_cast<unsigned int>(Layer::Hidden);
-            }
-        }
-
-        // 1. external geometry currently is always visible.
-        // 2. if internal and ElementNbr is out of range, the element
-        // needs to be updated and the return value is not important.
-        return true;
+        return visible;
     }
 
     QVariant data(int role) const override
@@ -322,6 +313,8 @@ public:
     Base::Type GeometryType;
     GeometryState State;
 
+    bool visible = true;
+    bool grouped = false;
     bool isLineSelected;
     bool isStartingPointSelected;
     bool isEndPointSelected;
@@ -1346,6 +1339,8 @@ void ElementFilterList::languageChange()
 TaskSketcherElements::TaskSketcherElements(ViewProviderSketch* sketchView)
     : TaskBox(Gui::BitmapFactory().pixmap("Sketcher_CreateLine"), tr("Elements"), true, nullptr)
     , sketchView(sketchView)
+    , rowDocumentName(sketchView->getSketchObject()->getDocument()->getName())
+    , rowObjectName(sketchView->getSketchObject()->getNameInDocument())
     , ui(new Ui_TaskSketcherElements())
     , focusItemIndex(-1)
     , previouslySelectedItemIndex(-1)
@@ -1578,13 +1573,9 @@ void TaskSketcherElements::updateVisibility()
 {
     // Calculate the set of grouped geometries that should be hidden.
     std::set<int> groupedGeoIds;
-    const auto& constraints = sketchView->getSketchObject()->Constraints.getValues();
-    for (const auto* c : constraints) {
-        if (c->Type == Sketcher::Group || c->Type == Sketcher::Text) {
-            // Member geometries start from index 1.
-            for (int j = 1; c->hasElement(j); ++j) {
-                groupedGeoIds.insert(c->getGeoId(j));
-            }
+    for (const auto& [id, item] : elementMap) {
+        if (item->grouped) {
+            groupedGeoIds.insert(id);
         }
     }
 
@@ -1606,8 +1597,8 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
     }
 
     // is it this object??
-    if (strcmp(msg.pDocName, sketchView->getSketchObject()->getDocument()->getName()) != 0
-        || strcmp(msg.pObjectName, sketchView->getSketchObject()->getNameInDocument()) != 0
+    if (strcmp(msg.pDocName, rowDocumentName.c_str()) != 0
+        || strcmp(msg.pObjectName, rowObjectName.c_str()) != 0
         || !msg.pSubName) {
         return;
     }
@@ -1638,25 +1629,18 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
     // Format: "Vertex123" -> offset 6
     else if (std::strncmp(subName, "Vertex", 6) == 0) {
         int vtId = std::atoi(subName + 6) - 1;
-        int GeoId;
-        Sketcher::PointPos PosId;
-        sketchView->getSketchObject()->getGeoVertexIndex(vtId, GeoId, PosId);
-
-        auto it = elementMap.find(GeoId);
-        if (it != elementMap.end()) {
-            modified_item = it->second;
-            switch (PosId) {
-                case Sketcher::PointPos::start:
-                    modified_item->isStartingPointSelected = select;
-                    break;
-                case Sketcher::PointPos::end:
-                    modified_item->isEndPointSelected = select;
-                    break;
-                case Sketcher::PointPos::mid:
-                    modified_item->isMidPointSelected = select;
-                    break;
-                default:
-                    break;
+        for (const auto& [id, item] : elementMap) {
+            if (vtId == item->StartingVertex) {
+                modified_item = item;
+                item->isStartingPointSelected = select;
+            }
+            if (vtId == item->EndVertex) {
+                modified_item = item;
+                item->isEndPointSelected = select;
+            }
+            if (vtId == item->MidVertex) {
+                modified_item = item;
+                item->isMidPointSelected = select;
             }
         }
     }
@@ -2017,14 +2001,68 @@ void TaskSketcherElements::leaveEvent(QEvent* event)
 void TaskSketcherElements::slotElementsChanged()
 {
     assert(sketchView);
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired() || sketchView->getDocument()->deferLivePresentationUpdates()
+        || updatingElements) {
+        if (!elementsUpdateQueued) {
+            elementsUpdateQueued = true;
+            QTimer::singleShot(10, this, [this]() {
+                elementsUpdateQueued = false;
+                slotElementsChanged();
+            });
+        }
+        return;
+    }
+    updatingElements = true;
+    const auto clearUpdating = Base::ScopeGuard([this]() { updatingElements = false; });
+
+    // Prepare owned row values, including vertex IDs and constraint grouping,
+    // before clearing/inserting rows can invoke callbacks that replace the model.
+    std::vector<std::unique_ptr<ElementItem>> rows;
     // Build up ListView with the elements
     Sketcher::SketchObject* sketch = sketchView->getSketchObject();
 
+    auto geometry = sketch->getGeoListFacade();
+    for (auto& facade : geometry.geomlist) {
+        if (facade) {
+            facade = Sketcher::GeometryFacade::getFacade(facade->clone(), true);
+        }
+    }
+    std::vector<std::unique_ptr<Sketcher::Constraint>> constraints;
+    for (const auto* constraint : sketch->Constraints.getValues()) {
+        if (constraint) {
+            constraints.emplace_back(constraint->clone());
+        }
+    }
+    std::vector<const Part::Geometry*> vals;
+    for (int id = 0; id < geometry.getInternalCount(); ++id) {
+        vals.push_back(geometry.getGeometryFromGeoId(id));
+    }
+    std::vector<const Part::Geometry*> ext_vals;
+    for (int index = 1; index <= geometry.getExternalCount(); ++index) {
+        ext_vals.push_back(geometry.getGeometryFromGeoId(-index));
+    }
+    std::map<int, std::array<int, 3>> vertices;
+    for (int index = 0; index < int(geometry.geomlist.size()); ++index) {
+        int id = geometry.getGeoIdFromGeomListIndex(index);
+        if (id == -1 || id == -2 || !geometry.getGeometryFromGeoId(id)) {
+            continue;
+        }
+        vertices[id] = {
+            sketch->getVertexIndexGeoPos(id, Sketcher::PointPos::start),
+            sketch->getVertexIndexGeoPos(id, Sketcher::PointPos::mid),
+            sketch->getVertexIndexGeoPos(id, Sketcher::PointPos::end)};
+    }
+    std::vector<std::string> linknames;
+    for (const auto* object : sketch->ExternalGeometry.getValues()) {
+        linknames.emplace_back(object ? object->getNameInDocument() : "");
+    }
+    const auto linksubs = sketch->ExternalGeometry.getSubValues();
+
     // Pre-process constraints to identify grouped elements and their handles
-    const auto& constraints = sketch->Constraints.getValues();
     std::set<int> groupedGeoIds;
     std::map<int, Sketcher::ConstraintType> handleIdToType;
-    for (const auto* c : constraints) {
+    for (const auto& c : constraints) {
         if (c->Type == Sketcher::Group || c->Type == Sketcher::Text) {
             if (c->hasElement(0)) {
                 handleIdToType[c->getGeoId(0)] = c->Type;
@@ -2036,16 +2074,14 @@ void TaskSketcherElements::slotElementsChanged()
         }
     }
 
-    const std::vector<Part::Geometry*>& vals = sketch->Geometry.getValues();
-
-    ui->listWidgetElements->clear();
-    elementMap.clear();
-    selectionBuffer.clear();
-
     using GeometryState = ElementItem::GeometryState;
 
     int i = 1;
     for (auto* geo : vals) {
+        if (!geo) {
+            ++i;
+            continue;
+        }
         Base::Type type = geo->getTypeId();
         GeometryState state = GeometryState::Normal;
 
@@ -2132,34 +2168,27 @@ void TaskSketcherElements::slotElementsChanged()
 
         auto* itemN = new ElementItem(
             i - 1,
-            sketchView->getSketchObject()->getVertexIndexGeoPos(i - 1, Sketcher::PointPos::start),
-            sketchView->getSketchObject()->getVertexIndexGeoPos(i - 1, Sketcher::PointPos::mid),
-            sketchView->getSketchObject()->getVertexIndexGeoPos(i - 1, Sketcher::PointPos::end),
+            vertices.at(i - 1)[0],
+            vertices.at(i - 1)[1],
+            vertices.at(i - 1)[2],
             type,
             state,
             label,
             sketchView,
             isTextHandle);
 
-        ui->listWidgetElements->addItem(itemN);
-
-        elementMap[itemN->ElementNbr] = itemN;
-
-        setItemVisibility(itemN, groupedGeoIds);
+        itemN->visible = layerId != static_cast<unsigned int>(ElementItem::Layer::Hidden);
+        itemN->grouped = groupedGeoIds.contains(i - 1);
+        rows.emplace_back(itemN);
         ++i;
     }
 
-    const std::vector<Part::Geometry*>& ext_vals =
-        sketchView->getSketchObject()->getExternalGeometry();
-
-    const std::vector<App::DocumentObject*> linkobjs =
-        sketchView->getSketchObject()->ExternalGeometry.getValues();
-    const std::vector<std::string> linksubs =
-        sketchView->getSketchObject()->ExternalGeometry.getSubValues();
-
     int j = 1;
-    for (std::vector<Part::Geometry*>::const_iterator it = ext_vals.begin(); it != ext_vals.end();
+    for (auto it = ext_vals.begin(); it != ext_vals.end();
          ++it, ++i, ++j) {
+        if (!*it || -j == Sketcher::GeoEnum::GeoUndef) {
+            continue;
+        }
         Base::Type type = (*it)->getTypeId();
 
         if (j > 2) {// we do not want the H and V axes
@@ -2194,9 +2223,10 @@ void TaskSketcherElements::slotElementsChanged()
             QString linkname;
 
             if (isNamingBoxChecked) {
-                if (size_t(j - 3) < linkobjs.size() && size_t(j - 3) < linksubs.size()) {
+                if (size_t(j - 3) < linknames.size() && size_t(j - 3) < linksubs.size()
+                    && !linknames[j - 3].empty()) {
                     linkname = IdInformation(true)
-                        + QString::fromUtf8(linkobjs[j - 3]->getNameInDocument())
+                        + QString::fromUtf8(linknames[j - 3].c_str())
                         + QStringLiteral(".") + QString::fromUtf8(linksubs[j - 3].c_str())
                         + QStringLiteral(")");
                 }
@@ -2210,9 +2240,9 @@ void TaskSketcherElements::slotElementsChanged()
 
             auto* itemN = new ElementItem(
                 -j,
-                sketchView->getSketchObject()->getVertexIndexGeoPos(-j, Sketcher::PointPos::start),
-                sketchView->getSketchObject()->getVertexIndexGeoPos(-j, Sketcher::PointPos::mid),
-                sketchView->getSketchObject()->getVertexIndexGeoPos(-j, Sketcher::PointPos::end),
+                vertices.at(-j)[0],
+                vertices.at(-j)[1],
+                vertices.at(-j)[2],
                 type,
                 state,
                 type == Part::GeomPoint::getClassTypeId()
@@ -2249,17 +2279,44 @@ void TaskSketcherElements::slotElementsChanged()
                                           : (QStringLiteral("%1-").arg(i - 2) + tr("Other"))),
                 sketchView);
 
-            ui->listWidgetElements->addItem(itemN);
-
-            elementMap[itemN->ElementNbr] = itemN;
-
-            setItemVisibility(itemN, groupedGeoIds);
+            rows.emplace_back(itemN);
         }
     }
+
+    // Drop buffered references before Qt removes their items.
+    elementMap.clear();
+    selectionBuffer.clear();
+    QSignalBlocker blockSelection(ui->listWidgetElements);
+    ui->listWidgetElements->clear();
+    for (auto& row : rows) {
+        auto* item = row.release();
+        ui->listWidgetElements->addItem(item);
+        elementMap[item->ElementNbr] = item;
+        setItemVisibility(item, groupedGeoIds);
+    }
+
+    // Reconcile the current GUI selection after publishing all rows. In particular, a
+    // zero-delay selection update queued immediately before this rebuild referred to old rows.
+    std::vector<std::string> subnames;
+    for (const auto& selected : Gui::Selection().getSelection(rowDocumentName.c_str())) {
+        if (rowObjectName == selected.FeatName && selected.SubName) {
+            subnames.emplace_back(selected.SubName);
+        }
+    }
+    for (const auto& subname : subnames) {
+        onSelectionChanged(Gui::SelectionChanges(Gui::SelectionChanges::AddSelection,
+                           rowDocumentName, rowObjectName, subname));
+    }
+    for (const auto& [id, item] : elementMap) {
+        item->setSelected(item->isLineSelected || item->isStartingPointSelected
+                          || item->isEndPointSelected || item->isMidPointSelected);
+    }
+    selectionBuffer.clear();
 }
 
 void TaskSketcherElements::clearWidget()
 {
+    selectionBuffer.clear();
     {
         QSignalBlocker sigblk(ui->listWidgetElements);
         ui->listWidgetElements->clearSelection();

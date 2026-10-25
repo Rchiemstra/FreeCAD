@@ -145,7 +145,10 @@ public:
 
     /** @name update coin colors*/
     //@{
-    void updateConstraintColor(const std::vector<Sketcher::Constraint*>& constraints);
+    void updateConstraintColor(
+        const GeoListFacade& geolistfacade,
+        const std::vector<Sketcher::Constraint*>& constraints
+    );
     //@}
 
     /** @name coin nodes creation*/

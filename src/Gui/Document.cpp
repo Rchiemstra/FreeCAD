@@ -1447,6 +1447,12 @@ void Document::noteDeferredVisibilityChange(const ViewProviderDocumentObject* vi
     }
 }
 
+bool Document::hasDeferredVisibilityChange(
+    const ViewProviderDocumentObject* viewProvider) const
+{
+    return d->_deferredVisibilitySync.contains(viewProvider);
+}
+
 void Document::scheduleLivePresentationCatchUp()
 {
     if (!d->_pcDocument || d->_livePresentationCatchUpQueued) {
