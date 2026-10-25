@@ -608,7 +608,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
-                                                 nestInCallerTransaction);
+                                                 nestInCallerTransaction,
+                                                 {});
     };
 
     if (_document.isCollaborationOwnerThread()) {
@@ -653,7 +654,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                         structuralCompatibility,
                         recomputePolicy,
                         retainUndoHistory,
-                        nestInCallerTransaction));
+                        nestInCallerTransaction,
+                        {}));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -692,7 +694,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithRecomp
                                              requireDetachedPreparationSupport,
                                              structuralCompatibility,
                                              recomputePolicy,
-                                             true);
+                                             true,
+                                             false,
+                                             {});
 }
 
 DocumentCommitResult
@@ -930,24 +934,6 @@ std::optional<DocumentCommitResult> DocumentCommitCoordinator::rejectCommitPrere
         );
     }
     return std::nullopt;
-}
-
-DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(
-    const PreparedEdit& edit,
-    const bool requireDetachedPreparationSupport,
-    const bool structuralCompatibility,
-    const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool retainUndoHistory,
-    const bool nestInCallerTransaction)
-{
-    return commitOnDocumentThreadWithOptions(
-        edit,
-        requireDetachedPreparationSupport,
-        structuralCompatibility,
-        recomputePolicy,
-        retainUndoHistory,
-        nestInCallerTransaction,
-        {});
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(

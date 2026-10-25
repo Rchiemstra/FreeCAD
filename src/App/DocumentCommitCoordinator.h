@@ -151,15 +151,8 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy);
-    [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithOptions(
-        const PreparedEdit& edit,
-        bool requireDetachedPreparationSupport,
-        bool structuralCompatibility,
-        CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool retainUndoHistory,
-        bool nestInCallerTransaction = false);
-    // The scope type is incomplete in this header. The unique_ptr overload is
-    // separate so its empty scope is created only where the type is complete.
+    // No default arguments: the scope type is incomplete in this header, and an
+    // empty default scope would need its destructor here (Clang, C++23).
     [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithOptions(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
