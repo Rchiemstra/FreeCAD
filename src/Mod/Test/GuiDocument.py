@@ -560,9 +560,17 @@ class TestGuiDocument(unittest.TestCase):
 
             text_edit = text_edits[0]
 
+            editor_closed = []
+
             def closeEditor():
+                if editor_closed:
+                    return
+                editor_closed.append(True)
                 text_edit.document().setModified(False)
                 main_window.removeWindow(editor)
+                # removeWindow() only schedules the deletion. Delete the editor now, so
+                # its file timestamp check cannot ask about the removed temporary file.
+                QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
             self.addCleanup(closeEditor)
 
@@ -596,6 +604,9 @@ class TestGuiDocument(unittest.TestCase):
             # Std_Save must reach the focused macro editor, not the active document,
             # the macro is written and the document is left untouched
             self.assertEqual(doc_mtime_after, doc_mtime_before)
+
+            # close the editor while its file still exists
+            closeEditor()
 
 
 class TestImagePlaneLoading(unittest.TestCase):

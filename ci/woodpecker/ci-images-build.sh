@@ -1,77 +1,87 @@
 #!/bin/sh
-# Build and push ONE CI image, but only if ci-images-check.sh flagged it missing.
-#
-# Usage: ci-images-build.sh <deps|mcp>
-#
-# Runs inside the kaniko executor image. kaniko does not support building more
-# than one image per container, so deps and mcp get their own pipeline steps and
-# this script is invoked once per image.
-set -e
-
-which="$1"
-[ -n "$which" ] || { echo "usage: ci-images-build.sh <deps|mcp>"; exit 1; }
-
-# Flag files from ci-images-check can lag the registry (workspace cwd, GC).
-# Re-query :24.04 before a no-op so we actually rebuild when tags are null.
-# If this kaniko image has no wget, keep the old flag-only no-op (do not force
-# a 15 minute rebuild on every PR).
-if [ ! -f ".ci-images/$which-missing" ]; then
-  wget_bin="$(command -v wget 2>/dev/null || true)"
-  if [ -z "$wget_bin" ] && [ -x /busybox/wget ]; then
-    wget_bin=/busybox/wget
-  fi
-  if [ -z "$wget_bin" ]; then
-    echo "freecad-ci-$which is already in the registry; nothing to build"
-    echo "(wget unavailable; trusting ci-images-check flag)"
-    exit 0
-  fi
-  list_url="${FREECAD_CI_REGISTRY:-http://registry-freecad:5000}/v2/freecad-ci-$which/tags/list"
-  tags="$("$wget_bin" -qO- "$list_url" 2>/dev/null || true)"
-  if echo "$tags" | grep -q '"24.04"'; then
-    echo "freecad-ci-$which is already in the registry; nothing to build"
-    exit 0
-  fi
-  echo "no .ci-images/$which-missing flag, but registry has no 24.04 tag; building"
-  echo "tags: ${tags:-<none>}"
+# Build a candidate archive without publishing. Serialize the final recheck,
+# keyed publication and compatibility-alias repair across both workflows/local.
+set -eu
+which=${1:?usage: ci-images-build.sh <deps|mcp>}
+case "$which" in deps|mcp) ;; *) echo "unknown image '$which'" >&2; exit 1 ;; esac
+. ci/woodpecker/ci-images-common.sh
+load_image_tags
+case "$which" in deps) tag=$deps_tag ;; mcp) tag=$mcp_tag ;; esac
+parent=
+if [ "$which" = mcp ]; then
+  parent=$(image_digest deps "$deps_tag") || { echo 'ERROR: build deps before MCP' >&2; exit 1; }
 fi
-
-registry="${FREECAD_CI_REGISTRY_HOST:-registry-freecad:5000}"
-workspace="${CI_WORKSPACE:-$(pwd)}"
-sha="$CI_COMMIT_SHA"
-
-case "$which" in
-  deps)
-    context="$workspace/package/ubuntu"
-    dockerfile="$context/Dockerfile"
-    ;;
-  mcp)
-    context="$workspace/tools/mcp/freecad-mcp"
-    dockerfile="$context/Dockerfile.ci"
-    ;;
-  *)
-    echo "unknown image '$which'"; exit 1 ;;
-esac
-
-[ -f "$dockerfile" ] || { echo "missing Dockerfile: $dockerfile"; exit 1; }
-
-echo "building freecad-ci-$which from $dockerfile"
-
-# --insecure/--skip-tls-verify: the local registry speaks plain HTTP.
-# The mcp image FROMs freecad-ci-deps out of that same registry, so it also
-# needs the pull-side flags.
-set -- \
-  --context="dir://$context" \
-  --dockerfile="$dockerfile" \
-  --destination="$registry/freecad-ci-$which:24.04" \
-  --insecure \
-  --skip-tls-verify \
-  --insecure-pull \
-  --skip-tls-verify-pull \
-  --single-snapshot
-
-if [ -n "$sha" ]; then
-  set -- "$@" --destination="$registry/freecad-ci-$which:$sha"
+existing=
+if existing=$(image_digest "$which" "$tag"); then
+  if [ "$which" = deps ] || [ "$(image_parent "$existing")" = "$parent" ]; then
+    lock_publisher
+    # Re-enter the common final check under the lock, even on no-op paths.
+  else
+    existing=
+  fi
+else
+  rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
 fi
-
-/kaniko/executor "$@"
-echo "pushed freecad-ci-$which"
+candidate=$image_state/$which.tar
+if [ -z "$existing" ]; then
+  workspace=${CI_WORKSPACE:-$(pwd)}
+  case "$which" in
+    deps) context="$workspace/package/ubuntu"; dockerfile="$context/Dockerfile" ;;
+    mcp) context="$workspace/tools/mcp/freecad-mcp"; dockerfile="$context/Dockerfile.ci" ;;
+  esac
+  [ -f "$dockerfile" ] || { echo "missing Dockerfile: $dockerfile" >&2; exit 1; }
+  if [ "${FREECAD_CI_BUILD_ENGINE:-kaniko}" = docker ]; then
+    set -- --pull -f "$dockerfile" -t "freecad-ci-$which:$tag"
+    if [ "$which" = mcp ]; then
+      set -- "$@" --build-arg "FREECAD_CI_DEPS_IMAGE=$registry_host/freecad-ci-deps@$parent" \
+        --label "org.freecad.ci.deps-digest=$parent"
+    fi
+    docker build "$@" "$context"
+    docker save -o "$candidate" "freecad-ci-$which:$tag"
+  else
+    set -- --context="dir://$context" --dockerfile="$dockerfile" \
+      --destination="$registry_host/freecad-ci-$which:$tag" --no-push --tar-path="$candidate" \
+      --insecure --skip-tls-verify --insecure-pull --skip-tls-verify-pull --single-snapshot
+    if [ "$which" = mcp ]; then
+      set -- "$@" --build-arg="FREECAD_CI_DEPS_IMAGE=$registry_host/freecad-ci-deps@$parent" \
+        --label="org.freecad.ci.deps-digest=$parent"
+    fi
+    "${KANIKO_EXECUTOR:-/kaniko/executor}" "$@"
+  fi
+  lock_publisher
+fi
+# No work may change the parent between the build and its publication.
+if [ "$which" = mcp ] && [ "$(image_digest deps "$deps_tag")" != "$parent" ]; then
+  echo 'ERROR: deps changed during MCP build; rerun the pipeline' >&2
+  exit 1
+fi
+publish=0
+old_digest=; old_parent=
+if digest=$(image_digest "$which" "$tag"); then
+  if [ "$which" = mcp ]; then
+    old_parent=$(image_parent "$digest")
+    if [ -z "$old_parent" ]; then
+      echo 'ERROR: existing MCP key has no recorded parent; refusing to overwrite it' >&2
+      exit 1
+    fi
+    if [ "$old_parent" != "$parent" ]; then
+      old_digest=$digest
+      publish=1
+    fi
+  fi
+else
+  rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
+  publish=1
+fi
+if [ "$publish" -eq 1 ]; then
+  [ -f "$candidate" ] || { echo 'ERROR: image evicted during no-op; rerun pipeline' >&2; exit 1; }
+  if [ -n "$old_digest" ]; then
+    echo "replacing stale-parent MCP tag $tag: old MCP digest=$old_digest; old parent=$old_parent; new parent=$parent"
+  fi
+  "$crane_bin" push --insecure "$candidate" "$registry_host/freecad-ci-$which:$tag"
+  digest=$(image_digest "$which" "$tag")
+else
+  echo "freecad-ci-$which:$tag already present or appeared during build ($digest); using it"
+fi
+repair_alias "$which" "$digest"
+rm -f "$candidate"

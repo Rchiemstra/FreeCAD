@@ -3,39 +3,45 @@
   "exclusions": [
     {
       "path": "src/Gui/Application.h",
-      "line": 167,
       "category": "live-reference-callback",
-      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler."
+      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler.",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&)> signalDeletedObject;",
+      "occurrence": 1
     },
     {
       "path": "src/Gui/Application.h",
-      "line": 169,
       "category": "live-reference-callback",
-      "reason": "Signal member declaration (fastsignals::signal<...> signalBeforeChangeObject), not a live-reference callback binding or handler."
+      "reason": "Signal member declaration (fastsignals::signal<...> signalBeforeChangeObject), not a live-reference callback binding or handler.",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;",
+      "occurrence": 1
     },
     {
       "path": "src/Gui/Application.h",
-      "line": 171,
       "category": "live-reference-callback",
-      "reason": "Signal member declaration (fastsignals::signal<...> signalChangedObject), not a live-reference callback binding or handler."
+      "reason": "Signal member declaration (fastsignals::signal<...> signalChangedObject), not a live-reference callback binding or handler.",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalChangedObject;",
+      "occurrence": 1
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 139,
       "category": "live-reference-callback",
-      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler."
+      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler.",
+      "evidence": "mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalDeletedObject;",
+      "occurrence": 1
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 143,
       "category": "live-reference-callback",
-      "reason": "Signal member declaration (continuation of the fastsignals::signal<...> signalChangedObject declaration), not a live-reference callback binding or handler."
+      "reason": "Signal member declaration (continuation of the fastsignals::signal<...> signalChangedObject declaration), not a live-reference callback binding or handler.",
+      "evidence": "signalChangedObject;",
+      "occurrence": 1
     },
     {
       "path": "src/Gui/Quarter/SignalThread.cpp",
-      "line": 71,
       "category": "thread-waits",
-      "reason": "Worker-thread self-wait inside SignalThread::run(): the QWaitCondition the background thread blocks on while waiting to be triggered. It blocks the SignalThread worker, not the GUI thread, so it is not a GUI-thread blocking wait."
+      "reason": "Worker-thread self-wait inside SignalThread::run(): the QWaitCondition the background thread blocks on while waiting to be triggered. It blocks the SignalThread worker, not the GUI thread, so it is not a GUI-thread blocking wait.",
+      "evidence": "this->waitcond.wait(&this->mutex);",
+      "occurrence": 1
     }
   ]
 }

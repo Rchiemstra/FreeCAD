@@ -26,6 +26,7 @@
 
 #include <QItemDelegate>
 #include <QPointer>
+#include <QPersistentModelIndex>
 
 namespace Gui
 {
@@ -60,6 +61,7 @@ protected:
     void valueChanged();
 
 private:
+    mutable QPersistentModelIndex pendingCreateIndex;
     mutable QPointer<QWidget> propertyEditor;
     mutable QWidget* expressionEditor;
     mutable PropertyEditorWidget* userEditor = nullptr;

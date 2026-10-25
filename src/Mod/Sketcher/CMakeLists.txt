@@ -28,6 +28,7 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchEditFailures.py
     SketcherTests/TestSketchMalformedConstraints.py
     SketcherTests/TestSketcherEllipse.py
+    SketcherTests/TestSketchExternalProjection.py
     SketcherTests/TestSketchReferenceRepair.py
 )
 
@@ -35,6 +36,7 @@ if(BUILD_GUI)
     list (APPEND Sketcher_Scripts
           InitGui.py
           SketchReferenceRepairGui.py
+          SketchReferenceReassignGui.py
           TestSketcherGui.py
     )
     list (APPEND Sketcher_TestScripts
@@ -51,6 +53,7 @@ if(BUILD_GUI)
           SketcherTests/TestViewSectionGui.py
           SketcherTests/TestSketchReferenceRepairGui.py
           SketcherTests/TestSketchEditCleanGui.py
+          SketcherTests/TestSketchClipboardGui.py
     )
 endif(BUILD_GUI)
 

@@ -32,6 +32,8 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <fastsignals/signal.h>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include <Base/Parameter.h>
@@ -1080,6 +1082,9 @@ private:
     std::unique_ptr<ShortcutListener> listener;
 
     std::unique_ptr<EditModeCoinManager> editCoinManager;
+
+    // Even, globally unique edit id; low bit marks a queued redraw. Zero means no edit.
+    std::atomic<std::uint64_t> solverUpdateSession {0};
 
     std::unique_ptr<SnapManager> snapManager;
 
