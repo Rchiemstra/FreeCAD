@@ -72,10 +72,13 @@
 #include "Utils.h"
 #include "ViewProviderSketch.h"
 #include "ViewProviderSketchCoinAttorney.h"
+#include "SketcherPresentationInputs.h"
 
 using namespace Gui;
 using namespace SketcherGui;
 using namespace Sketcher;
+
+using PresentationInputs::hasAvailableGeometry;
 
 //**************************** EditModeConstraintCoinManager class ******************************
 
@@ -149,8 +152,14 @@ Restart:
     assert(int(constrlist.size()) == editModeScenegraphNodes.constrGroup->getNumChildren());
     assert(int(vConstrType.size()) == editModeScenegraphNodes.constrGroup->getNumChildren());
 
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
     // update the virtual space
     updateVirtualSpace();
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     auto getNormal =
         [](const GeoListFacade& geolistfacade, const int geoid, const Base::Vector3d& pointoncurve) {
@@ -180,6 +189,9 @@ Restart:
     // go through the constraints and update the position
     int i = 0;
     for (auto it = constrlist.begin(); it != constrlist.end(); ++it, i++) {
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
         // check if the type has changed
         if ((*it)->Type != vConstrType[i]) {
             // clearing the type vector will force a rebuild of the visual nodes
@@ -193,12 +205,9 @@ Restart:
             auto* sep = static_cast<SoSeparator*>(editModeScenegraphNodes.constrGroup->getChild(i));
             const Constraint* Constr = *it;
 
-            if (Constr->First < -extGeoCount || Constr->First >= intGeoCount
-                || (Constr->Second != GeoEnum::GeoUndef
-                    && (Constr->Second < -extGeoCount || Constr->Second >= intGeoCount))
-                || (Constr->Third != GeoEnum::GeoUndef
-                    && (Constr->Third < -extGeoCount || Constr->Third >= intGeoCount))) {
-                // Constraint can refer to non-existent geometry during undo/redo
+            if (!hasAvailableGeometry(geolistfacade, *Constr)) {
+                // Hide unavailable references, including old labels, until the next valid draw.
+                editModeScenegraphNodes.constrGroup->enable.set1Value(i, false);
                 continue;
             }
 
@@ -1734,6 +1743,7 @@ Base::Vector3d EditModeConstraintCoinManager::seekConstraintPosition(
 }
 
 void EditModeConstraintCoinManager::updateConstraintColor(
+    const GeoListFacade& geolistfacade,
     const std::vector<Sketcher::Constraint*>& constraints
 )
 {
@@ -1769,12 +1779,15 @@ void EditModeConstraintCoinManager::updateConstraintColor(
 
         // Check Constraint Type
         Sketcher::Constraint* constraint = constraints[i];
+        if (!hasAvailableGeometry(geolistfacade, *constraint)) {
+            continue;
+        }
         ConstraintType type = constraint->Type;
 
         // It may happen that color updates are triggered by programmatic selection changes before a
         // command final update. Then constraints may have been changed and the color will be
         // updated as part
-        if (type != vConstrType[i]) {
+        if (i >= int(vConstrType.size()) || type != vConstrType[i]) {
             break;
         }
 
@@ -1912,9 +1925,9 @@ void EditModeConstraintCoinManager::updateConstraintColor(
 
 void EditModeConstraintCoinManager::rebuildConstraintNodes()
 {
-    auto geolistfacade = ViewProviderSketchCoinAttorney::getGeoListFacade(viewProvider);
-
-    rebuildConstraintNodes(geolistfacade);
+    ViewProviderSketchCoinAttorney::withRedrawInputs(viewProvider, [this](GeoListFacade& geometry) {
+        rebuildConstraintNodes(geometry);
+    });
 }
 
 void EditModeConstraintCoinManager::setConstraintSelectability(bool enabled /* = true */)
@@ -1934,6 +1947,9 @@ void EditModeConstraintCoinManager::rebuildConstraintNodes(const GeoListFacade& 
 
     // clean up
     Gui::coinRemoveAllChildren(editModeScenegraphNodes.constrGroup);
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     vConstrType.clear();
 
@@ -1959,6 +1975,9 @@ void EditModeConstraintCoinManager::rebuildConstraintNodes(
 {
 
     for (auto it : constrlist) {
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
         // root separator for one constraint
         auto* sep = new SoSeparator();
         sep->ref();
@@ -2442,9 +2461,9 @@ SbVec3s EditModeConstraintCoinManager::getDisplayedSize(const SoImage* iconPtr) 
 // public function that triggers drawing of most constraint icons
 void EditModeConstraintCoinManager::drawConstraintIcons()
 {
-    auto geolistfacade = ViewProviderSketchCoinAttorney::getGeoListFacade(viewProvider);
-
-    drawConstraintIcons(geolistfacade);
+    ViewProviderSketchCoinAttorney::withRedrawInputs(viewProvider, [this](GeoListFacade& geometry) {
+        drawConstraintIcons(geometry);
+    });
 }
 
 void EditModeConstraintCoinManager::drawConstraintIcons(const GeoListFacade& geolistfacade)
@@ -2460,7 +2479,14 @@ void EditModeConstraintCoinManager::drawConstraintIcons(const GeoListFacade& geo
     );
 
     for (int constrId = 0; constrId < maxNumberOfConstraints; ++constrId) {
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
         Sketcher::Constraint* constraint = constraints[constrId];
+
+        if (!hasAvailableGeometry(geolistfacade, *constraint)) {
+            continue;
+        }
 
         // Check if Icon Should be created
         bool multipleIcons = false;
@@ -2470,7 +2496,7 @@ void EditModeConstraintCoinManager::drawConstraintIcons(const GeoListFacade& geo
             continue;
         }
 
-        if (constraint->Type != vConstrType[constrId]) {
+        if (constrId >= int(vConstrType.size()) || constraint->Type != vConstrType[constrId]) {
             break;
         }
 
