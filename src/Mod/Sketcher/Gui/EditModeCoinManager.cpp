@@ -978,8 +978,16 @@ EditModeCoinManager::EditModeCoinManager(ViewProviderSketch& vp)
 EditModeCoinManager::~EditModeCoinManager()
 {
     Gui::coinRemoveAllChildren(editModeScenegraphNodes.EditRoot);
-    ViewProviderSketchCoinAttorney::removeNodeFromRoot(viewProvider, editModeScenegraphNodes.EditRoot);
+    detachFromRoot();
     editModeScenegraphNodes.EditRoot->unref();
+}
+
+void EditModeCoinManager::detachFromRoot()
+{
+    if (rootAttached) {
+        rootAttached = false;
+        ViewProviderSketchCoinAttorney::removeNodeFromRoot(viewProvider, editModeScenegraphNodes.EditRoot);
+    }
 }
 
 /***** Temporary edit curves and markers *****/
@@ -1609,10 +1617,16 @@ void EditModeCoinManager::processGeometryConstraintsInformationOverlay(
     overlayParameters.rebuildInformationLayer = rebuildinformationlayer;
 
     pEditModeGeometryCoinManager->processGeometry(geolistfacade);
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     updateOverlayParameters();
 
     processGeometryInformationOverlay(geolistfacade);
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     pEditModeConstraintCoinManager->processConstraints(geolistfacade);
 }
@@ -1696,6 +1710,9 @@ void EditModeCoinManager::updateColor(const GeoListFacade& geolistfacade)
     bool sketchinvalid = ViewProviderSketchCoinAttorney::isSketchInvalid(viewProvider);
 
     pEditModeGeometryCoinManager->updateGeometryColor(geolistfacade, sketchinvalid);
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     // update constraint color
 

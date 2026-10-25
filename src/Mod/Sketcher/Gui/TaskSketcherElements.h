@@ -155,6 +155,8 @@ protected:
     void changeEvent(QEvent* e) override;
     void leaveEvent(QEvent* event) override;
     ViewProviderSketch* sketchView;
+    std::string rowDocumentName;
+    std::string rowObjectName;
     using Connection = fastsignals::connection;
     Connection connectionElementsChanged;
 

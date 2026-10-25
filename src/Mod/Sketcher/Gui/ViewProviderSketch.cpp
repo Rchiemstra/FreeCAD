@@ -98,6 +98,7 @@
 #include "TaskSketcherValidation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
+#include "SketcherPresentationInputs.h"
 #include "SketchEditState.h"
 #include "ViewProviderSketchGeometryExtension.h"
 #include "Workbench.h"
@@ -620,22 +621,35 @@ PROPERTY_SOURCE_WITH_EXTENSIONS(SketcherGui::ViewProviderSketch, PartGui::ViewPr
 
 struct ViewProviderSketch::RedrawInputs
 {
+    // Keep the manager and its nodes alive until every synchronous notification returns.
+    std::shared_ptr<EditModeCoinManager> manager;
+    std::uint64_t session;
     GeoListFacade geometry;
     std::vector<std::unique_ptr<Sketcher::Constraint>> ownedConstraints;
     std::vector<Sketcher::Constraint*> constraints;
     std::vector<bool> active;
     std::vector<bool> expressions;
+    bool invalid;
+    bool fullyConstrained;
+    bool invalidConstraintGeometry;
 
     RedrawInputs(ViewProviderSketch& view, bool temp)
-        : geometry(temp ? view.getSolvedSketch().extractGeoListFacade()
+        : manager(view.editCoinManager)
+        , session(view.solverUpdateSession.load() & ~std::uint64_t(1))
+        , geometry(temp ? view.getSolvedSketch().extractGeoListFacade()
                         : view.getSketchObject()->getGeoListFacade())
     {
         if (!temp) {
             for (auto& facade : geometry.geomlist) {
-                facade = GeometryFacade::getFacade(facade->clone(), true);
+                if (facade) {
+                    facade = GeometryFacade::getFacade(facade->clone(), true);
+                }
             }
         }
         auto* sketch = view.getSketchObject();
+        invalid = view.isSketchInvalid();
+        fullyConstrained = sketch->FullyConstrained.getValue();
+        invalidConstraintGeometry = sketch->Constraints.hasInvalidGeometry();
         for (auto* constraint : sketch->Constraints.getValues()) {
             active.push_back(sketch->isConstraintActiveInSketch(constraint));
             expressions.push_back(sketch->constraintHasExpression(constraints.size()));
@@ -3809,6 +3823,17 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
     }
 }
 
+bool ViewProviderSketch::isRedrawCurrent() const
+{
+    return !redrawInputs || (editCoinManager == redrawInputs->manager
+        && (solverUpdateSession.load() & ~std::uint64_t(1)) == redrawInputs->session);
+}
+
+int ViewProviderSketch::getRenderGroupHandle(int geoId) const
+{
+    return PresentationInputs::groupHandle(getConstraints(), geoId);
+}
+
 void ViewProviderSketch::withRedrawInputs(
     bool temp, bool rebuild, const std::function<void(GeoListFacade&)>& render)
 {
@@ -3854,13 +3879,22 @@ void ViewProviderSketch::draw(bool temp /*=false*/, bool rebuildinformationoverl
         // ============== Render geometry, constraints and geometry information overlays
         // ==================================
 
-        editCoinManager->processGeometryConstraintsInformationOverlay(
-            geolistfacade, rebuildinformationoverlay);
+        const auto manager = redrawInputs->manager;
+        manager->processGeometryConstraintsInformationOverlay(geolistfacade, rebuildinformationoverlay);
+        if (!isRedrawCurrent()) {
+            return;
+        }
 
         // Avoids unneeded calls to pixmapFromSvg
         if (Mode == STATUS_NONE || Mode == STATUS_SKETCH_UseHandler) {
-            editCoinManager->drawConstraintIcons(geolistfacade);
-            editCoinManager->updateColor(geolistfacade);
+            manager->drawConstraintIcons(geolistfacade);
+            if (!isRedrawCurrent()) {
+                return;
+            }
+            manager->updateColor(geolistfacade);
+        }
+        if (!isRedrawCurrent()) {
+            return;
         }
 
         Gui::MDIView* mdi = this->getActiveView();
@@ -3872,9 +3906,6 @@ void ViewProviderSketch::draw(bool temp /*=false*/, bool rebuildinformationoverl
 
 void ViewProviderSketch::queueRedraw(bool temp, bool rebuild)
 {
-    if (!getObject() || !getObject()->isAttachedToDocument()) {
-        return;
-    }
     queuedRedrawTemp = temp;
     queuedRedrawRebuild = queuedRedrawRebuild || rebuild;
     const auto session = solverUpdateSession.load() & ~std::uint64_t(1);
@@ -3887,9 +3918,19 @@ void ViewProviderSketch::queueRedraw(bool temp, bool rebuild)
         return;
     }
     queuedRedrawSession = session;
-    const std::string documentName = getObject()->getDocument()->getName();
-    const std::string objectName = getObject()->getNameInDocument();
+    retryRedraw(redrawDocumentName, redrawObjectName, session);
+}
+
+void ViewProviderSketch::retryRedraw(const std::string& documentName,
+                                    const std::string& objectName, std::uint64_t session)
+{
     Gui::scheduleGuiSingleShot(10, [documentName, objectName, session]() {
+        App::LivePresentationRefreshScope refresh;
+        if (!refresh.acquired()) {
+            // Retry solely from stable identities. No model/provider access without admission.
+            retryRedraw(documentName, objectName, session);
+            return;
+        }
         auto* doc = App::GetApplication().getDocument(documentName.c_str());
         auto* gui = doc && Gui::Application::Instance
             ? Gui::Application::Instance->getDocument(doc) : nullptr;
@@ -3906,14 +3947,21 @@ void ViewProviderSketch::queueRedraw(bool temp, bool rebuild)
         const bool rebuild = view->queuedRedrawRebuild;
         view->queuedRedrawSession = 0;
         view->queuedRedrawRebuild = false;
-        App::LivePresentationRefreshScope refresh;
-        if (!refresh.acquired() || gui->deferLivePresentationUpdates() || view->redrawInputs) {
+        if (gui->deferLivePresentationUpdates() || view->redrawInputs) {
             view->queueRedraw(temp, rebuild);
             return;
         }
+        const auto manager = view->editCoinManager;
+        const auto current = [&]() {
+            return view->editCoinManager == manager
+                && (view->solverUpdateSession.load() & ~std::uint64_t(1)) == session;
+        };
         view->UpdateSolverInformation();
+        if (!current()) {
+            return;
+        }
         view->draw(temp, rebuild);
-        if (!view->queuedRedrawSession) {
+        if (current() && !view->queuedRedrawSession) {
             view->signalConstraintsChanged();
         }
     });
@@ -4020,6 +4068,11 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
     if (prop != &getSketchObject()->Constraints) {
         signalElementsChanged();
     }
+    else if (isInEditMode()) {
+        // Rows own their published constraint data, including names and expressions.
+        // Constraint-only changes therefore need publication even without a solve.
+        queueRedraw(false, true);
+    }
 }
 
 void ViewProviderSketch::slotSolverUpdate()
@@ -4093,14 +4146,26 @@ void ViewProviderSketch::slotSolverUpdate()
 
     // solver information is also updated when no matching geometry, so that if a solving fails
     // this failed solving info is presented to the user
+    const auto manager = editCoinManager;
+    const auto session = solverUpdateSession.load() & ~std::uint64_t(1);
+    const auto current = [&]() {
+        return editCoinManager == manager
+            && (solverUpdateSession.load() & ~std::uint64_t(1)) == session;
+    };
     UpdateSolverInformation();// just update the solver window with the last SketchObject
                               // solving information
 
+    if (!current()) {
+        return;
+    }
     if (getSketchObject()->getExternalGeometryCount()
             + getSketchObject()->getHighestCurveIndex() + 1
         == getSolvedSketch().getGeometrySize()) {
 
         draw(false, true);
+        if (!current()) {
+            return;
+        }
 
         Gui::MDIView* mdi =
             Gui::Application::Instance->editViewOfNode(editCoinManager->getRootEditNode());
@@ -4438,7 +4503,9 @@ bool ViewProviderSketch::setEdit(int ModNum)
     assert(!isInEditMode());
     preselection.reset();
     selection.reset();
-    editCoinManager = std::make_unique<EditModeCoinManager>(*this);
+    redrawDocumentName = getObject()->getDocument()->getName();
+    redrawObjectName = getObject()->getNameInDocument();
+    editCoinManager = std::make_shared<EditModeCoinManager>(*this);
     snapManager = std::make_unique<SnapManager>(*this);
 
 
@@ -4763,6 +4830,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             deactivateHandler();
         }
 
+        // Detach now; an active render owns the manager until its callback unwinds.
+        editCoinManager->detachFromRoot();
         editCoinManager = nullptr;
         snapManager = nullptr;
         preselection.reset();
@@ -5614,7 +5683,9 @@ GeoListFacade ViewProviderSketch::getGeoListFacade() const
 
 bool ViewProviderSketch::isSketchInvalid() const
 {
-
+    if (redrawInputs) {
+        return redrawInputs->invalid;
+    }
     bool sketchinvalid = getSketchObject()->getLastHasRedundancies()
         || getSketchObject()->getLastHasConflicts()
         || getSketchObject()->getLastHasMalformedConstraints();
@@ -5623,12 +5694,14 @@ bool ViewProviderSketch::isSketchInvalid() const
 
 bool ViewProviderSketch::isSketchFullyConstrained() const
 {
-    return getSketchObject()->FullyConstrained.getValue();
+    return redrawInputs ? redrawInputs->fullyConstrained
+                        : getSketchObject()->FullyConstrained.getValue();
 }
 
 bool ViewProviderSketch::haveConstraintsInvalidGeometry() const
 {
-    return getSketchObject()->Constraints.hasInvalidGeometry();
+    return redrawInputs ? redrawInputs->invalidConstraintGeometry
+                        : getSketchObject()->Constraints.hasInvalidGeometry();
 }
 
 void ViewProviderSketch::addNodeToRoot(SoSeparator* node)

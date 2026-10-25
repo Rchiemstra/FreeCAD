@@ -852,7 +852,13 @@ private:
     std::unique_ptr<RedrawInputs> redrawInputs;
     void withRedrawInputs(bool temp, bool rebuild,
                           const std::function<void(GeoListFacade&)>& render);
+    bool isRedrawCurrent() const;
+    int getRenderGroupHandle(int geoId) const;
     void queueRedraw(bool temp, bool rebuild);
+    static void retryRedraw(const std::string& documentName, const std::string& objectName,
+                            std::uint64_t session);
+    std::string redrawDocumentName;
+    std::string redrawObjectName;
     std::uint64_t queuedRedrawSession = 0;
     bool queuedRedrawTemp = false;
     bool queuedRedrawRebuild = false;
@@ -1092,7 +1098,7 @@ private:
 
     std::unique_ptr<ShortcutListener> listener;
 
-    std::unique_ptr<EditModeCoinManager> editCoinManager;
+    std::shared_ptr<EditModeCoinManager> editCoinManager;
 
     // Even, globally unique edit id; low bit marks a queued redraw. Zero means no edit.
     std::atomic<std::uint64_t> solverUpdateSession {0};

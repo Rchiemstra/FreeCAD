@@ -648,6 +648,25 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         self.flush_gui(100)
         return sketch
 
+    def edit_scene_node(self, name):
+        def find(node):
+            if str(node.getName()) == name:
+                return node
+            if hasattr(node, "getNumChildren"):
+                for index in range(node.getNumChildren()):
+                    found = find(node.getChild(index))
+                    if found is not None:
+                        return found
+            return None
+
+        result = find(Gui.activeDocument().activeView().getSceneGraph())
+        self.assertIsNotNone(result, name)
+        return result
+
+    def scene_points(self, name):
+        field = self.edit_scene_node(name).point
+        return [tuple(field[index].getValue())[:2] for index in range(field.getNum())]
+
     def watch_solver_redraws(self):
         from pivy import coin
 
@@ -794,6 +813,8 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
                 # replace geometry. The outer pass must keep its captured pair.
                 sketch.renameConstraint(0, "OwnedRedraw")
                 sketch.toggleConstruction(0)
+                sketch.addGeometry(Part.LineSegment(App.Vector(23, 4, 0),
+                                                     App.Vector(31, 4, 0)), False)
                 sketch.solve()
 
         sensor = coin.SoFieldSensor(on_draw, None)
@@ -827,7 +848,17 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         self.assertEqual([item["status"] for item in results], ["Committed"])
         self.assertEqual(calls, [True])
         self.assertEqual(nested, [0], "inline solver notification recursively redrew")
-        self.assertGreaterEqual(len(redraws), 2, "deferred final redraw was lost")
+        # Geometry and colors can each notify once in a single draw. Verify the
+        # final scene, including the geometry introduced by the nested callback.
+        self.assertIn((23.0, 4.0), self.scene_points("CurvesCoordinate0"))
+        self.assertIn((31.0, 4.0), self.scene_points("CurvesCoordinate0"))
+        self.assertEqual(self.edit_scene_node("CurvesLineSet0").numVertices.getNum(), 1)
+        self.assertEqual(self.edit_scene_node("CurvesLineSet1").numVertices.getNum(), 1)
+        self.assertEqual(self.edit_scene_node("CurvesMaterials0").diffuseColor.getNum(), 1)
+        self.assertEqual(self.edit_scene_node("CurvesMaterials1").diffuseColor.getNum(), 1)
+        normal = tuple(self.edit_scene_node("CurvesMaterials0").diffuseColor[0].getValue())
+        construction = tuple(self.edit_scene_node("CurvesMaterials1").diffuseColor[0].getValue())
+        self.assertNotEqual(normal, construction)
         self.assertTrue(sketch.getConstruction(0))
         self.assertEqual(sketch.Constraints[0].Name, "OwnedRedraw")
         # Constraint-only replacement must also refresh without changing counts.
@@ -1013,3 +1044,291 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         finally:
             if not session.closed:
                 session.close()
+
+    def test_owned_constraint_rows_during_commit(self):
+        import Sketcher
+
+        sketch = self.make_solver_update_fixture()
+        sketch.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
+        self.flush_gui(100)
+        constraints = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetConstraints")[0]
+        row = constraints.item(0)
+        roles = (QtCore.Qt.DisplayRole, QtCore.Qt.EditRole, QtCore.Qt.ToolTipRole)
+        before = [row.data(role) for role in roles]
+        entered, release = threading.Event(), threading.Event()
+
+        def replace():
+            sketch.renameConstraint(0, "ReplacedDuringCommit")
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("delegate commit timed out")
+
+        result = self.doc.commitCompatibilityMutationAsync(
+            replace, object_name=sketch.Name, recompute=False,
+        )
+        results, errors = [], []
+
+        def wait():
+            try:
+                results.append(result["wait"](10))
+            except BaseException as error:
+                errors.append(error)
+
+        waiter = threading.Thread(target=wait, daemon=True)
+        waiter.start()
+        try:
+            self.assertTrue(self.wait_until(entered.is_set, 5000))
+            self.assertEqual([row.data(role) for role in roles], before,
+                             "delegate read replacement model data during commit")
+            # Exercise decoration and actual paint while admission is unavailable.
+            row.data(QtCore.Qt.DecorationRole)
+            constraints.viewport().grab()
+        finally:
+            release.set()
+            self.wait_until(lambda: not waiter.is_alive(), 10000)
+            waiter.join(1)
+        self.assertFalse(errors, errors)
+        self.assertEqual([item["status"] for item in results], ["Committed"])
+        self.flush_gui(150)
+        self.assertIn("ReplacedDuringCommit", constraints.item(0).text())
+        # Expression-only changes must also publish fresh owned tooltip/badge data.
+        sketch.setExpression("Constraints[0]", "12 mm")
+        self.recompute_gui_document()
+        self.flush_gui(100)
+        self.assertIn("12", constraints.item(0).data(QtCore.Qt.ToolTipRole))
+        sketch.setExpression("Constraints[0]", None)
+        self.flush_gui(100)
+        self.assertIsNone(constraints.item(0).data(QtCore.Qt.ToolTipRole))
+
+    def test_element_refresh_reconciles_queued_edge_and_point_selection(self):
+        sketch = self.make_solver_update_fixture()
+        elements = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetElements")[0]
+        for subname in ("Edge1", "Vertex1", "Vertex2"):
+            with self.subTest(subname=subname):
+                Gui.Selection.clearSelection()
+                Gui.Selection.addSelection(sketch, subname)
+                # Refresh before the zero-delay buffered selection is published.
+                sketch.toggleConstruction(0)
+                self.flush_gui(100)
+                self.assertEqual([item.data(QtCore.Qt.UserRole)
+                                  for item in elements.selectedItems()], [0],
+                                 "refresh lost current GUI selection")
+                self.assertEqual(Gui.Selection.getSelectionEx()[0].SubElementNames,
+                                 (subname,))
+
+    def test_coin_callback_teardown_and_restart_keeps_new_scene(self):
+        from pivy import coin
+
+        sketch = self.make_solver_update_fixture()
+        redraws, watcher = self.watch_solver_redraws()
+        field = watcher.getAttachedField()
+        calls, errors = [], []
+
+        def restart(*_args):
+            sensor.detach()
+            calls.append(True)
+            try:
+                Gui.activeDocument().resetEdit()
+                sketch.addGeometry(Part.LineSegment(App.Vector(30, 5, 0),
+                                                     App.Vector(47, 5, 0)), False)
+                self.assertTrue(Gui.activeDocument().setEdit(sketch.Name))
+            except BaseException as error:
+                errors.append(error)
+
+        sensor = coin.SoFieldSensor(restart, None)
+        sensor.setPriority(0)
+        sensor.attach(field)
+        self.addCleanup(sensor.detach)
+        sketch.solve()
+        self.flush_gui(200)
+        self.assertFalse(errors, errors)
+        self.assertEqual(calls, [True])
+        self.assertEqual(sketch.GeometryCount, 2)
+        _events, current = self.watch_solver_redraws()
+        coordinates = current.getAttachedField()
+        points = [tuple(coordinates[index].getValue())[:2]
+                  for index in range(coordinates.getNum())]
+        self.assertIn((30.0, 5.0), points)
+        self.assertIn((47.0, 5.0), points)
+
+    def test_external_removal_reconciles_scene_and_selection_colors(self):
+        sketch = self.make_solver_update_fixture()
+        Gui.activeDocument().resetEdit()
+        source = self.doc.addObject("PartDesign::Feature", "ExternalSource")
+        source.Shape = Part.makeLine(App.Vector(25, 7, 0), App.Vector(41, 7, 0))
+        self.recompute_gui_document()
+        sketch.addExternal(source.Name, "Edge1")
+        self.recompute_gui_document()
+        source.Visibility = False
+        self.assertTrue(Gui.activeDocument().setEdit(sketch.Name))
+        self.flush_gui(100)
+        self.assertIn((25.0, 7.0), self.scene_points("CurvesCoordinate3"))
+        sketch.delExternal(0)
+        # Trigger color processing immediately after geometry replacement.
+        Gui.Selection.addSelection(sketch, "Edge1")
+        self.flush_gui(100)
+        self.assertEqual(self.scene_points("CurvesCoordinate3"), [])
+        self.assertEqual(self.edit_scene_node("CurvesLineSet3").numVertices.getNum(), 0)
+        self.assertEqual(self.edit_scene_node("CurvesMaterials3").diffuseColor.getNum(), 0)
+        self.assertEqual(self.edit_scene_node("CurvesLineSet0").numVertices.getNum(), 1)
+        self.assertIn((10.0, 0.0), self.scene_points("CurvesCoordinate0"))
+        selected = tuple(self.edit_scene_node("CurvesMaterials0").diffuseColor[0].getValue())
+        Gui.Selection.clearSelection()
+        self.flush_gui(100)
+        unselected = tuple(self.edit_scene_node("CurvesMaterials0").diffuseColor[0].getValue())
+        self.assertNotEqual(selected, unselected)
+
+    def test_nested_group_replacement_updates_points_overlay_and_selection(self):
+        import Sketcher
+        from pivy import coin
+
+        sketch = self.make_solver_update_fixture()
+        sketch.toggleConstruction(0)
+        sketch.addGeometry(Part.ArcOfCircle(Part.Circle(App.Vector(25, 8, 0),
+                                                     App.Vector(0, 0, 1), 4), 0, 1.5), False)
+        self.flush_gui(100)
+        # Group creation from a geometry notification must affect the final points,
+        # overlay, curve colors and task rows together.
+        _redraws, watcher = self.watch_solver_redraws()
+        calls, errors = [], []
+
+        def group(*_args):
+            sensor.detach()
+            calls.append(True)
+            try:
+                sketch.addConstraint(Sketcher.Constraint("Group", [0, 0, 1, 0]))
+                sketch.solve()
+            except BaseException as error:
+                errors.append(error)
+
+        sensor = coin.SoFieldSensor(group, None)
+        sensor.setPriority(0)
+        sensor.attach(watcher.getAttachedField())
+        self.addCleanup(sensor.detach)
+        sketch.solve()
+        self.flush_gui(200)
+        self.assertFalse(errors, errors)
+        self.assertEqual(calls, [True])
+        self.assertEqual(self.edit_scene_node("InformationGroup").getNumChildren(), 0)
+        points = self.scene_points("PointsCoordinate0")
+        self.assertEqual(len(points), 2, "group member points remained in scene")
+        elements = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetElements")[0]
+        self.assertTrue(elements.item(1).isHidden())
+        Gui.Selection.addSelection(sketch, "Edge1")
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertEqual([item.data(QtCore.Qt.UserRole) for item in elements.selectedItems()], [0])
+        handle = tuple(self.edit_scene_node("CurvesMaterials1").diffuseColor[0].getValue())
+        member = tuple(self.edit_scene_node("CurvesMaterials0").diffuseColor[0].getValue())
+        self.assertEqual(handle, member, "group member did not use captured handle selection")
+        for subname in ("Vertex1", "Vertex2"):
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(sketch, subname)
+            sketch.solve()
+            self.flush_gui(100)
+            self.assertEqual([item.data(QtCore.Qt.UserRole)
+                              for item in elements.selectedItems()], [0])
+        sketch.delConstraint(0)
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertEqual(len(self.scene_points("PointsCoordinate0")), 5)
+        self.assertEqual(self.edit_scene_node("InformationGroup").getNumChildren(), 1)
+        self.assertFalse(elements.item(1).isHidden())
+
+    def test_temporary_drag_geometry_reaches_scene_before_release(self):
+        sketch = self.make_solver_update_fixture()
+        view = Gui.activeDocument().activeView()
+        view.viewTop()
+        view.fitAll()
+        self.flush_gui(100)
+        viewport = view.graphicsView().viewport()
+        start = self.viewport_to_qpoint(view, viewport, view.getPointOnScreen(App.Vector(10, 0, 0)))
+        end = self.viewport_to_qpoint(view, viewport, view.getPointOnScreen(App.Vector(12, 3, 0)))
+        self.move(viewport, start)
+        self.send_mouse(viewport, QtCore.QEvent.MouseButtonPress, start,
+                        QtCore.Qt.LeftButton, QtCore.Qt.LeftButton)
+        try:
+            # The first move initializes dragging; the next publishes temporary solver geometry.
+            middle = QtCore.QPoint((start.x() + end.x()) // 2, (start.y() + end.y()) // 2)
+            self.send_mouse(viewport, QtCore.QEvent.MouseMove, middle,
+                            QtCore.Qt.NoButton, QtCore.Qt.LeftButton)
+            self.flush_gui(50)
+            self.send_mouse(viewport, QtCore.QEvent.MouseMove, end,
+                            QtCore.Qt.NoButton, QtCore.Qt.LeftButton)
+            self.flush_gui(100)
+            points = self.scene_points("PointsCoordinate0")
+            self.assertTrue(any(abs(x - 12) < 0.2 and abs(y - 3) < 0.2 for x, y in points), points)
+        finally:
+            self.send_mouse(viewport, QtCore.QEvent.MouseButtonRelease, end,
+                            QtCore.Qt.LeftButton, QtCore.Qt.NoButton)
+        self.flush_gui(100)
+        endpoint = sketch.Geometry[0].EndPoint
+        self.assertAlmostEqual(endpoint.x, 12, delta=0.2)
+        self.assertAlmostEqual(endpoint.y, 3, delta=0.2)
+
+    def test_owned_rows_survive_owner_deletion_and_replacement(self):
+        import Sketcher
+
+        sketch = self.make_solver_update_fixture()
+        sketch.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
+        sketch.renameConstraint(0, "BeforeDeletion")
+        self.flush_gui(100)
+        constraints = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetConstraints")[0]
+        elements = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetElements")[0]
+        # Retain real published rows independently of their task panel's lifetime.
+        # Structural removal is deliberately unavailable inside owner commits.
+        retained = QtGui.QListWidget()
+        constraint_row = constraints.takeItem(0)
+        element_row = elements.takeItem(0)
+        retained.addItem(constraint_row)
+        retained.addItem(element_row)
+        before = constraint_row.data(QtCore.Qt.DisplayRole)
+        name = sketch.Name
+        Gui.activeDocument().resetEdit()
+        self.doc.removeObject(name)
+        replacement = self.doc.addObject("Sketcher::SketchObject", name)
+        replacement.addGeometry(Part.LineSegment(App.Vector(50, 50, 0),
+                                                   App.Vector(60, 50, 0)), False)
+        replacement.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
+        replacement.renameConstraint(0, "NewOwner")
+        self.recompute_gui_document()
+        try:
+            self.assertIn("BeforeDeletion", before)
+            self.assertEqual(constraint_row.data(QtCore.Qt.DisplayRole), before)
+            for role in (QtCore.Qt.EditRole, QtCore.Qt.ToolTipRole, QtCore.Qt.DecorationRole):
+                constraint_row.data(role)
+            element_row.data(QtCore.Qt.DecorationRole)
+            retained.viewport().grab()
+        finally:
+            retained.close()
+
+    def test_color_callback_can_end_edit_and_restart(self):
+        from pivy import coin
+
+        sketch = self.make_solver_update_fixture()
+        coordinate = self.edit_scene_node("OriginPointCoordinate")
+        calls, errors = [], []
+
+        def finish(*_args):
+            sensor.detach()
+            calls.append(True)
+            try:
+                Gui.activeDocument().resetEdit()
+            except BaseException as error:
+                errors.append(error)
+
+        sensor = coin.SoFieldSensor(finish, None)
+        sensor.setPriority(0)
+        sensor.attach(coordinate.point)
+        self.addCleanup(sensor.detach)
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertFalse(errors, errors)
+        self.assertEqual(calls, [True])
+        self.assertIsNone(Gui.activeDocument().getInEdit())
+        self.assertTrue(Gui.activeDocument().setEdit(sketch.Name))
+        self.flush_gui(100)
+        self.assertIn((10.0, 0.0), self.scene_points("PointsCoordinate0"))
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertEqual(self.edit_scene_node("CurvesLineSet0").numVertices.getNum(), 1)

@@ -250,19 +250,7 @@ public:
 
     bool isVisible() const
     {
-        if (State != GeometryState::External && State != GeometryState::ConstructionExternal) {
-            const auto geo = sketchView->getSketchObject()->getGeometry(ElementNbr);
-            if (geo) {
-                auto layer = getSafeGeomLayerId(geo);
-
-                return layer != static_cast<unsigned int>(Layer::Hidden);
-            }
-        }
-
-        // 1. external geometry currently is always visible.
-        // 2. if internal and ElementNbr is out of range, the element
-        // needs to be updated and the return value is not important.
-        return true;
+        return visible;
     }
 
     QVariant data(int role) const override
@@ -325,6 +313,8 @@ public:
     Base::Type GeometryType;
     GeometryState State;
 
+    bool visible = true;
+    bool grouped = false;
     bool isLineSelected;
     bool isStartingPointSelected;
     bool isEndPointSelected;
@@ -1349,6 +1339,8 @@ void ElementFilterList::languageChange()
 TaskSketcherElements::TaskSketcherElements(ViewProviderSketch* sketchView)
     : TaskBox(Gui::BitmapFactory().pixmap("Sketcher_CreateLine"), tr("Elements"), true, nullptr)
     , sketchView(sketchView)
+    , rowDocumentName(sketchView->getSketchObject()->getDocument()->getName())
+    , rowObjectName(sketchView->getSketchObject()->getNameInDocument())
     , ui(new Ui_TaskSketcherElements())
     , focusItemIndex(-1)
     , previouslySelectedItemIndex(-1)
@@ -1581,13 +1573,9 @@ void TaskSketcherElements::updateVisibility()
 {
     // Calculate the set of grouped geometries that should be hidden.
     std::set<int> groupedGeoIds;
-    const auto& constraints = sketchView->getSketchObject()->Constraints.getValues();
-    for (const auto* c : constraints) {
-        if (c->Type == Sketcher::Group || c->Type == Sketcher::Text) {
-            // Member geometries start from index 1.
-            for (int j = 1; c->hasElement(j); ++j) {
-                groupedGeoIds.insert(c->getGeoId(j));
-            }
+    for (const auto& [id, item] : elementMap) {
+        if (item->grouped) {
+            groupedGeoIds.insert(id);
         }
     }
 
@@ -1609,8 +1597,8 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
     }
 
     // is it this object??
-    if (strcmp(msg.pDocName, sketchView->getSketchObject()->getDocument()->getName()) != 0
-        || strcmp(msg.pObjectName, sketchView->getSketchObject()->getNameInDocument()) != 0
+    if (strcmp(msg.pDocName, rowDocumentName.c_str()) != 0
+        || strcmp(msg.pObjectName, rowObjectName.c_str()) != 0
         || !msg.pSubName) {
         return;
     }
@@ -1641,25 +1629,18 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
     // Format: "Vertex123" -> offset 6
     else if (std::strncmp(subName, "Vertex", 6) == 0) {
         int vtId = std::atoi(subName + 6) - 1;
-        int GeoId;
-        Sketcher::PointPos PosId;
-        sketchView->getSketchObject()->getGeoVertexIndex(vtId, GeoId, PosId);
-
-        auto it = elementMap.find(GeoId);
-        if (it != elementMap.end()) {
-            modified_item = it->second;
-            switch (PosId) {
-                case Sketcher::PointPos::start:
-                    modified_item->isStartingPointSelected = select;
-                    break;
-                case Sketcher::PointPos::end:
-                    modified_item->isEndPointSelected = select;
-                    break;
-                case Sketcher::PointPos::mid:
-                    modified_item->isMidPointSelected = select;
-                    break;
-                default:
-                    break;
+        for (const auto& [id, item] : elementMap) {
+            if (vtId == item->StartingVertex) {
+                modified_item = item;
+                item->isStartingPointSelected = select;
+            }
+            if (vtId == item->EndVertex) {
+                modified_item = item;
+                item->isEndPointSelected = select;
+            }
+            if (vtId == item->MidVertex) {
+                modified_item = item;
+                item->isMidPointSelected = select;
             }
         }
     }
@@ -2196,6 +2177,8 @@ void TaskSketcherElements::slotElementsChanged()
             sketchView,
             isTextHandle);
 
+        itemN->visible = layerId != static_cast<unsigned int>(ElementItem::Layer::Hidden);
+        itemN->grouped = groupedGeoIds.contains(i - 1);
         rows.emplace_back(itemN);
         ++i;
     }
@@ -2303,6 +2286,7 @@ void TaskSketcherElements::slotElementsChanged()
     // Drop buffered references before Qt removes their items.
     elementMap.clear();
     selectionBuffer.clear();
+    QSignalBlocker blockSelection(ui->listWidgetElements);
     ui->listWidgetElements->clear();
     for (auto& row : rows) {
         auto* item = row.release();
@@ -2310,10 +2294,29 @@ void TaskSketcherElements::slotElementsChanged()
         elementMap[item->ElementNbr] = item;
         setItemVisibility(item, groupedGeoIds);
     }
+
+    // Reconcile the current GUI selection after publishing all rows. In particular, a
+    // zero-delay selection update queued immediately before this rebuild referred to old rows.
+    std::vector<std::string> subnames;
+    for (const auto& selected : Gui::Selection().getSelection(rowDocumentName.c_str())) {
+        if (rowObjectName == selected.FeatName && selected.SubName) {
+            subnames.emplace_back(selected.SubName);
+        }
+    }
+    for (const auto& subname : subnames) {
+        onSelectionChanged(Gui::SelectionChanges(Gui::SelectionChanges::AddSelection,
+                           rowDocumentName, rowObjectName, subname));
+    }
+    for (const auto& [id, item] : elementMap) {
+        item->setSelected(item->isLineSelected || item->isStartingPointSelected
+                          || item->isEndPointSelected || item->isMidPointSelected);
+    }
+    selectionBuffer.clear();
 }
 
 void TaskSketcherElements::clearWidget()
 {
+    selectionBuffer.clear();
     {
         QSignalBlocker sigblk(ui->listWidgetElements);
         ui->listWidgetElements->clearSelection();

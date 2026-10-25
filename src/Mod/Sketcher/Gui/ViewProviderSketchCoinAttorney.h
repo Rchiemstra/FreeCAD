@@ -89,6 +89,9 @@ private:
         const ViewProviderSketch& vp,
         const Sketcher::Constraint* cstr
     );
+    static inline bool isRedrawCurrent(const ViewProviderSketch& vp) { return vp.isRedrawCurrent(); }
+    static inline int getRenderGroupHandle(const ViewProviderSketch& vp, int geoId)
+    { return vp.getRenderGroupHandle(geoId); }
     static inline const GeoList getGeoList(const ViewProviderSketch& vp);
     static inline const GeoListFacade getGeoListFacade(const ViewProviderSketch& vp);
     static inline void withRedrawInputs(

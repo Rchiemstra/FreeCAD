@@ -16,6 +16,7 @@
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 #include "SketcherTestHelpers.h"
+#include <Mod/Sketcher/Gui/SketcherPresentationInputs.h>
 
 using namespace SketcherTestHelpers;
 
@@ -967,4 +968,45 @@ TEST_F(SketchObjectTest, DrawGeoListRejectsUndefEvenInLargeLists)
     std::unique_ptr<const Sketcher::GeometryFacade> facade(
         list.getGeometryFacadeFromGeoId(Sketcher::GeoEnum::GeoUndef));
     EXPECT_EQ(facade, nullptr);
+}
+
+// No GUI edit fixture: exercise the exact owned-input queries used by the renderers.
+TEST_F(SketchObjectTest, PresentationInputsSurviveOwnerReplacementAndRejectInvalidPoints)
+{
+    auto line = std::make_unique<Part::GeomLineSegment>();
+    line->setPoints(Base::Vector3d(3, 4, 0), Base::Vector3d(11, 4, 0));
+    getObject()->addGeometry(line.get());
+    auto geometry = getObject()->getGeoListFacade();
+    for (auto& facade : geometry.geomlist) {
+        facade = Sketcher::GeometryFacade::getFacade(facade->clone(), true);
+    }
+    auto group = std::make_unique<Sketcher::Constraint>();
+    group->Type = Sketcher::Group;
+    group->setElement(0, Sketcher::GeoElementId(0, Sketcher::PointPos::none));
+    group->setElement(1, Sketcher::GeoElementId(1, Sketcher::PointPos::none));
+    std::unique_ptr<Sketcher::Constraint> capturedGroup(group->clone());
+    std::vector<Sketcher::Constraint*> constraints {capturedGroup.get()};
+    group->setElement(1, Sketcher::GeoElementId(2, Sketcher::PointPos::none));
+    group.reset();
+    getObject()->delGeometry(0);
+    using namespace SketcherGui::PresentationInputs;
+    EXPECT_EQ(groupHandle(constraints, 1), 0);
+    EXPECT_EQ(groupHandle(constraints, 2), 2);
+    EXPECT_EQ(groupHandle(constraints, -3), -3);
+    EXPECT_EQ(geometry.getPoint(0, Sketcher::PointPos::start), Base::Vector3d(3, 4, 0));
+    Sketcher::Constraint constraint;
+    constraint.Type = Sketcher::Distance;
+    constraint.First = 0;
+    constraint.FirstPos = Sketcher::PointPos::start;
+    EXPECT_TRUE(hasAvailableGeometry(geometry, constraint));
+    constraint.FirstPos = static_cast<Sketcher::PointPos>(99);
+    EXPECT_FALSE(hasAvailableGeometry(geometry, constraint));
+    constraint.FirstPos = Sketcher::PointPos::mid;
+    EXPECT_FALSE(hasAvailableGeometry(geometry, constraint));
+    constraint.FirstPos = Sketcher::PointPos::end;
+    EXPECT_TRUE(hasAvailableGeometry(geometry, constraint));
+    constraint.First = -3;
+    EXPECT_FALSE(hasAvailableGeometry(geometry, constraint));
+    constraint.First = Sketcher::GeoEnum::GeoUndef;
+    EXPECT_FALSE(hasAvailableGeometry(geometry, constraint));
 }
