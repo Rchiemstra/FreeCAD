@@ -180,6 +180,8 @@ private:
     };
     std::vector<PendingUpdate> selectionBuffer;
     bool updateTimerPending = false;
+    bool updatingElements = false;
+    bool elementsUpdateQueued = false;
 
     void processSelectionBuffer();
 };

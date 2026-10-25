@@ -1686,9 +1686,9 @@ void EditModeCoinManager::updateAxesLength(const Base::BoundBox2d& bb)
 
 void EditModeCoinManager::updateColor()
 {
-    auto geolistfacade = ViewProviderSketchCoinAttorney::getGeoListFacade(viewProvider);
-
-    updateColor(geolistfacade);
+    ViewProviderSketchCoinAttorney::withRedrawInputs(viewProvider, [this](GeoListFacade& geometry) {
+        updateColor(geometry);
+    });
 }
 
 void EditModeCoinManager::updateColor(const GeoListFacade& geolistfacade)
@@ -1705,7 +1705,7 @@ void EditModeCoinManager::updateColor(const GeoListFacade& geolistfacade)
         return;
     }
 
-    pEditModeConstraintCoinManager->updateConstraintColor(constraints);
+    pEditModeConstraintCoinManager->updateConstraintColor(geolistfacade, constraints);
 }
 
 void EditModeCoinManager::setConstraintSelectability(bool enabled /* = true */)
@@ -2199,7 +2199,9 @@ void EditModeCoinManager::drawConstraintIcons(const GeoListFacade& geolistfacade
 
 void EditModeCoinManager::updateVirtualSpace()
 {
-    pEditModeConstraintCoinManager->updateVirtualSpace();
+    ViewProviderSketchCoinAttorney::withRedrawInputs(viewProvider, [this](GeoListFacade&) {
+        pEditModeConstraintCoinManager->updateVirtualSpace();
+    });
 }
 
 /************************ Resizing of coin nodes ************************/

@@ -657,16 +657,186 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         search.apply(Gui.activeDocument().activeView().getSceneGraph())
         self.assertIsNotNone(search.getPath())
         edit_root = search.getPath().getTail()
-        search.setName("PointsCoordinate0")
-        search.apply(edit_root)
-        self.assertIsNotNone(search.getPath())
-        coordinates = search.getPath().getTail()
+        # An admitted initial draw may still be deferred. Traverse children
+        # directly because an empty switchboard hides its disabled layers even
+        # from SoSearchAction, while the coordinate nodes already exist.
+        def find_coordinates(node):
+            if str(node.getName()) == "PointsCoordinate0":
+                return node
+            if hasattr(node, "getNumChildren"):
+                for index in range(node.getNumChildren()):
+                    found = find_coordinates(node.getChild(index))
+                    if found is not None:
+                        return found
+            return None
+
+        coordinates = find_coordinates(edit_root)
+        self.assertIsNotNone(coordinates)
         redraws = []
         sensor = coin.SoFieldSensor(lambda *_: redraws.append(True), None)
         sensor.setPriority(0)
         sensor.attach(coordinates.point)
         self.addCleanup(sensor.detach)
         return redraws, sensor
+
+    def test_field_sensor_observes_solver_redraw_delivery(self):
+        import Sketcher
+        from pivy import coin
+
+        sketch = self.make_solver_update_fixture()
+        sketch.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
+        self.recompute_gui_document()
+        # Settle fixture work before attaching the diagnostic. Draw admission
+        # can still defer a solve notification, so test notification timing
+        # separately from the eventual solver redraw.
+        from Test.GuiRecompute import wait_for_mutation_ready
+
+        wait_for_mutation_ready(self.doc)
+        _redraws, watcher = self.watch_solver_redraws()
+        field = watcher.getAttachedField()
+        watcher.detach()
+        inside, calls = [False], []
+
+        def on_draw(*_args):
+            sensor.detach()  # One shot, before any callback work.
+            calls.append(inside[0])
+
+        sensor = coin.SoFieldSensor(on_draw, None)
+        sensor.setPriority(0)
+        sensor.attach(field)
+        self.addCleanup(sensor.detach)
+        inside[0] = True
+        try:
+            field.touch()
+        finally:
+            inside[0] = False
+        if not calls:
+            self.skipTest("inline field notification unavailable for this live coordinate field")
+        self.assertEqual(calls, [True], "priority-zero field notification was not inline")
+
+        calls.clear()
+        sensor.attach(field)
+        inside[0] = True
+        try:
+            sketch.solve()
+        finally:
+            inside[0] = False
+        self.assertTrue(self.wait_until(lambda: bool(calls), 2000),
+                        "solver notification lost its final redraw")
+        self.assertEqual(len(calls), 1, "one-shot sensor ran more than once")
+        App.Console.PrintMessage(
+            "Solver redraw diagnostic: inline=%d deferred=%d\n" % (calls[0], not calls[0])
+        )
+
+    def test_element_list_coalesces_nested_geometry_change(self):
+        sketch = self.make_solver_update_fixture()
+        lists = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetElements")
+        self.assertEqual(len(lists), 1)
+        elements = lists[0]
+        self.assertEqual(elements.count(), sketch.GeometryCount)
+        self.assertFalse(sketch.getConstruction(0))
+        events, calls, nested, errors = [], [], [], []
+        inside = [False]
+
+        def on_rows(*_args):
+            events.append(inside[0])
+            if inside[0]:
+                nested.append(True)
+                return
+            if calls:
+                return
+            calls.append(True)
+            inside[0] = True
+            try:
+                sketch.toggleConstruction(0)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                inside[0] = False
+
+        model = elements.model()
+        model.rowsInserted.connect(on_rows)
+        try:
+            sketch.toggleConstruction(0)
+            self.assertTrue(self.wait_until(lambda: len(events) >= 2, 2000),
+                            "deferred element-list update was lost")
+            self.flush_gui(100)
+        finally:
+            model.rowsInserted.disconnect(on_rows)
+        self.assertFalse(errors, errors)
+        self.assertEqual(calls, [True])
+        self.assertFalse(nested, "element-list update reentered its row callback")
+        self.assertEqual(elements.count(), sketch.GeometryCount)
+        self.assertFalse(sketch.getConstruction(0))
+
+    def test_queued_redraw_coalesces_inline_solver_notification(self):
+        from pivy import coin
+
+        import Sketcher
+
+        sketch = self.make_solver_update_fixture()
+        sketch.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
+        self.flush_gui(100)
+        redraws, watcher = self.watch_solver_redraws()
+        field = watcher.getAttachedField()
+        calls, nested = [], []
+
+        def on_draw(*_args):
+            sensor.detach()
+            calls.append(True)
+            before = len(redraws)
+            # Request another solve before explicitly replacing model inputs.
+            # Only exercise replacement once the nonrecursive control holds.
+            sketch.solve()
+            nested.append(len(redraws) - before)
+            if nested[-1] == 0:
+                # Replace constraints without changing geometry counts, then
+                # replace geometry. The outer pass must keep its captured pair.
+                sketch.renameConstraint(0, "OwnedRedraw")
+                sketch.toggleConstruction(0)
+                sketch.solve()
+
+        sensor = coin.SoFieldSensor(on_draw, None)
+        sensor.setPriority(0)
+        sensor.attach(field)
+        self.addCleanup(sensor.detach)
+
+        def solve():
+            sketch.solve()
+
+        result = self.doc.commitCompatibilityMutationAsync(
+            solve, object_name=sketch.Name, recompute=False,
+        )
+        results, errors = [], []
+
+        def wait():
+            try:
+                results.append(result["wait"](10))
+            except BaseException as error:
+                errors.append(error)
+
+        waiter = threading.Thread(target=wait, daemon=True)
+        waiter.start()
+        try:
+            self.assertTrue(self.wait_until(lambda: not waiter.is_alive(), 10000))
+            self.assertTrue(self.wait_until(lambda: bool(calls), 2000))
+            self.flush_gui(100)
+        finally:
+            waiter.join(1)
+        self.assertFalse(errors, errors)
+        self.assertEqual([item["status"] for item in results], ["Committed"])
+        self.assertEqual(calls, [True])
+        self.assertEqual(nested, [0], "inline solver notification recursively redrew")
+        self.assertGreaterEqual(len(redraws), 2, "deferred final redraw was lost")
+        self.assertTrue(sketch.getConstruction(0))
+        self.assertEqual(sketch.Constraints[0].Name, "OwnedRedraw")
+        # Constraint-only replacement must also refresh without changing counts.
+        redraws.clear()
+        sketch.renameConstraint(0, "ConstraintOnly")
+        sketch.solve()
+        self.flush_gui(100)
+        self.assertTrue(redraws)
+        self.assertEqual(sketch.Constraints[0].Name, "ConstraintOnly")
 
     def test_queued_solver_update_does_not_redraw_restarted_edit(self):
         sketch = self.make_solver_update_fixture()
@@ -698,7 +868,9 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
                             Gui.activeDocument().resetEdit()
                             if not Gui.activeDocument().setEdit(sketch.Name):
                                 raise RuntimeError("could not restart sketch edit")
-                            watches.append(test.watch_solver_redraws())
+                            redraws, sensor = test.watch_solver_redraws()
+                            watches.append((redraws, sensor,
+                                            sensor.getAttachedField().getNum() == 0))
                         except BaseException as error:
                             errors.append(error)
                 return False
@@ -738,8 +910,12 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         self.assertEqual([item["status"] for item in results], ["Committed"])
         self.assertEqual(restart.calls, 1, "expected exactly the solver's queued callback")
         self.assertEqual(len(watches), 1)
-        redraws, sensor = watches[0]
-        self.assertFalse(redraws, "old solver update redrew the new edit")
+        initial_redraws, sensor, initial_deferred = watches[0]
+        if initial_deferred:
+            self.assertTrue(initial_redraws, "new edit lost its deferred initial redraw")
+            self.assertGreater(sensor.getAttachedField().getNum(), 0)
+        else:
+            self.assertFalse(initial_redraws, "old solver update redrew the new edit")
         # Idle presentation catch-up can replace the coordinate nodes. Watch
         # the current nodes for the positive controls after draining it.
         sensor.detach()
@@ -748,6 +924,9 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         sketch.solve()
         self.flush_gui(100)
         self.assertTrue(redraws, "current edit stopped receiving solver updates")
+        if initial_deferred:
+            self.assertEqual(len(initial_redraws), len(redraws),
+                             "old solver update added a redraw beyond initial setup")
         redraws.clear()
         sketch.touch()
         self.doc.recompute()

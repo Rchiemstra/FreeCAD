@@ -9,8 +9,11 @@
 #include <App/Expression.h>
 #include <App/ObjectIdentifier.h>
 #include <Base/Interpreter.h>
+#include <Base/Exception.h>
 #include <Base/PyObjectBase.h>
 #include <Mod/Sketcher/App/GeoEnum.h>
+#include <Mod/Sketcher/App/GeoList.h>
+#include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 #include "SketcherTestHelpers.h"
 
@@ -883,4 +886,85 @@ TEST_F(SketchObjectTest, attachExternalRejectsDocumentlessSketch)
         },
         ::testing::ExitedWithCode(0),
         "");
+}
+
+// Real, separately owned lines in complete-geometry order: internal, external, V, H.
+TEST_F(SketchObjectTest, DrawGeoListRejectsPartitionAliases)
+{
+    std::vector<Part::Geometry*> lines;
+    for (int i = 0; i < 4; ++i) {
+        auto line = std::make_unique<Part::GeomLineSegment>();
+        line->setPoints(Base::Vector3d(0, double(i), 0), Base::Vector3d(10, double(i), 0));
+        if (i == 2) {
+            line->setPoints(Base::Vector3d(), Base::Vector3d(0, 1, 0));
+        }
+        if (i == 3) {
+            line->setPoints(Base::Vector3d(), Base::Vector3d(1, 0, 0));
+        }
+        Sketcher::GeometryFacade::getFacade(line.get());
+        lines.push_back(line.release());
+    }
+    auto list = Sketcher::GeoList::getGeoListModel(std::move(lines), 1, true);
+    for (const int id : {0, -3, -2, -1}) {
+        const auto index = id < 0 ? int(list.geomlist.size()) + id : id;
+        EXPECT_EQ(list.getGeometryFromGeoId(id), list.geomlist[index]);
+        EXPECT_NO_THROW(list.getPoint(id, Sketcher::PointPos::start));
+    }
+    auto missing = Sketcher::ExternalGeometryFacade::getFacade(list.geomlist[1]);
+    missing->setFlag(Sketcher::ExternalGeometryExtension::Missing);
+    EXPECT_NE(list.getGeometryFromGeoId(-3), nullptr);
+    EXPECT_TRUE(list.isGeoIdValid(Sketcher::GeoEnum::GeoUndef, true));
+    EXPECT_FALSE(list.isGeoIdValid(Sketcher::GeoEnum::GeoUndef));
+    EXPECT_FALSE(list.isGeoIdValid(1, true));
+    EXPECT_FALSE(list.isGeoIdValid(-4, true));
+    EXPECT_EQ(list.getGeometryFromGeoId(1), nullptr);
+    EXPECT_EQ(list.getGeometryFromGeoId(-4), nullptr);
+    EXPECT_THROW(list.getPoint(1, Sketcher::PointPos::start), Base::IndexError);
+    EXPECT_THROW(list.getPoint(-4, Sketcher::PointPos::start), Base::IndexError);
+    EXPECT_EQ(Sketcher::GeoList::getGeometryFromGeoId(list.geomlist, 4), nullptr);
+    EXPECT_EQ(Sketcher::GeoList::getGeometryFromGeoId(list.geomlist, -5), nullptr);
+    std::unique_ptr<const Sketcher::GeometryFacade> positive(list.getGeometryFacadeFromGeoId(1));
+    std::unique_ptr<const Sketcher::GeometryFacade> negative(list.getGeometryFacadeFromGeoId(-4));
+    EXPECT_EQ(positive, nullptr);
+    EXPECT_EQ(negative, nullptr);
+    auto facadeList = Sketcher::getGeoListFacade(list);
+    EXPECT_EQ(facadeList.getGeometryFromGeoId(1), nullptr);
+    EXPECT_EQ(facadeList.getGeometryFacadeFromGeoId(-4), nullptr);
+    EXPECT_EQ(facadeList.getGeometryFromGeoId(-3), list.geomlist[1]);
+}
+
+TEST_F(SketchObjectTest, DrawGeoListRejectsInvalidCounts)
+{
+    auto complete = getObject()->getCompleteGeometry(); // Document-owned H/V axes.
+    ASSERT_EQ(complete.size(), 2);
+    for (int count : {-1, 1, 3}) {
+        auto list = Sketcher::GeoList::getGeoListModel(complete, count);
+        EXPECT_EQ(list.getGeometryFromGeoId(-1), nullptr) << count;
+        EXPECT_FALSE(list.isGeoIdValid(Sketcher::GeoEnum::GeoUndef, true));
+        EXPECT_THROW(list.getPoint(-1, Sketcher::PointPos::start), Base::IndexError);
+    }
+}
+
+TEST_F(SketchObjectTest, DrawGeoListRejectsUndefEvenInLargeLists)
+{
+    std::vector<Part::Geometry*> lines;
+    for (int i = 0; i < 2003; ++i) {
+        auto line = std::make_unique<Part::GeomLineSegment>();
+        line->setPoints(Base::Vector3d(0, double(i), 0), Base::Vector3d(10, double(i), 0));
+        if (i == 2001) {
+            line->setPoints(Base::Vector3d(), Base::Vector3d(0, 1, 0));
+        }
+        if (i == 2002) {
+            line->setPoints(Base::Vector3d(), Base::Vector3d(1, 0, 0));
+        }
+        Sketcher::GeometryFacade::getFacade(line.get());
+        lines.push_back(line.release());
+    }
+    auto list = Sketcher::GeoList::getGeoListModel(std::move(lines), 1, true);
+    EXPECT_EQ(list.getGeometryFromGeoId(Sketcher::GeoEnum::GeoUndef), nullptr);
+    EXPECT_THROW(list.getPoint(Sketcher::GeoEnum::GeoUndef, Sketcher::PointPos::start),
+                 Base::IndexError);
+    std::unique_ptr<const Sketcher::GeometryFacade> facade(
+        list.getGeometryFacadeFromGeoId(Sketcher::GeoEnum::GeoUndef));
+    EXPECT_EQ(facade, nullptr);
 }

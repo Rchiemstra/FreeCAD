@@ -146,6 +146,9 @@ public:
      */
     const Part::Geometry* getGeometryFromGeoId(int geoId) const;
 
+    /// Validate the internal/external partition; GeoUndef is only an optional element.
+    bool isGeoIdValid(int geoId, bool optional = false) const;
+
     /** @brief returns a geometryfacade
      * @warning If the underlying model of the list is a naked pointed (Part::Geometry *), i.e. a
      * GeoList instantiation, the client (the user) bears responsibility for releasing the

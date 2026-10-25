@@ -45,6 +45,7 @@
 #include <App/Document.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/Expression.h>
+#include <App/MutationClassification.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -174,6 +175,10 @@ public:
 
     QString getName() const
     {
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return {};
+        }
         const Sketcher::Constraint* constraint = sketch->Constraints[ConstraintNbr];
 
         if (!constraint->Name.empty()) {
@@ -559,13 +564,19 @@ public:
 
     Sketcher::ConstraintType constraintType() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return Sketcher::None;
+        }
         return sketch->Constraints[ConstraintNbr]->Type;
     }
 
     bool isEnforceable() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return false;
+        }
 
         if (isDeltaPositionVisibleChild()) {
             return true;
@@ -609,17 +620,25 @@ public:
 
     bool isDimensional() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return false;
+        }
 
         return (sketch->Constraints[ConstraintNbr])->isDimensional();
     }
 
     bool isDriving() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return false;
+        }
 
         for (int constraintNbr : constraintNumbers()) {
-            if (!sketch->Constraints[constraintNbr]->isDriving) {
+            if (constraintNbr < 0 || constraintNbr >= sketch->Constraints.getSize()
+                || !sketch->Constraints[constraintNbr]
+                || !sketch->Constraints[constraintNbr]->isDriving) {
                 return false;
             }
         }
@@ -629,17 +648,25 @@ public:
 
     bool isInVirtualSpace() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return false;
+        }
 
         return sketch->Constraints[ConstraintNbr]->isInVirtualSpace;
     }
 
     bool isActive() const
     {
-        assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()
+            || !sketch->Constraints[ConstraintNbr]) {
+            return false;
+        }
 
         for (int constraintNbr : constraintNumbers()) {
-            if (!sketch->Constraints[constraintNbr]->isActive) {
+            if (constraintNbr < 0 || constraintNbr >= sketch->Constraints.getSize()
+                || !sketch->Constraints[constraintNbr]
+                || !sketch->Constraints[constraintNbr]->isActive) {
                 return false;
             }
         }
@@ -1505,6 +1532,11 @@ void TaskSketcherConstraints::onListWidgetConstraintsItemChanged(QListWidgetItem
 
     const Sketcher::SketchObject* sketch = sketchView->getSketchObject();
     const std::vector<Sketcher::Constraint*>& vals = sketch->Constraints.getValues();
+    if (it->ConstraintNbr < 0 || it->ConstraintNbr >= int(vals.size())) {
+        inEditMode = false;
+        slotConstraintsChanged();
+        return;
+    }
     const Sketcher::Constraint* v = vals[it->ConstraintNbr];
     const std::string currConstraintName = v->Name;
 
@@ -1588,6 +1620,12 @@ void TaskSketcherConstraints::updateAssociatedConstraintsFilter()
 
 void TaskSketcherConstraints::updateList()
 {
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired() || sketchView->getDocument()->deferLivePresentationUpdates()
+        || updatingConstraints) {
+        slotConstraintsChanged();
+        return;
+    }
     multiFilterStatus =
         filterList->getMultiFilter();// moved here in case the filter is changed programmatically.
 
@@ -1730,9 +1768,10 @@ void TaskSketcherConstraints::processSelectionBuffer()
 
 void TaskSketcherConstraints::deferredUpdateList()
 {
-    updateAssociatedConstraintsFilter();
-    updateList();
     updateListPending = false;
+    // The model may have replaced its constraint list since selection was queued.
+    // Reconcile the rows under the same nonblocking admission as other updates.
+    updateList();
 }
 
 void TaskSketcherConstraints::OnChange(Base::Subject<const char*>& rCaller, const char* rcReason)
@@ -1947,6 +1986,9 @@ bool TaskSketcherConstraints::isConstraintFiltered(QListWidgetItem* item)
     const Sketcher::SketchObject* sketch = sketchView->getSketchObject();
     const std::vector<Sketcher::Constraint*>& vals = sketch->Constraints.getValues();
     ConstraintItem* it = static_cast<ConstraintItem*>(item);
+    if (!it || it->ConstraintNbr < 0 || it->ConstraintNbr >= int(vals.size())) {
+        return true;
+    }
     const Sketcher::Constraint* constraint = vals[it->ConstraintNbr];
 
     if (it->isDeltaPositionHiddenChild()) {
@@ -2079,12 +2121,32 @@ void TaskSketcherConstraints::slotConstraintsChanged()
 {
     assert(sketchView);
 
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired() || sketchView->getDocument()->deferLivePresentationUpdates()
+        || updatingConstraints) {
+        if (!constraintsUpdateQueued) {
+            constraintsUpdateQueued = true;
+            QTimer::singleShot(10, this, [this]() {
+                constraintsUpdateQueued = false;
+                updateList();
+            });
+        }
+        return;
+    }
+    updatingConstraints = true;
+    const auto clearUpdating = Base::ScopeGuard([this]() { updatingConstraints = false; });
+
     constraintMap.clear();
     selectionBuffer.clear();
 
     // Build up ListView with the constraints
     const Sketcher::SketchObject* sketch = sketchView->getSketchObject();
-    const std::vector<Sketcher::Constraint*>& vals = sketch->Constraints.getValues();
+    std::vector<std::unique_ptr<Sketcher::Constraint>> ownedConstraints;
+    std::vector<Sketcher::Constraint*> vals;
+    for (const auto* constraint : sketch->Constraints.getValues()) {
+        ownedConstraints.emplace_back(constraint->clone());
+        vals.push_back(ownedConstraints.back().get());
+    }
 
     /* Remove entries, if any */
     for (std::size_t i = ui->listWidgetConstraints->count(); i > vals.size(); --i)
@@ -2112,6 +2174,8 @@ void TaskSketcherConstraints::slotConstraintsChanged()
         }
     }
     ui->listWidgetConstraints->blockSignals(tmpBlock);
+
+    updateAssociatedConstraintsFilter();
 
     /* Update filtering */
     for (std::size_t i = 0; i < vals.size(); ++i) {
