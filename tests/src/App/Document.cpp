@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <stdexcept>
 
 #include "App/Application.h"
 #include "App/Document.h"
@@ -150,6 +151,49 @@ TEST_F(DocumentTest, mergeIntoKeepsTheParentsSnapshotForADuplicateProperty)
     // Assert: the parent's older snapshot (1) is the one undo restores, not
     // the nested transaction's newer duplicate (2).
     EXPECT_EQ(object->Integer.getValue(), 1);
+}
+
+TEST_F(DocumentTest, checkedRollbackRemovesAddedLockedProperty)
+{
+    auto* object = doc()->addObject<App::FeatureTest>("LockedProperty");
+    auto* property = object->addDynamicProperty("App::PropertyLength", "DummyLength");
+    ASSERT_NE(property, nullptr);
+    property->setStatus(App::Property::LockDynamic, true);
+    App::Transaction transaction;
+    transaction.addOrRemoveProperty(object, property, true);
+    transaction.addObjectChange(object, &object->Integer);
+    const auto original = object->Integer.getValue();
+    object->Integer.setValue(15);
+
+    EXPECT_NO_THROW(transaction.applyChecked(*doc(), false));
+    EXPECT_EQ(object->getDynamicPropertyByName("DummyLength"), nullptr);
+    EXPECT_EQ(object->Integer.getValue(), original);
+}
+
+TEST_F(DocumentTest, checkedPropertyRemovalFailureRestoresDynamicLock)
+{
+    auto* object = doc()->addObject<App::FeatureTest>("LockedProperty");
+    auto* property = object->addDynamicProperty("App::PropertyLength", "DummyLength");
+    ASSERT_NE(property, nullptr);
+    property->setStatus(App::Property::LockDynamic, true);
+    App::Transaction transaction;
+    transaction.addOrRemoveProperty(object, property, true);
+
+    bool removalAttempted = false;
+    auto connection = App::GetApplication().signalRemoveDynamicProperty.connect(
+        [&](const App::Property& removed) {
+            if (&removed == property) {
+                removalAttempted = true;
+                throw std::runtime_error("injected removal failure");
+            }
+        });
+    EXPECT_THROW(transaction.applyChecked(*doc(), false), std::runtime_error);
+    connection.disconnect();
+
+    EXPECT_TRUE(removalAttempted);
+    ASSERT_EQ(object->getDynamicPropertyByName("DummyLength"), property);
+    EXPECT_TRUE(property->testStatus(App::Property::LockDynamic));
+    EXPECT_FALSE(object->removeDynamicProperty("DummyLength"));
 }
 
 TEST_F(DocumentTest, importObjectsRestoresSourceStringHasher)

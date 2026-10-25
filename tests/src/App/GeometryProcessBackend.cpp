@@ -131,6 +131,9 @@ private:
     std::optional<std::string> previous;
 };
 
+// Starting the installed worker executable can take more than 10 s on a loaded test machine.
+constexpr std::chrono::milliseconds installedWorkerLifetime = 120s;
+
 GeometryJobRequest request(const std::string& operation,
                            const std::chrono::milliseconds lifetime = 10s)
 {
@@ -307,9 +310,12 @@ TEST(GeometryProcessBackendTest, installedFreeCADCmdRoundTripsAValidatedProbe)
     GeometryJobManager manager(1, 4);
     Internal::GeometryProcessBackendTestAccess::start(manager, worker, unicodeRoot);
 
-    const auto id = manager.submit(request("FreeCAD.Internal.GeometryProbe"), archive());
+    const auto id = manager.submit(
+        request("FreeCAD.Internal.GeometryProbe", installedWorkerLifetime),
+        archive()
+    );
     EXPECT_TRUE(waitForProgress(manager, id, 250ms));
-    const auto status = waitForTerminal(manager, id);
+    const auto status = waitForTerminal(manager, id, installedWorkerLifetime + 30s);
     ASSERT_TRUE(status.has_value());
     ASSERT_EQ(status->state, GeometryJobState::Completed) << status->diagnostic;
     auto result = manager.takeResult(id);
@@ -382,8 +388,11 @@ TEST(GeometryProcessBackendTest, installedWorkerDoesNotLoadTheLiveGuiUserProfile
     const auto root = directory.path / "geometry-jobs";
     std::filesystem::create_directories(root);
     Internal::GeometryProcessBackendTestAccess::start(manager, worker, root);
-    const auto id = manager.submit(request("FreeCAD.Internal.GeometryProbe"), archive());
-    const auto status = waitForTerminal(manager, id);
+    const auto id = manager.submit(
+        request("FreeCAD.Internal.GeometryProbe", installedWorkerLifetime),
+        archive()
+    );
+    const auto status = waitForTerminal(manager, id, installedWorkerLifetime + 30s);
     ASSERT_TRUE(status.has_value());
     ASSERT_EQ(status->state, GeometryJobState::Completed) << status->diagnostic;
     EXPECT_FALSE(std::filesystem::exists(marker));

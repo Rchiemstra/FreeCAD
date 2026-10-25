@@ -5,8 +5,8 @@
 # Host Windows runs are not evidence; run from WSL with Docker.
 set -e
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
 TIER=${TIER:-arch}
@@ -15,8 +15,9 @@ run_arch() {
   echo "== TIER=arch: architecture pytest (no FreeCAD build) =="
   # freecad-ci-deps:24.04 does not ship pytest; provision it the same way
   # prior collaboration Docker gates did (pip into the container).
-  if ! python3 -c 'import pytest' 2>/dev/null; then
-    python3 -m pip install --break-system-packages -q pytest
+  # CI image scheduling tests also parse the workflow YAML with PyYAML.
+  if ! python3 -c 'import pytest, yaml' 2>/dev/null; then
+    python3 -m pip install --break-system-packages -q pytest PyYAML
   fi
   export PYTHONUNBUFFERED=1
   python3 -m pytest -vv --tb=line tests/architecture/
