@@ -67,6 +67,7 @@ target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
+    ${Python3_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )
