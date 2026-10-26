@@ -54,6 +54,8 @@ SOURCE_GROUP("Module" FILES ${Module_SRCS})
 SET(Assembly_SRCS
     AssemblyObject.cpp
     AssemblyObject.h
+    MotionSimulationCoordinates.cpp
+    MotionSimulationCoordinates.h
     AssemblyLink.cpp
     AssemblyLink.h
     AssemblyUtils.cpp
@@ -66,6 +68,8 @@ SET(Assembly_SRCS
     ReviewNote.h
     InterferenceScan.cpp
     InterferenceScan.h
+    InterferenceScanPy.cpp
+    InterferenceScanPy.h
     InterferenceScanSession.cpp
     InterferenceScanSession.h
 

@@ -55,6 +55,7 @@ EXPECTED_GUI_SUITES: tuple[str, ...] = (
     "TestOpenSCADGui",
     "TestMaterialsGui",
     "TestCAMGui",
+    "TestAssemblyGui",
 )
 
 # Diagnostic class units. Never a substitute for the aggregate TestSketcherGui.
