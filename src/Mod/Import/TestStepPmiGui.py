@@ -489,7 +489,7 @@ class StepPmiGuiTest(unittest.TestCase):
 
         existing = set(App.listDocuments())
         text = Path(__file__).with_name("TestData").joinpath(
-            "StepAttributes", "attributes-nested.step").read_text()
+            "StepAttributes", "attributes-nested.step").read_text(encoding="utf-8")
         # Independently authored surface style: RGB (0.8, 0.2, 0.1) on solid #11.
         style = """
 #500=COLOUR_RGB('supplier red',0.8,0.2,0.1);
@@ -522,7 +522,7 @@ class StepPmiGuiTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory(prefix="gui-step-views-") as directory:
                 path = Path(directory, "colored-views.step")
-                path.write_text(text)
+                path.write_text(text, encoding="utf-8")
                 for links in (False, True):
                     signatures = []
                     for enabled in (False, True):

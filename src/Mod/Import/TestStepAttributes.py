@@ -58,13 +58,13 @@ class TestStepAttributes(unittest.TestCase):
         return matches[0]
 
     def variant(self, replacements=(), extra='', fixture='mm', **options):
-        text = (DATA / ('attributes-' + fixture + '.step')).read_text()
+        text = (DATA / ('attributes-' + fixture + '.step')).read_text(encoding="utf-8")
         for old, new in replacements:
             self.assertEqual(text.count(old), 1, old)
             text = text.replace(old, new)
         text = text.replace('ENDSEC;\nEND-ISO-10303-21;', extra + '\nENDSEC;\nEND-ISO-10303-21;')
         path = Path(self.temp.name) / 'variant.step'
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         return self.load(path=path, **options)
 
     def test_independent_descriptive_and_measured_properties(self):

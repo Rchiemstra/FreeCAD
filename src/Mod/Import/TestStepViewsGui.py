@@ -40,7 +40,7 @@ class TestStepViewsGui(unittest.TestCase):
         path = DATA / ("views-centered-" + unit + ".step")
         if text is not None:
             path = Path(self.temp.name, "variant.step")
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
         ImportGui.insert(str(path), doc.Name, merge=False, useLinkGroup=True,
                          savedViews=True, semanticPMI=True)
         recompute_document(doc)
@@ -220,7 +220,7 @@ class TestStepViewsGui(unittest.TestCase):
         for kind in ("Orthographic", "Perspective"):
             for operation in ("save", "save-as", "failed-save", "failed-save-as", "non-active-view"):
                 with self.subTest(kind=kind, operation=operation):
-                    doc, view, records = self.load(text=(DATA / "views-centered-mm.step").read_text())
+                    doc, view, records = self.load(text=(DATA / "views-centered-mm.step").read_text(encoding="utf-8"))
                     os.remove(os.path.join(self.temp.name, "variant.step"))
                     view.setCameraType(kind)
                     Gui.updateGui()  # Settle queued camera-type actions before authoring the baseline.
@@ -286,10 +286,10 @@ class TestStepViewsGui(unittest.TestCase):
                             os.rename(backup, path)
                     else:
                         blocked = os.path.join(self.temp.name, "existing.FCStd")
-                        Path(blocked).write_text("preserve this destination")
+                        Path(blocked).write_text("preserve this destination", encoding="utf-8")
                         with self.assertRaises(RuntimeError):
                             save_document_as(doc, blocked, overwrite=False)
-                        self.assertEqual(Path(blocked).read_text(), "preserve this destination")
+                        self.assertEqual(Path(blocked).read_text(encoding="utf-8"), "preserve this destination")
                     self.assertEqual((self.camera(view, depth=False),
                                       self.children(view.getSceneGraph())), presentation)
                     self.assertIs(self.api._states[id(view)], state)
@@ -338,7 +338,7 @@ class TestStepViewsGui(unittest.TestCase):
     def test_centered_retained_region_and_both_eye_sides(self):
         for unit, scale in (("mm", 1), ("inch", 25.4), ("metre", 1000)):
             for opposite in (False, True):
-                text = (DATA / ("views-centered-" + unit + ".step")).read_text()
+                text = (DATA / ("views-centered-" + unit + ".step")).read_text(encoding="utf-8")
                 if opposite:
                     text = text.replace("#302=CARTESIAN_POINT('',(0.,0.,0.));",
                                         "#302=CARTESIAN_POINT('',(0.,0.,100.));")
@@ -430,7 +430,7 @@ class TestStepViewsGui(unittest.TestCase):
         self.assertEqual(self.camera(second), snapshots[1])
 
     def test_projection_on_opposite_side_of_view_plane(self):
-        text = (DATA / "views-centered-mm.step").read_text().replace(
+        text = (DATA / "views-centered-mm.step").read_text(encoding="utf-8").replace(
             "#302=CARTESIAN_POINT('',(0.,0.,0.));",
             "#302=CARTESIAN_POINT('',(0.,0.,100.));").replace(
                 "4.,2.,.T.,80.,.T.,.T.", "4.,2.,.F.,80.,.F.,.T.").replace(
@@ -493,8 +493,8 @@ class TestStepViewsGui(unittest.TestCase):
     def test_unsupported_source_cases_refused(self):
         doc, view, records = self.load()
         self.good(records[0], view)
-        original = (DATA / "views-mm.step").read_text()
-        centered = (DATA / "views-centered-mm.step").read_text()
+        original = (DATA / "views-mm.step").read_text(encoding="utf-8")
+        centered = (DATA / "views-centered-mm.step").read_text(encoding="utf-8")
         variants = [original,  # asymmetric, oblique, union
                     centered.replace("#303=CARTESIAN_POINT('',(-9.,-6.,4.));",
                                      "#303=CARTESIAN_POINT('',(6.,-9.,4.));").replace(
@@ -601,7 +601,7 @@ class TestStepViewsGui(unittest.TestCase):
         self.assertEqual((self.camera(view), self.children(view.getSceneGraph())), before)
 
     def test_source_free_copy_reopen_undo_and_no_document_edits(self):
-        doc, view, records = self.load(text=(DATA / "views-centered-mm.step").read_text())
+        doc, view, records = self.load(text=(DATA / "views-centered-mm.step").read_text(encoding="utf-8"))
         os.remove(os.path.join(self.temp.name, "variant.step"))
         path = os.path.join(self.temp.name, "owned.FCStd")
         save_document_as(doc, path)

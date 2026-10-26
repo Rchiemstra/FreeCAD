@@ -44,7 +44,7 @@ class TestStepAttributesExport(AttributeImportTests):
         return path, report
 
     def text(self, path):
-        return re.sub(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d', 'TIME', path.read_text())
+        return re.sub(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d', 'TIME', path.read_text(encoding="utf-8"))
 
     def reload(self, path):
         return self.load(path=path, userAttributes=True)
@@ -99,7 +99,7 @@ class TestStepAttributesExport(AttributeImportTests):
             path, report = self.emit(doc, legacy=legacy)
             self.assertEqual(sum(r['status'] == 'written' for r in report), 5, report)
             self.assertTrue(all(r['reason'] for r in report if r['status'] == 'skipped'))
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             entities = dict(re.findall(r'#(\d+)\s*=\s*(.*?);', text, re.S))
             props = [(key, value) for key, value in entities.items()
                      if value.startswith("PROPERTY_DEFINITION('supplier set'")]
@@ -157,7 +157,7 @@ class TestStepAttributesExport(AttributeImportTests):
             Import.export(self.owners(doc), str(baseline_path), userAttributes=False, semanticPMI=False)
             baseline = self.text(baseline_path)
             path, _ = self.emit(doc)
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             scalar_text = re.sub(r'\s+', '', text)
             match = re.search(r"MEASURE_WITH_UNIT\(LENGTH_MEASURE\(([^)]+)\),#(\d+)\)REPRESENTATION_ITEM\('span'\)", scalar_text)
             self.assertIsNotNone(match, text[-4000:])
@@ -201,7 +201,7 @@ class TestStepAttributesExport(AttributeImportTests):
                         selected.append(repeat)
             path, report = self.emit(doc, selected)
             self.assertTrue(all(r['status'] == 'skipped' and r['reason'] for r in report), (scenario, report))
-            self.assertNotIn("PROPERTY_DEFINITION('supplier set'", path.read_text())
+            self.assertNotIn("PROPERTY_DEFINITION('supplier set'", path.read_text(encoding="utf-8"))
 
     def test_live_owner_link_authoritative_partial_copy(self):
         doc = self.load()
@@ -232,7 +232,7 @@ class TestStepAttributesExport(AttributeImportTests):
             row = next(r for r in report if r['object'] == override.Name)
             self.assertEqual(row['status'], 'written' if fixture == 'assembly' else 'skipped', report)
             if fixture == 'assembly':
-                text = path.read_text()
+                text = path.read_text(encoding="utf-8")
                 entities = dict(re.findall(r'#(\d+)\s*=\s*(.*?);', text, re.S))
                 instance = next(v for v in entities.values() if v.startswith("PROPERTY_DEFINITION('instance set'"))
                 target = entities[re.findall(r'#(\d+)', instance)[-1]]
@@ -491,7 +491,7 @@ class TestStepAttributesExport(AttributeImportTests):
 """)
         path, report = self.emit(doc)
         self.assertEqual(sum(r['status'] == 'written' for r in report), 6)
-        self.assertEqual(len(re.findall(r"PROPERTY_DEFINITION\('supplier set'", path.read_text())), 2)
+        self.assertEqual(len(re.findall(r"PROPERTY_DEFINITION\('supplier set'", path.read_text(encoding="utf-8"))), 2)
         restored = self.reload(path)
         self.assertEqual(len([r for r in self.records(restored) if r.SupplierName == 'Label']), 2)
 
@@ -503,7 +503,7 @@ class TestStepAttributesExport(AttributeImportTests):
         row = next(r for r in report if r['object'] == span.Name)
         self.assertEqual(row['status'], 'skipped')
         self.assertIn('nonfinite', row['reason'])
-        self.assertNotIn("REPRESENTATION_ITEM('span'", path.read_text())
+        self.assertNotIn("REPRESENTATION_ITEM('span'", path.read_text(encoding="utf-8"))
         self.assertEqual(self.by_name(self.reload(path), 'Label').Value, 'supplier label')
 
     def test_color_palette_parity(self):

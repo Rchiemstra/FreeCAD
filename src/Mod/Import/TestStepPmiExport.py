@@ -134,7 +134,7 @@ class StepPmiExportTests:
             doc = self.load(links)
             path, report = self.export_pmi(doc, legacy=legacy)
             self.assertEqual([r["status"] for r in report], ["written"] * 3)
-            with open(path) as stream:
+            with open(path, encoding="utf-8") as stream:
                 # Typed measure selects are required even if a reader accepts bare reals.
                 self.assertRegex(stream.read(),
                                  r"LENGTH_MEASURE_WITH_UNIT\s*\(\s*LENGTH_MEASURE\(-")
@@ -297,7 +297,7 @@ class StepPmiExportTests:
         owner = doc.StepPMI.Group[0].References[0][0]
         path = os.path.join(self.directory.name, "same.step")
         Import.export([owner], path, semanticPMI=False)
-        with open(path) as stream:
+        with open(path, encoding="utf-8") as stream:
             expected = stream.read()
         original = StepPmiExport.prepare
 
@@ -310,7 +310,7 @@ class StepPmiExportTests:
 
         with patch.object(StepPmiExport, "prepare", side_effect=fail_after_datum):
             report = Import.export([owner], path, semanticPMI=True)
-        with open(path) as stream:
+        with open(path, encoding="utf-8") as stream:
             actual = stream.read()
         normalize = lambda text: re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", "TIME", text)
         self.assertEqual(normalize(expected), normalize(actual))

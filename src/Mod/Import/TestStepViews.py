@@ -51,13 +51,13 @@ class TestStepViews(unittest.TestCase):
     def variant(self, replacements=(), extra="", **options):
         """Hand-authored Part 21 variants; expected data is specified in README.txt."""
         from pathlib import Path
-        text = Path(DATA, "views-mm.step").read_text()
+        text = Path(DATA, "views-mm.step").read_text(encoding="utf-8")
         for old, new in replacements:
             self.assertEqual(text.count(old), 1, old)
             text = text.replace(old, new)
         text = text.replace("ENDSEC;\nEND-ISO-10303-21;", extra + "\nENDSEC;\nEND-ISO-10303-21;")
         path = Path(self.temp.name, "variant.step")
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         doc = App.newDocument("VariantViews")
         settings = dict(merge=False, useLinkGroup=True, semanticPMI=True, savedViews=True)
         settings.update(options)
@@ -501,10 +501,10 @@ class TestStepViews(unittest.TestCase):
         # A source with a context-dependent length has no conversion to mm.
         from pathlib import Path
         source = Path(self.temp.name) / "unknown.step"
-        text = Path(DATA, "views-mm.step").read_text()
+        text = Path(DATA, "views-mm.step").read_text(encoding="utf-8")
         text = text.replace("#81=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));",
                             "#81=(CONTEXT_DEPENDENT_UNIT('supplier unit') LENGTH_UNIT() NAMED_UNIT(#86));")
-        source.write_text(text)
+        source.write_text(text, encoding="utf-8")
         doc = App.newDocument("UnknownViewUnits")
         Import.insert(str(source), doc.Name, merge=False, useLinkGroup=True,
                       semanticPMI=False, savedViews=True)
