@@ -22,6 +22,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <sstream>
 #include <utility>
 #include <boost/algorithm/string/predicate.hpp>
 #include <QApplication>
@@ -359,9 +360,33 @@ void PropertyEditor::openTransaction()
         FC_LOG("pending transaction");
         return;
     }
-    // Edits open their own undo transaction on the document execution lane
-    // (named "Edit"). This editor must not book another one: a zero
-    // transactionID used to compare equal to "no booking" and commit during undo.
+    // Book a named undo transaction for this edit. Lane Edit commands still
+    // record the value change; closeTransaction commits only this booking, and
+    // a zero id still means this editor has nothing to close.
+    auto* document = obj->getDocument();
+    std::ostringstream str;
+    str << tr("Edit").toUtf8().constData() << ' ';
+    for (auto* itemProperty : items) {
+        if (itemProperty->getContainer() != obj) {
+            obj = nullptr;
+            break;
+        }
+    }
+    if (obj && obj->isAttachedToDocument()) {
+        str << obj->getNameInDocument() << '.';
+    }
+    else {
+        str << tr("property").toUtf8().constData() << ' ';
+    }
+    str << prop->getName();
+    if (items.size() > 1) {
+        str << "...";
+    }
+    transactionDocument = document;
+    transactionID = document->setActiveTransaction(
+        App::TransactionName {.name = str.str(), .temporary = false}
+    );
+    FC_LOG("editor transaction " << App::GetApplication().getTransactionName(transactionID));
 }
 
 void PropertyEditor::onItemActivated(const QModelIndex& index)
