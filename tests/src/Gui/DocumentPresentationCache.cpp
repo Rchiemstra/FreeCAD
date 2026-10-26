@@ -48,6 +48,13 @@
 #include <gp_Vec.hxx>
 #endif
 
+#if defined(FREECAD_TEST_PARTDESIGN_DATUM_EXTENTS)
+# include <App/CollaborativeSetPropertyOperation.h>
+# include <App/MutationClassification.h>
+# include <App/PropertyUnits.h>
+# include <Precision.hxx>
+#endif
+
 #include "CollaborationGuiTestHelpers.h"
 
 #include <atomic>
@@ -371,6 +378,78 @@ protected:
     Gui::Document* guiDocument {};
     Gui::ViewProviderDocumentObject* provider {};
 };
+
+#if defined(FREECAD_TEST_PARTDESIGN_DATUM_EXTENTS)
+// A deferred Placement replay must preserve the conservative wildcard fence
+// used by structural compatibility edits, even though PropertyLength publishes
+// that revision whenever its setter is called.
+TEST_F(PartPresentationCaptureTest, UnchangedDatumExtentsPreserveRevisionFence)
+{
+    Base::Interpreter().runString("import PartDesignGui\n"
+                                  "feature.addProperty('App::PropertyString', 'Text')\n"
+                                  "datum = doc.addObject('PartDesign::Plane', 'MidX')\n");
+    auto* datum = document->getObject("MidX");
+    ASSERT_NE(datum, nullptr);
+    auto* view = guiDocument->getViewProvider(datum);
+    ASSERT_NE(view, nullptr);
+    auto* length = dynamic_cast<App::PropertyLength*>(datum->getPropertyByName("Length"));
+    auto* width = dynamic_cast<App::PropertyLength*>(datum->getPropertyByName("Width"));
+    ASSERT_NE(length, nullptr);
+    ASSERT_NE(width, nullptr);
+    const auto* placement = datum->getPropertyByName("Placement");
+    view->updateData(placement);
+    Gui::Test::settlePendingRecomputeWithoutBlockingGui(*document);
+    const double originalLength = length->getValue();
+    const double originalWidth = width->getValue();
+    App::ensureCollaborativeSetPropertyOperationRegistered();
+    auto& service = document->collaborationService();
+    const auto session = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return service.beginEditSession("datum-refresh-test");
+    });
+    const App::CollaborativeOperationIntent intent {
+        std::string(App::CollaborativeSetPropertyOperationType),
+        {{"object", "Plane"},
+         {"property", "Text"},
+         {"value_type", "string"},
+         {"value", "After refresh"}}
+    };
+
+    // Check exact equality, sub-tolerance differences, and a real size change.
+    for (double difference : {0.0, 0.5 * Precision::Confusion(), 2.0 * Precision::Confusion()}) {
+        SCOPED_TRACE(difference);
+        length->setValue(originalLength + difference);
+        width->setValue(originalWidth + difference);
+        // Native scalar preparation needs no GUI callbacks. Keep queued refresh
+        // out until the explicit Placement replay below.
+        auto prepared
+            = std::async(std::launch::async, [&] {
+                  return service.prepareEdit(session.sessionId(), "datum-refresh", intent, "test");
+              }).get();
+        const auto wildcard = App::DocumentRevisionKey::unknownModelMutation();
+        const auto before = document->collaborationRevisions().current(wildcard);
+        // Replay the same callback used by updateView during GUI catch-up.
+        {
+            App::LivePresentationRefreshScope refresh;
+            ASSERT_TRUE(refresh.acquired());
+            view->updateData(placement);
+        }
+        const bool changed = difference > Precision::Confusion();
+        EXPECT_EQ(document->collaborationRevisions().current(wildcard), before + (changed ? 2 : 0));
+        const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+            return service.commitEdit(session.sessionId(), prepared);
+        });
+        EXPECT_EQ(
+            result.status,
+            changed ? App::DocumentCommitStatus::Conflict : App::DocumentCommitStatus::Committed
+        ) << result.message;
+        EXPECT_DOUBLE_EQ(
+            length->getValue(), changed ? originalLength : originalLength + difference
+        );
+        EXPECT_DOUBLE_EQ(width->getValue(), changed ? originalWidth : originalWidth + difference);
+    }
+}
+
+#endif
 
 TEST_F(PartPresentationCaptureTest, BothCoinProducersRoundTripThreeTriangles)
 {
