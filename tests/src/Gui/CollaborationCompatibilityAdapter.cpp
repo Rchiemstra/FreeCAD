@@ -1710,13 +1710,14 @@ TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperChecksDeadlineAfterRe
             refresh.release();
             App::endAtomicPresentationMutationTarget(*_driven);
         });
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        auto now = std::chrono::steady_clock::time_point {};
+        const auto deadline = now + std::chrono::seconds(1);
         EXPECT_THROW(Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
                          *_driven, deadline, [&] {
                              ++deferrals;
-                             std::this_thread::sleep_until(deadline);
+                             now = deadline + std::chrono::steady_clock::duration(1);
                              refresh.release();
-                         }),
+                         }, [&] { return now; }),
                      std::runtime_error);
         EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
     });

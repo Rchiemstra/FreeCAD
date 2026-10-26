@@ -39,16 +39,19 @@ namespace Gui::Test
  * pre-admission deferral as production. The deadline bounds admission retries;
  * the App wait has no timed overload, so refresh probes must release under a
  * watchdog. The optional observer coordinates those probes before the wait.
+ * Tests may inject a clock to control retry deadlines independently of scheduling.
  * Callers must pair successful admission with an owner-thread scope guard.
  */
 inline void beginAtomicPresentationMutationTargetWithRetry(
     App::Document& document,
     std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(5),
-    const std::function<void()>& onDeferred = {})
+    const std::function<void()>& onDeferred = {},
+    const std::function<std::chrono::steady_clock::time_point()>& now =
+        std::chrono::steady_clock::now)
 {
     for (;;) {
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (now() >= deadline) {
             throw std::runtime_error("owner presentation admission timed out");
         }
         try {
