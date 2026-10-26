@@ -1230,6 +1230,7 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
         // App::GetApplication().setActiveDocument(doc);
 
         showHiddenAction->setChecked(docitem->showHidden());
+        contextMenu.addAction(this->relabelObjectAction);
         contextMenu.addAction(this->showHiddenAction);
         contextMenu.addAction(this->openFileLocationAction);
         contextMenu.addAction(this->searchObjectsAction);
@@ -1459,7 +1460,13 @@ void TreeWidget::onCreateGroup()
 void TreeWidget::onRelabelObject()
 {
     QTreeWidgetItem* item = currentItem();
-    if (item) {
+    if (item && item->type() == DocumentType) {
+        // A document rename includes its filename. Reuse native Save As so
+        // cancellation, overwrite confirmation and lane completion retain
+        // their existing authority and durable-save checks.
+        static_cast<DocumentItem*>(item)->document()->saveAs();
+    }
+    else if (item) {
         editItem(item);
     }
 }
@@ -1963,6 +1970,12 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
     if (event->matches(QKeySequence::Find)) {
         event->accept();
         onSearchObjects();
+        return;
+    }
+    else if (event->key() == Qt::Key_F2 && event->modifiers() == Qt::NoModifier
+             && currentItem() && currentItem()->type() == DocumentType) {
+        event->accept();
+        onRelabelObject();
         return;
     }
     else if (event->modifiers() == Qt::AltModifier) {
