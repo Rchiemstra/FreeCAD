@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -1351,6 +1352,63 @@ int countOccurrences(const std::string& haystack, const std::string& needle)
     return count;
 }
 
+namespace
+{
+
+// The GUI pump must enter the reservation before the owner attempts admission.
+// Release only after the typed deferral is observed, rather than relying on a
+// timer delay to overlap two threads. Both handshake waits have watchdogs.
+class CoordinatedGuiRefresh final
+{
+public:
+    CoordinatedGuiRefresh()
+    {
+        QTimer::singleShot(0, &_context, [this] {
+            App::LivePresentationRefreshScope refresh;
+            std::unique_lock lock(_mutex);
+            _entered = true;
+            _acquired = refresh.acquired();
+            _changed.notify_all();
+            _timedOut = !_changed.wait_for(lock, std::chrono::seconds(5),
+                                          [this] { return _released; });
+        });
+    }
+
+    void waitUntilEntered()
+    {
+        std::unique_lock lock(_mutex);
+        if (!_changed.wait_for(lock, std::chrono::seconds(5),
+                               [this] { return _entered; }) || !_acquired) {
+            throw std::runtime_error("GUI refresh reservation did not start");
+        }
+    }
+
+    void release()
+    {
+        std::lock_guard lock(_mutex);
+        _released = true;
+        _changed.notify_all();
+    }
+
+    ~CoordinatedGuiRefresh()
+    {
+        EXPECT_TRUE(_entered);
+        EXPECT_TRUE(_acquired);
+        EXPECT_FALSE(_timedOut) << "owner did not observe refresh before watchdog";
+    }
+
+private:
+    QObject _context;
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    bool _entered {false};
+    bool _acquired {false};
+    bool _released {false};
+    bool _timedOut {false};
+};
+
+}  // namespace
+
 // A live main window (tree, property view, report view) is what recomputes a
 // Part feature after its expression source document has closed.
 class CrossDocumentExpressionGuiTest: public ::testing::Test
@@ -1517,8 +1575,27 @@ TEST_F(CrossDocumentExpressionGuiTest, viewAppearanceDuringOwnerAdmissionIsNotLo
     material.diffuseColor = Base::Color(0.4F, 0.5F, 0.6F);
     std::string thrown;
     ConsoleErrorCapture capture;
+    std::optional<CoordinatedGuiRefresh> refresh;
+    if (qEnvironmentVariableIsSet("FREECAD_TEST_FORCE_ADMISSION_REFRESH")) {
+        refresh.emplace();
+    }
+    unsigned int deferrals = 0;
     Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
-        App::beginAtomicPresentationMutationTarget(*_driven);
+        if (refresh) {
+            refresh->waitUntilEntered();
+        }
+        const auto releaseRefresh = qScopeGuard([&] {
+            if (refresh) {
+                refresh->release();
+            }
+        });
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
+            *_driven, std::chrono::steady_clock::now() + std::chrono::seconds(5), [&] {
+                ++deferrals;
+                if (refresh) {
+                    refresh->release();
+                }
+            });
         const auto endAdmission =
             qScopeGuard([&] { App::endAtomicPresentationMutationTarget(*_driven); });
         App::MainThreadSignalConfig::invoke(
@@ -1533,10 +1610,118 @@ TEST_F(CrossDocumentExpressionGuiTest, viewAppearanceDuringOwnerAdmissionIsNotLo
             true);
     });
 
+    if (refresh) {
+        EXPECT_GE(deferrals, 1u);
+    }
     EXPECT_TRUE(thrown.empty()) << thrown;
     const auto errors = capture.errors();
     EXPECT_EQ(errors.find("mutation is unavailable"), std::string::npos) << errors;
     EXPECT_EQ(view->ShapeAppearance[0].diffuseColor, material.diffuseColor);
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperRetriesLiveRefresh)
+{
+    CoordinatedGuiRefresh refresh;
+    unsigned int deferrals = 0;
+    EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
+        refresh.waitUntilEntered();
+        const auto release = qScopeGuard([&] { refresh.release(); });
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
+            *_driven, std::chrono::steady_clock::now() + std::chrono::seconds(5), [&] {
+                ++deferrals;
+                refresh.release();
+            });
+        const auto endAdmission = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_driven);
+        });
+        EXPECT_TRUE(_driven->executionLane()->isOwnerThread());
+        EXPECT_TRUE(App::atomicPresentationMutationAdmissionHeldFor(*_driven));
+        App::enforceAtomicPresentationMutationTarget(*_driven);
+    }));
+    EXPECT_GE(deferrals, 1u);
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperAdmitsNormally)
+{
+    EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(*_driven);
+        const auto endAdmission = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_driven);
+        });
+        EXPECT_TRUE(_driven->executionLane()->isOwnerThread());
+        EXPECT_TRUE(App::atomicPresentationMutationAdmissionHeldFor(*_driven));
+        App::enforceAtomicPresentationMutationTarget(*_driven);
+    }));
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperRethrowsNonDeferrableRefresh)
+{
+    App::LivePresentationRefreshScope refresh;
+    ASSERT_TRUE(refresh.acquired());
+    unsigned int deferrals = 0;
+    try {
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
+            *_driven, std::chrono::steady_clock::now() + std::chrono::seconds(5),
+            [&] { ++deferrals; });
+        FAIL() << "refresh-thread admission must be refused";
+    }
+    catch (const App::LivePresentationRefreshInProgress& error) {
+        EXPECT_FALSE(error.deferrable());
+    }
+    EXPECT_EQ(deferrals, 0u);
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperRethrowsOtherAdmissionErrors)
+{
+    App::beginAtomicPresentationMutationTarget(*_source);
+    const auto endAdmission = qScopeGuard([&] {
+        App::endAtomicPresentationMutationTarget(*_source);
+    });
+    EXPECT_THROW(Gui::Test::beginAtomicPresentationMutationTargetWithRetry(*_driven),
+                 Base::RuntimeError);
+    EXPECT_TRUE(App::atomicPresentationMutationAdmissionHeldFor(*_source));
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionHeldFor(*_driven));
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperRejectsExpiredDeadline)
+{
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
+        const auto cleanup = qScopeGuard([&] {
+            App::endAtomicPresentationMutationTarget(*_driven);
+        });
+        EXPECT_THROW(Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
+                         *_driven, std::chrono::steady_clock::now()),
+                     std::runtime_error);
+        EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+    });
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+}
+
+TEST_F(CrossDocumentExpressionGuiTest, ownerAdmissionHelperChecksDeadlineAfterRefreshWait)
+{
+    CoordinatedGuiRefresh refresh;
+    unsigned int deferrals = 0;
+    Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_driven, [&] {
+        refresh.waitUntilEntered();
+        const auto cleanup = qScopeGuard([&] {
+            refresh.release();
+            App::endAtomicPresentationMutationTarget(*_driven);
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        EXPECT_THROW(Gui::Test::beginAtomicPresentationMutationTargetWithRetry(
+                         *_driven, deadline, [&] {
+                             ++deferrals;
+                             std::this_thread::sleep_until(deadline);
+                             refresh.release();
+                         }),
+                     std::runtime_error);
+        EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
+    });
+    EXPECT_EQ(deferrals, 1u);
+    EXPECT_FALSE(App::atomicPresentationMutationAdmissionActive());
 }
 
 class GuiRedoMutationRegressionTest: public CollaborationCompatibilityIntegrationTest,

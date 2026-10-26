@@ -4,6 +4,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
+#include <App/MutationClassification.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/SharedPresentationCoordinator.h>
 
@@ -16,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 
@@ -31,6 +33,41 @@ class Document;
 
 namespace Gui::Test
 {
+
+/**
+ * Admit on the owner thread without document locks, retrying only the same
+ * pre-admission deferral as production. The deadline bounds admission retries;
+ * the App wait has no timed overload, so refresh probes must release under a
+ * watchdog. The optional observer coordinates those probes before the wait.
+ * Callers must pair successful admission with an owner-thread scope guard.
+ */
+inline void beginAtomicPresentationMutationTargetWithRetry(
+    App::Document& document,
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    const std::function<void()>& onDeferred = {})
+{
+    for (;;) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            throw std::runtime_error("owner presentation admission timed out");
+        }
+        try {
+            App::beginAtomicPresentationMutationTarget(document);
+            return;
+        }
+        catch (const App::LivePresentationRefreshInProgress& error) {
+            if (!error.deferrable()) {
+                throw;
+            }
+            if (onDeferred) {
+                onDeferred();
+            }
+            if (!App::waitForLivePresentationRefresh()) {
+                throw;
+            }
+        }
+    }
+}
 
 /**
  * Run \p fn on the document execution lane owner thread while pumping Qt on
