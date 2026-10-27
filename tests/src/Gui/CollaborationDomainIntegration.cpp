@@ -760,6 +760,171 @@ TEST_F(CollaborationDomainIntegrationTest,
               revisionBefore + 1);
 }
 
+TEST_F(CollaborationDomainIntegrationTest,
+       externalNotificationBarrierStartupFailurePreservesLiveDocument)
+{
+    ASSERT_FALSE(document->mustExecute());
+    ASSERT_FALSE(document->hasPendingTransaction());
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    auto& application = *Gui::Application::Instance;
+    const auto identity = document->collaborationIdentity();
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+    const auto appKey = App::DocumentRevisionKey::unknownModelMutation();
+    const auto appBefore = document->collaborationRevisions().current(appKey);
+    const auto publicationBefore =
+        guiDocument->sharedPresentationRevisions().latestPublicationSequence();
+    const auto fileBefore = document->getPendingFileChanges().toUnderlyingType();
+    const auto statusBefore = provider->ShowInTree.getStatus();
+    const auto valueBefore = provider->ShowInTree.getValue();
+    const auto undoNamesBefore = document->getAvailableUndoNames();
+    const auto redoNamesBefore = document->getAvailableRedoNames();
+    const auto undoBefore = document->getAvailableUndos();
+    const auto redoBefore = document->getAvailableRedos();
+    const auto objectCountBefore = document->getObjects().size();
+    const auto labelBefore = object->Label.getStrValue();
+    const auto visibilityBefore = object->Visibility.getValue();
+    const auto modifiedBefore = guiDocument->isModified();
+    int notifications = 0;
+    auto connection = document->signalFileChangeStateChanged().connect(
+        [&](const App::Document&) { ++notifications; });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    const auto requestForCurrentRevision = [&] {
+        Gui::SharedPresentationCommitRequest request;
+        request.document = {identity.instanceId, identity.lifecycleEpoch};
+        request.expectedPresentationRevisions =
+            guiDocument->sharedPresentationRevisions().capture({key});
+        request.presentationWrites = {key};
+        return request;
+    };
+    int appWork = 0;
+    int guiWork = 0;
+    int postconditions = 0;
+    int appRollbacks = 0;
+    int guiRollbacks = 0;
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [&] {
+        ++appWork;
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        ++guiWork;
+        provider->ShowInTree.setStatus(App::Property::Hidden,
+            !provider->ShowInTree.testStatus(App::Property::Hidden));
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [&] {
+        ++postconditions;
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackGuiMutation = [&] {
+        ++guiRollbacks;
+        provider->ShowInTree.setStatusValue(statusBefore);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [&] {
+        ++appRollbacks;
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    int externalAuditCalls = 0;
+    application.beginSharedPresentationNotificationBarrier(
+        [&](const Gui::ViewProvider&, const App::Property&) {
+            ++externalAuditCalls;
+            return true;
+        });
+    const auto finishExternalBarrier = qScopeGuard([&] {
+        application.finishSharedPresentationNotificationBarrier(false);
+    });
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, requestForCurrentRevision(), callbacks);
+
+    EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::SerializationFailed)
+        << result.diagnostic;
+    EXPECT_EQ(result.diagnostic,
+              "shared-presentation notification barrier startup failed: "
+              "nested shared-presentation notification barrier");
+    EXPECT_FALSE(result.publishedPresentation.has_value());
+    EXPECT_EQ(appWork, 0);
+    EXPECT_EQ(guiWork, 0);
+    EXPECT_EQ(postconditions, 0);
+    EXPECT_EQ(guiRollbacks, 0);
+    EXPECT_EQ(appRollbacks, 0);
+    const auto identityAfter = document->collaborationIdentity();
+    EXPECT_EQ(identityAfter.instanceId, identity.instanceId);
+    EXPECT_EQ(identityAfter.lifecycleEpoch, identity.lifecycleEpoch);
+    EXPECT_EQ(identityAfter.state, App::DocumentLifecycleState::Live);
+    EXPECT_FALSE(document->hasPendingTransaction());
+    EXPECT_FALSE(document->transacting());
+    EXPECT_FALSE(document->isTransactionLocked());
+    EXPECT_EQ(document->getBookedTransactionID(), 0);
+    EXPECT_FALSE(App::Internal::DocumentCollaborationConcurrencyTestAccess::poisoned(*document));
+    EXPECT_FALSE(document->collaborationRevisionPublicationSuppressed());
+    EXPECT_EQ(document->getAvailableUndos(), undoBefore);
+    EXPECT_EQ(document->getAvailableRedos(), redoBefore);
+    EXPECT_EQ(document->getAvailableUndoNames(), undoNamesBefore);
+    EXPECT_EQ(document->getAvailableRedoNames(), redoNamesBefore);
+    EXPECT_EQ(document->getObjects().size(), objectCountBefore);
+    EXPECT_EQ(object->Label.getStrValue(), labelBefore);
+    EXPECT_EQ(object->Visibility.getValue(), visibilityBefore);
+    EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+    EXPECT_EQ(provider->ShowInTree.getValue(), valueBefore);
+    EXPECT_EQ(document->getPendingFileChanges().toUnderlyingType(), fileBefore);
+    EXPECT_EQ(guiDocument->isModified(), modifiedBefore);
+    EXPECT_EQ(document->collaborationRevisions().current(appKey), appBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+              publicationBefore);
+    EXPECT_EQ(notifications, 0);
+
+    // The refused commit must neither finish nor replace the external audit.
+    EXPECT_TRUE(application.sharedPresentationPropertyStatusRollbackActive());
+    EXPECT_FALSE(application.sharedPresentationNotificationAuditViolated());
+    EXPECT_THROW(application.beginSharedPresentationNotificationBarrier(), Base::RuntimeError);
+    EXPECT_THROW(application.ensureSharedPresentationStructureMutationAllowed(), Base::RuntimeError);
+    EXPECT_EQ(externalAuditCalls, 0);
+    application.preflightSharedPresentationPropertyMutation(*provider, provider->ShowInTree);
+    EXPECT_EQ(externalAuditCalls, 1);
+    application.finishSharedPresentationNotificationBarrier(false);
+    EXPECT_FALSE(application.sharedPresentationPropertyStatusRollbackActive());
+    EXPECT_NO_THROW(application.ensureSharedPresentationStructureMutationAllowed());
+
+    // An ordinary publication proves document suppression was restored.
+    provider->ShowInTree.setStatus(App::Property::Hidden,
+        !provider->ShowInTree.testStatus(App::Property::Hidden));
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore + 1);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+              publicationBefore + 1);
+    EXPECT_EQ(notifications, 1);
+    EXPECT_EQ(externalAuditCalls, 1);
+
+    // A fresh commit proves the active flag and native atomic state were restored.
+    const auto recovered = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, requestForCurrentRevision(), std::move(callbacks));
+    ASSERT_TRUE(recovered.committed()) << recovered.diagnostic;
+    EXPECT_TRUE(recovered.publishedPresentation.has_value());
+    EXPECT_EQ(appWork, 1);
+    EXPECT_EQ(guiWork, 1);
+    EXPECT_EQ(postconditions, 1);
+    EXPECT_EQ(guiRollbacks, 0);
+    EXPECT_EQ(appRollbacks, 0);
+    EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore + 2);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+              publicationBefore + 2);
+    EXPECT_EQ(document->collaborationRevisions().current(appKey), appBefore);
+    EXPECT_FALSE(document->hasPendingTransaction());
+    EXPECT_FALSE(document->transacting());
+    EXPECT_EQ(document->getBookedTransactionID(), 0);
+    EXPECT_FALSE(document->collaborationRevisionPublicationSuppressed());
+    EXPECT_FALSE(application.sharedPresentationPropertyStatusRollbackActive());
+    EXPECT_EQ(document->getAvailableUndos(), undoBefore + 1);
+    EXPECT_EQ(document->getAvailableRedos(), redoBefore);
+}
+
 // Refresh release follows the helper's observed typed deferral. The watchdog
 // releases on broken implementations too; it never triggers a passing overlap.
 TEST_F(CollaborationDomainIntegrationTest,
