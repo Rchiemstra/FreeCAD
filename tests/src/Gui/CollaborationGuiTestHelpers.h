@@ -34,6 +34,17 @@ class Document;
 namespace Gui::Test
 {
 
+// Retry only typed Busy admission refusals, before any work starts. The caller
+// must hold no document locks and must recheck prerequisites on each attempt.
+// The observer and clock coordinate deterministic overlap/deadline probes.
+[[nodiscard]] App::DocumentCommitResult serializeWithPresentationAdmissionRetry(
+    const std::function<App::DocumentCommitResult()>& attempt,
+    const std::function<void()>& onDeferred = {},
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    const std::function<std::chrono::steady_clock::time_point()>& now =
+        std::chrono::steady_clock::now);
+
 /**
  * Admit on the owner thread without document locks, retrying only the same
  * pre-admission deferral as production. The deadline bounds admission retries;
@@ -180,7 +191,8 @@ App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& docu
 [[nodiscard]] SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
     Document& guiDocument,
     SharedPresentationCommitRequest request,
-    SharedPresentationCommitCallbacks callbacks);
+    SharedPresentationCommitCallbacks callbacks,
+    const std::function<void()>& onAdmissionDeferred = {});
 
 [[nodiscard]] CollaborationCompatibilityMutationOutcome
 executeCompatibilityMutationWithoutBlockingGui(

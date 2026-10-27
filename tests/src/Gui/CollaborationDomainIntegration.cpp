@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <future>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -37,6 +39,7 @@ using namespace std::chrono_literals;
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/PropertyStandard.h>
+#include <App/MutationClassification.h>
 #include <Base/Interpreter.h>
 #include <Base/Exception.h>
 #include <Gui/Application.h>
@@ -52,9 +55,25 @@ using namespace std::chrono_literals;
 namespace App::Internal
 {
 
+class DocumentCollaborationServiceTestAccess
+{
+public:
+    static App::DocumentCommitResult serializeAtomic(
+        App::DocumentCollaborationService& service,
+        App::CollaborationAtomicCompatibilityCallback callback)
+    {
+        return service.serializeAtomicCompatibilityCallback({}, std::move(callback));
+    }
+};
+
 class DocumentCollaborationConcurrencyTestAccess
 {
 public:
+    static bool poisoned(const App::Document& document) noexcept
+    {
+        return document.collaborationCommitPoisoned();
+    }
+
     static std::recursive_mutex& commitMutex(App::Document& document) noexcept
     {
         return document.collaborationCommitMutex();
@@ -688,6 +707,221 @@ TEST_F(CollaborationDomainIntegrationTest,
     EXPECT_NE(provider->ShowInTree.testStatus(App::Property::Hidden), hiddenBefore);
     EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
               revisionBefore + 1);
+}
+
+// Refresh release follows the helper's observed typed deferral. The watchdog
+// releases on broken implementations too; it never triggers a passing overlap.
+TEST_F(CollaborationDomainIntegrationTest,
+       idleRefreshOverlapPreservesAtomicAdmissionDeferral)
+{
+    ASSERT_FALSE(document->mustExecute());
+    ASSERT_FALSE(document->hasPendingTransaction());
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const auto identity = document->collaborationIdentity();
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+    const auto appKey = App::DocumentRevisionKey::unknownModelMutation();
+    const auto appBefore = document->collaborationRevisions().current(appKey);
+    const auto publicationBefore =
+        guiDocument->sharedPresentationRevisions().latestPublicationSequence();
+    const auto fileBefore = document->getPendingFileChanges().toUnderlyingType();
+    const auto statusBefore = provider->ShowInTree.getStatus();
+    const auto valueBefore = provider->ShowInTree.getValue();
+    const auto undoBefore = document->getAvailableUndos();
+    const auto redoBefore = document->getAvailableRedos();
+    const auto objectCountBefore = document->getObjects().size();
+    int notifications = 0;
+    auto connection = document->signalFileChangeStateChanged().connect(
+        [&](const App::Document&) { ++notifications; });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    const auto unchanged = [&] {
+        EXPECT_FALSE(document->hasPendingTransaction());
+        EXPECT_FALSE(document->transacting());
+        EXPECT_EQ(document->getBookedTransactionID(), 0);
+        EXPECT_FALSE(App::Internal::DocumentCollaborationConcurrencyTestAccess::poisoned(
+            *document));
+        EXPECT_FALSE(document->collaborationRevisionPublicationSuppressed());
+        EXPECT_EQ(document->getAvailableUndos(), undoBefore);
+        EXPECT_EQ(document->getAvailableRedos(), redoBefore);
+        EXPECT_EQ(document->getObjects().size(), objectCountBefore);
+        EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+        EXPECT_EQ(provider->ShowInTree.getValue(), valueBefore);
+        EXPECT_EQ(document->getPendingFileChanges().toUnderlyingType(), fileBefore);
+        EXPECT_EQ(document->collaborationRevisions().current(appKey), appBefore);
+        EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore);
+        EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+                  publicationBefore);
+        EXPECT_EQ(notifications, 0);
+    };
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool released = false;
+    bool watchdogExpired = false;
+    std::promise<bool> entered;
+    auto acquired = entered.get_future();
+    std::thread refresh([&] {
+        App::LivePresentationRefreshScope reservation;
+        entered.set_value(reservation.acquired());
+        std::unique_lock lock(mutex);
+        watchdogExpired = !changed.wait_for(lock, 5s, [&] { return released; });
+    });
+    const auto release = [&] {
+        {
+            std::lock_guard lock(mutex);
+            released = true;
+        }
+        changed.notify_all();
+        if (refresh.joinable()) {
+            refresh.join();
+        }
+    };
+    const auto cleanup = qScopeGuard(release);
+    ASSERT_EQ(acquired.wait_for(5s), std::future_status::ready);
+    ASSERT_TRUE(acquired.get());
+    int atomicWork = 0;
+    const auto serialized = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return App::Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+            document->collaborationService(), [&] { ++atomicWork; });
+    });
+    EXPECT_EQ(serialized.status, App::DocumentCommitStatus::Busy) << serialized.message;
+    EXPECT_TRUE(serialized.presentationAdmissionDeferred) << serialized.message;
+    EXPECT_EQ(atomicWork, 0);
+    unchanged();
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = {identity.instanceId, identity.lifecycleEpoch};
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({key});
+    request.presentationWrites = {key};
+    int appWork = 0;
+    int guiWork = 0;
+    int completion = 0;
+    int deferrals = 0;
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [&] {
+        ++appWork;
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        ++guiWork;
+        provider->ShowInTree.setStatus(App::Property::Hidden,
+            !provider->ShowInTree.testStatus(App::Property::Hidden));
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [&] {
+        ++completion;
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackGuiMutation = [&] {
+        provider->ShowInTree.setStatusValue(statusBefore);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks), [&] {
+            ++deferrals;
+            EXPECT_EQ(appWork, 0);
+            EXPECT_EQ(guiWork, 0);
+            EXPECT_EQ(completion, 0);
+            unchanged();
+            release();
+        });
+    release();
+    EXPECT_FALSE(watchdogExpired);
+    EXPECT_EQ(deferrals, 1);
+    EXPECT_TRUE(result.committed()) << result.diagnostic;
+    EXPECT_EQ(appWork, 1);
+    EXPECT_EQ(guiWork, 1);
+    EXPECT_EQ(completion, 1);
+    EXPECT_FALSE(document->hasPendingTransaction());
+    EXPECT_EQ(document->collaborationRevisions().current(appKey), appBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore + 1);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+              publicationBefore + 1);
+}
+
+TEST_F(CollaborationDomainIntegrationTest, atomicAdmissionRetryPreservesTerminalRefusals)
+{
+    using Status = App::DocumentCommitStatus;
+    for (const auto status : {Status::Busy, Status::ApplyFailed, Status::StaleDocument,
+                              Status::RollbackFailed, Status::InvalidPreparedEdit}) {
+        for (const bool deferred : {false, true}) {
+            int attempts = 0;
+            int deferrals = 0;
+            const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+                return Gui::Test::serializeWithPresentationAdmissionRetry([&] {
+                    App::DocumentCommitResult value;
+                    value.status = ++attempts == 1 ? status : Status::Committed;
+                    value.presentationAdmissionDeferred = deferred;
+                    value.message = "an idle live presentation refresh is active in this process";
+                    return value;
+                }, [&] { ++deferrals; });
+            });
+            const bool retry = status == Status::Busy && deferred;
+            EXPECT_EQ(attempts, retry ? 2 : 1);
+            EXPECT_EQ(deferrals, retry ? 1 : 0);
+            EXPECT_EQ(result.status, retry ? Status::Committed : status);
+            EXPECT_EQ(result.presentationAdmissionDeferred, deferred);
+            EXPECT_EQ(result.message,
+                      "an idle live presentation refresh is active in this process");
+        }
+    }
+    const auto deadline = std::chrono::steady_clock::now();
+    int attempts = 0;
+    int clockReads = 0;
+    const auto timedOut = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return Gui::Test::serializeWithPresentationAdmissionRetry([&] {
+            ++attempts;
+            App::DocumentCommitResult value;
+            value.status = Status::Busy;
+            value.presentationAdmissionDeferred = true;
+            value.message = "retained refusal";
+            return value;
+        }, {}, deadline, [&] {
+            return ++clockReads == 1 ? deadline - 1ms : deadline;
+        });
+    });
+    EXPECT_EQ(attempts, 1);
+    EXPECT_EQ(clockReads, 2);
+    EXPECT_EQ(timedOut.status, Status::Busy);
+    EXPECT_TRUE(timedOut.presentationAdmissionDeferred);
+    EXPECT_EQ(timedOut.message, "retained refusal");
+    EXPECT_THROW(Gui::Test::serializeWithPresentationAdmissionRetry([]()
+        -> App::DocumentCommitResult { throw std::runtime_error("attempt exception"); }),
+        std::runtime_error);
+    // A refresh on the owner itself must refuse without authorizing a wait.
+    int work = 0;
+    const auto refused = Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
+        App::LivePresentationRefreshScope reservation;
+        EXPECT_TRUE(reservation.acquired());
+        return App::Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+            document->collaborationService(), [&] { ++work; });
+    });
+    EXPECT_EQ(refused.status, Status::Busy);
+    EXPECT_FALSE(refused.presentationAdmissionDeferred);
+    EXPECT_EQ(work, 0);
+    EXPECT_FALSE(document->hasPendingTransaction());
+
+    // An unrelated native transaction is terminal and its reason survives the helper.
+    document->setTransactionMode(1);
+    document->openTransaction("admission refusal propagation");
+    const auto abort = qScopeGuard([&] { document->abortTransaction(); });
+    object->Label.setValue("existing native transaction");
+    ASSERT_TRUE(document->hasPendingTransaction());
+    Gui::SharedPresentationCommitRequest request;
+    const auto identity = document->collaborationIdentity();
+    request.document = {identity.instanceId, identity.lifecycleEpoch};
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), {});
+    EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::SerializationFailed);
+    EXPECT_NE(result.diagnostic.find("document already has a native transaction in progress"),
+              std::string::npos) << result.diagnostic;
+    EXPECT_TRUE(document->hasPendingTransaction());
 }
 
 TEST_F(CollaborationDomainIntegrationTest,
