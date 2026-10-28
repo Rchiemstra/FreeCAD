@@ -4,15 +4,24 @@
 
 import FreeCAD as App
 import Part
+import base64
+import json
 import os
 import tempfile
 import threading
 import unittest
+import xml.etree.ElementTree as ET
+import zipfile
 import FreeCADGui as Gui
 from BOPTools import BOPFeatures
 from pivy import coin
 from PySide import QtCore, QtWidgets
-from Test.GuiRecompute import close_document, recompute_document, save_document_as
+from Test.GuiRecompute import (
+    _pump_gui_until,
+    close_document,
+    recompute_document,
+    save_document_as,
+)
 
 
 class _SaveThreadProbe:
@@ -21,7 +30,7 @@ class _SaveThreadProbe:
 
     def dumps(self):
         self.threads.append(threading.get_ident())
-        return None
+        return {"thread": threading.get_ident()}
 
     def loads(self, state):
         pass
@@ -37,6 +46,12 @@ class ColorPerFaceTest(unittest.TestCase):
         close_document(self.doc)
 
     def testSaveGuiStateOnGuiThread(self):
+        self.checkSaveGuiState(with_gil=False)
+
+    def testSaveGuiStateWithGil(self):
+        self.checkSaveGuiState(with_gil=True)
+
+    def checkSaveGuiState(self, *, with_gil):
         # Async saves serialize the model on its owner thread. The separate
         # GuiDocument.xml callback must return to the GUI thread even while
         # posted events change the tree and serialize the active camera.
@@ -69,7 +84,25 @@ class ColorPerFaceTest(unittest.TestCase):
         timer.timeout.connect(change_gui_state)
         timer.start(0)
         try:
-            save_document_as(self.doc, self.fileName)
+            if with_gil:
+                # saveCopy() runs directly on the calling Python thread, which
+                # holds the GIL when SaveDocFile dispatches to the GUI thread.
+                errors = []
+
+                def save_with_gil():
+                    try:
+                        self.doc.saveCopy(self.fileName)
+                    except BaseException as error:
+                        errors.append(error)
+
+                worker = threading.Thread(target=save_with_gil, daemon=True)
+                worker.start()
+                _pump_gui_until(lambda: not worker.is_alive(), 30.0)
+                worker.join()
+                self.assertFalse(errors, errors)
+                self.assertEqual(set(model_probe.threads), {worker.ident})
+            else:
+                save_document_as(self.doc, self.fileName)
         finally:
             timer.stop()
 
@@ -79,6 +112,15 @@ class ColorPerFaceTest(unittest.TestCase):
         gui_thread = threading.get_ident()
         self.assertNotIn(gui_thread, model_probe.threads)
         self.assertEqual(set(gui_probe.threads), {gui_thread})
+        with zipfile.ZipFile(self.fileName) as archive:
+            gui_xml = ET.fromstring(archive.read("GuiDocument.xml"))
+        proxy = gui_xml.find(
+            "./ViewProviderData/ViewProvider[@name='Box']/Properties/Property[@name='Proxy']/Python"
+        )
+        self.assertIsNotNone(proxy)
+        self.assertEqual(
+            json.loads(base64.b64decode(proxy.attrib["value"])), {"thread": gui_thread}
+        )
 
     def testBox(self):
         box = self.doc.addObject("Part::Box", "Box")
