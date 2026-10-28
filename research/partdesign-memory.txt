@@ -1,0 +1,173 @@
+PartDesign refined primitive chain memory investigation
+======================================================
+
+Baseline: FreeCAD-start f09cb7aefc, existing RelWithDebInfo build, Linux/WSLg,
+2026-10-28. Reproducer: the task's 10 x 10 x 2 AdditiveBox chain, Z step 1.8,
+Refine=True, one document recompute after creating every feature.
+
+Cause and minimal trigger
+-------------------------
+
+The primitive Boolean result was constructed as TopoShape(0), without the
+document's string hasher. Its element map therefore concatenated complete
+ancestral names through Boolean/refine operations. Overlapping boxes repeatedly
+split and reunite coplanar faces. The same history appears multiple times in
+each next name: its length approximately doubles per feature. The result still
+has only six faces and 26 named elements. This is exponential naming storage,
+not exponential BRep geometry, an OCC allocation leak, or a GUI-only problem.
+
+With recompute after each feature, maximum stored name lengths before the fix:
+  feature       5       10         15          20
+  bytes     1,616   54,950  1,761,716  56,378,324
+At feature 20 the final shape's 26 names alone contain 451,028,150 bytes.
+Retained intermediate/raw shapes and temporary string copies amplify that cost.
+At N=20 the live glibc heap is approximately 1,744 MiB; closing the document
+reduces it to approximately 19 MiB. This identifies document-owned history,
+rather than permanently leaked allocations.
+
+The trigger also reproduces headlessly, with undo disabled, and with a
+recompute after every feature. GUI presentation capture/revision retention is
+not necessary. Disabling Refine, making boxes touch instead of overlap, or
+using sketch-based Pads removes this exponential behavior in the measured
+range. Separated boxes also avoid it (the current Body accepts multiple solids).
+Unrefined/separated chains retain increasing geometry in successive features
+and show modest polynomial growth; touching/refined boxes and Pads stay close
+to linear growth. The exponential case becomes visible well before N=20.
+
+The document defaults to UseHasher=True, but primitive Boolean shapes did not
+use it. Explicit UseHasher=False does not help. There is no functional global
+element-mapping-disable preference here: Part::Feature::isElementMappingDisabled
+currently returns false. The transient noElementMap API can isolate naming as
+a diagnostic, but discarding persistent names is not an acceptable fix.
+
+PR #16 addresses input-surface mutation during curved-surface refinement:
+https://github.com/Rchiemstra/FreeCAD/pull/16
+This all-planar reproducer follows the same general refine entry point but
+does not need that cylinder/BSpline surface-copy path. Its exponential payload
+is observable directly as element-name strings. Per-feature shape retention
+alone does not explain the blow-up: the fixed chain keeps the same features,
+raw shapes, geometric output, and element counts.
+
+Change
+------
+
+Initialize the primitive Boolean result with getDocument()->getStringHasher(),
+as FeatureExtrude already does for Pad results. Existing naming code then
+stores compact IDs referencing shared history instead of expanding strings.
+Keep the default naming policy and all mapped elements.
+
+testRefinedBoxChainElementNameGrowth checks a batch of 12 boxes before
+extending to 50. Without the fix it fails at a 326-byte name (limit 256),
+before allocating a dangerously large chain. With the fix it verifies all
+50 volumes, six faces per result, 26 mapped elements after the first box,
+and bounded stored name length. The bound is independent of OS/allocator RSS.
+
+Measurement method and reproduction
+-----------------------------------
+
+Systemd scope creation failed with "Failed to connect to bus: No data available".
+Every FreeCAD process instead inherited RLIMIT_AS=6,000,000 KiB (the requested
+ulimit fallback), disabled core dumps, and a 4,600,000 KiB RSS watchdog. Runs
+are sequential; no uncapped FreeCAD process was started. /proc/<pid>/status
+VmHWM is sampled every 20 ms; in-process VmRSS/VmHWM and glibc mallinfo2 record
+the live allocation change. Each run starts a fresh process and user config.
+OMP/OpenBLAS/llvmpipe thread counts are limited to one for repeatability.
+
+Offscreen uses QT_QPA_PLATFORM=offscreen. WSLg uses xcb and DISPLAY=:0.
+These are local comparisons, not substitutes for Woodpecker's CI environment.
+The virtual cap can cause std::bad_alloc before the RSS watchdog threshold;
+FreeCAD can return exit zero with invalid features, so object state and
+completion markers determine success. Stop each series at its first capped
+allocation/recompute failure; N=40 is intentionally absent for those series.
+
+The matrix changes one factor at a time around the reproducer in all three
+modes: Refine off, touching, separated, Pad, or recompute after each feature.
+It is not a full Cartesian-product study. memory_measurements.csv contains
+peak MiB, process wall time, recompute time, heap MiB, valid feature count,
+and outcome for every measured N=5,10,20,30,40 in those comparisons.
+For the "each" case, recompute_seconds is only the final recompute; wall time
+and per-feature records include the intermediate recomputes.
+
+From the repository root, on a build of the desired revision:
+  python3 research/measure_matrix.py before
+  # Apply fix and incrementally rebuild, with at most 6 jobs.
+  python3 research/measure_matrix.py after
+  python3 research/measure_chain.py --label after-cmd-50 --ns 50
+  python3 research/summarize_memory.py
+
+The launcher uses the existing build/relWithDebInfo binaries. Raw per-process
+JSONL/config/logs are under research/results (untracked); the CSV is committed.
+Use new labels to repeat runs; existing results are never overwritten.
+
+Limits
+------
+
+UseHasher=False deliberately disables history compression; such documents can
+still grow exponentially. The change honors that explicit existing setting.
+Existing documents may need recomputation to replace already expanded names.
+No naming migration or change to OCC/refine ownership is included.
+
+Measured results
+----------------
+
+Original trigger, peak RSS in MiB (fresh process for each N):
+                         N=5    N=10     N=20      N=30      N=40
+  before, FreeCADCmd   111.4   114.5   2049.9    4318.5*         -
+  before, offscreen    404.5   407.6   2332.3    2657.3*         -
+  before, WSLg         508.9   514.5   2434.7    2436.9*         -
+  after, FreeCADCmd    111.4   112.8    116.0     119.1      123.0
+  after, offscreen     405.2   406.7    411.0     415.9      421.4
+  after, WSLg          512.1   512.1    522.4     521.3      528.7
+
+* Allocation failure under the cap: only 21 features completed in FreeCADCmd,
+  and only 20 in either GUI mode. These are censored runs, not memory plateaus.
+  The original unsafe 50-feature run was not repeated without a cap.
+
+FreeCADCmd recompute time at N=20 falls from 8.659 s to 0.242 s; N=40 after
+the fix takes 0.572 s. The fixed curve is approximately linear in the measured
+range. The current CSV records all control comparisons and exact wall times.
+
+The original N=50 trigger now completes with all 50 features up to date:
+  mode             peak MiB   process wall s
+  FreeCADCmd          127.0            1.012
+  offscreen GUI       427.1            2.856
+  WSLg GUI            532.9            2.957
+All 90 post-fix matrix runs (18 comparisons x five N values) completed.
+At N=50 the headless live heap after recompute is 33.75 MiB, versus the
+baseline's 1,744 MiB already at N=20. Shape hashers are absent before the fix;
+afterwards they are present on every Boolean result after the initial box.
+
+UndoMode=0 still holds approximately 1.7 GiB of live heap at N=20 and reaches
+allocation failure at N=30. Early no-undo/no-hasher diagnostics copied all
+element names into Python, increasing their measured peak RSS; the main
+matrix limits these diagnostic copies to the first 15 features.
+Assigning Shape.copy(noElementMap=True) after each feature also did
+not bound memory: subsequent recomputation restored the feature's history
+from its modeled inputs/raw shape. It reached 2,640 MiB at N=20. This public
+Shape assignment is not equivalent to dropping all retained naming history.
+
+Validation
+----------
+
+Incremental build with -j 4: passed (one C++ file compiled, dependent targets
+relinked). The new regression failed before the change and passed afterwards;
+the passing 50-feature test took 0.896 s, process peak 214,664 KiB.
+
+TestPrimitive, TestTopologicalNamingProblem, and TopoShapeTest: 143/143 passed,
+4.863 s test time, peak 258,520 KiB.
+PartDesign C++ tests: 39/39 passed, peak 128,772 KiB.
+Part C++ tests: 415/415 passed, peak 270,404 KiB.
+Architecture GUI ingress and view-provider inventory gates: 155/155 passed;
+committed inventories remain in sync. No existing test was weakened/skipped.
+
+Runtime validation used the same per-process ulimit fallback and /usr/bin/time
+-v for peak RSS. Python architecture tests used:
+  uv run --no-project --with pytest python -m pytest -q \
+    tests/architecture/test_gui_blocking_live_model_inventory.py \
+    tests/architecture/test_view_provider_updatedata_inventory.py
+
+The runtime suites were loaded with unittest in FreeCADCmd (the source
+PartDesignTests.TestPrimitive.TestPrimitive,
+PartDesignTests.TestTopologicalNamingProblem.TestTopologicalNamingProblem,
+and parttests.TopoShapeTest.TopoShapeTest classes). C++ suites used the existing
+build/relWithDebInfo/tests/PartDesign_tests_run and Part_tests_run binaries.
