@@ -3787,6 +3787,15 @@ void Document::slotShowHidden(const App::Document& doc)
  */
 void Document::SaveDocFile(Base::Writer& writer) const
 {
+    // Writer::writeFiles() calls persistence objects directly on the document
+    // owner thread, bypassing the GUI-thread signal that registered this file.
+    // Tree items, ViewProviders and cameras must be read on the GUI thread.
+    // Wait for serialization to finish before the writer advances or is destroyed.
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        App::MainThreadSignalConfig::invoke([this, &writer] { SaveDocFile(writer); }, true);
+        return;
+    }
+
     syncSharedPresentationIdentity();
     d->pendingPresentationSave = d->sharedPresentationRevisions.capturePersistence();
 

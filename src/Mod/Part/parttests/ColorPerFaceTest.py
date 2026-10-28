@@ -6,10 +6,25 @@ import FreeCAD as App
 import Part
 import os
 import tempfile
+import threading
 import unittest
+import FreeCADGui as Gui
 from BOPTools import BOPFeatures
 from pivy import coin
+from PySide import QtCore, QtWidgets
 from Test.GuiRecompute import close_document, recompute_document, save_document_as
+
+
+class _SaveThreadProbe:
+    def __init__(self):
+        self.threads = []
+
+    def dumps(self):
+        self.threads.append(threading.get_ident())
+        return None
+
+    def loads(self, state):
+        pass
 
 
 class ColorPerFaceTest(unittest.TestCase):
@@ -20,6 +35,50 @@ class ColorPerFaceTest(unittest.TestCase):
 
     def tearDown(self):
         close_document(self.doc)
+
+    def testSaveGuiStateOnGuiThread(self):
+        # Async saves serialize the model on its owner thread. The separate
+        # GuiDocument.xml callback must return to the GUI thread even while
+        # posted events change the tree and serialize the active camera.
+        box = self.doc.addObject("Part::FeaturePython", "Box")
+        box.Shape = Part.makeBox(10, 10, 10)
+        model_probe = _SaveThreadProbe()
+        gui_probe = _SaveThreadProbe()
+        box.Proxy = model_probe
+        box.ViewObject.Proxy = gui_probe
+        group = self.doc.addObject("App::DocumentObjectGroup", "Group")
+        group.addObject(box)
+        recompute_document(self.doc)
+
+        view = Gui.activeDocument().activeView()
+        tree = Gui.getMainWindow().findChild(QtWidgets.QTreeWidget)
+        self.assertIsNotNone(tree)
+        changes = []
+
+        def change_gui_state():
+            changes.append(None)
+            if len(changes) % 2:
+                view.viewFront()
+                tree.collapseAll()
+            else:
+                view.viewAxonometric()
+                tree.expandAll()
+            view.getCamera()
+
+        timer = QtCore.QTimer()
+        timer.timeout.connect(change_gui_state)
+        timer.start(0)
+        try:
+            save_document_as(self.doc, self.fileName)
+        finally:
+            timer.stop()
+
+        self.assertTrue(changes)
+        self.assertTrue(model_probe.threads)
+        self.assertTrue(gui_probe.threads)
+        gui_thread = threading.get_ident()
+        self.assertNotIn(gui_thread, model_probe.threads)
+        self.assertEqual(set(gui_probe.threads), {gui_thread})
 
     def testBox(self):
         box = self.doc.addObject("Part::Box", "Box")
