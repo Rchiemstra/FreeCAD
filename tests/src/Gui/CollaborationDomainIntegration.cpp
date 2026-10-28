@@ -761,6 +761,54 @@ TEST_F(CollaborationDomainIntegrationTest,
 }
 
 TEST_F(CollaborationDomainIntegrationTest,
+       runtimeLockerStatusDoesNotViolateNotificationAudit)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    auto& application = *Gui::Application::Instance;
+    auto& property = provider->Visibility;
+    const auto statusBefore = property.getStatus();
+    const auto fileBefore = document->getPendingFileChanges().toUnderlyingType();
+    const auto revisionBefore =
+        guiDocument->sharedPresentationRevisions().latestPublicationSequence();
+    int auditCalls = 0;
+    application.beginSharedPresentationNotificationBarrier(
+        [&](const Gui::ViewProvider&, const App::Property&) {
+            ++auditCalls;
+            return false;
+        });
+    const auto finishBarrier = qScopeGuard([&] {
+        application.finishSharedPresentationNotificationBarrier(false);
+    });
+
+    // updateView() uses these runtime lockers during queued idle catch-up.
+    // Property::setStatusValue() deliberately does not preflight them.
+    for (const auto bit : {App::Property::User1, App::Property::User2, App::Property::User3}) {
+        EXPECT_NO_THROW(property.setStatus(bit, true));
+        EXPECT_TRUE(property.testStatus(bit));
+        EXPECT_NO_THROW(property.setStatus(bit, false));
+        EXPECT_FALSE(property.testStatus(bit));
+    }
+    EXPECT_FALSE(application.sharedPresentationNotificationAuditViolated());
+    EXPECT_EQ(auditCalls, 0);
+    EXPECT_EQ(property.getStatus(), statusBefore);
+    EXPECT_EQ(document->getPendingFileChanges().toUnderlyingType(), fileBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().latestPublicationSequence(),
+              revisionBefore);
+
+    // A persisted status change mixed with a locker must still be refused
+    // before either bit changes, and must mark the audit as violated.
+    EXPECT_THROW(property.setStatusValue(
+                     statusBefore ^ (1UL << App::Property::Hidden)
+                         ^ (1UL << App::Property::User1)),
+                 Base::RuntimeError);
+    EXPECT_EQ(property.getStatus(), statusBefore);
+    EXPECT_EQ(auditCalls, 1);
+    EXPECT_TRUE(application.sharedPresentationNotificationAuditViolated());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
        externalNotificationBarrierStartupFailurePreservesLiveDocument)
 {
     ASSERT_FALSE(document->mustExecute());
