@@ -61,6 +61,7 @@
 #include <Base/Console.h>
 #include <Base/Converter.h>
 #include <Base/ServiceProvider.h>
+#include <Base/Tools.h>
 #include <Base/Vector3D.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -78,6 +79,7 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/View3DInventorViewerInternal.h>
 #include <App/DocumentWouldBlock.h>
+#include <App/MutationClassification.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/GeoList.h>
@@ -96,6 +98,7 @@
 #include "TaskSketcherValidation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
+#include "SketcherPresentationInputs.h"
 #include "SketchEditState.h"
 #include "ViewProviderSketchGeometryExtension.h"
 #include "Workbench.h"
@@ -615,6 +618,46 @@ SbVec2s ViewProviderSketch::DoubleClick::newCursorPos;
 /* TRANSLATOR SketcherGui::ViewProviderSketch */
 PROPERTY_SOURCE_WITH_EXTENSIONS(SketcherGui::ViewProviderSketch, PartGui::ViewProvider2DObject)
 
+
+struct ViewProviderSketch::RedrawInputs
+{
+    // Keep the manager and its nodes alive until every synchronous notification returns.
+    std::shared_ptr<EditModeCoinManager> manager;
+    std::uint64_t session;
+    GeoListFacade geometry;
+    std::vector<std::unique_ptr<Sketcher::Constraint>> ownedConstraints;
+    std::vector<Sketcher::Constraint*> constraints;
+    std::vector<bool> active;
+    std::vector<bool> expressions;
+    bool invalid;
+    bool fullyConstrained;
+    bool invalidConstraintGeometry;
+
+    RedrawInputs(ViewProviderSketch& view, bool temp)
+        : manager(view.editCoinManager)
+        , session(view.solverUpdateSession.load() & ~std::uint64_t(1))
+        , geometry(temp ? view.getSolvedSketch().extractGeoListFacade()
+                        : view.getSketchObject()->getGeoListFacade())
+    {
+        if (!temp) {
+            for (auto& facade : geometry.geomlist) {
+                if (facade) {
+                    facade = GeometryFacade::getFacade(facade->clone(), true);
+                }
+            }
+        }
+        auto* sketch = view.getSketchObject();
+        invalid = view.isSketchInvalid();
+        fullyConstrained = sketch->FullyConstrained.getValue();
+        invalidConstraintGeometry = sketch->Constraints.hasInvalidGeometry();
+        for (auto* constraint : sketch->Constraints.getValues()) {
+            active.push_back(sketch->isConstraintActiveInSketch(constraint));
+            expressions.push_back(sketch->constraintHasExpression(constraints.size()));
+            ownedConstraints.emplace_back(constraint->clone());
+            constraints.push_back(ownedConstraints.back().get());
+        }
+    }
+};
 
 ViewProviderSketch::ViewProviderSketch()
     : SelectionObserver(false)
@@ -3675,17 +3718,18 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
             //
             // This code produces the scaled up version of the geometry for the scenograph
             if (gf->getInternalType() == InternalType::BSplineControlPoint) {
-                for (auto c : getSketchObject()->Constraints.getValues()) {
+                for (auto c : getConstraints()) {
                     if (c->Type == InternalAlignment && c->AlignmentType == BSplineControlPoint
                         && c->First == GeoId) {
                         auto bspline = dynamic_cast<const Part::GeomBSplineCurve*>(
-                            tempGeo[c->Second]->getGeometry());
+                            geolistfacade.getGeometryFromGeoId(c->Second));
 
                         if (bspline) {
                             auto weights = bspline->getWeights();
 
                             double weight = 1.0;
-                            if (c->InternalAlignmentIndex < int(weights.size()))
+                            if (c->InternalAlignmentIndex >= 0
+                                && c->InternalAlignmentIndex < int(weights.size()))
                                 weight = weights[c->InternalAlignmentIndex];
 
                             // tentative scaling factor:
@@ -3704,7 +3748,7 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
                                 std::vector<int> polegeoids;
                                 polegeoids.reserve(weights.size());
 
-                                for (auto ic : getSketchObject()->Constraints.getValues()) {
+                                for (auto ic : getConstraints()) {
                                     if (ic->Type == InternalAlignment
                                         && ic->AlignmentType == BSplineControlPoint
                                         && ic->Second == c->Second) {
@@ -3712,7 +3756,7 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
                                     }
                                 }
 
-                                for (auto ic : getSketchObject()->Constraints.getValues()) {
+                                for (auto ic : getConstraints()) {
                                     if (ic->Type == Weight) {
 
                                         if (auto pos = std::ranges::find(polegeoids, ic->First);
@@ -3725,20 +3769,7 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
                                 }
                             }
 
-                            Part::GeomCircle* tmpcircle;
-
-                            if (geometrywithmemoryallocation) {// with memory allocation
-                                tmpcircle = const_cast<Part::GeomCircle*>(circle);
-                                tmpcircle->setRadius(vradius);
-                            }
-                            else {// without memory allocation
-                                tmpcircle = static_cast<Part::GeomCircle*>(circle->clone());
-                                tmpcircle->setRadius(vradius);
-                                tempGeo[GeoId] = GeometryFacade::getFacade(
-                                    tmpcircle, true);// this is the circle that will be drawn, with
-                                                     // the updated vradius, the facade takes
-                                                     // ownership and will deallocate.
-                            }
+                            const_cast<Part::GeomCircle*>(circle)->setRadius(vradius);
 
                             if (!circle->hasExtension(
                                     SketcherGui::ViewProviderSketchGeometryExtension::
@@ -3765,6 +3796,13 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
                                         .lock()));
 
                             vpext->setRepresentationFactor(scalefactor);
+                            if (!geometrywithmemoryallocation) {
+                                auto* original = const_cast<Part::Geometry*>(
+                                    getSketchObject()->getGeometry(GeoId));
+                                if (original) {
+                                    original->setExtension(vpext->copy());
+                                }
+                            }
 
                             // save scale factor for any prospective dragging operation
                             // 1. Solver must be updated, in case a dragging operation starts
@@ -3785,51 +3823,148 @@ void ViewProviderSketch::scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGe
     }
 }
 
+bool ViewProviderSketch::isRedrawCurrent() const
+{
+    return !redrawInputs || (editCoinManager == redrawInputs->manager
+        && (solverUpdateSession.load() & ~std::uint64_t(1)) == redrawInputs->session);
+}
+
+int ViewProviderSketch::getRenderGroupHandle(int geoId) const
+{
+    return PresentationInputs::groupHandle(getConstraints(), geoId);
+}
+
+void ViewProviderSketch::withRedrawInputs(
+    bool temp, bool rebuild, const std::function<void(GeoListFacade&)>& render)
+{
+    if (!isInEditMode()) {
+        return;
+    }
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired() || getDocument()->deferLivePresentationUpdates() || redrawInputs) {
+        queueRedraw(temp, rebuild);
+        return;
+    }
+
+    // Capture both lists before any Coin notifications can call back into the model.
+    redrawInputs = std::make_unique<RedrawInputs>(*this, temp);
+    const auto clearInputs = Base::ScopeGuard([this]() { redrawInputs.reset(); });
+    auto& geolistfacade = redrawInputs->geometry;
+    if (!geolistfacade.isGeoIdValid(-1) || !geolistfacade.getGeometryFromGeoId(-1)
+        || !geolistfacade.getGeometryFromGeoId(-2)) {
+        return;
+    }
+
+    render(geolistfacade);
+}
+
 void ViewProviderSketch::draw(bool temp /*=false*/, bool rebuildinformationoverlay /*=true*/)
 {
-    assert(isInEditMode());
+    withRedrawInputs(temp, rebuildinformationoverlay, [&](GeoListFacade& geolistfacade) {
+        // A current draw also satisfies a queued request for this edit session.
+        if (queuedRedrawSession
+            && queuedRedrawSession == (solverUpdateSession.load() & ~std::uint64_t(1))) {
+            rebuildinformationoverlay = rebuildinformationoverlay || queuedRedrawRebuild;
+            queuedRedrawSession = 0;
+            queuedRedrawRebuild = false;
+        }
+        // ============== Prepare geometry for representation ==================================
 
-    // ============== Retrieve geometry to be represented =================================
+        // ************ Manage BSpline pole circle scaling  ****************************
 
-    auto geolistfacade = temp ? getSolvedSketch().extractGeoListFacade() :// with memory allocation
-        getSketchObject()->getGeoListFacade();// without memory allocation
+        // Scale the owned representation and preserve the model/solver extensions
+        // needed when a subsequent drag normalizes BSpline pole weights.
+        scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGeometry(geolistfacade, temp);
 
-    assert(int(geolistfacade.geomlist.size()) >= 2);
+        // ============== Render geometry, constraints and geometry information overlays
+        // ==================================
 
-    // ============== Prepare geometry for representation ==================================
+        const auto manager = redrawInputs->manager;
+        manager->processGeometryConstraintsInformationOverlay(geolistfacade, rebuildinformationoverlay);
+        if (!isRedrawCurrent()) {
+            return;
+        }
 
-    // ************ Manage BSpline pole circle scaling  ****************************
+        // Avoids unneeded calls to pixmapFromSvg
+        if (Mode == STATUS_NONE || Mode == STATUS_SKETCH_UseHandler) {
+            manager->drawConstraintIcons(geolistfacade);
+            if (!isRedrawCurrent()) {
+                return;
+            }
+            manager->updateColor(geolistfacade);
+        }
+        if (!isRedrawCurrent()) {
+            return;
+        }
 
-    // This function ensures that the geometry used for drawing takes into account:
-    // 1. the OCC mandated weight, which is normalised for non-rational BSplines, but not normalised
-    // for rational BSplines. That includes properly sizing for drawing any weight constraint. This
-    // function ensures that both the geometry of the SketchObject and solver are updated with the
-    // new value of the scaling factor (via the extension)
-    // 2. the scaling factor, including inserting the scaling factor into the
-    // ViewProviderSketchGeometryExtension so as to enable That ensures that dragging operations on
-    // the circles of the poles of the B-Splines are properly rendered.
-    //
-    // This function takes a reference to a vector of deep copies to delete. These deep copies are
-    // necessary to transparently perform (1) while doing (2).
+        Gui::MDIView* mdi = this->getActiveView();
+        if (mdi && mdi->isDerivedFrom<Gui::View3DInventor>()) {
+            static_cast<Gui::View3DInventor*>(mdi)->getViewer()->redraw();
+        }
+    });
+}
 
-    scaleBSplinePoleCirclesAndUpdateSolverAndSketchObjectGeometry(geolistfacade, temp);
-
-    // ============== Render geometry, constraints and geometry information overlays
-    // ==================================
-
-    editCoinManager->processGeometryConstraintsInformationOverlay(geolistfacade,
-                                                                  rebuildinformationoverlay);
-
-    // Avoids unneeded calls to pixmapFromSvg
-    if (Mode == STATUS_NONE || Mode == STATUS_SKETCH_UseHandler) {
-        editCoinManager->drawConstraintIcons(geolistfacade);
-        editCoinManager->updateColor(geolistfacade);
+void ViewProviderSketch::queueRedraw(bool temp, bool rebuild)
+{
+    queuedRedrawTemp = temp;
+    queuedRedrawRebuild = queuedRedrawRebuild || rebuild;
+    const auto session = solverUpdateSession.load() & ~std::uint64_t(1);
+    if (!session) {
+        // Initial edit setup can request a draw before its session is published.
+        redrawRequestedDuringSetup = true;
+        return;
     }
-
-    Gui::MDIView* mdi = this->getActiveView();
-    if (mdi && mdi->isDerivedFrom<Gui::View3DInventor>()) {
-        static_cast<Gui::View3DInventor*>(mdi)->getViewer()->redraw();
+    if (queuedRedrawSession == session) {
+        return;
     }
+    queuedRedrawSession = session;
+    retryRedraw(redrawDocumentName, redrawObjectName, session);
+}
+
+void ViewProviderSketch::retryRedraw(const std::string& documentName,
+                                    const std::string& objectName, std::uint64_t session)
+{
+    Gui::scheduleGuiSingleShot(10, [documentName, objectName, session]() {
+        App::LivePresentationRefreshScope refresh;
+        if (!refresh.acquired()) {
+            // Retry solely from stable identities. No model/provider access without admission.
+            retryRedraw(documentName, objectName, session);
+            return;
+        }
+        auto* doc = App::GetApplication().getDocument(documentName.c_str());
+        auto* gui = doc && Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(doc) : nullptr;
+        if (!gui || gui->isAboutToClose()) {
+            return;
+        }
+        auto* object = doc->getObject(objectName.c_str());
+        auto* view = object ? freecad_cast<ViewProviderSketch*>(gui->getViewProvider(object)) : nullptr;
+        if (!view || (view->solverUpdateSession.load() & ~std::uint64_t(1)) != session
+            || view->queuedRedrawSession != session) {
+            return;
+        }
+        const bool temp = view->queuedRedrawTemp;
+        const bool rebuild = view->queuedRedrawRebuild;
+        view->queuedRedrawSession = 0;
+        view->queuedRedrawRebuild = false;
+        if (gui->deferLivePresentationUpdates() || view->redrawInputs) {
+            view->queueRedraw(temp, rebuild);
+            return;
+        }
+        const auto manager = view->editCoinManager;
+        const auto current = [&]() {
+            return view->editCoinManager == manager
+                && (view->solverUpdateSession.load() & ~std::uint64_t(1)) == session;
+        };
+        view->UpdateSolverInformation();
+        if (!current()) {
+            return;
+        }
+        view->draw(temp, rebuild);
+        if (current() && !view->queuedRedrawSession) {
+            view->signalConstraintsChanged();
+        }
+    });
 }
 
 void ViewProviderSketch::setIsShownVirtualSpace(bool isshownvirtualspace)
@@ -3933,12 +4068,74 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
     if (prop != &getSketchObject()->Constraints) {
         signalElementsChanged();
     }
+    else if (isInEditMode()) {
+        // Rows own their published constraint data, including names and expressions.
+        // Constraint-only changes therefore need publication even without a solve.
+        queueRedraw(false, true);
+    }
 }
 
 void ViewProviderSketch::slotSolverUpdate()
 {
+    // Solver updates can fire from the document owner lane. Coin / Qt work
+    // must run on the GUI thread after the document lock is released.
+    if (!App::DocumentWouldBlock::isGuiThread()) {
+        auto session = solverUpdateSession.load();
+        if (!session || (session & 1)
+            || !solverUpdateSession.compare_exchange_strong(session, session | 1)) {
+            return;
+        }
+        App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+        if (!document || !getObject()->isAttachedToDocument()) {
+            return;
+        }
+        const std::string documentName = document->getName();
+        const std::string objectName = getObject()->getNameInDocument();
+        auto update = [documentName, objectName, session](auto retry) -> void {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            // Keep a commit from starting between the busy check and draw's
+            // reads of live geometry/solver data. Never wait on the GUI thread.
+            App::LivePresentationRefreshScope refresh;
+            if (!refresh.acquired() || guiDoc->deferLivePresentationUpdates()) {
+                // Preserve the final solver update, but never redraw while a
+                // commit/replay owns the model. The session fences retries too.
+                Gui::scheduleGuiSingleShot(10, [retry]() { retry(retry); });
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* sketchView = freecad_cast<ViewProviderSketch*>(guiDoc->getViewProvider(object));
+            if (sketchView && sketchView->solverUpdateSession.load() == (session | 1)) {
+                // Allow the next notification to queue while drawing the latest solver state.
+                sketchView->solverUpdateSession.store(session);
+                sketchView->slotSolverUpdate();
+            }
+        };
+        Gui::scheduleGuiSingleShot(0, [update]() { update(update); });
+        return;
+    }
+
+    if (!isInEditMode()) {
+        return;
+    }
+
     auto admission = expressionDiagnostics.readAdmission();
-    if (!admission || !isInEditMode()) {
+    App::LivePresentationRefreshScope refresh;
+    if (!admission || !refresh.acquired() || getDocument()->deferLivePresentationUpdates()
+        || redrawInputs) {
+        queueRedraw(false, true);
         return;
     }
 
@@ -3951,14 +4148,26 @@ void ViewProviderSketch::slotSolverUpdate()
 
     // solver information is also updated when no matching geometry, so that if a solving fails
     // this failed solving info is presented to the user
+    const auto manager = editCoinManager;
+    const auto session = solverUpdateSession.load() & ~std::uint64_t(1);
+    const auto current = [&]() {
+        return editCoinManager == manager
+            && (solverUpdateSession.load() & ~std::uint64_t(1)) == session;
+    };
     UpdateSolverInformation();// just update the solver window with the last SketchObject
                               // solving information
 
+    if (!current()) {
+        return;
+    }
     if (getSketchObject()->getExternalGeometryCount()
             + getSketchObject()->getHighestCurveIndex() + 1
         == getSolvedSketch().getGeometrySize()) {
 
         draw(false, true);
+        if (!current()) {
+            return;
+        }
 
         Gui::MDIView* mdi =
             Gui::Application::Instance->editViewOfNode(editCoinManager->getRootEditNode());
@@ -4296,7 +4505,9 @@ bool ViewProviderSketch::setEdit(int ModNum)
     assert(!isInEditMode());
     preselection.reset();
     selection.reset();
-    editCoinManager = std::make_unique<EditModeCoinManager>(*this);
+    redrawDocumentName = getObject()->getDocument()->getName();
+    redrawObjectName = getObject()->getNameInDocument();
+    editCoinManager = std::make_shared<EditModeCoinManager>(*this);
     snapManager = std::make_unique<SnapManager>(*this);
 
 
@@ -4418,6 +4629,13 @@ bool ViewProviderSketch::setEdit(int ModNum)
 
     setupActiveAndInEdit();
 
+    // Publish only after all edit setup succeeds. Ids also fence replacement providers.
+    static std::atomic<std::uint64_t> nextSession {2};
+    solverUpdateSession.store(nextSession.fetch_add(2));
+    if (redrawRequestedDuringSetup) {
+        redrawRequestedDuringSetup = false;
+        queueRedraw(queuedRedrawTemp, queuedRedrawRebuild);
+    }
     return true;
 }
 void ViewProviderSketch::setupActiveAndInEdit()
@@ -4597,6 +4815,12 @@ void ViewProviderSketch::unsetEdit(int ModNum)
         return PartGui::ViewProvider2DObject::unsetEdit(ModNum);
     }
 
+    // Invalidate queued redraws before any edit teardown or model restoration.
+    solverUpdateSession.store(0);
+    queuedRedrawSession = 0;
+    queuedRedrawRebuild = false;
+    redrawRequestedDuringSetup = false;
+
     if (dragAutoConstraintHandler) {
         dragAutoConstraintHandler->clear();
     }
@@ -4611,6 +4835,8 @@ void ViewProviderSketch::unsetEdit(int ModNum)
             deactivateHandler();
         }
 
+        // Detach now; an active render owns the manager until its callback unwinds.
+        editCoinManager->detachFromRoot();
         editCoinManager = nullptr;
         snapManager = nullptr;
         preselection.reset();
@@ -5315,14 +5541,14 @@ bool ViewProviderSketch::setPreselect(const std::string& subNameSuffix, float x,
 
 const std::vector<Sketcher::Constraint*> ViewProviderSketch::getConstraints() const
 {
-    return getSketchObject()->Constraints.getValues();
+    return redrawInputs ? redrawInputs->constraints : getSketchObject()->Constraints.getValues();
 }
 
 Sketcher::Constraint* ViewProviderSketch::getConstraint(int constid) const
 {
     Sketcher::SketchObject* obj = getSketchObject();
     const std::vector<Sketcher::Constraint*>& constrlist = obj->Constraints.getValues();
-    if (constid >= 0 || constid < int(constrlist.size())) {
+    if (constid >= 0 && constid < int(constrlist.size())) {
         return constrlist[constid];
     }
 
@@ -5331,6 +5557,11 @@ Sketcher::Constraint* ViewProviderSketch::getConstraint(int constid) const
 
 bool ViewProviderSketch::isConstraintActiveInSketch(const Sketcher::Constraint* cstr) const
 {
+    if (redrawInputs) {
+        const auto& constraints = redrawInputs->constraints;
+        auto it = std::ranges::find(constraints, cstr);
+        return it != constraints.end() && redrawInputs->active[it - constraints.begin()];
+    }
     return getSketchObject()->isConstraintActiveInSketch(cstr);
 }
 
@@ -5348,6 +5579,10 @@ const GeoList ViewProviderSketch::getGeoList() const
 
 bool ViewProviderSketch::constraintHasExpression(int constrid) const
 {
+    if (redrawInputs) {
+        return constrid >= 0 && constrid < int(redrawInputs->expressions.size())
+            && redrawInputs->expressions[constrid];
+    }
     return getSketchObject()->constraintHasExpression(constrid);
 }
 
@@ -5454,7 +5689,9 @@ GeoListFacade ViewProviderSketch::getGeoListFacade() const
 
 bool ViewProviderSketch::isSketchInvalid() const
 {
-
+    if (redrawInputs) {
+        return redrawInputs->invalid;
+    }
     bool sketchinvalid = getSketchObject()->getLastHasRedundancies()
         || getSketchObject()->getLastHasConflicts()
         || getSketchObject()->getLastHasMalformedConstraints();
@@ -5463,12 +5700,14 @@ bool ViewProviderSketch::isSketchInvalid() const
 
 bool ViewProviderSketch::isSketchFullyConstrained() const
 {
-    return getSketchObject()->FullyConstrained.getValue();
+    return redrawInputs ? redrawInputs->fullyConstrained
+                        : getSketchObject()->FullyConstrained.getValue();
 }
 
 bool ViewProviderSketch::haveConstraintsInvalidGeometry() const
 {
-    return getSketchObject()->Constraints.hasInvalidGeometry();
+    return redrawInputs ? redrawInputs->invalidConstraintGeometry
+                        : getSketchObject()->Constraints.hasInvalidGeometry();
 }
 
 void ViewProviderSketch::addNodeToRoot(SoSeparator* node)

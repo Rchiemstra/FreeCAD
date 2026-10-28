@@ -13,6 +13,7 @@ from SketcherTests.TestViewSectionGui import TestViewSectionGui
 
 from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
 from SketcherTests.TestSketchEditCleanGui import TestSketchEditCleanGui
+from SketcherTests.TestSketchClipboardGui import TestSketchClipboardGui
 
 # Use the module so that code checkers don't complain (flake8)
 (
@@ -31,5 +32,6 @@ from SketcherTests.TestSketchEditCleanGui import TestSketchEditCleanGui
     and TestViewSectionGui
     and TestSketchReferenceRepairGui
     and TestSketchEditCleanGui
+    and TestSketchClipboardGui
     else False
 )

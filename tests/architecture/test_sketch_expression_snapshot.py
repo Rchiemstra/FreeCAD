@@ -25,3 +25,25 @@ def test_sketch_diagnostics_read_admission_and_immutable_publication():
         "void ViewProviderSketch::slotSolverUpdate()", 1)[1].split(
         "void ViewProviderSketch::slotConstraintAdded", 1)[0]
     assert solver.index("readAdmission()") < solver.index("getSketchObject()")
+
+
+def test_solver_dispatches_to_gui_before_diagnostic_admission_and_retries_refusal():
+    solver = (GUI / "ViewProviderSketch.cpp").read_text().split(
+        "void ViewProviderSketch::slotSolverUpdate()", 1)[1].split(
+        "void ViewProviderSketch::slotConstraintAdded", 1)[0]
+    dispatch = solver.index("Gui::scheduleGuiSingleShot(0")
+    admission = solver.index("expressionDiagnostics.readAdmission()")
+    assert solver.index("!App::DocumentWouldBlock::isGuiThread()") < dispatch < admission
+    refused = solver[admission:solver.index("getSketchObject()")]
+    assert "!admission" in refused
+    assert "queueRedraw(false, true)" in refused
+
+
+def test_constraint_diagnostic_roles_capture_owned_row_inputs():
+    source = (GUI / "TaskSketcherConstraints.cpp").read_text()
+    row = source.split("class ConstraintItem:", 1)[1].split("class ExpressionDelegate:", 1)[0]
+    queries = row.split("~ConstraintItem()", 1)[1]
+    assert "sketch->" not in queries
+    assert "presentation.capture(" in queries
+    publish = source.split("void TaskSketcherConstraints::slotConstraintsChanged()", 1)[1]
+    assert publish.index("it->inputs = inputs") < publish.index("it->capturePresentation()")

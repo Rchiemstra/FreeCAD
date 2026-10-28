@@ -39,6 +39,7 @@ from Test.GuiRecompute import (
     save_document_as,
     touch_on_owner_thread,
     undo_document,
+    wait_for_mutation_ready,
     write_recovery_snapshot,
 )
 
@@ -331,8 +332,8 @@ class TestGuiDocument(unittest.TestCase):
         thread inside its commit boundary.
 
         What has to hold is that the refresh command does not *block* on it and
-        that the proxy never runs off the main thread, not that the feature is
-        left unrecomputed.
+        that the proxy runs on the document owner thread, not that the feature
+        is left unrecomputed.
         """
 
         class RefreshProxy:
@@ -363,6 +364,10 @@ class TestGuiDocument(unittest.TestCase):
             QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
             FreeCADGui.updateGui()
             time.sleep(0.005)
+
+        # Object state can settle before commit finalization and notification
+        # replay finish. Wait for the document before reading live results.
+        wait_for_mutation_ready(self.doc, timeout_seconds=5.0)
 
         # Dispatched, not run inline: the proxy sleeps 50ms and the command
         # still returns immediately.
@@ -560,9 +565,17 @@ class TestGuiDocument(unittest.TestCase):
 
             text_edit = text_edits[0]
 
+            editor_closed = []
+
             def closeEditor():
+                if editor_closed:
+                    return
+                editor_closed.append(True)
                 text_edit.document().setModified(False)
                 main_window.removeWindow(editor)
+                # removeWindow() only schedules the deletion. Delete the editor now, so
+                # its file timestamp check cannot ask about the removed temporary file.
+                QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
             self.addCleanup(closeEditor)
 
@@ -596,6 +609,9 @@ class TestGuiDocument(unittest.TestCase):
             # Std_Save must reach the focused macro editor, not the active document,
             # the macro is written and the document is left untouched
             self.assertEqual(doc_mtime_after, doc_mtime_before)
+
+            # close the editor while its file still exists
+            closeEditor()
 
 
 class TestImagePlaneLoading(unittest.TestCase):

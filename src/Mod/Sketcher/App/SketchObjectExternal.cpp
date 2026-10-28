@@ -1527,7 +1527,14 @@ void processEdge2(TopoDS_Edge& projEdge, std::vector<std::unique_ptr<Part::Geome
         // Unfortunately, a normal projection of a circle can also give
         // a Bspline Split the spline into arcs
         GeomConvert_BSplineCurveKnotSplitting bSplineSplitter(projCurve.BSpline(), 2);
-        auto* bspline = new Part::GeomBSplineCurve(projCurve.BSpline());
+        auto projectedCurve = projCurve.BSpline();
+        // Keep the edge's trimming bounds, not the full supporting B-spline.
+        if (projCurve.FirstParameter() != projectedCurve->FirstParameter()
+            || projCurve.LastParameter() != projectedCurve->LastParameter()) {
+            projectedCurve = Handle(Geom_BSplineCurve)::DownCast(projectedCurve->Copy());
+            projectedCurve->Segment(projCurve.FirstParameter(), projCurve.LastParameter());
+        }
+        auto* bspline = new Part::GeomBSplineCurve(projectedCurve);
         GeometryFacade::setConstruction(bspline, true);
         geos.emplace_back(bspline);
     }
@@ -2018,7 +2025,8 @@ void processEdge(const TopoDS_Edge& edge,
             // Align the z axis of the edge plane to the y axis of the projection
             // plane,  so that the extreme bound will be a line in the x axis direction
             // of the projection plane.
-            double angle = plane.Axis().Direction().Angle(sketchPlane.YAxis().Direction());
+            double angle = plane.Axis().Direction().AngleWithRef(
+                sketchPlane.YAxis().Direction(), sketchPlane.Axis().Direction());
 
             gp_Trsf trsf;
             if (fabs(angle) > Precision::Angular()) {
@@ -2036,19 +2044,29 @@ void processEdge(const TopoDS_Edge& edge,
                 throw Base::CADKernelError("Invalid bounding box");
             }
 
-            gp_Pnt p1(bbox.MinX, bbox.MinY, 0);
-            gp_Pnt p2(bbox.MaxX, bbox.MaxY, 0);
+            // In the aligned coordinates the projection has no Y extent. Average
+            // rounding errors here, before rotating back (issue 25720).
+            double y = (bbox.MinY + bbox.MaxY) / 2.0;
+            gp_Pnt p1(bbox.MinX, y, 0);
+            gp_Pnt p2(bbox.MaxX, y, 0);
             if (fabs(angle) > Precision::Angular()) {
                 trsf.SetRotation(gp_Ax1(gp_Pnt(), gp_Dir(0, 0, 1)), -angle);
                 p1.Transform(trsf);
                 p2.Transform(trsf);
             }
 
-            // The bounding box has no expansion in Y direction.
-            // Due to possible rounding errors force the same y
-            // value for both points. This fixes issue 25720
-            Base::Vector3d P1(p1.X(), (p1.Y() + p2.Y()) / 2.0, 0);
-            Base::Vector3d P2(p2.X(), (p1.Y() + p2.Y()) / 2.0, 0);
+            // Remove roundoff from axis-aligned projections.
+            if (fabs(p1.Y() - p2.Y()) < Precision::Confusion()) {
+                p1.SetY((p1.Y() + p2.Y()) / 2.0);
+                p2.SetY(p1.Y());
+            }
+            if (fabs(p1.X() - p2.X()) < Precision::Confusion()) {
+                p1.SetX((p1.X() + p2.X()) / 2.0);
+                p2.SetX(p1.X());
+            }
+
+            Base::Vector3d P1(p1.X(), p1.Y(), 0);
+            Base::Vector3d P2(p2.X(), p2.Y(), 0);
 
             // check for degenerated case when the line is collapsed to a point
             if (p1.SquareDistance(p2) < Precision::SquareConfusion()) {
