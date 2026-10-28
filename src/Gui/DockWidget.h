@@ -12,13 +12,18 @@
 namespace Gui
 {
 
-// QWidget::move() positions the window frame. Dock dragging works with client
-// coordinates, including for frameless windows whose platform reports margins.
+// Frameless dock dragging uses client coordinates even when the platform reports
+// margins. Framed docks retain QWidget::move()'s window-frame positioning.
 inline void moveFloatingDockWidget(QDockWidget* dock, const QPoint& clientPosition)
 {
-    QRect geometry = dock->geometry();
-    geometry.moveTopLeft(clientPosition);
-    dock->setGeometry(geometry);
+    if (dock->windowFlags().testFlag(Qt::FramelessWindowHint)) {
+        QRect geometry = dock->geometry();
+        geometry.moveTopLeft(clientPosition);
+        dock->setGeometry(geometry);
+    }
+    else {
+        dock->move(clientPosition);
+    }
 }
 
 inline bool usesWslgX11()

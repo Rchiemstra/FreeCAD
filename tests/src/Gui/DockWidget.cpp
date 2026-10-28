@@ -192,16 +192,14 @@ TEST_P(DockWidgetTest, restoresFloatingLayoutAndCanDockAgain)
     EXPECT_EQ(window.dockWidgetArea(&dock), Qt::LeftDockWidgetArea);
 }
 
-TEST_P(DockWidgetTest, dragKeepsClientGrabPointWhenWindowHasFrameMargins)
+TEST_P(DockWidgetTest, framelessDragKeepsClientGrabPoint)
 {
     QMainWindow window;
     Gui::DockWidget dock(&window, GetParam());
     setup(window, dock);
     window.show();
     dock.setFloating(true);
-    // Exercise real Qt frame margins, independently of the platform's floating
-    // dock decorations. WSLg reports margins even for a frameless window.
-    dock.setWindowFlags(Qt::Window | Qt::WindowTitleHint);
+    dock.setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     dock.show();
     dock.resize(250, 300);
     const QSize size = dock.size();
@@ -210,6 +208,27 @@ TEST_P(DockWidgetTest, dragKeepsClientGrabPointWhenWindowHasFrameMargins)
     for (const QPoint cursor : {QPoint(400, 350), QPoint(-400, 100), QPoint(800, -200)}) {
         Gui::moveFloatingDockWidget(&dock, cursor - grabPoint);
         EXPECT_EQ(dock.mapToGlobal(grabPoint), cursor);
+        EXPECT_EQ(dock.size(), size);
+        EXPECT_TRUE(dock.isVisible());
+    }
+}
+
+TEST_P(DockWidgetTest, framedDragKeepsWindowFramePosition)
+{
+    QMainWindow window;
+    Gui::DockWidget dock(&window, GetParam());
+    setup(window, dock);
+    window.show();
+    dock.setFloating(true);
+    dock.setWindowFlags(Qt::Window | Qt::WindowTitleHint);
+    dock.show();
+    dock.resize(250, 300);
+    const QSize size = dock.size();
+    ASSERT_FALSE(dock.windowFlags().testFlag(Qt::FramelessWindowHint));
+
+    for (const QPoint position : {QPoint(400, 350), QPoint(-400, 100), QPoint(800, -200)}) {
+        Gui::moveFloatingDockWidget(&dock, position);
+        EXPECT_EQ(dock.frameGeometry().topLeft(), position);
         EXPECT_EQ(dock.size(), size);
         EXPECT_TRUE(dock.isVisible());
     }
