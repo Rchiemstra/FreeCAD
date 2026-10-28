@@ -1,52 +1,31 @@
 #!/bin/sh
-# Final gate before the heavy image pulls: the images must now exist, whether
-# they were already there or this pipeline rebuilt them.
-set -e
-
-registry="$FREECAD_CI_REGISTRY"
-[ -n "$registry" ] || { echo "FREECAD_CI_REGISTRY is required"; exit 1; }
-
-expected_tag="24.04"
-if [ -f .ci-images/expected-tag ]; then
-  expected_tag="$(cat .ci-images/expected-tag)"
-fi
-
-required_tags="24.04"
-if [ "$expected_tag" != "24.04" ]; then
-  required_tags="24.04 $expected_tag"
-fi
-
-# A push to the registry can take a moment to become listable.
-for attempt in $(seq 1 30); do
-  deps_tags="$(wget -qO- "$registry/v2/freecad-ci-deps/tags/list" 2>/dev/null || true)"
-  mcp_tags="$(wget -qO- "$registry/v2/freecad-ci-mcp/tags/list" 2>/dev/null || true)"
-  ok=1
-  for t in $required_tags; do
-    echo "$deps_tags" | grep -q "\"$t\"" || ok=0
-    echo "$mcp_tags"  | grep -q "\"$t\"" || ok=0
-  done
-  if [ "$ok" = 1 ]; then
-    echo "CI images ready in $registry"
-    echo "required tags: $required_tags"
-    echo "deps: $deps_tags"
-    echo "mcp:  $mcp_tags"
+# Final readiness gate. The identity record is a snapshot, not a retention lease.
+set -eu
+. ci/woodpecker/ci-images-common.sh
+load_image_tags
+rm -f "$image_state/identity.txt"
+attempt=1
+while [ "$attempt" -le "${FREECAD_CI_VERIFY_ATTEMPTS:-30}" ]; do
+  deps_digest=; mcp_digest=; parent=
+  if deps_digest=$(image_digest deps "$deps_tag"); then :; else
+    rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
+  fi
+  if mcp_digest=$(image_digest mcp "$mcp_tag"); then
+    parent=$(image_parent "$mcp_digest")
+  else
+    rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
+  fi
+  if [ -n "$deps_digest" ] && [ -n "$mcp_digest" ] && [ "$parent" = "$deps_digest" ]; then
+    pull_host=${FREECAD_CI_PULL_HOST:-127.0.0.1:5001}
+    printf '%s\n' \
+      "$pull_host/freecad-ci-deps@$deps_digest (tag $deps_tag)" \
+      "$pull_host/freecad-ci-mcp@$mcp_digest (tag $mcp_tag; deps parent $parent)" > "$image_state/identity.txt"
+    cat "$image_state/identity.txt"
     exit 0
   fi
-  sleep 2
+  [ "$attempt" -eq "${FREECAD_CI_VERIFY_ATTEMPTS:-30}" ] || sleep 2
+  attempt=$((attempt + 1))
 done
-
-echo "CI images are still not available after the rebuild attempt"
-echo "required tags: $required_tags"
-echo "deps tags: ${deps_tags:-<none>}"
-echo "mcp tags:  ${mcp_tags:-<none>}"
-echo
-echo "tags:null means the registry still lists the repo names but every tag was"
-echo "deleted (short retention / GC). ci-images-check can see :24.04 at the start"
-echo "of the pipeline, the kaniko steps then no-op, and this gate runs later."
-echo
-echo "Repair (pick one):"
-echo "  1. Re-run this PR pipeline. ci-images-check will flag the missing tags"
-echo "     and ci-images-build-deps / ci-images-build-mcp will kaniko-push :24.04."
-echo "  2. Manually run the build-images workflow (.woodpecker/build-images.yml)"
-echo "     on FreeCAD-start, then re-run the PR pipeline."
+echo "ERROR: CI images missing or MCP parent mismatch: deps:$deps_tag mcp:$mcp_tag in $registry" >&2
+echo 'Re-run the pipeline to repair missing images; for stale MCP parents see ci-images.md.' >&2
 exit 1

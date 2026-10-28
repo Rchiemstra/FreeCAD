@@ -47,7 +47,7 @@ EXCLUSIONS_PATH = PACKAGE_DIR / "exclusions.json"
 REPORT_PATH = PACKAGE_DIR / "REPORT.md"
 
 REQUIRED_ENTRY_FIELDS = frozenset(
-    {"path", "line", "category", "subsystem", "disposition", "evidence"}
+    {"path", "occurrence", "category", "subsystem", "disposition", "evidence"}
 )
 
 _scan_cache: dict[str, list[scanner.Finding]] = {}
@@ -359,60 +359,36 @@ def _load_exclusions() -> dict:
     return json.loads(EXCLUSIONS_PATH.read_text(encoding="utf-8"))
 
 
-def report_count_violations(report_text: str, payload: dict) -> list[str]:
-    """Compare every machine-derived count printed in REPORT.md with payload."""
-    findings = list(payload["findings"])
-    category_counts = {key: 0 for key in payload["categories"]}
-    subsystem_counts: dict[str, int] = {}
-    language_counts = {"C++": 0, "Python": 0}
-    for finding in findings:
-        category_counts[str(finding["category"])] += 1
-        subsystem = str(finding["subsystem"])
-        subsystem_counts[subsystem] = subsystem_counts.get(subsystem, 0) + 1
-        language_counts["Python" if str(finding["path"]).endswith(".py") else "C++"] += 1
-
+def report_violations(report_text: str) -> list[str]:
+    """Keep category documentation complete and derived counts out of prose."""
     problems: list[str] = []
-    table_match = re.search(
-        r"## Inventory at a glance(?P<table>.*?)(?:\n## |\Z)", report_text, re.DOTALL
-    )
-    if not table_match:
-        return ["REPORT.md is missing its inventory table"]
-    rows = {
-        category: int(count.replace(",", ""))
-        for category, count in re.findall(
-            r"\| `([^`]+)` \| ([\d,]+) \|", table_match.group("table")
-        )
-    }
-    if rows != category_counts:
-        problems.append(f"category counts {rows} != {category_counts}")
-
-    total_match = re.search(
-        r"\(([\d,]+)\s+findings across (?:seven|eight|nine)\s+categories", report_text
-    )
-    if not total_match or int(total_match.group(1).replace(",", "")) != len(findings):
-        problems.append("REPORT total finding count does not match inventory")
-    language_match = re.search(r"spans ([\d,]+) C\+\+ and ([\d,]+) Python\s+findings", report_text)
-    expected_languages = (language_counts["C++"], language_counts["Python"])
-    if (
-        not language_match
-        or tuple(int(value.replace(",", "")) for value in language_match.groups())
-        != expected_languages
-    ):
-        problems.append("REPORT language counts do not match inventory")
-    subsystem_match = re.search(
-        r"Owning subsystems:\n?(?P<subsystems>.*?)(?:\n\n|\Z)", report_text, re.DOTALL
-    )
-    if not subsystem_match:
-        problems.append("REPORT is missing its owning-subsystems counts")
-    else:
-        rows = {
-            name: int(count.replace(",", ""))
-            for name, count in re.findall(
-                r"`([^`]+)`\s*\(([\d,]+)\)", subsystem_match.group("subsystems")
-            )
-        }
-        if rows != subsystem_counts:
-            problems.append(f"subsystem counts {rows} != {subsystem_counts}")
+    section = re.search(r"## Inventory at a glance(.*?)(?:\n## |\Z)", report_text, re.DOTALL)
+    if not section:
+        return ["REPORT.md is missing its category table"]
+    rows = []
+    for line in section.group(1).splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 3:
+            problems.append("category table must contain only category, disposition, description")
+            continue
+        key, disposition, description = cells
+        rows.append((key.strip("`"), disposition))
+        if not description:
+            problems.append(f"missing category description: {key}")
+    expected = [(c.key, c.default_disposition) for c in rules.CATEGORIES]
+    if sorted(rows) != sorted(expected):
+        problems.append("category names/dispositions differ from rules.CATEGORIES")
+    if "| Category | Disposition | Summary |" not in section.group(1):
+        problems.append("unexpected category table columns")
+    # Issue identifiers, source identifiers (Coin3D), and proposal numbering
+    # are prose; standalone numbers elsewhere are derived snapshot counts.
+    prose = re.sub(r"(?m)^### \d+\.", "###", report_text)
+    if re.search(r"(?<![\w-])\d[\d,]*(?!\w)", prose):
+        problems.append("REPORT.md must not contain derived counts; use scanner.py --summary")
+    if "scanner.py --summary" not in report_text:
+        problems.append("REPORT.md must point to scanner.py --summary")
     return problems
 
 
@@ -443,7 +419,7 @@ def entry_violations(
 ) -> list[str]:
     """Return human-readable violations for a single inventory entry."""
     problems: list[str] = []
-    location = f"{entry.get('path', '<missing>')}:{entry.get('line', '<missing>')}"
+    location = f"{entry.get('path', '<missing>')} occurrence {entry.get('occurrence', '<missing>')}"
 
     if set(entry.keys()) != REQUIRED_ENTRY_FIELDS:
         problems.append(
@@ -451,7 +427,7 @@ def entry_violations(
         )
 
     path = entry.get("path")
-    line = entry.get("line")
+    occurrence = entry.get("occurrence")
     category = entry.get("category")
     subsystem = entry.get("subsystem")
     disposition = entry.get("disposition")
@@ -461,9 +437,9 @@ def entry_violations(
     if path_problem:
         problems.append(f"{location}: 'path' {path_problem}")
 
-    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
-        problems.append(f"{location}: 'line' must be a positive integer")
-        return problems  # cannot range-check a malformed line
+    if not isinstance(occurrence, int) or isinstance(occurrence, bool) or occurrence < 1:
+        problems.append(f"{location}: 'occurrence' must be a positive integer")
+        return problems
 
     if not isinstance(category, str) or category not in category_keys:
         problems.append(f"{location}: unknown category {category!r}")
@@ -485,23 +461,14 @@ def entry_violations(
         if not source_path.is_file():
             problems.append(f"{location}: source file does not exist")
             return problems
-        source_lines = source_path.read_text(
-            encoding="utf-8", errors="surrogateescape"
-        ).splitlines()
-        if line > len(source_lines):
-            problems.append(f"{location}: line {line} exceeds file length {len(source_lines)}")
-        elif isinstance(category, str) and category in category_keys:
+        if isinstance(category, str) and category in category_keys:
             matches = [
-                finding
-                for finding in _scan_file(repository_root, path)
-                if finding.line == line and finding.category == category
+                finding for finding in _scan_file(repository_root, path)
+                if (finding.category, finding.evidence, finding.occurrence)
+                == (category, evidence, occurrence)
             ]
             if not matches:
-                problems.append(
-                    f"{location}: evidence does not match a {category} match at line {line}"
-                )
-            elif isinstance(evidence, str) and all(f.evidence != evidence for f in matches):
-                problems.append(f"{location}: evidence does not match the source line")
+                problems.append(f"{location}: evidence/occurrence does not match a {category} finding")
 
     return problems
 
@@ -510,7 +477,7 @@ def duplicate_violations(findings: list[dict]) -> list[str]:
     seen: dict[tuple, dict] = {}
     problems: list[str] = []
     for entry in findings:
-        key = (entry.get("path"), entry.get("line"), entry.get("category"))
+        key = (entry.get("path"), entry.get("category"), entry.get("evidence"), entry.get("occurrence"))
         if key in seen:
             problems.append(f"duplicate entry for {key}")
         else:
@@ -519,22 +486,25 @@ def duplicate_violations(findings: list[dict]) -> list[str]:
 
 
 def _exclusion_key(entry: dict) -> tuple:
-    return (entry["path"], entry["line"], entry["category"])
+    return scanner.snapshot_key(entry)
 
 
 def exclusion_violations(exclusions: list[dict], category_keys: frozenset[str]) -> list[str]:
     problems: list[str] = []
     seen: set[tuple] = set()
     for entry in exclusions:
-        key = (entry.get("path"), entry.get("line"), entry.get("category"))
-        location = f"{entry.get('path', '<missing>')}:{entry.get('line', '<missing>')}"
-        if set(entry.keys()) != {"path", "line", "category", "reason"}:
+        key = (entry.get("path"), entry.get("category"), entry.get("evidence"), entry.get("occurrence"))
+        location = f"{entry.get('path', '<missing>')} occurrence {entry.get('occurrence', '<missing>')}"
+        if set(entry.keys()) != {"path", "category", "evidence", "occurrence", "reason"}:
             problems.append(f"{location}: exclusion fields malformed")
         path_problem = _path_violation(entry.get("path"))
         if path_problem:
             problems.append(f"{location}: exclusion path {path_problem}")
-        if not isinstance(entry.get("line"), int) or entry.get("line", 0) < 1:
-            problems.append(f"{location}: exclusion line must be a positive integer")
+        occurrence = entry.get("occurrence")
+        if not isinstance(occurrence, int) or isinstance(occurrence, bool) or occurrence < 1:
+            problems.append(f"{location}: exclusion occurrence must be a positive integer")
+        if not isinstance(entry.get("evidence"), str) or not entry.get("evidence", "").strip():
+            problems.append(f"{location}: exclusion evidence must be a non-empty string")
         if entry.get("category") not in category_keys:
             problems.append(f"{location}: unknown exclusion category {entry.get('category')!r}")
         if not isinstance(entry.get("reason"), str) or not entry.get("reason").strip():
@@ -2930,7 +2900,7 @@ class InventoryEntryValidationTests(unittest.TestCase):
     def _valid_entry(self) -> dict:
         return {
             "path": "src/Gui/MainWindow.cpp",
-            "line": 1,
+            "occurrence": 1,
             "category": "process-events-polling",
             "subsystem": "Gui",
             "disposition": "investigate",
@@ -2970,17 +2940,16 @@ class InventoryEntryValidationTests(unittest.TestCase):
         violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("does not exist" in v for v in violations), violations)
 
-    def test_rejects_out_of_range_line(self) -> None:
+    def test_rejects_out_of_range_occurrence(self) -> None:
         bad = self._valid_entry()
         bad["path"] = "src/Gui/MainWindow.cpp"
-        bad["line"] = 10_000_000
+        bad["occurrence"] = 10_000_000
         violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
-        self.assertTrue(any("exceeds file length" in v for v in violations), violations)
+        self.assertTrue(any("occurrence" in v for v in violations), violations)
 
     def test_rejects_stale_evidence(self) -> None:
         bad = self._valid_entry()
         bad["path"] = "src/Gui/MainWindow.cpp"
-        bad["line"] = 1
         bad["evidence"] = "// not the first line"
         violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("evidence" in v for v in violations), violations)
@@ -3010,7 +2979,7 @@ class InventoryEntryValidationTests(unittest.TestCase):
         for path in ("C:/absolute/MainWindow.cpp", r"C:\absolute\MainWindow.cpp"):
             exclusion = {
                 "path": path,
-                "line": 1,
+                "occurrence": 1,
                 "category": "thread-waits",
                 "reason": "test",
             }
@@ -3026,14 +2995,15 @@ class InventoryEntryValidationTests(unittest.TestCase):
 
 class ExclusionsValidationTests(unittest.TestCase):
     def test_rejects_malformed_exclusion(self) -> None:
-        bad = [{"path": "x", "line": 1, "category": "thread-waits"}]
+        bad = [{"path": "x", "occurrence": 1, "category": "thread-waits"}]
         violations = exclusion_violations(bad, frozenset(rules.CATEGORY_BY_KEY))
         self.assertTrue(any("reason" in v for v in violations), violations)
 
     def test_rejects_duplicate_exclusion(self) -> None:
         ok = {
             "path": "src/Gui/Application.h",
-            "line": 167,
+            "occurrence": 1,
+            "evidence": "signalChangedObject",
             "category": "live-reference-callback",
             "reason": "signal declaration",
         }
@@ -3043,7 +3013,8 @@ class ExclusionsValidationTests(unittest.TestCase):
     def test_rejects_parent_path_component(self) -> None:
         ok = {
             "path": "../Gui/Application.h",
-            "line": 167,
+            "occurrence": 1,
+            "evidence": "signalChangedObject",
             "category": "live-reference-callback",
             "reason": "signal declaration",
         }
@@ -3173,8 +3144,8 @@ class RepositoryInventoryTests(unittest.TestCase):
         ]
         self.assertEqual(len(files), len(set(files)))
 
-    def test_report_counts_match_inventory(self) -> None:
-        problems = report_count_violations(REPORT_PATH.read_text(encoding="utf-8"), self.inventory)
+    def test_report_documents_categories_without_counts(self) -> None:
+        problems = report_violations(REPORT_PATH.read_text(encoding="utf-8"))
         self.assertFalse(problems, "\n".join(problems))
 
     def test_disposition_defaults_are_applied(self) -> None:
@@ -3183,7 +3154,7 @@ class RepositoryInventoryTests(unittest.TestCase):
             self.assertEqual(
                 entry["disposition"],
                 defaults[entry["category"]],
-                f"{entry['path']}:{entry['line']} disposition mismatch",
+                f"{entry['path']} occurrence {entry['occurrence']} disposition mismatch",
             )
 
     def test_every_subsystem_derives_from_path(self) -> None:
@@ -3191,7 +3162,7 @@ class RepositoryInventoryTests(unittest.TestCase):
             self.assertEqual(
                 entry["subsystem"],
                 scanner.subsystem_for(entry["path"]),
-                f"{entry['path']}:{entry['line']} subsystem mismatch",
+                f"{entry['path']} occurrence {entry['occurrence']} subsystem mismatch",
             )
 
     # -- focused site regressions -------------------------------------------
@@ -3199,7 +3170,7 @@ class RepositoryInventoryTests(unittest.TestCase):
     def _assert_site(self, path: str, line: int, category: str) -> None:
         self.assertIn(
             (path, line, category),
-            {f.key() for f in self.scanned},
+            {f.location_key() for f in self.scanned},
             f"expected finding {path}:{line} ({category})",
         )
 
@@ -3221,11 +3192,12 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_worker_thread_self_wait_is_excluded(self) -> None:
         key = ("src/Gui/Quarter/SignalThread.cpp", 71, "thread-waits")
-        self.assertIn(key, {f.key() for f in self.scanned})
-        self.assertIn(key, self.excluded_keys)
+        self.assertIn(key, {f.location_key() for f in self.scanned})
+        finding = next(f for f in self.scanned if f.location_key() == key)
+        self.assertIn(finding.key(), self.excluded_keys)
         self.assertNotIn(
-            key,
-            {(e["path"], e["line"], e["category"]) for e in self.inventory["findings"]},
+            finding.key(),
+            {scanner.snapshot_key(e) for e in self.inventory["findings"]},
         )
 
     def test_test_harness_file_is_excluded(self) -> None:
