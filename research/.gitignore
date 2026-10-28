@@ -1,6 +1,0 @@
-__pycache__/
-results/
-*.log
-*.FCMacro
-run_regression.py
-run_checks.py
