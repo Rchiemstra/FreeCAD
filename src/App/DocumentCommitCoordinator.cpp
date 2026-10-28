@@ -552,6 +552,14 @@ DocumentCommitResult DocumentCommitCoordinator::commitCompatibilityWithPolicy(
     return commitCompatibilityWithOptions(edit, structural, recomputePolicy);
 }
 
+std::unique_ptr<CollaborationPreparedMutationTargetScope>
+DocumentCommitCoordinator::acquireCompatibilityMutationTarget()
+{
+    return std::unique_ptr<CollaborationPreparedMutationTargetScope>(
+        new CollaborationPreparedMutationTargetScope(_document)
+    );
+}
+
 DocumentCommitResult DocumentCommitCoordinator::commitCompatibilityWithOptions(
     const PreparedEdit& edit,
     const bool structural,
@@ -600,7 +608,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
-                                                 nestInCallerTransaction);
+                                                 nestInCallerTransaction,
+                                                 {});
     };
 
     if (_document.isCollaborationOwnerThread()) {
@@ -645,7 +654,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                         structuralCompatibility,
                         recomputePolicy,
                         retainUndoHistory,
-                        nestInCallerTransaction));
+                        nestInCallerTransaction,
+                        {}));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -684,7 +694,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithRecomp
                                              requireDetachedPreparationSupport,
                                              structuralCompatibility,
                                              recomputePolicy,
-                                             true);
+                                             true,
+                                             false,
+                                             {});
 }
 
 DocumentCommitResult
@@ -848,21 +860,21 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
                       "derived recompute applied in the active coordinator transaction");
 }
 
-DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(
-    const PreparedEdit& edit,
+std::optional<DocumentCommitResult> DocumentCommitCoordinator::rejectCommitPrerequisites(
+    const DocumentInstanceId instanceId,
+    const DocumentLifecycleEpoch lifecycleEpoch,
+    const std::string& operationId,
     const bool requireDetachedPreparationSupport,
-    const bool structuralCompatibility,
-    const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool retainUndoHistory,
-    const bool nestInCallerTransaction)
+    const bool nestInCallerTransaction
+)
 {
-    if (!_document.isCollaborationOwnerThread()) {
-        return makeResult(DocumentCommitStatus::Unsupported,
-                          edit,
-                          "collaboration commit was not dispatched to the document owner thread");
-    }
-    std::lock_guard<std::recursive_mutex> serialized(_document.collaborationCommitMutex());
-
+    const auto reject = [&](DocumentCommitStatus status, std::string message) {
+        DocumentCommitResult result;
+        result.status = status;
+        result.operationId = operationId;
+        result.message = std::move(message);
+        return result;
+    };
     // Lifecycle validation deliberately precedes every call into the typed
     // payload. A stale payload cannot inspect or mutate a replacement or
     // closing document.
@@ -871,38 +883,44 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         identity = _document.collaborationIdentity();
     }
     catch (const Base::Exception& exception) {
-        return makeResult(DocumentCommitStatus::StaleDocument,
-                          edit,
-                          stageFailure("document identity unavailable", exception.what()));
+        return reject(
+            DocumentCommitStatus::StaleDocument,
+            stageFailure("document identity unavailable", exception.what())
+        );
     }
     catch (const std::exception& exception) {
-        return makeResult(DocumentCommitStatus::StaleDocument,
-                          edit,
-                          stageFailure("document identity unavailable", exception.what()));
+        return reject(
+            DocumentCommitStatus::StaleDocument,
+            stageFailure("document identity unavailable", exception.what())
+        );
     }
-    if (!identity || identity->instanceId != edit.documentInstanceId()
-        || identity->lifecycleEpoch != edit.lifecycleEpoch()
+    if (!identity || identity->instanceId != instanceId
+        || identity->lifecycleEpoch != lifecycleEpoch
         || identity->state != DocumentLifecycleState::Live) {
-        return makeResult(DocumentCommitStatus::StaleDocument,
-                          edit,
-                          "prepared edit targets a stale or non-live document instance");
+        return reject(
+            DocumentCommitStatus::StaleDocument,
+            "prepared edit targets a stale or non-live document instance"
+        );
     }
 
     if (_document.collaborationNotificationsReplaying()) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          "a committed collaboration boundary is notifying observers");
+        return reject(
+            DocumentCommitStatus::Busy,
+            "a committed collaboration boundary is notifying observers"
+        );
     }
     if (_document.collaborationCommitPoisoned()) {
-        return makeResult(DocumentCommitStatus::RollbackFailed,
-                          edit,
-                          _document.collaborationCommitPoisonDiagnostic());
+        return reject(
+            DocumentCommitStatus::RollbackFailed,
+            _document.collaborationCommitPoisonDiagnostic()
+        );
     }
 
     if (requireDetachedPreparationSupport && !_document.collaborationPreparationSupported()) {
-        return makeResult(DocumentCommitStatus::Unsupported,
-                          edit,
-                          "document contains a mutable Python payload that cannot be prepared");
+        return reject(
+            DocumentCommitStatus::Unsupported,
+            "document contains a mutable Python payload that cannot be prepared"
+        );
     }
     const bool nativeTransactionInProgress = _document.transacting()
         || _document.isTransactionLocked()
@@ -910,9 +928,41 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             && (_document.hasPendingTransaction()
                 || _document.getBookedTransactionID() != 0));
     if (nativeTransactionInProgress) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          "document already has a native transaction in progress");
+        return reject(
+            DocumentCommitStatus::Busy,
+            "document already has a native transaction in progress"
+        );
+    }
+    return std::nullopt;
+}
+
+DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(
+    const PreparedEdit& edit,
+    const bool requireDetachedPreparationSupport,
+    const bool structuralCompatibility,
+    const CollaborationCompatibilityRecomputePolicy recomputePolicy,
+    const bool retainUndoHistory,
+    const bool nestInCallerTransaction,
+    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget
+)
+{
+    if (!_document.isCollaborationOwnerThread()) {
+        return makeResult(
+            DocumentCommitStatus::Unsupported,
+            edit,
+            "collaboration commit was not dispatched to the document owner thread"
+        );
+    }
+    std::lock_guard<std::recursive_mutex> serialized(_document.collaborationCommitMutex());
+
+    if (auto rejected = rejectCommitPrerequisites(
+            edit.documentInstanceId(),
+            edit.lifecycleEpoch(),
+            edit.operationId(),
+            requireDetachedPreparationSupport,
+            nestInCallerTransaction
+        )) {
+        return std::move(*rejected);
     }
     // An undo transaction that is merely *open* is not a conflict. It is how
     // every GUI command groups its edits, and refusing here made every
@@ -962,9 +1012,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                   "one or more semantic revisions changed before commit",
                                   std::move(conflicts));
     }
-    std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
     try {
-        mutationTarget.reset(new CollaborationPreparedMutationTargetScope(_document));
+        if (!mutationTarget) {
+            mutationTarget = acquireCompatibilityMutationTarget();
+        }
     }
     catch (const LivePresentationRefreshInProgress& exception) {
         auto result = makeResult(DocumentCommitStatus::Busy,

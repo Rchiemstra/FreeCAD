@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <App/PropertyStandard.h>
+#include <App/MutationClassification.h>
 #include <Base/Factory.h>
 #include <Base/Matrix.h>
 #include <Base/Placement.h>
@@ -122,6 +123,22 @@ public:
         return CLASS::create();
     }
 };
+
+// Hold admission for the entire read, including editor/widget callbacks.
+class GuiExport PropertyReadGuard
+{
+public:
+    explicit PropertyReadGuard(const PropertyItem* item);
+    explicit PropertyReadGuard(const App::DocumentObjectT& object);
+    bool readable() const { return ownersReadable; }
+
+private:
+    App::LivePresentationRefreshScope reservation;
+    bool ownersReadable = false;
+};
+
+// Coalesced, lifetime-bound retries with a 50 ms to 1 s backoff.
+GuiExport void deferPropertyRead(QObject* context, const char* key, std::function<bool()> retry);
 
 class PropertyItemAttorney
 {
@@ -214,6 +231,7 @@ public:
     void setPropertyName(const QString& name, const QString& realName = QString());
     void setPropertyValue(const QString&);
     void setNameToolTipOverride(const QString& tooltip);
+    static bool dataRequiresOwnerRead(int column, int role);
     virtual QVariant data(int column, int role) const;
     bool setData(const QVariant& value);
     Qt::ItemFlags flags(int column) const;

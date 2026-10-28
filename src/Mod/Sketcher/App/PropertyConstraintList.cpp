@@ -388,6 +388,10 @@ unsigned int PropertyConstraintList::getMemSize() const
 
 void PropertyConstraintList::acceptGeometry(const std::vector<Part::Geometry*>& GeoList)
 {
+    // Only the runtime geometry-type validation cache changes here. Constraint
+    // values are untouched; callbacks on other properties remain tracked.
+    Base::ObjectStatusLocker<App::Property::Status, App::Property> cacheChange(
+        App::Property::NoModify, this);
     aboutToSetValue();
     validGeometryKeys.clear();
     validGeometryKeys.reserve(GeoList.size());

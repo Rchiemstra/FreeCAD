@@ -47,4 +47,21 @@ class VProperty(SceneDetail):
         return getattr(self.doc.getObject(self.objname).ViewObject, self.propname)
 
     def apply_data(self, val):
-        setattr(self.doc.getObject(self.objname).ViewObject, self.propname, val)
+        obj = self.doc.getObject(self.objname)
+        view = obj.ViewObject
+        # NoModify is runtime-only. Scope it to this one temporary property;
+        # onChanged hooks can still make persistent edits to other properties.
+        statuses = view.getPropertyStatus(self.propname) if self.propname in view.PropertiesList else []
+        mirrored = self.propname == "Visibility"
+        app_statuses = obj.getPropertyStatus("Visibility") if mirrored else []
+        try:
+            if self.propname in view.PropertiesList:
+                view.setPropertyStatus(self.propname, "NoModify")
+            if mirrored:
+                obj.setPropertyStatus("Visibility", "NoModify")
+            setattr(view, self.propname, val)
+        finally:
+            if mirrored and "NoModify" not in app_statuses:
+                obj.setPropertyStatus("Visibility", "-NoModify")
+            if self.propname in view.PropertiesList and "NoModify" not in statuses:
+                view.setPropertyStatus(self.propname, "-NoModify")

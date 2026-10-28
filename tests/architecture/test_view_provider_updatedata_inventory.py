@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -26,7 +27,7 @@ from view_provider_updatedata_classifications import (  # noqa: E402
     resolve_classification,
 )
 
-INVENTORY_HEADER = ("file", "symbol/caller", "line", "classification")
+INVENTORY_HEADER = ("file", "symbol/caller", "classification")
 CPP_IMPL = re.compile(
     r"void\s+((?:\w+::)*\w+)::updateData\s*\([^)]*App::Property",
     re.MULTILINE,
@@ -41,7 +42,7 @@ class InventoryRow:
     number: int
     file: str
     symbol: str
-    line: int
+    occurrence: int
     classification: str
 
     @property
@@ -53,15 +54,16 @@ class InventoryRow:
         return self.symbol.strip("`")
 
     def key(self) -> tuple[str, str, int]:
-        return (self.source_path, self.stable_symbol, self.line)
+        return (self.source_path, self.stable_symbol, self.occurrence)
 
     def diagnostic(self, message: str) -> str:
-        return f"{self.source_path}:{self.line} {self.stable_symbol}: {message}"
+        return f"{self.source_path} occurrence {self.occurrence} {self.stable_symbol}: {message}"
 
 
 def _parse_inventory(text: str) -> list[InventoryRow]:
     rows: list[InventoryRow] = []
     in_table = False
+    occurrences: Counter[tuple[str, str]] = Counter()
     for number, line in enumerate(text.splitlines(), 1):
         if not line.startswith("|"):
             if in_table and rows:
@@ -75,13 +77,14 @@ def _parse_inventory(text: str) -> list[InventoryRow]:
             continue
         if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
             continue
-        file, symbol, line_text, classification = cells
+        file, symbol, classification = cells
+        occurrences[file, symbol] += 1
         rows.append(
             InventoryRow(
                 number,
                 file,
                 symbol,
-                int(line_text),
+                occurrences[file, symbol],
                 classification,
             )
         )
@@ -146,7 +149,7 @@ def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
     violations: list[str] = []
     keys = [row.key() for row in rows]
     if len(keys) != len(set(keys)):
-        violations.append("<inventory>: duplicate file/symbol/line rows")
+        violations.append("<inventory>: duplicate file/symbol/occurrence rows")
     for row in rows:
         if row.classification not in VALID_CLASSIFICATIONS:
             violations.append(
@@ -158,7 +161,7 @@ def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
         elif row.classification == "unclassified":
             violations.append(row.diagnostic("classification must not remain unclassified"))
         else:
-            expected = resolve_classification(row.source_path, row.stable_symbol, row.line)
+            expected = resolve_classification(row.source_path, row.stable_symbol, row.occurrence)
             if row.classification != expected:
                 violations.append(
                     row.diagnostic(
@@ -167,17 +170,6 @@ def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
                 )
         if not (REPO_ROOT / row.source_path).is_file():
             violations.append(row.diagnostic("named source file does not exist"))
-        source = (REPO_ROOT / row.source_path).read_text(encoding="utf-8", errors="surrogateescape")
-        lines = source.splitlines()
-        if row.line <= 0 or row.line > len(lines):
-            violations.append(row.diagnostic("line is outside the source file"))
-            continue
-        if "updateData" not in lines[row.line - 1]:
-            neighborhood = "\n".join(
-                lines[max(0, row.line - 3) : min(len(lines), row.line + 2)]
-            )
-            if "updateData" not in neighborhood:
-                violations.append(row.diagnostic("line is not an updateData provider anchor"))
     return violations
 
 
@@ -195,17 +187,19 @@ def test_inventory_classifies_every_production_provider() -> None:
 def test_every_production_provider_is_inventoried() -> None:
     rows = _parse_inventory(INVENTORY_PATH.read_text(encoding="utf-8"))
     inventoried = {row.key() for row in rows}
-    discovered = _discover_providers()
-    def _row_key(row: tuple[str, str, int]) -> tuple[bytes, bytes, int]:
-        return (row[0].encode("utf-8"), row[1].encode("utf-8"), row[2])
-
-    missing = sorted(discovered - inventoried, key=_row_key)
-    stale = sorted(inventoried - discovered, key=_row_key)
+    occurrences: Counter[tuple[str, str]] = Counter()
+    discovered = {}
+    for file, symbol, line in sorted(_discover_providers()):
+        occurrences[file, symbol] += 1
+        discovered[file, symbol, occurrences[file, symbol]] = line
+    missing = sorted(discovered.keys() - inventoried)
+    stale = sorted(inventoried - discovered.keys())
     failures: list[str] = []
-    for file, symbol, line in missing:
-        failures.append(f"missing inventory row for {file}:{line} {symbol}")
-    for file, symbol, line in stale:
-        failures.append(f"stale inventory row for {file}:{line} {symbol}")
+    for key in missing:
+        file, symbol, occurrence = key
+        failures.append(f"missing inventory row for {file}:{discovered[key]} {symbol} occurrence {occurrence}")
+    for file, symbol, occurrence in stale:
+        failures.append(f"stale inventory row for {file} {symbol} occurrence {occurrence}")
     assert not failures, "updateData provider inventory drift:\n" + "\n".join(failures)
 
 

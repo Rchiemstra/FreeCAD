@@ -391,3 +391,5 @@ Gui.addWorkbench(AssemblyWorkbench())
 
 # Registered separately for the GUI CI runner, which selects units containing Gui.
 FreeCAD.__unit_test__ += ["AssemblyTests.TestIsolateSelectionGui"]
+# Registered separately so the GUI test runner executes the joint editor tests.
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]

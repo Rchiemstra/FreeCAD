@@ -1017,6 +1017,36 @@ if doc.getObject("AsyncMade") is None:
     EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
 }
 
+// N3: a timed wait() that expires raises TimeoutError. Python 3.12 rejects %g in
+// PyErr_Format and raised SystemError, so pollers treated a timeout as failure.
+TEST_F(DocumentExecutionLaneTest, AsyncMutationWaitTimeoutRaisesTimeoutError)
+{
+    const std::string script = std::string(R"PY(
+import threading
+import FreeCAD as App
+doc = App.getDocument(")PY")
+        + doc()->getName() + R"PY(")
+gate = threading.Event()
+def cb():
+    gate.wait(10.0)
+    doc.addObject("App::FeatureTest", "AsyncAfterTimeout")
+handle = doc.commitCompatibilityMutationAsync(cb, structural=True, recompute=False)
+try:
+    handle["wait"](0.05)
+except TimeoutError as exc:
+    if "0.05 seconds" not in str(exc):
+        raise RuntimeError("unexpected timeout message: %s" % exc)
+else:
+    raise RuntimeError("timed wait() returned before the mutation finished")
+finally:
+    gate.set()
+result = handle["wait"](10.0)
+if not isinstance(result, dict) or not result.get("committed"):
+    raise RuntimeError("wait() after a timeout did not commit: %r" % (result,))
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+}
+
 // N3: wait() on the thread the hooks call the GUI thread must refuse.
 TEST_F(DocumentExecutionLaneTest, AsyncMutationWaitRefusesGuiThread)
 {

@@ -21,7 +21,11 @@
 # *                                                                         *
 # ***************************************************************************
 
+import os
+import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+import zipfile
 
 import FreeCAD
 import Part
@@ -293,3 +297,309 @@ class TestDeactivatedPlacement(unittest.TestCase):
 
     def tearDown(self):
         FreeCAD.closeDocument("PartDesignTestDeactivatedPlacement")
+
+
+class TestTranslateAttachment(unittest.TestCase):
+    """Translate keeps the editable Placement orientation and applies offset rotation (#19571)."""
+
+    def setUp(self):
+        self.Doc = App.newDocument("TranslateAttachment")
+        self.part = self.Doc.addObject("App::Part", "Part")
+        self.lcs = self.part.newObject("Part::LocalCoordinateSystem", "LCS")
+        self.origin = self.part.Origin
+        self.vertex = self.origin.OriginFeatures[-1].Name + "."
+        self.xy_plane = self.origin.OriginFeatures[3].Name + "."
+        self.offset_position = App.Vector(100, 7, -3)
+
+    def tearDown(self):
+        App.closeDocument(self.Doc.Name)
+
+    def attach(self, obj=None):
+        obj = self.lcs if obj is None else obj
+        obj.AttachmentSupport = [(self.origin, self.vertex)]
+        obj.MapMode = "Translate"
+
+    def set_offset(self, angle, obj=None):
+        obj = self.lcs if obj is None else obj
+        obj.AttachmentOffset = App.Placement(
+            self.offset_position, App.Rotation(App.Vector(0, 0, 1), angle)
+        )
+
+    def assert_placement(self, rotation, position=None, obj=None):
+        obj = self.lcs if obj is None else obj
+        position = self.offset_position if position is None else position
+        self.assertNotIn("Invalid", obj.State)
+        self.assertTrue(obj.Placement.Base.isEqual(position, 1e-7), str(obj.Placement))
+        self.assertTrue(obj.Placement.Rotation.isSame(rotation, 1e-7), str(obj.Placement))
+
+    def recompute_and_check(self, rotation, position=None, obj=None):
+        obj = self.lcs if obj is None else obj
+        # Force execution: an untouched document's recompute can otherwise be a no-op.
+        for _ in range(4):
+            obj.touch()
+            self.Doc.recompute()
+            self.assert_placement(rotation, position, obj)
+
+    def testTranslateOffsetRotation(self):
+        self.attach()
+        self.set_offset(90)
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslateChangingOffsetRotation(self):
+        self.attach()
+        for angle in (90, 45, 0):
+            with self.subTest(angle=angle):
+                self.set_offset(angle)
+                self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), angle))
+
+    def testTranslateOffsetBeforeAttaching(self):
+        self.set_offset(90)
+        self.attach()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslatePreservesOriginalOrientation(self):
+        # Different axes also catch an incorrect order of rotation composition.
+        original = App.Rotation(App.Vector(1, 0, 0), 30)
+        self.lcs.Placement = App.Placement(App.Vector(), original)
+        self.attach()
+        for angle in (90, 45, 0):
+            with self.subTest(angle=angle):
+                self.set_offset(angle)
+                self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), angle))
+
+    def testTranslatePositionIsVertexPlusOffset(self):
+        anchor = self.part.newObject("Part::Feature", "Anchor")
+        point = App.Vector(12, -9, 5)
+        anchor.Shape = Part.Vertex(point)
+        self.lcs.AttachmentSupport = [(anchor, "Vertex1")]
+        self.lcs.MapMode = "Translate"
+        self.set_offset(90)
+        self.recompute_and_check(
+            App.Rotation(App.Vector(0, 0, 1), 90), point + self.offset_position
+        )
+
+    def testTranslatePlaneEngine(self):
+        sketch = self.part.newObject("Sketcher::SketchObject", "Sketch")
+        self.attach(sketch)
+        for angle in (90, 45, 0):
+            with self.subTest(angle=angle):
+                self.set_offset(angle, sketch)
+                self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), angle), obj=sketch)
+
+    def testTranslateSaveReopen(self):
+        original = App.Rotation(App.Vector(1, 0, 0), 30)
+        self.lcs.Placement = App.Placement(App.Vector(), original)
+        self.attach()
+        self.set_offset(90)
+        self.Doc.recompute()
+        saved = self.lcs.Placement
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Translate.FCStd")
+            self.Doc.saveAs(path)
+            App.closeDocument(self.Doc.Name)
+            self.Doc = App.openDocument(path)
+            self.lcs = self.Doc.getObject("LCS")
+            self.assertTrue(self.lcs.Placement.isSame(saved, 1e-7))
+            self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), 90))
+            self.set_offset(45)
+            self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), 45))
+
+    def testTranslateModeRoundTrip(self):
+        self.attach()
+        self.set_offset(90)
+        self.Doc.recompute()
+        direct = self.lcs.Placement
+        self.lcs.MapMode = "Deactivated"
+        self.lcs.AttachmentSupport = [(self.origin, self.xy_plane)]
+        self.lcs.MapMode = "FlatFace"
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+        self.lcs.MapMode = "Deactivated"
+        self.attach()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+        self.assertTrue(self.lcs.Placement.isSame(direct, 1e-7))
+
+    def testTranslateNoOffsetRotationDoesNotMove(self):
+        original = App.Rotation(App.Vector(1, 2, 3), 37)
+        self.lcs.Placement = App.Placement(App.Vector(), original)
+        self.attach()
+        self.set_offset(0)
+        self.Doc.recompute()
+        saved = self.lcs.Placement
+        self.recompute_and_check(original)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "TranslateIdentityOffset.FCStd")
+            self.Doc.saveAs(path)
+            App.closeDocument(self.Doc.Name)
+            self.Doc = App.openDocument(path)
+            self.lcs = self.Doc.getObject("LCS")
+            self.recompute_and_check(original)
+            self.assertTrue(self.lcs.Placement.isSame(saved, 1e-7))
+
+    def testTranslateManualOrientationRemainsEditable(self):
+        self.attach()
+        self.set_offset(90)
+        manual = App.Rotation(App.Vector(0, 1, 0), 23)
+        self.lcs.Placement = App.Placement(self.lcs.Placement.Base, manual)
+        self.recompute_and_check(manual)
+        self.set_offset(45)
+        self.recompute_and_check(manual * App.Rotation(App.Vector(0, 0, 1), -45))
+
+    def testTranslateUnchangedOffsetDoesNotChangeOrientation(self):
+        self.attach()
+        self.set_offset(90)
+        expected = App.Rotation(App.Vector(0, 0, 1), 90)
+        self.recompute_and_check(expected)
+        self.offset_position = App.Vector(-2, 11, 8)
+        self.set_offset(90)
+        self.recompute_and_check(expected)
+
+    def testTranslateInRotatedPart(self):
+        self.part.Placement = App.Placement(
+            App.Vector(20, 30, 40), App.Rotation(App.Vector(0, 1, 0), 25)
+        )
+        original = App.Rotation(App.Vector(1, 0, 0), 30)
+        self.lcs.Placement = App.Placement(App.Vector(), original)
+        self.attach()
+        # Translate offsets are added in global coordinates, then converted to the parent frame.
+        position = self.part.Placement.Rotation.inverted() * self.offset_position
+        for angle in (0, 90, 45, 0):
+            with self.subTest(angle=angle):
+                self.set_offset(angle)
+                self.recompute_and_check(
+                    original * App.Rotation(App.Vector(0, 0, 1), angle), position
+                )
+
+    def testTranslateUndoRedoOffset(self):
+        self.Doc.UndoMode = 1
+        self.attach()
+        self.set_offset(90)
+        self.Doc.recompute()
+        self.Doc.openTransaction("Change attachment offset rotation")
+        self.set_offset(45)
+        self.Doc.recompute()
+        self.Doc.commitTransaction()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 45))
+        self.Doc.undo()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+        self.Doc.redo()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 45))
+        self.Doc.undo()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslateActivationUndoRedoUndo(self):
+        self.Doc.UndoMode = 1
+        self.set_offset(90)
+        self.lcs.AttachmentSupport = [(self.origin, self.vertex)]
+        self.Doc.recompute()
+        self.Doc.openTransaction("Activate Translate")
+        self.lcs.MapMode = "Translate"
+        self.Doc.recompute()
+        self.Doc.commitTransaction()
+        self.assert_placement(App.Rotation(App.Vector(0, 0, 1), 90))
+        self.Doc.undo()
+        self.Doc.redo()
+        self.Doc.undo()
+        self.assertEqual(self.lcs.MapMode, "Deactivated")
+        self.assertTrue(self.lcs.Placement.Rotation.isSame(App.Rotation(), 1e-7))
+        self.lcs.MapMode = "Translate"
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslateDeactivatedSaveReopen(self):
+        self.set_offset(90)
+        self.lcs.AttachmentSupport = [(self.origin, self.vertex)]
+        self.Doc.recompute()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Deactivated.FCStd")
+            self.Doc.saveAs(path)
+            App.closeDocument(self.Doc.Name)
+            self.Doc = App.openDocument(path)
+            self.lcs = self.Doc.getObject("LCS")
+            self.assertTrue(self.lcs.Placement.Rotation.isSame(App.Rotation(), 1e-7))
+            self.lcs.MapMode = "Translate"
+            self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslateLegacySaveReopen(self):
+        self.attach()
+        self.set_offset(90)
+        original = App.Rotation(App.Vector(1, 0, 0), 30)
+        # Simulate a legacy Placement that never received the offset rotation.
+        self.lcs.Placement = App.Placement(self.offset_position, original)
+        self.Doc.recompute()
+        saved = self.lcs.Placement
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Translate.FCStd")
+            legacy_path = os.path.join(directory, "Legacy.FCStd")
+            self.Doc.saveAs(path)
+            App.closeDocument(self.Doc.Name)
+            removed = 0
+            with zipfile.ZipFile(path) as source, zipfile.ZipFile(legacy_path, "w") as target:
+                for entry in source.infolist():
+                    data = source.read(entry.filename)
+                    if entry.filename == "Document.xml":
+                        root = ET.fromstring(data)
+                        for properties in root.iter("Properties"):
+                            for prop in list(properties):
+                                if prop.get("name") == "AttachmentOffsetApplied":
+                                    properties.remove(prop)
+                                    removed += 1
+                                    properties.set("Count", str(int(properties.get("Count")) - 1))
+                        data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                    target.writestr(entry, data)
+            self.assertGreater(removed, 0)
+            self.Doc = App.openDocument(legacy_path)
+            self.lcs = self.Doc.getObject("LCS")
+            self.assertTrue(self.lcs.Placement.isSame(saved, 1e-7))
+            self.recompute_and_check(original)
+            self.set_offset(45)
+            self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), -45))
+
+    def testTranslateCopyObject(self):
+        original = App.Rotation(App.Vector(1, 0, 0), 30)
+        self.lcs.Placement = App.Placement(App.Vector(), original)
+        self.attach()
+        self.set_offset(90)
+        self.Doc.recompute()
+        copied = self.Doc.copyObject(self.lcs)
+        self.part.addObject(copied)
+        self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), 90), obj=copied)
+        self.set_offset(45, copied)
+        self.recompute_and_check(original * App.Rotation(App.Vector(0, 0, 1), 45), obj=copied)
+        self.assert_placement(original * App.Rotation(App.Vector(0, 0, 1), 90))
+
+    def testTranslateExpressionOffsetUndo(self):
+        self.Doc.UndoMode = 1
+        driver = self.Doc.addObject("App::FeaturePython", "Driver")
+        driver.addProperty("App::PropertyAngle", "Angle")
+        driver.Angle = 90
+        self.attach()
+        self.set_offset(0)
+        self.lcs.setExpression("AttachmentOffset.Rotation.Angle", "Driver.Angle")
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 90))
+        self.Doc.openTransaction("Change expression input")
+        driver.Angle = 45
+        self.Doc.recompute()
+        self.Doc.commitTransaction()
+        self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), 45))
+        for replay, angle in ((self.Doc.undo, 90), (self.Doc.redo, 45), (self.Doc.undo, 90)):
+            replay()
+            self.recompute_and_check(App.Rotation(App.Vector(0, 0, 1), angle))
+
+    def testTranslateZeroOffsetDoesNotWriteAppliedRotation(self):
+        self.attach()
+        self.set_offset(0)
+        self.Doc.recompute()
+        changes = []
+
+        class Observer:
+            def slotChangedObject(observer, obj, prop):
+                if obj == self.lcs and prop == "AttachmentOffsetApplied":
+                    changes.append(prop)
+
+        observer = Observer()
+        App.addDocumentObserver(observer)
+        try:
+            self.recompute_and_check(App.Rotation())
+        finally:
+            App.removeDocumentObserver(observer)
+        self.assertEqual(changes, [])
+        self.assertTrue(self.lcs.AttachmentOffsetApplied.isSame(App.Rotation(), 1e-7))
