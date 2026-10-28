@@ -22,6 +22,7 @@
 # ***************************************************************************/
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Assembly
 import Part
 import os
@@ -88,7 +89,7 @@ class AssemblyTestBase(unittest.TestCase):
         This method is called after each test() method. Add cleanup instructions here.
         Such cleanup instructions will likely undo those in the setUp() method.
         """
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
 
 class TestCore(AssemblyTestBase):
@@ -802,13 +803,21 @@ class TestCore(AssemblyTestBase):
                 presolve=False,
                 recompute=False,
             )
-            self.assertIsNone(joint.ViewObject)
+            self.assertIsNone(JointObject.guiViewObject(joint))
             created.append(joint)
             return True
 
-        result = self.doc.commitCompatibilityMutation(
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = self.doc.commitCompatibilityMutationAsync(
             create_joint, structural=True, recompute=False
         )
+        # Waiting off the GUI thread lets native publication replay on it.
+        with ThreadPoolExecutor(max_workers=1) as waiter:
+            completion = waiter.submit(handle["wait"], 15.0)
+            _pump_gui_until(completion.done, 20.0)
+            result = completion.result()
         self.assertTrue(result.get("committed"), result)
         joint = created[0]
         self.assertIsNotNone(joint.ViewObject)

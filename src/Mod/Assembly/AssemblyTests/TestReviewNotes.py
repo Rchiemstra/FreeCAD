@@ -31,6 +31,7 @@ import unittest
 import zipfile
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Part
 
 import CommandReviewNote
@@ -70,7 +71,7 @@ class TestReviewNotes(unittest.TestCase):
         _msg("  Temporary document '{}'".format(self.doc.Name))
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
     def _make_joint(self):
         box2 = self.assembly.newObject("Part::Box", "Box2")
@@ -517,7 +518,7 @@ class TestReviewNotes(unittest.TestCase):
         try:
             self.doc.saveAs(path)
             doc_name = self.doc.Name
-            App.closeDocument(doc_name)
+            close_document_by_name(doc_name)
 
             loaded = App.openDocument(path)
             self.doc = loaded
@@ -553,7 +554,7 @@ class TestReviewNotes(unittest.TestCase):
             )
         finally:
             if App.ActiveDocument:
-                App.closeDocument(App.ActiveDocument.Name)
+                close_document_by_name(App.ActiveDocument.Name)
             # Recreate a blank doc so tearDown can close it cleanly.
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
@@ -603,7 +604,7 @@ class TestReviewNotes(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            App.closeDocument(self.doc.Name)
+            close_document_by_name(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -619,7 +620,7 @@ class TestReviewNotes(unittest.TestCase):
             self.assertEqual(loaded_refs[0]["full"], "Box.Face6", operation)
         finally:
             if App.ActiveDocument:
-                App.closeDocument(App.ActiveDocument.Name)
+                close_document_by_name(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -1902,7 +1903,7 @@ class TestReviewNotes(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            App.closeDocument(self.doc.Name)
+            close_document_by_name(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -1916,7 +1917,7 @@ class TestReviewNotes(unittest.TestCase):
                 self.assertFalse(note.ViewObject.Visibility, operation)
         finally:
             if App.ActiveDocument:
-                App.closeDocument(App.ActiveDocument.Name)
+                close_document_by_name(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -1940,7 +1941,7 @@ class TestReviewNotesGui(unittest.TestCase):
 
         doc_name = self.__class__.__name__
         if App.ActiveDocument and App.ActiveDocument.Name != doc_name:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
         if not App.ActiveDocument or App.ActiveDocument.Name != doc_name:
             App.newDocument(doc_name)
         App.setActiveDocument(doc_name)
@@ -1983,7 +1984,7 @@ class TestReviewNotesGui(unittest.TestCase):
         except Exception:
             pass
         if App.ActiveDocument:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
 
     def test_gui_commands_and_view_context_eligibility(self):
         operation = "GUI commands registered; Add Note View-eligible"
@@ -2542,6 +2543,11 @@ class TestReviewNotesGui(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         import math
         import FreeCADGui as Gui
+
+        # The empty-document camera is too tightly zoomed for this 40 mm offset.
+        # Fix the frame so raster extents and border checks have a stable scale.
+        Gui.ActiveDocument.ActiveView.getCameraNode().height.setValue(100.0)
+        Gui.updateGui()
 
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
@@ -3923,6 +3929,10 @@ class TestReviewNotesGui(unittest.TestCase):
         from pivy.coin import SbRotation, SbVec3f
         from PySide import QtCore, QtGui
 
+        # Mouse synthesis needs the annotation inside the actual viewport.
+        Gui.ActiveDocument.ActiveView.getCameraNode().height.setValue(100.0)
+        Gui.updateGui()
+
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
         )
@@ -3955,6 +3965,10 @@ class TestReviewNotesGui(unittest.TestCase):
         scale = float(gl.devicePixelRatioF()) if hasattr(gl, "devicePixelRatioF") else 1.0
         sx = int(round(float(px) / scale))
         sy = int(round((float(height) - float(py) - 1.0) / scale))
+        self.assertTrue(
+            gl.rect().contains(sx, sy),
+            "{} press ({}, {}) outside {}".format(operation, sx, sy, gl.rect()),
+        )
 
         finish_samples = []
 
@@ -4078,7 +4092,7 @@ class TestReviewNotesGui(unittest.TestCase):
             fd, path = tempfile.mkstemp(suffix=".FCStd")
             os.close(fd)
             self.doc.saveAs(path)
-            App.closeDocument(doc_name)
+            close_document_by_name(doc_name)
             App.open(path)
             self.doc = App.ActiveDocument
             Gui.ActiveDocument = Gui.getDocument(self.doc.Name)
