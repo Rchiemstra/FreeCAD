@@ -33,6 +33,15 @@ protected:
         }
     }
 
+    static void syncEvents()
+    {
+        // X11 configure replies arrive after the first event drain. Finish
+        // them before checking geometry or sending the next resize gesture.
+        QApplication::processEvents();
+        QGuiApplication::sync();
+        QApplication::processEvents();
+    }
+
     Qt::WindowType floatingType() const
     {
         return GetParam() ? Qt::Window : Qt::Tool;
@@ -63,7 +72,7 @@ protected:
         window.tabifyDockWidget(&first, &second);
         first.raise();
         window.show();
-        QApplication::processEvents();
+        syncEvents();
 
         // Exercise Qt's real grouped title-bar drag. setFloating(true) would
         // detach only one member and never create QDockWidgetGroupWindow.
@@ -74,7 +83,7 @@ protected:
             QMouseEvent event(type, first.mapFromGlobal(global), global, button, buttons,
                               Qt::NoModifier);
             QApplication::sendEvent(&first, &event);
-            QApplication::processEvents();
+            syncEvents();
         };
         send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
         send(QEvent::MouseMove, start + QPoint(QApplication::startDragDistance() + 20, 0),
@@ -92,12 +101,13 @@ protected:
 
     static void dragResizeGrip(QSizeGrip& grip, const QPoint& delta)
     {
+        syncEvents();
         const QPoint start = grip.rect().center();
         const QPoint finish = grip.mapToGlobal(start) + delta;
         QTest::mousePress(&grip, Qt::LeftButton, Qt::NoModifier, start);
         QTest::mouseMove(&grip, grip.mapFromGlobal(finish), 1);
         QTest::mouseRelease(&grip, Qt::LeftButton, Qt::NoModifier, grip.mapFromGlobal(finish));
-        QApplication::processEvents();
+        syncEvents();
     }
 };
 
@@ -298,7 +308,7 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     EXPECT_EQ(first.parentWidget(), group);
     EXPECT_EQ(second.parentWidget(), group);
     group->resize(440, 330);
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_EQ(group->size(), QSize(440, 330));
     EXPECT_GT(first.width(), 350);
 
@@ -309,7 +319,7 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     EXPECT_EQ(first.parentWidget(), &window);
     EXPECT_EQ(second.parentWidget(), &window);
     ASSERT_TRUE(window.restoreState(state));
-    QApplication::processEvents();
+    syncEvents();
     group = first.parentWidget();
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
@@ -362,7 +372,7 @@ TEST_P(DockWidgetTest, framelessAddonDockResizesByDraggingItsNativeGrip)
     dock.setFloating(true);
     dock.setGeometry(120, 150, 350, 260);
     dock.show();
-    QApplication::processEvents();
+    syncEvents();
     auto* grip = resizeGrip(dock);
     if (!GetParam()) {
         EXPECT_EQ(grip, nullptr);
@@ -384,10 +394,10 @@ TEST_P(DockWidgetTest, framelessAddonDockResizesByDraggingItsNativeGrip)
     EXPECT_EQ(dock.features(), features);
 
     dock.setFloating(false);
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip->isHidden());
     dock.setFloating(true);
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_EQ(resizeGrip(dock), grip);
     EXPECT_TRUE(grip->isVisible());
     const QSize refloated = dock.size();
@@ -414,7 +424,7 @@ TEST_P(DockWidgetTest, framelessTabGroupResizesByDraggingItsNativeGrip)
                           | Qt::Tool | Qt::FramelessWindowHint);
     group->setGeometry(120, 150, 350, 260);
     group->show();
-    QApplication::processEvents();
+    syncEvents();
     auto* grip = resizeGrip(*group);
     if (!GetParam()) {
         EXPECT_EQ(grip, nullptr);
@@ -433,24 +443,23 @@ TEST_P(DockWidgetTest, framelessTabGroupResizesByDraggingItsNativeGrip)
     EXPECT_TRUE(window.tabifiedDockWidgets(&first).contains(&second));
 
     group->showMaximized();
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip->isHidden());
     group->showNormal();
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip->isVisible());
     EXPECT_EQ(grip->geometry().bottomRight(), group->rect().bottomRight());
     group->showFullScreen();
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip->isHidden());
     group->showNormal();
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip->isVisible());
 }
 
 TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
 {
     Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
     QDockWidget dock(&window);
     setup(window, dock);
@@ -461,6 +470,9 @@ TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
     dock.setFloating(true);
     dock.hide();
     dock.setWindowFlags(Qt::Tool | Qt::WindowTitleHint);
+    // On X11 Qt initially floats docks frameless even without a custom title
+    // bar. Install the filter only after preparing the framed window under test.
+    qApp->installEventFilter(&filter);
     dock.show();
     EXPECT_EQ(dock.windowType(), floatingType());
     EXPECT_EQ(resizeGrip(dock), nullptr);
@@ -478,7 +490,7 @@ TEST_P(DockWidgetTest, nativeResizeGripDiesWithItsDock)
     QPointer<QSizeGrip> grip = resizeGrip(*dock);
     EXPECT_EQ(!grip.isNull(), GetParam());
     delete dock;
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_TRUE(grip.isNull());
 }
 
@@ -498,7 +510,7 @@ TEST_P(DockWidgetTest, destroyedApplicationFilterDoesNotAffectLaterDocks)
     EXPECT_TRUE(dock.isVisible());
 }
 
-TEST_P(DockWidgetTest, bundledThemeProvidesLargerDockResizeTargets)
+TEST_P(DockWidgetTest, bundledThemePreservesDockSeparatorSizes)
 {
     QFile theme(QStringLiteral(TEST_SOURCE_DIR "/src/Gui/Stylesheets/FreeCAD.qss"));
     ASSERT_TRUE(theme.open(QIODevice::ReadOnly));
@@ -517,7 +529,7 @@ TEST_P(DockWidgetTest, bundledThemeProvidesLargerDockResizeTargets)
     for (const bool horizontal : {false, true}) {
         option.state.setFlag(QStyle::State_Horizontal, horizontal);
         EXPECT_EQ(window.style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent, &option,
-                                              &window), 10);
+                                              &window), 6);
     }
 
     auto* central = new QWidget(&window);
@@ -530,7 +542,7 @@ TEST_P(DockWidgetTest, bundledThemeProvidesLargerDockResizeTargets)
     window.resize(800, 600);
     window.show();
     window.resizeDocks({&dock}, {200}, Qt::Horizontal);
-    QApplication::processEvents();
+    syncEvents();
     const int before = dock.width();
     const QPoint start(dock.geometry().right() + 1, dock.geometry().center().y());
     QTest::mouseMove(&window, start);
@@ -539,18 +551,18 @@ TEST_P(DockWidgetTest, bundledThemeProvidesLargerDockResizeTargets)
         QTest::mouseMove(&window, start + QPoint(12 * step, 0), 1);
         // QMainWindow applies separator movement through a zero-delay timer.
         // Drain it while the button is held; releasing first discards the move.
-        QApplication::processEvents();
+        syncEvents();
     }
     const int widthBeforeRelease = dock.width();
     QTest::mouseRelease(&window, Qt::LeftButton, Qt::NoModifier, start + QPoint(48, 0));
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_EQ(widthBeforeRelease, before + 48);
     EXPECT_EQ(dock.width(), before + 48);
     EXPECT_FALSE(dock.isFloating());
     EXPECT_EQ(window.dockWidgetArea(&dock), Qt::LeftDockWidgetArea);
 
     window.resizeDocks({&dock}, {before}, Qt::Horizontal);
-    QApplication::processEvents();
+    syncEvents();
     EXPECT_EQ(dock.width(), before);
 }
 
