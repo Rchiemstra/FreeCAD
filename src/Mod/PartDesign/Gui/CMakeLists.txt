@@ -139,6 +139,7 @@ SET(PartDesignGuiTaskDlgs_SRCS
     ReferenceSelection.h
     TaskFeatureParameters.cpp
     TaskFeatureParameters.h
+    TaskRecomputeRetry.h
     TaskFeatureAddSubParameters.cpp
     TaskFeatureAddSubParameters.h
     TaskSketchBasedParameters.cpp

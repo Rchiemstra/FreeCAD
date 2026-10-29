@@ -42,6 +42,7 @@ import tempfile
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Part
 
 import CommandReviewNote
@@ -83,7 +84,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         _msg("  Temporary document '{}'".format(self.doc.Name))
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
     def _make_note(self, text_lines, sub="Face6", pick=None):
         if pick is None:
@@ -165,7 +166,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            App.closeDocument(self.doc.Name)
+            close_document_by_name(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -176,7 +177,7 @@ class TestReviewNotesIssues(unittest.TestCase):
             )
         finally:
             if App.ActiveDocument:
-                App.closeDocument(App.ActiveDocument.Name)
+                close_document_by_name(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -282,7 +283,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
 
         doc_name = self.__class__.__name__
         if App.ActiveDocument and App.ActiveDocument.Name != doc_name:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
         if not App.ActiveDocument or App.ActiveDocument.Name != doc_name:
             App.newDocument(doc_name)
         App.setActiveDocument(doc_name)
@@ -316,7 +317,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         except Exception:
             pass
         if App.ActiveDocument:
-            App.closeDocument(App.ActiveDocument.Name)
+            close_document_by_name(App.ActiveDocument.Name)
 
     def _flush(self):
         import FreeCADGui as Gui
@@ -340,8 +341,22 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         """Return (view, viewport widget, DPR, Qt point) for a world-space point."""
         import FreeCADGui as Gui
         from PySide import QtCore
+        from pivy.coin import SbVec3f
 
         view = Gui.ActiveDocument.ActiveView
+        # Earlier camera tests may leave a different default zoom. Frame this
+        # test's actual mouse target, independently of that saved GUI state.
+        camera = view.getCameraNode()
+        camera.height.setValue(100.0)
+        eye_offset = camera.orientation.getValue().multVec(
+            SbVec3f(0, 0, camera.focalDistance.getValue())
+        )
+        camera.position.setValue(
+            world.x + eye_offset[0],
+            world.y + eye_offset[1],
+            world.z + eye_offset[2],
+        )
+        self._flush()
         graphics_view = view.graphicsView()
         gl = graphics_view.viewport()
         self.assertIsNotNone(gl, "No 3D viewport for mouse synthesis")
@@ -354,6 +369,10 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         point = QtCore.QPoint(
             int(round(float(px) / scale)),
             int(round((float(height) - float(py) - 1.0) / scale)),
+        )
+        self.assertTrue(
+            gl.rect().contains(point),
+            "Mouse target {} outside viewport {}".format(point, gl.rect()),
         )
         return view, gl, scale, point
 
@@ -417,6 +436,10 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         point = QtCore.QPoint(
             int(round(center.x() + (float(image_x) - 0.5 * width) / scale)),
             int(round(center.y() + (float(image_y) - 0.5 * height) / scale)),
+        )
+        self.assertTrue(
+            gl.rect().contains(point),
+            "Raster mouse target {} outside viewport {}".format(point, gl.rect()),
         )
         return view, gl, scale, point
 
