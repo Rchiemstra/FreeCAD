@@ -2,12 +2,19 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include <QApplication>
+#include <QCursor>
 #include <QFile>
 #include <QMainWindow>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QStyle>
 #include <QStyleOption>
 #include <QtTest/QTest>
@@ -16,6 +23,32 @@
 
 namespace
 {
+
+class ScopedFloatingDockWindowEventFilter: public Gui::FloatingDockWindowEventFilter
+{
+public:
+    using Gui::FloatingDockWindowEventFilter::FloatingDockWindowEventFilter;
+
+    ~ScopedFloatingDockWindowEventFilter() override
+    {
+        qApp->removeEventFilter(this);
+    }
+};
+
+template<typename Base>
+class ShowCountingDockWidget: public Base
+{
+public:
+    using Base::Base;
+    int showEvents = 0;
+
+protected:
+    void showEvent(QShowEvent* event) override
+    {
+        ++showEvents;
+        Base::showEvent(event);
+    }
+};
 
 class DockWidgetTest: public ::testing::TestWithParam<bool>
 {
@@ -30,6 +63,49 @@ protected:
         static char* argv[] = {executable, nullptr};
         if (!QApplication::instance()) {
             new QApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        syncEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            originalWindows.push_back({widget, widget->windowFlags()});
+        }
+        originalActiveWindow = QApplication::activeWindow();
+        originalFocusWidget = QApplication::focusWidget();
+        originalCursorPosition = QCursor::pos();
+    }
+
+    void TearDown() override
+    {
+        const auto restore = qScopeGuard([&] {
+            QApplication::setActiveWindow(originalActiveWindow);
+            if (originalFocusWidget) {
+                originalFocusWidget->setFocus();
+            }
+            QCursor::setPos(originalCursorPosition);
+            syncEvents();
+        });
+        // Test-body windows and filters have already been destroyed. Retire
+        // Qt's floating groups and drag helpers before another suite pumps
+        // events, including when a fatal assertion returned from the test.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        syncEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        for (auto* widget : QApplication::topLevelWidgets()) {
+            const auto found = std::find_if(originalWindows.begin(), originalWindows.end(),
+                                           [widget](const auto& entry) {
+                                               return entry.first == widget;
+                                           });
+            EXPECT_NE(found, originalWindows.end()) << widget->metaObject()->className()
+                                                   << ' ' << widget->objectName().toStdString();
+        }
+        for (const auto& [widget, flags] : originalWindows) {
+            ASSERT_NE(widget, nullptr);
+            EXPECT_EQ(widget->windowFlags(), flags);
         }
     }
 
@@ -109,6 +185,12 @@ protected:
         QTest::mouseRelease(&grip, Qt::LeftButton, Qt::NoModifier, grip.mapFromGlobal(finish));
         syncEvents();
     }
+
+private:
+    std::vector<std::pair<QPointer<QWidget>, Qt::WindowFlags>> originalWindows;
+    QPointer<QWidget> originalActiveWindow;
+    QPointer<QWidget> originalFocusWidget;
+    QPoint originalCursorPosition;
 };
 
 TEST_P(DockWidgetTest, repeatedFloatingPreservesVisibilityAndDocking)
@@ -246,11 +328,11 @@ TEST_P(DockWidgetTest, framedDragKeepsWindowFramePosition)
 
 TEST_P(DockWidgetTest, applicationFilterManagesPlainAddonDocksAndPreservesGeometry)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
     QDockWidget dock(&window);
     setup(window, dock);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     window.show();
     const auto features = dock.features();
     dock.hide();
@@ -280,11 +362,11 @@ TEST_P(DockWidgetTest, applicationFilterManagesPlainAddonDocksAndPreservesGeomet
 
 TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
     QDockWidget first(&window);
     QDockWidget second(&window);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     QPointer<QWidget> group = floatTabGroup(window, first, second);
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
@@ -327,6 +409,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     // Qt restores a group's saved rectangle as its frame position. Keep that
     // native convention, including the offscreen platform's frame margins.
     EXPECT_EQ(group->size(), savedGeometry.size());
+    EXPECT_TRUE(QTest::qWaitFor([&] {
+        return group->frameGeometry().topLeft() == savedGeometry.topLeft();
+    }));
     EXPECT_EQ(group->frameGeometry().topLeft(), savedGeometry.topLeft());
     EXPECT_EQ(first.parentWidget(), second.parentWidget());
     EXPECT_TRUE(window.tabifiedDockWidgets(&first).contains(&second));
@@ -343,9 +428,10 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
 
 TEST_P(DockWidgetTest, applicationFilterLeavesUnrelatedToolWindowsAlone)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
+    QMainWindow window;
     QWidget tool(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::BypassWindowManagerHint);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     tool.setObjectName(QStringLiteral("Unrelated_groupWindow"));
     const auto flags = tool.windowFlags();
     const QRect expected(120, 150, 250, 300);
@@ -357,13 +443,78 @@ TEST_P(DockWidgetTest, applicationFilterLeavesUnrelatedToolWindowsAlone)
     EXPECT_EQ(resizeGrip(tool), nullptr);
 }
 
+TEST_P(DockWidgetTest, applicationFilterLeavesOtherMainWindowsDocksAlone)
+{
+    QMainWindow owner;
+    QMainWindow other;
+    QDockWidget dock(&other);
+    setup(other, dock);
+    ScopedFloatingDockWindowEventFilter filter(&owner, GetParam());
+    qApp->installEventFilter(&filter);
+    other.show();
+    dock.setFloating(true);
+
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    EXPECT_EQ(resizeGrip(dock), nullptr);
+    EXPECT_TRUE(dock.isVisible());
+}
+
+TEST_P(DockWidgetTest, applicationFilterDoesNothingAfterOwnerIsDestroyed)
+{
+    auto owner = std::make_unique<QMainWindow>();
+    QMainWindow other;
+    QDockWidget dock(&other);
+    setup(other, dock);
+    ScopedFloatingDockWindowEventFilter filter(owner.get(), GetParam());
+    qApp->installEventFilter(&filter);
+    owner.reset();
+    other.show();
+    dock.setFloating(true);
+
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    EXPECT_EQ(resizeGrip(dock), nullptr);
+    EXPECT_TRUE(dock.isVisible());
+}
+
+TEST_P(DockWidgetTest, normalizedDockReceivesShowOnce)
+{
+    QMainWindow window;
+    ShowCountingDockWidget<Gui::DockWidget> dock(&window, GetParam());
+    setup(window, dock);
+    window.show();
+    dock.hide();
+    dock.setFloating(true);
+    dock.showEvents = 0;
+    dock.show();
+
+    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.showEvents, 1);
+}
+
+TEST_P(DockWidgetTest, applicationFilterDeliversNormalizedShowOnce)
+{
+    QMainWindow window;
+    ShowCountingDockWidget<QDockWidget> dock(&window);
+    setup(window, dock);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
+    window.show();
+    dock.hide();
+    dock.setFloating(true);
+    dock.showEvents = 0;
+    dock.show();
+
+    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.showEvents, 1);
+}
+
 TEST_P(DockWidgetTest, framelessAddonDockResizesByDraggingItsNativeGrip)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
     QDockWidget dock(&window);
     setup(window, dock);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     window.show();
     const QSize contentMinimum = dock.widget()->minimumSize();
     const QSize titleMinimum = dock.titleBarWidget()->minimumSize();
@@ -407,11 +558,11 @@ TEST_P(DockWidgetTest, framelessAddonDockResizesByDraggingItsNativeGrip)
 
 TEST_P(DockWidgetTest, framelessTabGroupResizesByDraggingItsNativeGrip)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
     QDockWidget first(&window);
     QDockWidget second(&window);
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     QPointer<QWidget> group = floatTabGroup(window, first, second);
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
@@ -459,7 +610,6 @@ TEST_P(DockWidgetTest, framelessTabGroupResizesByDraggingItsNativeGrip)
 
 TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
     QMainWindow window;
     QDockWidget dock(&window);
     setup(window, dock);
@@ -472,6 +622,7 @@ TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
     dock.setWindowFlags(Qt::Tool | Qt::WindowTitleHint);
     // On X11 Qt initially floats docks frameless even without a custom title
     // bar. Install the filter only after preparing the framed window under test.
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
     qApp->installEventFilter(&filter);
     dock.show();
     EXPECT_EQ(dock.windowType(), floatingType());
@@ -480,9 +631,9 @@ TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
 
 TEST_P(DockWidgetTest, nativeResizeGripDiesWithItsDock)
 {
-    Gui::FloatingDockWindowEventFilter filter(GetParam());
-    qApp->installEventFilter(&filter);
     QMainWindow window;
+    ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
+    qApp->installEventFilter(&filter);
     auto* dock = new QDockWidget(&window);
     setup(window, *dock);
     window.show();
@@ -496,11 +647,11 @@ TEST_P(DockWidgetTest, nativeResizeGripDiesWithItsDock)
 
 TEST_P(DockWidgetTest, destroyedApplicationFilterDoesNotAffectLaterDocks)
 {
+    QMainWindow window;
     {
-        Gui::FloatingDockWindowEventFilter filter(GetParam());
+        ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
         qApp->installEventFilter(&filter);
     }
-    QMainWindow window;
     QDockWidget dock(&window);
     setup(window, dock);
     window.show();

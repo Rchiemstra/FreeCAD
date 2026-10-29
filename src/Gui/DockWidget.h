@@ -129,20 +129,35 @@ inline bool normalizeFloatingDockWindow(QWidget* widget)
 class FloatingDockWindowEventFilter: public QObject
 {
 public:
-    explicit FloatingDockWindowEventFilter(bool managedFloatingWindows = usesWslgX11())
-        : managedFloatingWindows(managedFloatingWindows)
+    explicit FloatingDockWindowEventFilter(QWidget* dockOwner,
+                                           bool managedFloatingWindows = usesWslgX11())
+        : dockOwner(dockOwner)
+        , managedFloatingWindows(managedFloatingWindows)
     {}
 
 protected:
     bool eventFilter(QObject* object, QEvent* event) override
     {
         if (managedFloatingWindows && event->type() == QEvent::Show && object->isWidgetType()) {
-            normalizeFloatingDockWindow(static_cast<QWidget*>(object));
+            auto* widget = static_cast<QWidget*>(object);
+            // The application also hosts dialogs and independent main windows.
+            // Only normalize docks belonging to this manager, including Qt's
+            // floating tab groups. A destroyed owner must disable the filter.
+            for (auto* parent = widget->parentWidget(); parent; parent = parent->parentWidget()) {
+                // QWidget::isAncestorOf stops at a window boundary, whereas
+                // floating docks remain QObject children of their main window.
+                if (dockOwner && parent == dockOwner) {
+                    // Normalizing flags hides and re-shows the widget. That
+                    // nested Show has already reached the widget's handlers.
+                    return normalizeFloatingDockWindow(widget);
+                }
+            }
         }
         return false;
     }
 
 private:
+    QPointer<QWidget> dockOwner;
     const bool managedFloatingWindows;
 };
 
@@ -163,8 +178,9 @@ public:
 protected:
     bool event(QEvent* event) override
     {
-        if (managedFloatingWindows && event->type() == QEvent::Show) {
-            normalizeFloatingDockWindow(this);
+        if (managedFloatingWindows && event->type() == QEvent::Show
+            && normalizeFloatingDockWindow(this)) {
+            return true;
         }
         return QDockWidget::event(event);
     }
