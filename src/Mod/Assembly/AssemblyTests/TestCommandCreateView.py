@@ -17,6 +17,7 @@ class _Move:
     def __init__(self, move_type, placement):
         self.MoveType = move_type
         self.MovementTransform = placement
+        self.Label = "Move"
 
 
 @unittest.skipIf(not App.GuiUp, "GUI tests require FreeCAD GUI mode")
