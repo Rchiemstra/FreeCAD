@@ -27445,14 +27445,6 @@
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
       "occurrence": 1,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(feature, \"purgeTouched()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "occurrence": 1,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",

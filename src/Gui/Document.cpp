@@ -25,6 +25,7 @@
 #include <initializer_list>
 #include <tuple>
 #include <memory>
+#include <optional>
 #include <list>
 #include <ranges>
 #include <string>
@@ -81,6 +82,7 @@
 #include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Base/Matrix.h>
 #include <Base/Reader.h>
 #include <Base/Writer.h>
@@ -3787,6 +3789,20 @@ void Document::slotShowHidden(const App::Document& doc)
  */
 void Document::SaveDocFile(Base::Writer& writer) const
 {
+    // Writer::writeFiles() calls persistence objects directly on the document
+    // owner thread, bypassing the GUI-thread signal that registered this file.
+    // Tree items, ViewProviders and cameras must be read on the GUI thread.
+    // Wait for serialization to finish before the writer advances or is destroyed.
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        // Python view providers may need the GIL on the GUI thread.
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
+        App::MainThreadSignalConfig::invoke([this, &writer] { SaveDocFile(writer); }, true);
+        return;
+    }
+
     syncSharedPresentationIdentity();
     d->pendingPresentationSave = d->sharedPresentationRevisions.capturePersistence();
 
