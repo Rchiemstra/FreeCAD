@@ -3,12 +3,15 @@
 #include <gtest/gtest.h>
 
 #include <App/Application.h>
+#include <App/Document.h>
 #include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Sequencer.h>
+#include <Base/Writer.h>
 #include <Gui/ApplicationPy.h>
 #include <Gui/Application.h>
+#include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/ProgressBar.h>
 #include <src/App/InitApplication.h>
@@ -18,6 +21,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -263,4 +267,40 @@ TEST_F(UpdateGuiThreadTest, progressIndicatorOffMainThreadDoesNotLogOrThrow)
     sequencer.join();
     EXPECT_TRUE(sequencerError.empty()) << sequencerError;
     EXPECT_TRUE(errors.errors.empty()) << errors.errors;
+}
+
+TEST_F(UpdateGuiThreadTest, guiDocumentSaveReleasesGilBeforeBlockingInvoke)
+{
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* document = App::GetApplication().newDocument("GuiSaveGil", "", flags);
+    ASSERT_NE(document, nullptr);
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    ASSERT_NE(guiDocument, nullptr);
+
+    struct SaveInvokeProbe {};
+    App::MainThreadSignalConfig::setHooks(
+        &updateGuiTestIsMainThread,
+        [](std::function<void()>&&, bool blocking) {
+            EXPECT_TRUE(blocking);
+            EXPECT_FALSE(PyGILState_Check());
+            // Inspect the caller before any invoke hook can release the GIL.
+            // Stop here so a regression fails without deadlocking the test.
+            throw SaveInvokeProbe {};
+        });
+    for (const bool withGil : {false, true}) {
+        std::thread worker([&] {
+            std::optional<Base::PyGILStateLocker> gil;
+            if (withGil) {
+                gil.emplace();
+            }
+            Base::StringWriter writer;
+            EXPECT_THROW(guiDocument->SaveDocFile(writer), SaveInvokeProbe);
+            EXPECT_EQ(PyGILState_Check() != 0, withGil);
+        });
+        worker.join();
+    }
+    App::MainThreadSignalConfig::setHooks(
+        &updateGuiTestIsMainThread, &updateGuiTestInvokeOnMain);
+    App::GetApplication().closeDocument("GuiSaveGil");
 }
