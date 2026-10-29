@@ -133,7 +133,8 @@ protected:
         window.addDockWidget(Qt::LeftDockWidgetArea, &dock);
     }
 
-    static QWidget* floatTabGroup(QMainWindow& window, QDockWidget& first, QDockWidget& second)
+    static QWidget* floatTabGroup(QMainWindow& window, QDockWidget& first, QDockWidget& second,
+                                  QByteArray& dockedState)
     {
         window.resize(800, 600);
         window.setDockOptions(window.dockOptions() | QMainWindow::GroupedDragging);
@@ -149,6 +150,7 @@ protected:
         first.raise();
         window.show();
         syncEvents();
+        dockedState = window.saveState();
 
         // Exercise Qt's real grouped title-bar drag. setFloating(true) would
         // detach only one member and never create QDockWidgetGroupWindow.
@@ -367,7 +369,12 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     QDockWidget second(&window);
     ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
     qApp->installEventFilter(&filter);
-    QPointer<QWidget> group = floatTabGroup(window, first, second);
+    QByteArray dockedState;
+    QPointer<QWidget> group = floatTabGroup(window, first, second, dockedState);
+    const auto restore = qScopeGuard([&] {
+        EXPECT_TRUE(window.restoreState(dockedState));
+        syncEvents();
+    });
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
     EXPECT_EQ(first.parentWidget(), second.parentWidget());
@@ -391,13 +398,19 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     EXPECT_EQ(second.parentWidget(), group);
     group->resize(440, 330);
     syncEvents();
+    // Under a loaded X server, earlier configure replies can arrive before
+    // the reply for this resize. Keep the requested size as the assertion.
+    ASSERT_TRUE(QTest::qWaitFor([&] { return group && group->size() == QSize(440, 330); }));
     EXPECT_EQ(group->size(), QSize(440, 330));
     EXPECT_GT(first.width(), 350);
 
     const QRect savedGeometry = group->geometry();
     const QByteArray state = window.saveState();
-    window.addDockWidget(Qt::LeftDockWidgetArea, &first);
-    window.addDockWidget(Qt::LeftDockWidgetArea, &second);
+    // Qt 6.11.1 retains stale drag-layout items when addDockWidget() detaches
+    // individual members of a floating group, even without our event filter.
+    // Restore the complete docked layout instead of tearing the group apart.
+    ASSERT_TRUE(window.restoreState(dockedState));
+    syncEvents();
     EXPECT_EQ(first.parentWidget(), &window);
     EXPECT_EQ(second.parentWidget(), &window);
     ASSERT_TRUE(window.restoreState(state));
@@ -416,8 +429,8 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     EXPECT_EQ(first.parentWidget(), second.parentWidget());
     EXPECT_TRUE(window.tabifiedDockWidgets(&first).contains(&second));
 
-    window.addDockWidget(Qt::LeftDockWidgetArea, &first);
-    window.addDockWidget(Qt::LeftDockWidgetArea, &second);
+    ASSERT_TRUE(window.restoreState(dockedState));
+    syncEvents();
     EXPECT_EQ(window.dockWidgetArea(&first), Qt::LeftDockWidgetArea);
     EXPECT_EQ(window.dockWidgetArea(&second), Qt::LeftDockWidgetArea);
     first.show();
@@ -563,7 +576,14 @@ TEST_P(DockWidgetTest, framelessTabGroupResizesByDraggingItsNativeGrip)
     QDockWidget second(&window);
     ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
     qApp->installEventFilter(&filter);
-    QPointer<QWidget> group = floatTabGroup(window, first, second);
+    QByteArray dockedState;
+    QPointer<QWidget> group = floatTabGroup(window, first, second, dockedState);
+    // Restore before stack dock destruction, including assertion/early returns.
+    // Removing one group member at a time hits the same Qt 6.11.1 layout bug.
+    const auto restore = qScopeGuard([&] {
+        EXPECT_TRUE(window.restoreState(dockedState));
+        syncEvents();
+    });
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
     // FreeCAD supplies custom title bars; Qt then keeps the whole group
