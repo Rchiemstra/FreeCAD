@@ -7,6 +7,7 @@ These fixtures never launch FreeCAD.
 
 from pathlib import Path
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +18,60 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "ci/woodpecker/check-test-results.py"
 INVENTORY = ROOT / "ci/woodpecker/debug-test-binaries.txt"
+
+
+class IntegrationScriptTests(unittest.TestCase):
+    def run_script(self, limit=None, rc=0):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            for name, content in {
+                "mktemp": 'printf "%s\\n" "$TEST_LOG"\n',
+                "timeout": 'printf "%s\\n" "$@" >"$TEST_ARGS"\n'
+                           'printf "Ran 2 tests in 0.1s\\n\\nOK\\n"\n'
+                           'exit "$TEST_RC"\n',
+            }.items():
+                stub = directory / name
+                stub.write_text("#!/bin/sh\n" + content)
+                stub.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("FREECAD_INTEGRATION_TEST_TIMEOUT", None)
+            env.update(PATH=f"{directory}:{env['PATH']}",
+                       TEST_LOG=str(directory / "integration.log"),
+                       TEST_ARGS=str(directory / "args"), TEST_RC=str(rc))
+            if limit is not None:
+                env["FREECAD_INTEGRATION_TEST_TIMEOUT"] = limit
+            result = subprocess.run(
+                ["sh", str(ROOT / "ci/woodpecker/freecad-integration-tests.sh")],
+                cwd=directory, env=env, capture_output=True, text=True, check=False,
+            )
+            args = (directory / "args").read_text().splitlines()
+        self.assertEqual(args[1:], ["build/debug/bin/FreeCADCmd", "-t", "0"])
+        return result, args[0]
+
+    def test_default_hang_guard(self):
+        result, limit = self.run_script()
+        self.assertEqual(limit, "2400")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_overridden_hang_guard(self):
+        result, limit = self.run_script(limit="3600")
+        self.assertEqual(limit, "3600")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_timeout_reports_hang_guard_and_limit(self):
+        for configured, expected in ((None, "2400"), ("3600", "3600")):
+            with self.subTest(limit=configured):
+                result, _ = self.run_script(limit=configured, rc=124)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"hang guard reached {expected}s", result.stderr)
+                self.assertIn("exit 124", result.stderr)
+                self.assertIn("Ran 2 tests", result.stdout)
+
+    def test_other_process_failure_still_fails(self):
+        result, _ = self.run_script(rc=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("integration process exit 1", result.stderr)
+        self.assertNotIn("hang guard", result.stderr)
 
 
 class ResultCheckerTests(unittest.TestCase):
