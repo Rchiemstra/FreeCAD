@@ -460,6 +460,20 @@ void publishSaveBookkeepingPropertySignalSafely(Property& property,
     }
 }
 
+void publishDocumentRelabel(Document& document)
+{
+    // SaveAs adopts its identity on the owner lane. Application's relabel
+    // signal is a plain signal, whose GUI observers must run on the main
+    // thread just like Document::signalChanged observers do. Blocking delivery
+    // keeps the document alive and avoids queued tree indexes outliving it.
+    std::optional<Base::PyGILStateRelease> release;
+    if (!MainThreadSignalConfig::isMainThread() && Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    MainThreadSignalConfig::invoke(
+        [&document] { GetApplication().signalRelabelDocument(document); }, true);
+}
+
 void publishSaveBookkeepingPropertySafely(Document& document,
                                           Property& property,
                                           const char* name,
@@ -481,7 +495,7 @@ void publishSaveBookkeepingPropertySafely(Document& document,
 
     if (relabelDocument) {
         try {
-            GetApplication().signalRelabelDocument(document);
+            publishDocumentRelabel(document);
         }
         catch (const Base::Exception& exception) {
             FC_ERR("Save global relabel observer failed: " << exception.what());
@@ -3929,7 +3943,7 @@ void Document::onChanged(const Property* prop)
     // the Name property is a label for display purposes
     if (prop == &Label && !suppressBookkeepingProperty) {
         Base::FlagToggler<> flag(globalIsRelabeling);
-        GetApplication().signalRelabelDocument(*this);
+        publishDocumentRelabel(*this);
     }
     else if (prop == &ShowHidden) {
         GetApplication().signalShowHidden(*this);

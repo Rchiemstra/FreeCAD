@@ -468,7 +468,11 @@ void DrawViewSection::sectionExec(TopoDS_Shape& baseShape)
     }
 
     m_cuttingTool = makeCuttingTool(m_shapeSize);
+    startSectionCut(baseShape);
+}
 
+void DrawViewSection::startSectionCut(const TopoDS_Shape& baseShape)
+{
     if (!DU::isGuiUp()) {
         // without the gui we will never be informed of completion of the separate thread
         makeSectionCut(baseShape);
@@ -478,22 +482,13 @@ void DrawViewSection::sectionExec(TopoDS_Shape& baseShape)
     }
 
     try {
-        // note that &m_cutWatcher in the third parameter is not strictly required,
-        // but using the 4 parameter signature instead of the 3 parameter signature
-        // prevents clazy warning:
-        // https://github.com/KDE/clazy/blob/1.11/docs/checks/README-connect-3arg-lambda.md
-        connectCutWatcher =
-            QObject::connect(&m_cutWatcher, &QFutureWatcherBase::finished, &m_cutWatcher, [this] {
-                this->onSectionCutFinished();
-            });
-
         // We create a lambda closure to hold a copy of baseShape.
         // This is important because this variable might be local to the calling
         // function and might get destructed before the parallel processing finishes.
         auto lambda = [this, baseShape]{this->makeSectionCut(baseShape);};
         m_cutFuture = QtConcurrent::run(std::move(lambda));
-        m_cutWatcher.setFuture(m_cutFuture);
-        waitingForCut(true);
+        connectCutWatcher = watchGeometryFuture(m_cutWatcher, m_cutFuture, m_waitingForCut,
+                                                 [this] { onSectionCutFinished(); });
     }
     catch (...) {
         Base::Console().message("DVS::sectionExec - failed to make section cut");
@@ -562,8 +557,6 @@ void DrawViewSection::makeSectionCut(const TopoDS_Shape& baseShape)
                                 Label.getValue());
         return;
     }
-
-    waitingForCut(false);
 }
 
 //! position, scale and rotate shape for buildGeometryObject
@@ -628,6 +621,7 @@ TopoDS_Shape DrawViewSection::makeCuttingTool(double shapeSize)
 
 void DrawViewSection::onSectionCutFinished()
 {
+    waitingForCut(false);
     if (DU::isGuiUp()) {
         QObject::disconnect(connectCutWatcher);
         showProgressMessage(getNameInDocument(), "has finished making section cut");
@@ -641,8 +635,8 @@ void DrawViewSection::onSectionCutFinished()
     postSectionCutTasks();
 
     // display geometry for cut shape is in geometryObject as in DVP
-    m_tempGeometryObject = buildGeometryObject(getShapeForGeometryBuild(), getProjectionCS());
-    if (!DU::isGuiUp()) {
+    buildGeometryObject(getShapeForGeometryBuild(), getProjectionCS());
+    if (CoarseView.getValue() || !DU::isGuiUp()) {
         onHlrFinished();
     }
 }

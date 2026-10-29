@@ -42,6 +42,7 @@
 #include <memory>
 #include <string>
 
+#include "SolverGeometryUpdate.h"
 #include "GeoEnum.h"
 #include "SketchObject.h"
 
@@ -77,7 +78,7 @@ void SketchObject::retrieveSolverDiagnostics()
     lastMalformedConstraints = solvedSketch.getMalformedConstraints();
 }
 
-SketchSolveStatus SketchObject::solve(bool updateGeoAfterSolving /*=true*/)
+SketchSolveStatus SketchObject::solve(bool updateGeoAfterSolving, bool onlyPersistentChanges)
 {
     // no need to check input data validity as this is an sketchobject managed operation.
     Base::StateLocker lock(managedoperation, true);
@@ -169,13 +170,20 @@ SketchSolveStatus SketchObject::solve(bool updateGeoAfterSolving /*=true*/)
     // does not converge. We avoid marking a sketch as fully constrained when no convergence is
     // achieved.
     if (status == SketchSolveStatus::Success) {
-        FullyConstrained.setValue(lastDoF == 0);
+        if (FullyConstrained.getValue() != (lastDoF == 0)) {
+            FullyConstrained.setValue(lastDoF == 0);
+        }
         if (updateGeoAfterSolving) {
             // set the newly solved geometry
             std::vector<Part::Geometry*> geomlist = solvedSketch.extractGeometry();
             Part::PropertyGeometryList tmp;
             tmp.setValues(std::move(geomlist));
-            Geometry.moveValues(std::move(tmp));
+            if (onlyPersistentChanges) {
+                updateSolverGeometry(Geometry, std::move(tmp));
+            }
+            else {
+                Geometry.moveValues(std::move(tmp));
+            }
         }
     }
 

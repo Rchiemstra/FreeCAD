@@ -72,6 +72,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
+        import CommandComponentPattern
         import CommandReviewNote
         import AssemblyPreferences as Preferences
 
@@ -87,6 +88,7 @@ class AssemblyWorkbench(Workbench):
             "Assembly_CreateAssembly",
             "Assembly_Insert",
             "Part_LinkArrays",
+            "Assembly_ComponentPattern",
             "Assembly_SolveAssembly",
             "Assembly_CreateView",
             "Assembly_CreateSnapshot",
@@ -380,3 +382,6 @@ class AssemblyWorkbench(Workbench):
 
 
 Gui.addWorkbench(AssemblyWorkbench())
+
+# Registered separately so the GUI test runner executes the joint editor tests.
+FreeCAD.__unit_test__ += ["TestAssemblyGui"]

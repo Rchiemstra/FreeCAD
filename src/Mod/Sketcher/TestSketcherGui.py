@@ -8,8 +8,11 @@ from SketcherTests.TestPlacementUpdate import TestSketchPlacementUpdate
 from SketcherTests.TestExternalFacePreselection import TestExternalFacePreselection
 from SketcherTests.TestSketcherOffsetGui import TestSketcherOffsetGui
 from SketcherTests.TestVisualLayerListGui import TestVisualLayerListGui
+from SketcherTests.TestViewSectionGui import TestViewSectionGui
 
 from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepairGui
+from SketcherTests.TestSketchEditCleanGui import TestSketchEditCleanGui
+from SketcherTests.TestSketchClipboardGui import TestSketchClipboardGui
 
 # Use the module so that code checkers don't complain (flake8)
 (
@@ -23,6 +26,9 @@ from SketcherTests.TestSketchReferenceRepairGui import TestSketchReferenceRepair
     and TestExternalFacePreselection
     and TestSketcherOffsetGui
     and TestVisualLayerListGui
+    and TestViewSectionGui
     and TestSketchReferenceRepairGui
+    and TestSketchEditCleanGui
+    and TestSketchClipboardGui
     else False
 )

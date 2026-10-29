@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 import sys
 from pathlib import Path
@@ -27,10 +28,10 @@ CPP_INLINE = re.compile(
     r"void\s+updateData\s*\(\s*const\s+App::Property[^)]*\)\s*(?:override)?\s*\{",
     re.MULTILINE,
 )
-def _production_gui_sources() -> list[Path]:
+def _production_gui_sources(repository_root: Path = REPO_ROOT) -> list[Path]:
     return [
         path
-        for path in iter_source_files(REPO_ROOT)
+        for path in iter_source_files(repository_root)
         if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
     ]
 
@@ -60,8 +61,10 @@ def _class_name_from_source(text: str, line_index: int) -> str | None:
     return None
 
 
-def _collect_cpp_providers(path: Path, text: str) -> list[tuple[str, str, int]]:
-    relative = path.relative_to(REPO_ROOT).as_posix()
+def _collect_cpp_providers(
+    path: Path, text: str, repository_root: Path = REPO_ROOT
+) -> list[tuple[str, str, int]]:
+    relative = path.relative_to(repository_root).as_posix()
     rows: list[tuple[str, str, int]] = []
     for match in CPP_IMPL.finditer(text):
         line = text.count("\n", 0, match.start()) + 1
@@ -75,10 +78,12 @@ def _collect_cpp_providers(path: Path, text: str) -> list[tuple[str, str, int]]:
     return rows
 
 
-def _collect_python_providers(path: Path, text: str) -> list[tuple[str, str, int]]:
+def _collect_python_providers(
+    path: Path, text: str, repository_root: Path = REPO_ROOT
+) -> list[tuple[str, str, int]]:
     if path.suffix.lower() != ".py":
         return []
-    relative = path.relative_to(REPO_ROOT).as_posix()
+    relative = path.relative_to(repository_root).as_posix()
     rows: list[tuple[str, str, int]] = []
     for line, _evidence in _python_update_data_provider_matches(text, relative):
         class_name = _class_name_from_source(text, line - 1) or path.stem
@@ -86,12 +91,12 @@ def _collect_python_providers(path: Path, text: str) -> list[tuple[str, str, int
     return rows
 
 
-def _collect_rows() -> list[tuple[str, str, int]]:
+def _collect_rows(repository_root: Path = REPO_ROOT) -> list[tuple[str, str, int]]:
     rows: list[tuple[str, str, int]] = []
-    for path in _production_gui_sources():
+    for path in _production_gui_sources(repository_root):
         text = path.read_text(encoding="utf-8", errors="surrogateescape")
-        rows.extend(_collect_cpp_providers(path, text))
-        rows.extend(_collect_python_providers(path, text))
+        rows.extend(_collect_cpp_providers(path, text, repository_root))
+        rows.extend(_collect_python_providers(path, text, repository_root))
     return sorted(
         {(file, symbol, line) for file, symbol, line in rows},
         key=lambda row: (row[0].encode("utf-8"), row[1].encode("utf-8"), row[2]),
@@ -106,14 +111,18 @@ def _render(rows: list[tuple[str, str, int]]) -> str:
         "(Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Wave 3 "
         "classifies every row as `adapted` (pointer-free presentation adapter) "
         "or `unsupported` (explicit capability; no synchronous updateData fallback).\n\n"
-        "| file | symbol/caller | line | classification |\n"
-        "| --- | --- | ---: | --- |\n"
+        "| file | symbol/caller | classification |\n"
+        "| --- | --- | --- |\n"
     )
-    body = "\n".join(
-        f"| `{file}` | `{symbol}` | {line} | {resolve_classification(file, symbol, line)} |"
-        for file, symbol, line in rows
-    )
-    return f"{header}{body}\n"
+    # Preserve repeated file/class rows: their multiplicity is part of the gate.
+    occurrences: Counter[tuple[str, str]] = Counter()
+    body = []
+    for file, symbol, _line in rows:
+        occurrences[file, symbol] += 1
+        classification = resolve_classification(file, symbol, occurrences[file, symbol])
+        body.append(f"| `{file}` | `{symbol}` | {classification} |")
+    return header + "\n".join(body) + "\n"
+
 
 
 def main() -> None:

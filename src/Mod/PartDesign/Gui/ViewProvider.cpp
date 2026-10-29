@@ -31,6 +31,7 @@
 
 #include <Base/Exception.h>
 #include <Base/ServiceProvider.h>
+#include <Base/Tools.h>
 #include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -300,6 +301,15 @@ void ViewProvider::onChanged(const App::Property* prop)
                         Gui::Application::Instance->getViewProvider(obj)
                     );
                     if (vpd && vpd->Visibility.getValue()) {
+                        // TempoVis showing a feature also temporarily hides its siblings.
+                        // Propagate only the visibility exclusion, on each owning object.
+                        const bool temporary = Visibility.testStatus(App::Property::NoModify);
+                        Base::ObjectStatusLocker<App::Property::Status, App::Property> viewChange(
+                            App::Property::NoModify, &vpd->Visibility,
+                            temporary || vpd->Visibility.testStatus(App::Property::NoModify));
+                        Base::ObjectStatusLocker<App::Property::Status, App::Property> appChange(
+                            App::Property::NoModify, &obj->Visibility,
+                            temporary || obj->Visibility.testStatus(App::Property::NoModify));
                         vpd->Visibility.setValue(false);
                     }
                 }

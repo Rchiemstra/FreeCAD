@@ -1,25 +1,28 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (4,365 findings across nine categories, snapshot in `inventory.json`) and proposes bounded follow-up task
+This report summarizes the reproducible inventory (snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
 ## Inventory at a glance
 
-| Category | Findings | Disposition | Summary |
-| --- | ---: | --- | --- |
-| `live-app-dereference` | 2887 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads and `Gui::Document::getDocument()->getObject()` ingress. |
-| `live-reference-callback` | 240 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
-| `live-reference-payload` | 5 | migrate | `fastsignals::signal` declarations carrying live `App::Property*` or `App::DocumentObject*` payloads (including tree highlight/expand navigation). |
-| `update-data-provider` | 237 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
-| `direct-recompute` | 491 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs, including executable literals passed to known C++ GUI command wrappers/macros. |
-| `sync-document-api` | 380 | migrate | Document-shaped sync calls (`recompute`, `save`/`saveAs`, `undo`/`redo`, `closeDocument`, `commitCompatibilityMutation`) from first-party GUI code. Coin3D/property/feature touch, painter and image saves, feature-level `obj.recompute()`, `Gui::Document` async ingress, and the ingress implementation itself are not findings. |
-| `process-events-polling` | 71 | investigate | Manual event-loop pumping. |
-| `thread-waits` | 54 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
-| `blocking-invokes` | 0 | migrate | No remaining production `Qt::BlockingQueuedConnection` sites in the snapshot. |
+| Category | Disposition | Summary |
+| --- | --- | --- |
+| `live-app-dereference` | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads and `Gui::Document::getDocument()->getObject()` ingress. |
+| `live-reference-callback` | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
+| `live-reference-payload` | migrate | `fastsignals::signal` declarations carrying live `App::Property*` or `App::DocumentObject*` payloads (including tree highlight/expand navigation). |
+| `update-data-provider` | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
+| `direct-recompute` | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs, including executable literals passed to known C++ GUI command wrappers/macros. |
+| `sync-document-api` | migrate | Document-shaped sync calls (`recompute`, `save`/`saveAs`, `undo`/`redo`, `closeDocument`, `commitCompatibilityMutation`) from first-party GUI code. Coin3D/property/feature touch, painter and image saves, feature-level `obj.recompute()`, `Gui::Document` async ingress, and the ingress implementation itself are not findings. |
+| `process-events-polling` | investigate | Manual event-loop pumping. |
+| `thread-waits` | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
+| `blocking-invokes` | migrate | Synchronous `Qt::BlockingQueuedConnection` invocations. |
 
-The snapshot spans 1,992 C++ and 2,373 Python findings. Owning subsystems:
-`BIM` (1073), `CAM` (584), `Fem` (463), `Gui` (387), `Sketcher` (361), `TechDraw` (346), `Draft` (277), `Part` (186), `PartDesign` (150), `Spreadsheet` (110), `Mesh` (107), `Assembly` (92), `OpenSCAD` (67), `Robot` (32), `Surface` (29), `AddonManager` (27), `Measure` (21), `Inspection` (13), `Material` (12), `MeshPart` (8), `Points` (7), `Import` (6), `ReverseEngineering` (6),
-and `Start` (1).
+Current totals, counts per category, C++/Python split, and counts per subsystem
+are available on demand:
+
+```bash
+python3 tests/architecture/gui_blocking_live_model/scanner.py --summary
+```
 
 ## Bounded follow-up task candidates
 
