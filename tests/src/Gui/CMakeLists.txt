@@ -21,6 +21,7 @@ add_executable(Gui_tests_run
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
         DocumentRecovery.cpp
+        DockWidget.cpp
         DocumentExecutionWaitTestHelpers.cpp
         GuiPythonGate.cpp
         UpdateGuiThread.cpp
@@ -68,6 +69,7 @@ target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
     ${Python3_LIBRARIES}
+    ${QtTest_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )

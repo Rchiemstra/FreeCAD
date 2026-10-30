@@ -489,9 +489,24 @@ int ProgressBar::minimumDuration() const
     return d->minimumDuration;
 }
 
+namespace
+{
+template<typename Change>
+void deferProgressPaint(ProgressBar& bar, Change&& change)
+{
+    // QProgressBar setters repaint synchronously. During MDI resizing that
+    // flush can retain an OpenGL texture already replaced by the viewport.
+    // Apply the state now and leave painting to the next Qt event turn.
+    const bool wasEnabled = bar.updatesEnabled();
+    bar.setUpdatesEnabled(false);
+    change();
+    bar.setUpdatesEnabled(wasEnabled);
+}
+}
+
 void ProgressBar::resetEx()
 {
-    QProgressBar::reset();
+    deferProgressPaint(*this, [this] { QProgressBar::reset(); });
 #ifdef QT_WINEXTRAS_LIB
     setupTaskBarProgress();
     m_taskbarProgress->reset();
@@ -500,7 +515,7 @@ void ProgressBar::resetEx()
 
 void ProgressBar::setRangeEx(int minimum, int maximum)
 {
-    QProgressBar::setRange(minimum, maximum);
+    deferProgressPaint(*this, [this, minimum, maximum] { QProgressBar::setRange(minimum, maximum); });
 #ifdef QT_WINEXTRAS_LIB
     setupTaskBarProgress();
     m_taskbarProgress->setRange(minimum, maximum);
@@ -509,7 +524,7 @@ void ProgressBar::setRangeEx(int minimum, int maximum)
 
 void ProgressBar::setValueEx(int value)
 {
-    QProgressBar::setValue(value);
+    deferProgressPaint(*this, [this, value] { QProgressBar::setValue(value); });
 #ifdef QT_WINEXTRAS_LIB
     setupTaskBarProgress();
     m_taskbarProgress->setValue(value);

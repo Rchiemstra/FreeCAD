@@ -58,6 +58,86 @@ class TestGuiDocument(unittest.TestCase):
         if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
             close_document(self.doc)
 
+    def testSaveAsRelabelRunsOnGuiThread(self):
+        notifications = []
+        document = self.doc
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Observer:
+            def slotRelabelDocument(self, doc):
+                if doc == document:
+                    notifications.append(QtCore.QThread.currentThread() == gui_thread)
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                self.doc.saveAs(os.path.join(directory, "Relabeled.FCStd"))
+                self.assertEqual(self.doc.Label, "Relabeled")
+                self.assertEqual(notifications, [True])
+                self.doc.Label = "Renamed after Save As"
+                self.assertEqual(notifications, [True, True])
+                # A pending Qt dataChanged must never outlive the tree item.
+                close_document(self.doc)
+                self.doc = None
+                QtWidgets.QApplication.processEvents()
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+    def testSaveAsRelabelRejectsSynchronousClose(self):
+        document = self.doc
+        errors = []
+
+        class Observer:
+            def slotRelabelDocument(self, doc):
+                if doc == document:
+                    try:
+                        FreeCAD.closeDocument(doc.Name)
+                    except RuntimeError as exc:
+                        errors.append(str(exc))
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "Relabeled.FCStd")
+                save_document_as(document, path)
+                self.assertEqual(len(errors), 1)
+                self.assertIn("blocking document notification", errors[0])
+                self.assertIn("closeAsync", errors[0])
+                self.assertEqual(FreeCAD.getDocument(document.Name), document)
+                self.assertTrue(os.path.isfile(path))
+                self.assertFalse(document.hasPendingFileChanges())
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+    def testTextRunnerDrainsDeferredDeletesBetweenCases(self):
+        import TestApp
+        import shiboken6
+        from unittest.mock import patch
+
+        objects = []
+        callbacks = []
+
+        class ScheduleDelete(unittest.TestCase):
+            def runTest(self):
+                obj = QtCore.QObject()
+                objects.append(obj)
+                obj.deleteLater()
+                QtCore.QTimer.singleShot(0, lambda: callbacks.append(True))
+
+        class CheckDeleted(unittest.TestCase):
+            def runTest(self):
+                self.assertFalse(shiboken6.isValid(objects[0]))
+                self.assertEqual(callbacks, [True])
+
+        suite = unittest.TestSuite([ScheduleDelete(), CheckDeleted()])
+        with patch.object(
+            unittest.defaultTestLoader, "loadTestsFromName", return_value=suite
+        ), patch.object(TestApp, "_drain_gui_after_tests"):
+            result = TestApp.TestText("DeferredDeleteProbe")
+        self.assertTrue(result.wasSuccessful())
+
     def _findAutoSaver(self):
         app = QtWidgets.QApplication.instance()
         self.assertIsNotNone(app)
