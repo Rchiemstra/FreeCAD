@@ -1,4 +1,4 @@
-# Parallel recompute M0: static contracts and qualification runbook
+# Parallel recompute M0: contracts, runbook and measured serial baseline
 
 Research date: 2026-10-30. Inspected source/plan commit:
 `e1446662caadf9ca2e2335fd81ee4eed460f01a4`, branch
@@ -6,17 +6,18 @@ Research date: 2026-10-30. Inspected source/plan commit:
 identity. The plan cites an earlier product audit at `d7b0d2ffa7fce1ac21a5a9fdabdfd901fea434d8`;
 its measurements have not been repeated here.
 
-**The static part of M0 is recorded; the M0 exit gate is not satisfied.** No
-FreeCAD/OCC executable, compiler, CMake, package installation, upstream run or
+**The M0 exit gate is not satisfied.** The initial static audit used no
+FreeCAD/OCC executable; the local serial measurements added later are recorded
+in section 7. No compiler, CMake build, package installation, upstream run or
 race detector was used. Nothing under `src/` changes. No production scheduling
 or parallel feature execution is introduced. All four live target methods need
 serialization. Their proposed detached kernels remain unqualified.
 
-The only additional script, `tools/parallel_recompute_m0_probe.py`, is an
-unexecuted FreeCAD serial measurement probe. It changes temporary in-memory
+`tools/parallel_recompute_m0_probe.py` is a FreeCAD serial measurement probe,
+with local execution and summarization helpers under `tools/`. It changes temporary in-memory
 documents and writes generated fixtures/results to an explicit output directory;
-it never saves over an existing input FCStd. Its Python syntax was checked, but
-its FreeCAD API behavior still needs a build. Do not treat it as a race detector,
+it never saves over an existing input FCStd. Its measured behavior and limitations
+are recorded in section 7. Do not treat it as a race detector,
 an adapter, or a geometry/naming equivalence oracle.
 
 ## 1. Deliverables and present status
@@ -30,11 +31,12 @@ scope excludes. A specification is not an implemented or passing test.
 | --- | --- | --- |
 | Enumerate M0 work, qualification template and negative admission cases | Static | **Done:** this table and sections 2–4. |
 | Candidate input/output/invalidation inventory: exact Box, Cut, Fuse, Common; naming, caches, callbacks and OCC settings | Static audit; runtime closure needed | **Done (static):** section 2. Complete *qualified* contracts still **need build**, dependency instrumentation and kernel coverage. |
-| Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Static runbook/probe; native instrumentation needed | **Done (design/probe); needs build** for validated probe, phase spans, production property graph, concurrency and memory traces. |
+| Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
 | Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Done (design); needs build** and native test-only kernels; no detached harness exists in this change. |
-| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Static recipes/commands | **Done (runbook); needs build** for all timings and venue/crossover decision. No new runtime numbers. |
+| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Done (serial baseline):** section 7 measures wide/narrow, edit/noop and cold-after-restore controls. Thread/process comparison and venue/crossover decision still need the detached harness. |
 | Working instrumented race checks, including cold/error/cancel cases | Static gate design | **Done (design); needs build** plus instrumented OCC and a compatible runner. No race pass claimed. |
-| Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Static fixture inventory/pin | **Needs build** for bidirectional runs; **blocked** for final large user corpus/add-on version selection pending owner input. |
+| Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
+| Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
 | Exact sibling publication, broad conflict invalidation and existing client visibility | Static assertions/test placement | **Done (design); needs build** for demonstration; generic serialization stays intact. |
 | Callback order A/B/Z, PR #114, terminal failure/cancel presentation, undo/rollback | Static source comparison/test matrix | **Done (design); needs build** for traces and equivalence. Existing finalization difference is unresolved. |
 | Safe process transport/lifetime, justified cost/venue and credible end-to-end gain supporting M1 | Static acceptance conditions | **Needs build** and harness implementation; conditional process-only pilot **blocked** on owner decision if thread qualification cannot be achieved. |
@@ -336,7 +338,7 @@ match the **full expected** test names/counts and require zero skips, and must n
 inherit an unrelated process-crash quarantine. Add explicit tests that a missing
 case, skip, truncated XML and TSan startup error make that wrapper fail.
 
-## 4. Measurement runbook (no measured performance values)
+## 4. Measurement runbook (local serial results in section 7)
 
 ### Fixtures and sizes
 
@@ -647,7 +649,7 @@ and revision/notification boundaries.
    remains unavailable. None of these decisions is permission to weaken the
    publication, native-run or naming gates.
 
-## 6. Validation performed for this research change
+## 6. Validation performed for the initial static research change
 
 - Verified branch/worktree and source SHA, inspected the plan and source anchors;
   no AGENTS.md was present in this clone or its traversed parent directories.
@@ -657,8 +659,314 @@ and revision/notification boundaries.
   pre-existing uv cache under `../logs/m0-static/uv-cache` (default cache is
   read-only). No packages were installed. Checked probe syntax/import without
   FreeCAD, 71 source citations comprising 100 line spans, and all five shell
-  blocks with `bash -n`. Native probe/race/performance/compatibility runs remain
-  pending. Validation details and source excerpts live under
+  blocks with `bash -n`. Native probe/race/performance/compatibility runs were
+  pending at that revision; later local serial runs are in section 7. Validation details and source excerpts live under
   `../logs/m0-static/`.
 - Changed only this report and the research probe; no src edits, compiler/CMake
   invocation, forbidden checkout access, push or PR action.
+
+## 7. Serial baseline, measured
+
+Measured locally on 2026-10-30. **Local build, not CI:** the supplied read-only
+RelWithDebInfo artifact is from `FreeCAD-start` source
+`ec84cacee3440461e142c29ba9cfa6a7aac21453`. Its build directory is
+`/home/rch/Documents/code/FreeCAD-integration/build/relWithDebInfo`.
+The local checkout HEAD read, CMake cache, FreeCADCmd/App/Part SHA-256 hashes and
+their `ldd` output are retained in `../logs/m0-runtime/build-manifest.json`
+and `CMakeCache.txt`. The FreeCADCmd SHA-256 is
+`bb83c5b27271938ba7535bbb744b15ebd5e5e8decf196b763355ccc950d1663f`.
+Runtime versions are FreeCAD 27.1.0 development, OCC 8.0.1, Python 3.13.15
+(conda-forge, GCC 15.3.0), Qt 6.11.2. These are local provenance records,
+not a CI attestation that proves the binary/source relationship.
+
+**Fixture source differs from the build:** the input FCStd files come from this
+clone at `06af2770baab3463915f328e4ad7cef1acf8161b`, not ec84cacee3.
+Their hashes are in the local build manifest and per-run manifests. Synthetic
+archives are generated from the committed probe recipe and saved only under
+the run output. Each synthetic process then closes and reopens its archive,
+asserts identical restored object names/types, and rebinds its edit target.
+No source FCStd input is saved over.
+
+All FreeCAD and native test processes use a user systemd scope with
+`MemoryMax=5G`, `taskset -c 0-3`, and per-run FREECAD_USER_HOME, HOME,
+XDG config/data/cache paths. Probe invocations also pass explicit user/system
+configuration paths. The host reports an AMD Ryzen 7 4700G, 8 cores/16 logical
+CPUs; only logical CPUs 0–3 are admitted. The default
+session bus failed inside the sandbox; the working launch environment sets
+`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus` and removes
+XDG_RUNTIME_DIR. GUI tests additionally use `xvfb-run -a` and the xcb Qt platform.
+The runner records exact commands/environment overrides, timestamps, load,
+console output and `/usr/bin/time -v` output. It performs no builds or installs.
+Existing native Boolean wrappers request inner parallelism; **this is serial
+document recompute with the default inner policy, not an inner-one baseline**.
+
+Two probe API assumptions needed correction. `obj.isTouched()` does not exist
+on this build's Python wrappers; both touch-state checks now use
+`"Touched" in obj.State`. FEM mesh objects have an `App::PropertyLink` named
+`Shape`, whose value is another document object, not a BRep. The final summary
+now checks only `Part::PropertyPartShape` properties; the linked Part object's
+actual BRep is still checked. The first FEM all/noop attempts completed their
+timing samples but failed this summary API call. They are retained in
+`failed-fem-summary-api/` and replaced by successful full FEM reruns. This fix
+changes only the outside-timer summary; AST comparison confirms that `main()`
+and its timed loop are identical between the two captured probe versions.
+Hashes and the reason are recorded in `probe-versions.json`. No synthetic
+geometry recipe needed a change. Runtime Qt version and a separate
+`restore.json` diagnostic were also added outside the recompute timer. FreeCADCmd
+returned zero even on the initial Python exception, so success requires the
+expected sample count, final completed record, geometry validity and settled
+objects; missing add-on imports/unrestored proxies fail the fixture.
+
+The interrupted first driver continued running and overlapped the next attempt.
+Both `smoke/` and `smoke-v2/` are retained but **excluded** from reported timings;
+see `discarded-attempts.txt`. After stopping their remaining scopes, the complete
+smoke matrix was repeated in `smoke-serial/`. The runner now holds an exclusive
+file lock, checks for pre-existing M0 scopes, and stops its named scope on an
+interrupt or timeout. Timings below come from separate subsequent serial runs.
+
+Each reported recompute excludes mutation, dirty-set enumeration, restore and
+geometry summaries. CPU/wall is the sum of process CPU time inside measured
+recompute calls divided by their summed wall time. p95 uses linear interpolation
+at `(n-1)*0.95`; warmups are excluded and no measured outliers are dropped.
+“Peak RSS MB” means `/usr/bin/time -v` maximum resident kbytes / 1024 (MiB),
+over the entire process, including fixture creation/restore and validation.
+It is neither aggregate descendant memory nor recompute-only memory.
+
+All 19 clean synthetic smoke cases passed with one warmup and three measured
+all-dirty repetitions. `estimate.json` prices **each** of all/edit/noop at the
+smoke all-dirty mean action cost, plus measured fixed process/setup/restore/
+validation cost. This is deliberately conservative because edit/noop were not
+timed in the requested smoke stage. At 08:44 UTC it estimated 23,522 seconds
+(6.53 hours) for 30 repetitions against 15,979 seconds left in the five-hour
+task budget. Reserving 2,700 seconds for files/cold/suites/reporting selected
+**14 measured repetitions uniformly**, with five warmups, for every synthetic
+scenario and file scenario. Its selected synthetic estimate is 13,168 seconds
+(3.66 hours). Cold-after-restore remains 30 fresh processes with zero warmups
+and one measured recompute each. This is one local serial session, not the
+future three-session randomized detached-harness comparison.
+
+Edit samples alternate the first recipe dimension between its original value
+and original + 0.01 mm (seven measured samples of each). They need not have the
+same topology as the original all-dirty fixture: the final `chain:200` tip has
+eight faces and volume 18010.1 mm³ after edit, versus six faces and 18010 mm³
+in all/noop. A slower edit here is not a same-geometry execution comparison.
+Initially touched names and the recompute API's returned object count are
+retained separately; neither is an exact native execute/kernel trace.
+
+The live Pair 512 scope snapshot confirmed MemoryMax=5368709120 bytes and
+24 tasks, including application/runtime threads. Task count is not kernel
+overlap or an OCC inner-worker count. The snapshot is retained in
+`live-scope-resource-snapshot.txt`; actual native overlap remains unavailable.
+`campaign.json` records the task start, launch working directories and helper
+hardening during execution. The timed probe remains identical across clean
+smoke/full runs. Later file/cold/native launches also pin cwd and TMPDIR to
+their output directory and have a campaign deadline leaving ten minutes for
+reporting. A fresh `M0_RUN_ROOT` selects a new campaign without overwriting
+earlier provenance or case folders.
+
+### Results and restored counts
+
+All 19 clean smoke cases, 57 synthetic case/scenario runs and 18 file runs
+passed the probe's completion, settled-state and BRep checks after the two API
+fixes. Each final synthetic/file run has all 14 selected measured samples.
+No missing add-on imports or unrestored data proxies were reported in this build; no dependency
+failure was skipped or replaced with a stub. These are headless data checks,
+not full naming/history, add-on semantic or GUI equivalence qualification.
+
+Synthetic restored counts agree with the recipes: Box=N; binary Boolean=3N;
+Pair=5N; Chain=N+9; Bodies=11N. Each Body creates an Origin, an origin point,
+three axes and three planes in addition to the Body and modeled features.
+File counts are restored counts, not the saved XML inventory: expression,
+cross-reference, migration and carbon-copy controls restore 11/13/14/26 objects
+versus 10/12/13/24 saved; the other listed fixture counts are unchanged.
+
+BIM's genuine proxies restore and its headless data checks pass, but console
+output reports that axis/dimension SVG and text export require GUI mode.
+The 7197.823 ms all-dirty median includes those warning paths, not rendered
+annotations or a complete visible GUI update. No rendering output is substituted.
+FEM's mesh-link property is excluded only from BRep inspection; mesh quality and
+solver correctness are not claimed by this probe.
+
+| Case | Scenario | Objects | Recompute median ms | p95 ms | CPU/wall | Peak RSS MB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `box:2` | all | 2 | 3.085 | 5.395 | 0.16 | 112.8 |
+| `box:2` | edit | 2 | 0.228 | 0.256 | 1.00 | 112.7 |
+| `box:2` | noop | 2 | 0.030 | 0.061 | 1.02 | 112.9 |
+| `box:512` | all | 512 | 1996.408 | 2029.922 | 0.44 | 161.9 |
+| `box:512` | edit | 512 | 1.941 | 1.983 | 0.99 | 157.3 |
+| `box:512` | noop | 512 | 1.012 | 1.102 | 0.99 | 157.4 |
+| `cut:24` | all | 72 | 342.250 | 349.704 | 0.73 | 125.6 |
+| `cut:24` | edit | 72 | 8.700 | 10.899 | 1.04 | 124.9 |
+| `cut:24` | noop | 72 | 0.151 | 0.157 | 0.96 | 124.7 |
+| `cut:128` | all | 384 | 2196.752 | 2223.433 | 0.78 | 163.7 |
+| `cut:128` | edit | 384 | 10.312 | 10.888 | 1.04 | 158.6 |
+| `cut:128` | noop | 384 | 0.725 | 0.833 | 0.98 | 158.8 |
+| `cut:512` | all | 1536 | 14834.059 | 14890.907 | 0.87 | 300.2 |
+| `cut:512` | edit | 1536 | 17.370 | 17.720 | 1.02 | 282.8 |
+| `cut:512` | noop | 1536 | 3.828 | 3.970 | 0.99 | 283.1 |
+| `fuse:24` | all | 72 | 371.820 | 378.861 | 0.76 | 126.9 |
+| `fuse:24` | edit | 72 | 9.928 | 10.560 | 1.05 | 126.1 |
+| `fuse:24` | noop | 72 | 0.153 | 0.160 | 0.97 | 126.1 |
+| `fuse:128` | all | 384 | 2372.545 | 2390.048 | 0.80 | 167.7 |
+| `fuse:128` | edit | 384 | 11.447 | 14.113 | 0.99 | 163.5 |
+| `fuse:128` | noop | 384 | 0.726 | 0.909 | 0.99 | 163.5 |
+| `fuse:512` | all | 1536 | 15556.301 | 15660.804 | 0.88 | 319.4 |
+| `fuse:512` | edit | 1536 | 18.577 | 18.952 | 1.02 | 301.4 |
+| `fuse:512` | noop | 1536 | 3.826 | 3.862 | 1.00 | 301.4 |
+| `common:24` | all | 72 | 328.103 | 333.685 | 0.71 | 124.5 |
+| `common:24` | edit | 72 | 8.269 | 9.067 | 1.03 | 123.7 |
+| `common:24` | noop | 72 | 0.151 | 0.184 | 0.97 | 123.6 |
+| `common:128` | all | 384 | 2092.452 | 2105.450 | 0.76 | 158.5 |
+| `common:128` | edit | 384 | 10.082 | 10.790 | 1.00 | 154.2 |
+| `common:128` | noop | 384 | 0.668 | 0.823 | 0.99 | 154.1 |
+| `common:512` | all | 1536 | 13858.939 | 13906.928 | 0.86 | 280.7 |
+| `common:512` | edit | 1536 | 16.706 | 17.459 | 1.01 | 265.5 |
+| `common:512` | noop | 1536 | 3.826 | 3.866 | 1.00 | 265.6 |
+| `pair:24` | all | 120 | 775.912 | 782.077 | 0.86 | 133.6 |
+| `pair:24` | edit | 120 | 22.565 | 23.719 | 1.07 | 132.7 |
+| `pair:24` | noop | 120 | 0.226 | 0.235 | 0.98 | 132.9 |
+| `pair:128` | all | 640 | 5303.857 | 5347.639 | 0.89 | 207.6 |
+| `pair:128` | edit | 640 | 26.315 | 27.088 | 1.06 | 197.6 |
+| `pair:128` | noop | 640 | 1.376 | 1.442 | 0.99 | 197.7 |
+| `pair:512` | all | 2560 | 39123.912 | 39452.515 | 0.94 | 472.1 |
+| `pair:512` | edit | 2560 | 41.299 | 41.713 | 1.04 | 434.5 |
+| `pair:512` | noop | 2560 | 6.780 | 6.862 | 1.00 | 434.7 |
+| `chain:50` | all | 59 | 941.339 | 947.262 | 1.16 | 146.3 |
+| `chain:50` | edit | 59 | 1081.813 | 1259.125 | 1.18 | 150.2 |
+| `chain:50` | noop | 59 | 0.170 | 0.179 | 0.97 | 142.9 |
+| `chain:200` | all | 209 | 9043.631 | 9169.521 | 1.25 | 317.4 |
+| `chain:200` | edit | 209 | 11509.773 | 14234.449 | 1.23 | 371.0 |
+| `chain:200` | noop | 209 | 0.615 | 0.868 | 0.91 | 279.1 |
+| `bodies:20` | all | 220 | 734.671 | 771.338 | 0.38 | 135.4 |
+| `bodies:20` | edit | 220 | 10.031 | 10.365 | 0.69 | 131.3 |
+| `bodies:20` | noop | 220 | 0.376 | 0.497 | 0.95 | 131.5 |
+| `bodies:100` | all | 1100 | 6357.873 | 6439.848 | 0.64 | 193.2 |
+| `bodies:100` | edit | 1100 | 15.128 | 15.736 | 0.79 | 172.3 |
+| `bodies:100` | noop | 1100 | 2.542 | 2.581 | 0.99 | 172.4 |
+| `bodies:500` | all | 5500 | 114321.180 | 116409.991 | 0.90 | 487.4 |
+| `bodies:500` | edit | 5500 | 45.262 | 46.053 | 0.93 | 375.3 |
+| `bodies:500` | noop | 5500 | 13.356 | 13.448 | 1.00 | 375.4 |
+
+File fixtures (same columns):
+
+| Case | Scenario | Objects | Recompute median ms | p95 ms | CPU/wall | Peak RSS MB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| AssemblyExample.FCStd | all | 54 | 186.360 | 188.617 | 0.37 | 170.8 |
+| AssemblyExample.FCStd | noop | 54 | 0.151 | 0.178 | 0.96 | 163.5 |
+| BIMExample.FCStd | all | 361 | 7197.823 | 7227.042 | 1.01 | 404.2 |
+| BIMExample.FCStd | noop | 361 | 1.913 | 2.090 | 0.97 | 364.2 |
+| EngineBlock.FCStd | all | 36 | 353.186 | 357.897 | 1.97 | 170.2 |
+| EngineBlock.FCStd | noop | 36 | 0.099 | 0.112 | 0.98 | 141.0 |
+| FEMExample.FCStd | all | 43 | 116.818 | 118.138 | 0.20 | 169.8 |
+| FEMExample.FCStd | noop | 43 | 0.093 | 0.146 | 1.00 | 166.6 |
+| ModelFromV021.FCStd | all | 14 | 58.367 | 59.325 | 0.56 | 126.1 |
+| ModelFromV021.FCStd | noop | 14 | 0.042 | 0.045 | 1.04 | 125.0 |
+| PartDesignExample.FCStd | all | 28 | 369.783 | 373.949 | 1.53 | 145.9 |
+| PartDesignExample.FCStd | noop | 28 | 0.112 | 0.138 | 0.96 | 123.5 |
+| TestSketchCarbonCopyReverseMapping.FCStd | all | 26 | 64.853 | 65.709 | 0.17 | 118.9 |
+| TestSketchCarbonCopyReverseMapping.FCStd | noop | 26 | 0.067 | 0.132 | 0.97 | 118.0 |
+| TwoLengthsPadCrossObjectRef.FCStd | all | 13 | 35.506 | 36.887 | 0.30 | 123.4 |
+| TwoLengthsPadCrossObjectRef.FCStd | noop | 13 | 0.040 | 0.050 | 1.05 | 122.2 |
+| TwoLengthsPadWithExpression.FCStd | all | 11 | 25.958 | 27.054 | 0.18 | 119.9 |
+| TwoLengthsPadWithExpression.FCStd | noop | 11 | 0.043 | 0.045 | 1.05 | 119.5 |
+
+### Edit and action cost
+
+Mutation is outside the recompute interval, including the native work triggered
+by Box dimension setters. Action total also includes Python dirty-set enumeration;
+its median need not equal the sum of separately computed component medians.
+The lists below are the observed count ranges. A returned count is a framework
+object count, not a kernel-call trace (setters can execute native work earlier).
+
+| Case | Mutation median ms | Recompute median ms | Action total median ms | Initially touched | Returned count |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `box:2` | 0.054 | 0.228 | 0.294 | [1] | [1] |
+| `box:512` | 0.120 | 1.941 | 2.799 | [1] | [1] |
+| `cut:24` | 0.118 | 8.700 | 8.930 | [1] | [2] |
+| `cut:128` | 0.134 | 10.312 | 10.898 | [1] | [2] |
+| `cut:512` | 0.167 | 17.370 | 19.575 | [1] | [2] |
+| `fuse:24` | 0.120 | 9.928 | 10.144 | [1] | [2] |
+| `fuse:128` | 0.137 | 11.447 | 12.049 | [1] | [2] |
+| `fuse:512` | 0.168 | 18.577 | 20.802 | [1] | [2] |
+| `common:24` | 0.121 | 8.269 | 8.505 | [1] | [2] |
+| `common:128` | 0.146 | 10.082 | 10.691 | [1] | [2] |
+| `common:512` | 0.179 | 16.706 | 18.951 | [1] | [2] |
+| `pair:24` | 0.132 | 22.565 | 22.860 | [1] | [3] |
+| `pair:128` | 0.152 | 26.315 | 27.249 | [1] | [3] |
+| `pair:512` | 0.182 | 41.299 | 45.196 | [1] | [3] |
+| `chain:50` | 0.034 | 1081.813 | 1082.011 | [1] | [51] |
+| `chain:200` | 0.047 | 11509.773 | 11510.361 | [1] | [201] |
+| `bodies:20` | 0.026 | 10.031 | 10.343 | [1] | [3] |
+| `bodies:100` | 0.040 | 15.128 | 16.559 | [1] | [3] |
+| `bodies:500` | 0.056 | 45.262 | 54.545 | [1] | [3] |
+
+### Cold-after-restore and native suites
+
+Thirty fresh processes opened the already generated `full/pair-24-all/fixture.FCStd`,
+restored 120 objects, touched all and recomputed once, with zero warmups.
+All 30 completed. The source archive hash is identical in every process.
+
+| Cold metric | Median | p95 |
+| --- | ---: | ---: |
+| First dirty recompute after restore, ms | 739.503 | 745.265 |
+| Restore/load span, ms | 150.821 | 152.312 |
+| Scope launch to process exit, s | 1.618 | 1.669 |
+
+Maximum per-process `time -v` RSS across the cold series is 129.594 MiB.
+Launch-to-exit includes imports/startup, restore, mutation/enumeration, recompute,
+validation, summary and teardown; it is not a spawn-to-ready measurement.
+Restore and imports may warm OCC, so this does not measure a truly first raw
+kernel invocation or the existing geometry-worker transport protocol.
+
+| Existing suite / runbook filter | Passed | Failed | Errors | Skipped / not run | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| App: coordinator, generic isolated, native request capture, commit coordinator | 42 | 0 | 0 | 0 | 0 |
+| Part: ShapeCacheIsolatedRecomputeTest.* | 8 | 0 | 0 | 0 | 0 |
+| Gui under Xvfb: unchanged datum extents revision fence | 1 | 0 | 0 | 0 | 0 |
+
+All expected names match `native-expected-tests.json`; there are no unexpected
+cases. Full XML/console/time output is under `native/{App,Part,Gui}/` and test
+binary hashes are in `native-binary-hashes.txt`. These are the pre-existing
+baseline tests, not the unimplemented M0 recorder/detached/race/publication gate.
+
+### Interpretation and owner decisions
+
+- **The phase serial fraction is still unmeasured.** Kernel, capture, TNP,
+  publication, GIL waits and presentation spans are unavailable. CPU/wall is
+  process utilization over recompute, not a serial-fraction estimate. Ratios
+  above one (EngineBlock 1.97, chain 200 all 1.25) also show why this default
+  inner-policy baseline must not be called inner-one.
+- The largest case, Bodies 500 (114.321 s median), contains **zero** exact
+  Part::Box/Cut/Fuse/Common objects. It remains entirely outside the initial
+  four-type pilot and cannot justify that pilot's gain. Keep both narrow
+  controls and unsupported-type workloads as regression/fallback controls.
+- Pair 24→512 increases branch count 21.3× but all-dirty wall time 50.4×.
+  Identical analytic operands do not make the full document cost linear.
+  Owner/framework/naming contributions need measured spans before assigning
+  this time to parallelizable geometry; the cause is not established here.
+- Single-property edits expose one dependent branch: binary Boolean runs
+  return two objects, Pair three, Bodies three; Chain edits return N+1.
+  Wide all-dirty speed potential is not wide incremental speed potential.
+  Select real multi-branch edits and heavy imported/spline/shared-topology
+  Boolean models in the owner corpus before choosing a venue.
+- Timings are descriptive for one local session. First→last measured times
+  rise 1.2% for Cut 512, 2.9% for Pair 512, 4.8% for Chain 200 and 3.6% for
+  Bodies 500 (112.459→116.507 s). Nothing is removed as an outlier; cause and
+  long-run stationarity are unqualified. Do not apply performance gates or
+  extrapolate a parallel speedup from these medians alone.
+- **Owner decisions:** fund the native phase recorder and instrumented
+  FreeCAD/OCC race harness; choose the heavy/user corpus and pinned upstream/
+  add-on versions; obtain a genuine GUI BIM annotation/presentation baseline.
+  Defer the thread/process venue decision until capture/transport/naming/commit
+  costs and qualification exist. Keep thread adapters disabled. A process-only
+  pilot remains a separate owner decision after its isolation/transport gate.
+
+The completed artifact audit (`validation.json`) passes 246 checks: expected
+run/sample counts, synthetic restored counts and analytic one-solid volumes,
+unchanged source archive and build binary/library hashes, identical runtime
+versions, one common cold input hash, resource-wrapper arguments, exact native
+case names and no overlapping measured process intervals. Raw data and generated
+statistics are in `../logs/m0-runtime/{summary.json,tables.md,edit-timings.md,trends.json}`.
+The two contaminated smoke attempts and failed FEM summaries remain separately
+retained with their reasons. No production source or scheduling changes, build,
+package installation, upstream run or race detector is part of this measurement.

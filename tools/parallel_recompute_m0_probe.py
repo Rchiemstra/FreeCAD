@@ -68,7 +68,7 @@ def make_fixture(app, case):
 
 def verify(doc):
     invalid = [obj.Name for obj in doc.Objects if not obj.isValid()]
-    unsettled = [obj.Name for obj in doc.Objects if obj.isTouched()]
+    unsettled = [obj.Name for obj in doc.Objects if "Touched" in obj.State]
     if invalid or unsettled:
         raise RuntimeError(f"invalid={invalid}, unsettled={unsettled}")
 
@@ -78,6 +78,10 @@ def shape_summary(doc):
     result = {}
     for obj in doc.Objects:
         if "Shape" not in obj.PropertiesList:
+            continue
+        # FEM mesh Shape is an App::PropertyLink, not a TopoShape. Its linked
+        # Part object's actual BRep is checked separately in this same document.
+        if obj.getTypeIdOfProperty("Shape") != "Part::PropertyPartShape":
             continue
         shape = obj.Shape
         if shape.isNull():
@@ -101,6 +105,7 @@ def shape_summary(doc):
 def main():
     import FreeCAD as app
     import Part
+    from PySide6.QtCore import qVersion
 
     out = Path(os.environ["M0_OUT"]).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -128,9 +133,22 @@ def main():
         if source.exists():
             raise FileExistsError(source)
         doc.saveAs(str(source))
+        # Measure restored archives, not the still-live creation graph. Rebind
+        # the edit target because wrappers from the closed document are invalid.
+        edit_spec = (edit[0].Name, edit[1], edit[2]) if edit else None
+        created_types = {obj.Name: obj.TypeId for obj in doc.Objects}
+        app.closeDocument(doc.Name)
+        doc = app.openDocument(str(source))
+        if {obj.Name: obj.TypeId for obj in doc.Objects} != created_types:
+            raise RuntimeError("synthetic object names/types changed on restore")
+        edit = (doc.getObject(edit_spec[0]), *edit_spec[1:]) if edit_spec else None
     load_or_create_ns = time.perf_counter_ns() - start
     unresolved = [obj.Name for obj in doc.Objects
                   if "Proxy" in obj.PropertiesList and obj.Proxy is None]
+    (out / "restore.json").write_text(json.dumps({
+        "objects": len(doc.Objects), "types": {obj.Name: obj.TypeId for obj in doc.Objects},
+        "unresolved_proxies": unresolved, "load_or_create_ns": load_or_create_ns,
+    }, sort_keys=True) + "\n")
     if unresolved:
         raise RuntimeError(f"unrestored proxies: {unresolved}")
     if scenario == "edit" and edit is None:
@@ -144,6 +162,7 @@ def main():
         emit({
             "kind": "manifest", "case": case, "scenario": scenario,
             "freecad_version": list(app.Version()), "occ_version": Part.OCC_VERSION,
+            "qt_version": qVersion(),
             "build_sha_supplied": os.environ["M0_BUILD_SHA"],
             "python": sys.version, "platform": platform.platform(),
             "fixture": str(source), "fixture_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -170,7 +189,7 @@ def main():
                 obj, prop, original = edit
                 setattr(obj, prop, original + (0.01 if index % 2 == 0 else 0.0))
             mutation_ns = time.perf_counter_ns() - action_start
-            dirty = [obj.Name for obj in doc.Objects if obj.isTouched()]
+            dirty = [obj.Name for obj in doc.Objects if "Touched" in obj.State]
             cpu_start = time.process_time_ns()
             compute_start = time.perf_counter_ns()
             returned = doc.recompute(None, False, True)
