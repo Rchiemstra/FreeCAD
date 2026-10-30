@@ -8,8 +8,9 @@ its measurements have not been repeated here.
 
 **The M0 exit gate is not satisfied.** The initial static audit used no
 FreeCAD/OCC executable; the local serial measurements added later are recorded
-in section 7. No compiler, CMake build, package installation, upstream run or
-race detector was used. Nothing under `src/` changes. No production scheduling
+in section 7. Sections 1–7 used no compiler, CMake build, package installation,
+upstream run or race detector; section 8 resolves py-spy into an isolated run
+cache for profiling. Nothing under `src/` changes. No production scheduling
 or parallel feature execution is introduced. All four live target methods need
 serialization. Their proposed detached kernels remain unqualified.
 
@@ -943,7 +944,8 @@ baseline tests, not the unimplemented M0 recorder/detached/race/publication gate
 - Pair 24→512 increases branch count 21.3× but all-dirty wall time 50.4×.
   Identical analytic operands do not make the full document cost linear.
   Owner/framework/naming contributions need measured spans before assigning
-  this time to parallelizable geometry; the cause is not established here.
+  this time to parallelizable geometry. Section 8 now profiles the growing
+  native owner overhead; this baseline alone did not establish its cause.
 - Single-property edits expose one dependent branch: binary Boolean runs
   return two objects, Pair three, Bodies three; Chain edits return N+1.
   Wide all-dirty speed potential is not wide incremental speed potential.
@@ -970,3 +972,312 @@ statistics are in `../logs/m0-runtime/{summary.json,tables.md,edit-timings.md,tr
 The two contaminated smoke attempts and failed FEM summaries remain separately
 retained with their reasons. No production source or scheduling changes, build,
 package installation, upstream run or race detector is part of this measurement.
+
+## 8. Superlinear serial cost, profiled
+
+Measured locally on 2026-10-30, starting from `0905b8b83c`. The growing cost is
+in the serial document coordinator: repeated scheduling scans, document-wide
+preparation admission scans, and full progress snapshots. Independent geometry
+branches still pay these shared loops once per feature. This is evidence for
+serial algorithm improvements before using these timings to size a parallel pilot.
+No production code, build, preference policy or scheduling behavior was changed.
+
+### Method, window and limitations
+
+All artifacts are under `../logs/m0-profile/`. The FreeCADCmd/App/Part SHA-256
+checks in `artifact-check.json` match the section 7 build exactly. The profiler
+reads the same existing `m0-runtime/full/{case}-all/fixture.FCStd` archives;
+`M0_CASE=file`, `M0_SCENARIO=all`, `M0_WARMUPS=0`, `M0_REPETITIONS=1` select one
+first all-dirty recompute after restore. Per-run command manifests retain the
+original family/count and archive hash. Inputs were never saved over.
+
+First tried the requested parent-spawned command:
+
+```text
+uv run --no-project --with py-spy py-spy record --native --rate 200 -f raw -- <FreeCADCmd and probe arguments>
+```
+
+Py-spy 0.4.2 reads the embedded Python 3.13 interpreter, but misses this build's
+native document owner thread. In Bodies 100 it recorded 1,020 samples/49 errors;
+only 48 included the named recompute wrapper, all waiting in the caller's
+`std::future`. The document and shape summary completed; py-spy returned 1 with
+`No child process`. Its Bodies 500 attempt was stopped when this attribution
+limitation was established. Those Python-thread stacks cannot explain the native
+work, so **the reported profiler is parent-launched GDB 17.1**, the permitted
+fallback. No perf command or sysctl change was attempted.
+
+A copy of the existing probe under each run folder wraps only its timed
+`doc.recompute(None, False, True)` with SIGUSR1/SIGUSR2 gates (stopped and suppressed
+by gdb). GDB/MI resumes for 50 ms, interrupts all threads, records
+`thread apply all bt 100`, and repeats until the end gate. Restore, touching,
+verification and shape summaries are outside the gates. Each launch is under
+`systemd-run --user --scope -q -p MemoryMax=5G`, with `taskset -c 0-3` inherited
+by debugger and inferior; HOME, FREECAD_USER_HOME, XDG homes/cache and TMPDIR
+are in that run folder. The corrected four GDB cases ran sequentially and exited
+normally; every object was dirty and every sample/shape validation completed.
+An initial gdb gate configuration attempt is explicitly retained as discarded.
+
+`gdb_profile.py`, `gdb_sample.py`, the exact `probe.FCMacro` copies, command/env
+manifests, `gdb-mi.log`, `gdb-stacks.jsonl`, `samples.jsonl`, `sampler.json` and
+process/time logs reproduce the measurements. Run helpers with `python3` from
+the logs directory; each case requires a fresh output folder. `fold.py` writes
+root-to-leaf `folded.raw`, `inclusive.tsv`, and `folded-summary.json`; `report.py`
+writes the complete share-growth rankings and exact unfiltered top-15 lists
+in `growth-rankings.json`, `*-growth.tsv` and `top15-all.md`.
+
+For each stop, fold the unique native owner stack containing
+`App::DocumentExecutionLane::threadMain`; count an inclusive frame at most once
+per stop. All stops have exactly one such stack. Other threads, including the
+blocked Python caller, are excluded from the denominator. Shares are **owner
+elapsed-time sample shares**, including its sleeps, not CPU percentages. Most
+thread-entry/dispatch/wait frames are present in 100% of samples and tell us
+nothing about growth. A 50 ms interval is inferior run time between stops;
+backtrace/symbol-loading time adds substantial pauses. Thus the instrumented
+wall times below are not new performance baselines. Single profiles, especially
+the roughly 100-stop small cases, support attribution, not precise speedup claims.
+
+| Case | Objects / recomputed | Owner stops | GDB recompute wall s | Inferior process CPU s |
+| --- | ---: | ---: | ---: | ---: |
+| `bodies:100` | 1100 / 1100 | 115 | 13.639 | 3.715 |
+| `bodies:500` | 5500 / 5500 | 1951 | 162.332 | 89.612 |
+| `pair:128` | 640 / 640 | 93 | 12.009 | 4.225 |
+| `pair:512` | 2560 / 2560 | 662 | 56.568 | 31.812 |
+
+### Inclusive frame shares
+
+The following are each case's top 15 inclusive `App::` frames, omitting only
+generated lambda/invocation forwarding and owner dispatch/wait infrastructure.
+Ties use frame-name order. These frames include parent/child overlap and must
+not be summed. Exact unfiltered top-15 native frames (including standard-library
+and 100% transport frames) are also listed for every case in
+`../logs/m0-profile/top15-all.md`; the full rankings are in each `inclusive.tsv`.
+
+**bodies:100**
+
+| Inclusive application frame | Share |
+| --- | ---: |
+| `App::DocumentRecomputeCoordinator::poll` | 67.8% |
+| `App::DocumentCollaborationService::commitRecomputeEdit` | 47.0% |
+| `App::DocumentCollaborationService::commitRecomputeEditOnDocumentThread` | 47.0% |
+| `App::DocumentCommitCoordinator::commitRecompute` | 47.0% |
+| `App::DocumentCommitCoordinator::commitOnDocumentThreadWithOptions` | 46.1% |
+| `App::DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions` | 46.1% |
+| `App::DocumentRecomputeCoordinator::scheduleReady` | 20.0% |
+| `App::Document::beginCollaborationCommitNotificationBarrier` | 18.3% |
+| `App::DocumentCollaborationService::prepareEditAsync` | 8.7% |
+| `App::DocumentCollaborationService::prepareEditAsyncOnDocumentThread` | 8.7% |
+| `App::Document::collaborationPreparationSupported` | 7.8% |
+| `App::Document::_recomputeFeature` | 6.1% |
+| `App::DocumentObject::recompute` | 6.1% |
+| `App::Document::finishCollaborationCommitNotificationBarrier` | 3.5% |
+| `App::ExtensionContainer::getPropertyList` | 3.5% |
+
+**bodies:500**
+
+| Inclusive application frame | Share |
+| --- | ---: |
+| `App::DocumentRecomputeCoordinator::poll` | 70.0% |
+| `App::DocumentRecomputeCoordinator::scheduleReady` | 36.7% |
+| `App::DocumentCollaborationService::commitRecomputeEdit` | 29.9% |
+| `App::DocumentCollaborationService::commitRecomputeEditOnDocumentThread` | 29.9% |
+| `App::DocumentCommitCoordinator::commitOnDocumentThreadWithOptions` | 29.8% |
+| `App::DocumentCommitCoordinator::commitRecompute` | 29.8% |
+| `App::DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions` | 29.8% |
+| `App::DocumentCollaborationService::prepareEditAsync` | 17.1% |
+| `App::DocumentCollaborationService::prepareEditAsyncOnDocumentThread` | 17.1% |
+| `App::Document::collaborationPreparationSupported` | 16.7% |
+| `App::Document::beginCollaborationCommitNotificationBarrier` | 12.5% |
+| `App::ExtensionContainer::getPropertyList` | 8.5% |
+| `App::DocumentRecomputeCoordinator::status` | 7.8% |
+| `App::DocumentRecomputeCoordinator::statusLocked` | 7.8% |
+| `App::Document::finishCollaborationCommitNotificationBarrier` | 5.0% |
+
+**pair:128**
+
+| Inclusive application frame | Share |
+| --- | ---: |
+| `App::DocumentRecomputeCoordinator::poll` | 72.0% |
+| `App::DocumentCollaborationService::commitRecomputeEdit` | 60.2% |
+| `App::DocumentCollaborationService::commitRecomputeEditOnDocumentThread` | 60.2% |
+| `App::DocumentCommitCoordinator::commitOnDocumentThreadWithOptions` | 60.2% |
+| `App::DocumentCommitCoordinator::commitRecompute` | 60.2% |
+| `App::DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions` | 60.2% |
+| `App::Document::_recomputeFeature` | 50.5% |
+| `App::DocumentObject::recompute` | 50.5% |
+| `App::DocumentRecomputeCoordinator::scheduleReady` | 9.7% |
+| `App::Document::collaborationPreparationSupported` | 6.5% |
+| `App::DocumentCollaborationService::prepareEditAsync` | 6.5% |
+| `App::DocumentCollaborationService::prepareEditAsyncOnDocumentThread` | 6.5% |
+| `App::Document::beginCollaborationCommitNotificationBarrier` | 4.3% |
+| `App::DynamicProperty::getPropertyList` | 4.3% |
+| `App::ExtensionContainer::getPropertyList` | 4.3% |
+
+**pair:512**
+
+| Inclusive application frame | Share |
+| --- | ---: |
+| `App::DocumentRecomputeCoordinator::poll` | 74.2% |
+| `App::DocumentCollaborationService::commitRecomputeEdit` | 46.2% |
+| `App::DocumentCollaborationService::commitRecomputeEditOnDocumentThread` | 46.2% |
+| `App::DocumentCommitCoordinator::commitOnDocumentThreadWithOptions` | 46.2% |
+| `App::DocumentCommitCoordinator::commitRecompute` | 46.2% |
+| `App::DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions` | 46.2% |
+| `App::Document::_recomputeFeature` | 31.3% |
+| `App::DocumentObject::recompute` | 31.1% |
+| `App::DocumentRecomputeCoordinator::scheduleReady` | 27.3% |
+| `App::DocumentCollaborationService::prepareEditAsync` | 19.0% |
+| `App::DocumentCollaborationService::prepareEditAsyncOnDocumentThread` | 19.0% |
+| `App::Document::collaborationPreparationSupported` | 18.6% |
+| `App::ExtensionContainer::getPropertyList` | 8.0% |
+| `App::Document::beginCollaborationCommitNotificationBarrier` | 5.4% |
+| `App::DynamicProperty::getPropertyList` | 4.8% |
+
+### Frames whose shares grow
+
+Rank by large-minus-small percentage points, collapsing forwarding aliases and
+choosing distinct causes rather than repeating a hot parent and its child.
+The all-frame rankings, including every STL frame and negative change, remain
+in `growth-rankings.json`. The three leading causal frames are the same in both
+families. Paths/lines below refer to this clone at `0905b8b83c`.
+
+| Growing frame | Bodies 100 → 500 | Growth pp | Pair 128 → 512 | Growth pp | Source |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `DocumentRecomputeCoordinator::scheduleReady` | 20.0% → 36.7% | +16.7 | 9.7% → 27.3% | +17.7 | `src/App/DocumentRecomputeCoordinator.cpp:389` |
+| `Document::collaborationPreparationSupported` | 7.8% → 16.7% | +8.8 | 6.5% → 18.6% | +12.1 | `src/App/Document.cpp:2483` |
+| `DocumentRecomputeCoordinator::statusLocked` | 1.7% → 7.8% | +6.1 | 1.1% → 3.6% | +2.6 | `src/App/DocumentRecomputeCoordinator.cpp:965` |
+
+`DocumentRecomputeCoordinator.cpp`, `DocumentCollaborationService.cpp`,
+`RecomputeHandle.cpp` and `DocumentCommitCoordinator.cpp` match the supplied
+build source byte-for-byte as text. `Document.cpp` has unrelated save/relabel
+differences: the preparation loop is identical, at build line 2497 rather than
+clone line 2483. `source-comparison.json` and `*.source-diff` retain this check.
+
+
+### The three loops and proposed fixes (design only)
+
+Let F be planned features, N document objects, and P average properties per
+object. Here F=N: 1,100/5,500 for Bodies, 640/2,560 for Pair. Each Body adds
+eleven objects, including origins, planes, axes and an origin point; all of
+those are touched and traverse the coordinator, despite only two modelling
+features per Body. The broad legacy revision fence admits one preparation at
+a time (`GenericIsolatedRecompute.cpp:2483–2488`); independence does not avoid
+the repeated coordinator work. Preserve that fence in all proposed fixes.
+
+1. **Scheduling rescans: `DocumentRecomputeCoordinator.cpp:375–456`.** Each
+   `scheduleReady()` iteration walks `job.nodes` at line 389, rechecks failed
+   dependencies with map lookups (399–404), scans for pending payloads (416),
+   scans active states (422), then searches again for the first ready feature
+   (431). It repeats after submission and on every `poll()` (823). With one
+   outstanding feature, O(F) completions repeatedly inspect O(F+E) state and
+   perform O(log F) dependency lookups: at least quadratic, and O(F² log F)
+   for sparse bounded-degree graphs with those map lookups. The waiting-node
+   suffix and already-completed prefix alone give triangular repeated scans.
+
+   **Fix:** maintain reverse dependency lists, remaining-dependency counts,
+   a ready set ordered by the current feature-ID map comparator, active/pending
+   counts and terminal/failure counts. Update them at each state transition;
+   propagate failures/cancellation through the same dependency edges. Keep the
+   single-active broad-fence rule, payload backpressure, retry behavior and
+   existing ready-selection order. Intended behavior is unchanged; a plain FIFO
+   ready queue would change the order and is not the proposed fix. Internal
+   readiness work becomes O((F+E) log F), with cancellation propagation charged
+   to affected edges. Incremental bookkeeping must cover every state transition.
+
+2. **Repeated preparation eligibility: `Document.cpp:2470–2485`, called at
+   `DocumentCollaborationService.cpp:954`.** Every preparation enumerates every
+   object's property list and tests each property for `PropertyPythonObject`.
+   These fixtures contain no such payload, so no early rejection shortens the
+   scan. Repeating O(NP) per feature costs O(FNP), quadratic for fixed P and
+   F proportional to N. `ExtensionContainer::getPropertyList` and its vector
+   allocations/type checks are child frames, not separate causes.
+
+   **Fix:** check `intent.operationType != GenericIsolatedRecomputeOperationType`
+   before calling `collaborationPreparationSupported()`. The current `&&`
+   evaluates the full document scan first, although this operation is already
+   exempt from rejection. This preserves the existing acceptance/refusal rule
+   and the rejection check for other operation types; it removes the whole
+   redundant scan on this path. For other operations, a later schema-generation
+   cache could help, but would need invalidation on object/extension/property
+   creation/removal, restore and rollback. No cache is needed for the narrow fix.
+
+3. **Full status materialization: `DocumentRecomputeCoordinator.cpp:950–988`.**
+   `statusLocked()` reserves F entries, iterates the entire node map at 965,
+   copies feature IDs/diagnostics and recounts progress. `RecomputeHandle.cpp:156–172`
+   calls coordinator status at 160 and handle status again at 165 inside the
+   per-progress wait loop; the latter can fall through `DocumentExecutionLane.cpp:587`
+   to coordinator status again. With O(F) iterations this is O(F²) string/vector
+   construction, followed by matching destruction. String allocation and
+   `DocumentRecomputeSnapshot`/feature-snapshot destructors grow with this path.
+
+   **Fix:** keep aggregate state/counters incrementally and use a private light
+   terminal/progress query inside `wait()`. Materialize a full snapshot on
+   terminal return, timeout, and explicit public `status()` requests. Public
+   snapshots must retain all current fields, ordering and consistency; keep
+   finalization, failure/cancel results and timeout behavior. This changes
+   internal work, with no intended observable change. A change to public
+   progress cadence or omission of feature records would be a separate behavior
+   decision and is unnecessary for this fix. Snapshot destruction/copies outside
+   `statusLocked()` provide extra potential saving, omitted from the estimate.
+
+### Saving budgets, overlap and remaining quadratic work
+
+`scheduleReady()` includes `prepareEditAsync()` and hence the eligibility scan.
+Subtract that entire child before estimating scheduling savings: exclusive of
+preparation, scheduling is **11.3% → 19.6%** for Bodies (rather than summing
+36.7% and 16.7%). The three disjoint regions below account for about 44.1% of
+the large-case samples. These are conditional engineering budgets, not measured
+speedups: apply the zero-warmup profile shares to the section 7 uninstrumented
+median of 114.321 s, assuming a similar mixture. Never multiply by the 162.332 s
+GDB wall time, which includes debugger pauses.
+
+| Proposed fix | Disjoint large share | Entire sampled-region budget | Rough saving at 500 Bodies |
+| --- | ---: | ---: | ---: |
+| Incremental ordered scheduling, excluding all preparation | 19.6% | 22.4 s | ~19 s |
+| Skip already-exempt Python-payload scan | 16.7% | 19.0 s | ~19 s |
+| Lightweight internal status, full public/terminal snapshots | 7.8% | 9.0 s | ~8 s |
+
+For scheduler/status estimates, retain five times their Bodies-100 region time
+as residual linear work: `114.321*large_share - 5*6.358*small_share`. For the
+exempt scan, removal uses the whole 19.0 s budget. The combined scenario is
+about **46 s saved**, inside a **50 s sampled-region ceiling**; neither figure
+is a guarantee. The short small profiles, cold-versus-warm difference, sampling
+noise, allocator effects and changed execution mixture after optimization all
+limit precision. Validate changes on the existing all/edit/noop and error/
+cancellation/rollback/observer controls before treating this as a performance
+prediction. No fix or performance A/B was implemented here.
+
+There is further quadratic work even when its *relative share decreases*.
+`Document::beginCollaborationCommitNotificationBarrier` copies document-wide
+identity/order/touched collections and every object's scheduler state
+(`Document.cpp:1687–1704`); finish clears/destroys them (`1825–1846`). This is
+O(FN) per-feature rollback bookkeeping. Begin+finish occupies **21.7% → 17.5%**
+for Bodies, still about 20 s of the large uninstrumented median if the shares
+transfer. A future journal/copy-on-write boundary could avoid full copies, but
+must preserve exact rollback order, identities, active object, touched state,
+undo/redo, arbitrary callback mutations and allocation-free recovery. Simply
+dropping the snapshot for apparently independent features would change failure
+semantics. This is an additional design candidate, not one of the top three
+share-growth causes and not included in the 46 s scenario.
+
+The owner sleep frame shrinks from 28.7% to 15.3% for Bodies: the fixed 2 ms
+poll sleep (`RecomputeHandle.cpp:172`) is a separate linear/polling overhead,
+not evidence of superlinear geometry. `_recomputeFeature` shrinks from 6.1%
+to 2.1% for Bodies and 50.5% to 31.3% for Pair. Parallelizing just feature
+execution cannot remove the growing coordinator/property/status loops.
+
+**Owner decisions:** prioritize the already-exempt eligibility-check reorder,
+then ordered incremental scheduling and internal status counters. Keep the
+current broad invalidation fence, callback order and public observations.
+Choose whether to fund the more involved rollback-journal design after those
+measurements. These findings do not qualify detached kernels, change the M0
+race/behavior gate, or decide thread versus process execution. Bodies remains
+outside the four exact-type pilot. Raw evidence and validation are local only;
+this change commits documentation and does not push.
+
+The local artifact audit (`../logs/m0-profile/validation.json`) passes 42 checks:
+zero-warmup/all-dirty sample counts, normal gated completion, resource-wrapper
+arguments and isolated homes, unchanged input/build hashes, restored type and
+shape-summary equality with the serial baseline, exactly one owner per stop,
+folded denominators, helper syntax, and unchanged probe `main()` AST except for
+the recompute wrapper. `git diff --check` passes. No native behavior tests were
+rerun for this documentation-only change.
