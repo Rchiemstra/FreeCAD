@@ -27419,14 +27419,6 @@
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
       "occurrence": 1,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(feature, \"purgeTouched()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "occurrence": 1,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -31367,6 +31359,14 @@
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppObjectArgs(getObject(), \"delGeometries([%s], True)\", stream.str().c_str());"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getDocument(documentName.c_str());"
     },
     {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",

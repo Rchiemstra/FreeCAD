@@ -137,6 +137,10 @@ TaskDlgDefeaturingParameters::~TaskDlgDefeaturingParameters() = default;
 
 bool TaskDlgDefeaturingParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     auto obj = getObject();
     if (!obj->isError()) {
         getViewObject()->showPreviousFeature(false);

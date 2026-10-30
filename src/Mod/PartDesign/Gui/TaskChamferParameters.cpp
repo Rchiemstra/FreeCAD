@@ -441,6 +441,10 @@ TaskDlgChamferParameters::~TaskDlgChamferParameters() = default;
 
 bool TaskDlgChamferParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     auto obj = getObject();
     if (!obj->isError()) {
         getViewObject()->showPreviousFeature(false);

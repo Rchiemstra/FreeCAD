@@ -155,6 +155,8 @@ protected:
     void changeEvent(QEvent* e) override;
     void leaveEvent(QEvent* event) override;
     ViewProviderSketch* sketchView;
+    std::string rowDocumentName;
+    std::string rowObjectName;
     using Connection = fastsignals::connection;
     Connection connectionElementsChanged;
 
@@ -180,6 +182,8 @@ private:
     };
     std::vector<PendingUpdate> selectionBuffer;
     bool updateTimerPending = false;
+    bool updatingElements = false;
+    bool elementsUpdateQueued = false;
 
     void processSelectionBuffer();
 };

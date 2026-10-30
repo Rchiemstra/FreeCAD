@@ -161,7 +161,7 @@ struct DockWindowManagerP
     ParameterGrp::handle _hPref;
     fastsignals::advanced_scoped_connection _connParam;
     QTimer _timer;
-    FloatingDockWindowEventFilter _floatingDockWindowEventFilter;
+    FloatingDockWindowEventFilter _floatingDockWindowEventFilter {getMainWindow()};
     DockWidgetEventFilter _dockWidgetEventFilter;
     QPointer<OverlayManager> overlayManager;
 };

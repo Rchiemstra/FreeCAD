@@ -120,6 +120,8 @@ class SketcherGuiExport EditModeCoinManager
      * EditModeCoinManager and its helpers, initialising the EditModeCoinManager to the current
      * configuration and handle in real time any change to their values.
      */
+    bool rootAttached = true;
+
     class ParameterObserver: public ParameterGrp::ObserverType
     {
     private:
@@ -166,6 +168,8 @@ class SketcherGuiExport EditModeCoinManager
     };
 
 public:
+    void detachFromRoot();
+
     /** @brief This struct defines the information provided to other classes about preselection.
      *
      * @details
