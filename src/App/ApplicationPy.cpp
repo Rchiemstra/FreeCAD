@@ -235,6 +235,15 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             PyErr_Format(PyExc_RuntimeError, "Invalid document");
             return nullptr;
         }
+        // A blocking observer is running for a lane that cannot finish until
+        // this callback returns. Synchronous close must never wait on it.
+        if (MainThreadSignalConfig::insideBlockingInvoke()) {
+            PyErr_SetString(
+                PyExc_RuntimeError,
+                "FreeCAD.closeDocument() cannot run inside a blocking document notification; "
+                "use Document.closeAsync() or close after the notification returns");
+            return nullptr;
+        }
         // Refuse lifecycle changes before entering the asynchronous close path.
         // The guard must be translated at this Python boundary too.
         try {

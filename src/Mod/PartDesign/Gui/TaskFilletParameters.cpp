@@ -279,6 +279,10 @@ TaskDlgFilletParameters::~TaskDlgFilletParameters() = default;
 
 bool TaskDlgFilletParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     auto obj = getObject();
     if (!obj->isError()) {
         getViewObject()->showPreviousFeature(false);

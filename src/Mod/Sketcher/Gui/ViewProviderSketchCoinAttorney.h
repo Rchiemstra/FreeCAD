@@ -89,8 +89,13 @@ private:
         const ViewProviderSketch& vp,
         const Sketcher::Constraint* cstr
     );
+    static inline bool isRedrawCurrent(const ViewProviderSketch& vp) { return vp.isRedrawCurrent(); }
+    static inline int getRenderGroupHandle(const ViewProviderSketch& vp, int geoId)
+    { return vp.getRenderGroupHandle(geoId); }
     static inline const GeoList getGeoList(const ViewProviderSketch& vp);
     static inline const GeoListFacade getGeoListFacade(const ViewProviderSketch& vp);
+    static inline void withRedrawInputs(
+        ViewProviderSketch& vp, const std::function<void(GeoListFacade&)>& render);
     static inline Base::Placement getEditingPlacement(const ViewProviderSketch& vp);
     static inline bool isShownVirtualSpace(const ViewProviderSketch& vp);
     static inline std::unique_ptr<SoRayPickAction> getRayPickAction(const ViewProviderSketch& vp);
@@ -165,6 +170,12 @@ inline const GeoList ViewProviderSketchCoinAttorney::getGeoList(const ViewProvid
 const GeoListFacade ViewProviderSketchCoinAttorney::getGeoListFacade(const ViewProviderSketch& vp)
 {
     return vp.getGeoListFacade();
+}
+
+inline void ViewProviderSketchCoinAttorney::withRedrawInputs(
+    ViewProviderSketch& vp, const std::function<void(GeoListFacade&)>& render)
+{
+    vp.withRedrawInputs(false, true, render);
 }
 
 inline Base::Placement ViewProviderSketchCoinAttorney::getEditingPlacement(const ViewProviderSketch& vp)
