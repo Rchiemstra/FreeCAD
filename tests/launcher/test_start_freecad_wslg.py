@@ -168,7 +168,7 @@ class WslgGraphicsEnvTests(unittest.TestCase):
                 ("GALLIUM_DRIVER", "llvmpipe"),
                 ("GALLIUM_DRIVER", "d3d12"),
                 ("GALLIUM_DRIVER", ""),
-                ("MESA_LOADER_DRIVER_OVERRIDE", "zink"),
+                ("MESA_LOADER_DRIVER_OVERRIDE", "zink"),  # codespell:ignore zink
                 ("MESA_LOADER_DRIVER_OVERRIDE", ""),
             ):
                 with self.subTest(mode=mode, name=name, value=value):
