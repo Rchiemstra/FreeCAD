@@ -349,7 +349,7 @@ protected:
     std::string _NameInDocument;
 
 private:
-    void applyChnImpl(TransactionalObject* obj, bool propagateErrors);
+    void applyChnImpl(Document& Doc, TransactionalObject* obj, bool propagateErrors);
 };
 
 /**

@@ -32,7 +32,8 @@ INVENTORY_HEADER = (
     "migration WP",
     "exception rationale",
 )
-EXPECTED_ROW_COUNT = 904
+# The joint editor no longer aborts a tree auto-transaction.
+EXPECTED_ROW_COUNT = 903
 EXPECTED_PATH_COUNT = 372
 CANDIDATE_DRIFT_LINES = 50
 

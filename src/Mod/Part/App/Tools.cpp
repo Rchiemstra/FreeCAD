@@ -686,13 +686,14 @@ Handle(Poly_Triangulation) Part::Tools::triangulationOfFace(const TopoDS_Face& f
     selectRange(u1, u2);
     selectRange(v1, v2);
 
-    Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+    // The caller applies the face location to the returned mesh.
+    const auto localFace = TopoDS::Face(face.Located(TopLoc_Location()));
+    Handle(Geom_Surface) surface = BRep_Tool::Surface(localFace);
     if (surface.IsNull()) {
         FC_THROWM(Base::CADKernelError, "Cannot create surface from face");
     }
     BRepBuilderAPI_MakeFace mkBuilder(surface, u1, u2, v1, v2, Precision::Confusion());
     TopoDS_Shape shape = mkBuilder.Shape();
-    shape.Location(loc);
 
     BRepMesh_IncrementalMesh(shape, 0.005, false, 0.1, true);
     return BRep_Tool::Triangulation(TopoDS::Face(shape), loc);
@@ -708,12 +709,23 @@ Handle(Poly_Polygon3D) Part::Tools::polygonOfEdge(const TopoDS_Edge& edge, TopLo
         return aPoly;
     }
 
-    // recreate an edge with a clear range
-    u = std::max(-50.0, u);
-    v = std::min(50.0, v);
+    // Bound only infinite parameters, preserving the finite end of a ray.
+    if (Precision::IsInfinite(u) && Precision::IsInfinite(v)) {
+        u = -50.0;
+        v = 50.0;
+    }
+    else if (Precision::IsInfinite(u)) {
+        u = v - 100.0;
+    }
+    else if (Precision::IsInfinite(v)) {
+        v = u + 100.0;
+    }
 
+    // Polygon3D does not supply a location when no polygon exists.
+    loc = edge.Location();
     double uv;
-    Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, uv, uv);
+    const auto localEdge = TopoDS::Edge(edge.Located(TopLoc_Location()));
+    Handle(Geom_Curve) curve = BRep_Tool::Curve(localEdge, uv, uv);
 
     if (curve.IsNull()) {
         return nullptr;
@@ -721,10 +733,6 @@ Handle(Poly_Polygon3D) Part::Tools::polygonOfEdge(const TopoDS_Edge& edge, TopLo
 
     BRepBuilderAPI_MakeEdge mkBuilder(curve, u, v);
     TopoDS_Shape shape = mkBuilder.Shape();
-    // why do we have to set the inverted location here?
-    TopLoc_Location inv = loc.Inverted();
-    shape.Location(inv);
-
     BRepMesh_IncrementalMesh(shape, 0.005, false, 0.1, true);
     TopLoc_Location tmp;
     return BRep_Tool::Polygon3D(TopoDS::Edge(shape), tmp);
@@ -878,9 +886,10 @@ bool Part::Tools::isShapeEmpty(const TopoDS_Shape& shape)
         return isEveryShapeInCompoundEmpty(shape);
     }
 
-    // To see if shape is non-empty we check if it has at least one vertex
-    TopExp_Explorer explorer(shape, TopAbs_VERTEX);
-    return !explorer.More();
+    // Infinite faces and edges can have geometry without any vertices.
+    return !TopExp_Explorer(shape, TopAbs_VERTEX).More()
+        && !TopExp_Explorer(shape, TopAbs_EDGE).More()
+        && !TopExp_Explorer(shape, TopAbs_FACE).More();
 }
 
 Bnd_Box Part::Tools::getBounds(const TopoDS_Shape& shape)

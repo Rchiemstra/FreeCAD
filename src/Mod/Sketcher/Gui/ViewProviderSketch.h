@@ -32,6 +32,9 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <fastsignals/signal.h>
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 
 #include <Base/Parameter.h>
@@ -51,6 +54,7 @@
 
 #include "ShortcutListener.h"
 #include "Utils.h"
+#include "SketchEditState.h"
 
 #include <Gui/Inventor/SoToggleSwitch.h>
 #include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
@@ -844,6 +848,22 @@ protected:
     ) const override;
 
 private:
+    struct RedrawInputs;
+    std::unique_ptr<RedrawInputs> redrawInputs;
+    void withRedrawInputs(bool temp, bool rebuild,
+                          const std::function<void(GeoListFacade&)>& render);
+    bool isRedrawCurrent() const;
+    int getRenderGroupHandle(int geoId) const;
+    void queueRedraw(bool temp, bool rebuild);
+    static void retryRedraw(const std::string& documentName, const std::string& objectName,
+                            std::uint64_t session);
+    std::string redrawDocumentName;
+    std::string redrawObjectName;
+    std::uint64_t queuedRedrawSession = 0;
+    bool queuedRedrawTemp = false;
+    bool queuedRedrawRebuild = false;
+    bool redrawRequestedDuringSetup = false;
+
     bool hasMissingExternalGeometry() const;
 
     /// function to handle OCCT BSpline weight calculation singularities and representation
@@ -1078,7 +1098,10 @@ private:
 
     std::unique_ptr<ShortcutListener> listener;
 
-    std::unique_ptr<EditModeCoinManager> editCoinManager;
+    std::shared_ptr<EditModeCoinManager> editCoinManager;
+
+    // Even, globally unique edit id; low bit marks a queued redraw. Zero means no edit.
+    std::atomic<std::uint64_t> solverUpdateSession {0};
 
     std::unique_ptr<SnapManager> snapManager;
 
@@ -1098,6 +1121,9 @@ private:
 
     bool blockContextMenu;
     std::stringstream sketchBackup;
+    SketchEditState sketchEditState;
+    fastsignals::scoped_connection connectExplicitTouch;
+    fastsignals::scoped_connection connectPersistentTouch;
 };
 
 }  // namespace SketcherGui

@@ -75,13 +75,28 @@ class Preview:
 _operations = set()
 
 
+class RepairCancellation:
+    """Session lifetime shared with the worker and native transaction callbacks."""
+
+    def __init__(self):
+        self.cancelled = threading.Event()
+
+    def cancel(self):
+        self.cancelled.set()
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise RepairError(tr("Reference repair cancelled"))
+
+
 class RepairOperation(QtCore.QObject):
-    """Observe the document command off Qt, then admit its presentation callback."""
+    """Resolve/commit a repair off Qt, then admit its presentation callback."""
 
     completed = QtCore.Signal(str)
 
-    def __init__(self, sketch, choices, callback):
+    def __init__(self, sketch, choices, callback, cancellation=None):
         super().__init__()
+        self.cancellation = cancellation or RepairCancellation()
         self.document = sketch.Document
         self.document_identity = self.document.collaborationIdentity()
         self.name, self.object_id = sketch.Name, sketch.ID
@@ -99,18 +114,34 @@ class RepairOperation(QtCore.QObject):
 
     def run(self):
         try:
+            self.cancellation.check()
             doc = self.document
             if doc.collaborationIdentity() != self.document_identity:
                 raise RepairError("Document changed; reopen the repair command")
             sketch = doc.getObject(self.name)
             if sketch is None or sketch.ID != self.object_id:
                 raise RepairError("Sketch changed; reopen the repair command")
-            prepared = prepare_repair(sketch, self.choices)
+            choices = self.choices() if callable(self.choices) else self.choices
+            self.cancellation.check()
+            prepared = prepare_repair(sketch, choices)
+            self.cancellation.check()
+
+            def mutate():
+                self.cancellation.check()
+                apply_prepared(sketch, prepared)
+
+            def postcondition():
+                valid = check_repair(sketch, prepared)
+                # Native code commits immediately after this callback. A close
+                # during validation/mutation must abort the entire transaction.
+                self.cancellation.check()
+                return valid
+
             result = doc.commitCompatibilityMutationAsync(
-                lambda: apply_prepared(sketch, prepared),
+                mutate,
                 object_name=self.name,
                 label="Repair sketch references",
-                postcondition=lambda: check_repair(sketch, prepared),
+                postcondition=postcondition,
             )
             if callable(result.get("wait")):
                 result = result["wait"]()
@@ -127,6 +158,9 @@ class RepairOperation(QtCore.QObject):
         self.present()
 
     def present(self):
+        if self.cancellation.cancelled.is_set():
+            self.release()
+            return
         try:
             if not Gui.tryRunPresentationCallback(
                 lambda: self.callback(self.error), self.document
@@ -136,6 +170,9 @@ class RepairOperation(QtCore.QObject):
         except (ReferenceError, RuntimeError):
             # Document close/deletion also dismisses the owning dialog.
             pass
+        self.release()
+
+    def release(self):
         self.callback = None
         self.document = None
         _operations.discard(self)
@@ -145,18 +182,26 @@ class RepairOperation(QtCore.QObject):
 class RepairObserver(QtCore.QObject):
     removed = QtCore.Signal()
 
-    def __init__(self, sketch):
+    def __init__(self, sketch, cancellation=None):
         super().__init__()
+        self.cancellation = cancellation
         self.sketch = sketch
         self.document = sketch.Document
 
     def slotDeletedObject(self, obj):
         if obj is self.sketch:
-            self.removed.emit()
+            self.remove()
 
     def slotDeletedDocument(self, doc):
         if doc is self.document:
-            self.removed.emit()
+            self.remove()
+
+    def remove(self):
+        # App observers can run on the document owner before Qt receives the
+        # close signal. Cancel synchronously without touching any GUI object.
+        if self.cancellation is not None:
+            self.cancellation.cancel()
+        self.removed.emit()
 
 
 class RepairDialog(QtGui.QDialog):
@@ -166,10 +211,11 @@ class RepairDialog(QtGui.QDialog):
         self.setWindowTitle(tr("Repair sketch references"))
         self.sketch = sketch
         self.document = sketch.Document
+        self.cancellation = RepairCancellation()
         self.closed = False
         self.busy = False
         self.preview = Preview(Gui.getDocument(self.document.Name).activeView())
-        self.observer = RepairObserver(sketch)
+        self.observer = RepairObserver(sketch, self.cancellation)
         self.observer.removed.connect(self.close)
         App.addDocumentObserver(self.observer)
         self.rank_timer = QtCore.QTimer(self)
@@ -295,6 +341,7 @@ class RepairDialog(QtGui.QDialog):
             self.sketch,
             [(self.refs[ref_row], self.ranked[candidate_row])],
             self.applied,
+            self.cancellation,
         )
 
     def applied(self, error):
@@ -311,6 +358,7 @@ class RepairDialog(QtGui.QDialog):
     def dispose(self, *args):
         if self.closed:
             return
+        self.cancellation.cancel()
         self.closed = True
         self.rank_timer.stop()
         self.rank_iterator = None
@@ -354,6 +402,13 @@ Gui.addCommand("Sketcher_RepairReferences", command)
 class RepairMenu:
     """Extend the native C++ workbench without editing its menu implementation."""
 
+    def modifyContextMenu(self, recipient):
+        from SketchReferenceReassignGui import command
+
+        if recipient == "Sketch" and command.IsActive():
+            return [{"insert": "Sketcher_ReassignBrokenReference", "menuItem": "Std_Delete"}]
+        return []
+
     def modifyMenuBar(self):
         return [
             {
@@ -365,3 +420,6 @@ class RepairMenu:
 
 menu_manipulator = RepairMenu()
 Gui.addWorkbenchManipulator(menu_manipulator)
+
+# Register the in-view command after the shared dialog/operation are available.
+import SketchReferenceReassignGui  # noqa: E402,F401

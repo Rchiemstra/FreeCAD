@@ -614,6 +614,32 @@ ViewProviderFeaturePythonImp::ValueT ViewProviderFeaturePythonImp::doubleClicked
     return Rejected;
 }
 
+bool ViewProviderFeaturePythonImp::getTransactionText(std::string& text) const
+{
+    _FC_PY_CALL_CHECK(getTransactionText, return false);
+    Base::PyGILStateLocker lock;
+    try {
+        Py::Tuple args(has__object__ ? 0 : 1);
+        if (!has__object__) {
+            args.setItem(0, Py::Object(object->getPyObject(), true));
+        }
+        Py::Object ret(Base::pyCall(py_getTransactionText.ptr(), args.ptr()));
+        // None opts out of the tree's automatic transaction. The proxy then
+        // owns validation, commit and rollback of its double-click operation.
+        text = ret.isNone() ? std::string() : Py::String(ret).as_std_string("utf-8");
+        return true;
+    }
+    catch (Py::Exception&) {
+        if (PyErr_ExceptionMatches(PyExc_NotImplementedError)) {
+            PyErr_Clear();
+            return false;
+        }
+        Base::PyException e;
+        e.reportException();
+    }
+    return false;
+}
+
 bool ViewProviderFeaturePythonImp::setupContextMenu(QMenu* menu)
 {
     _FC_PY_CALL_CHECK(setupContextMenu, return (false));

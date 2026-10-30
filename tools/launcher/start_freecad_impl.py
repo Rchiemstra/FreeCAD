@@ -36,6 +36,8 @@ MCP_RPC_PORT = 9875
 MCP_SETTINGS_FILENAME = "freecad_mcp_settings.json"
 MCP_ADDON_DIRNAME = "FreeCADMCP"
 PIXI_EXTERNAL_MODS = ("freecad.robotcad",)
+WSLG_RUNTIME_DIR = Path("/mnt/wslg/runtime-dir")
+DEFAULT_CURSOR_SIZE = "24"
 
 
 def _is_freecad_repo(path: Path) -> bool:
@@ -300,6 +302,7 @@ def _launch_env(freecad_exe: Path) -> dict[str, str]:
         env.setdefault("CONDA_PREFIX", str(pixi))
         env.update(_qt_plugin_env(pixi))
 
+    env.update(_wslg_display_env(env))
     return env
 
 
@@ -309,6 +312,44 @@ def _qt_plugin_env(pixi_env: Path) -> dict[str, str]:
         "QT_PLUGIN_PATH": str(plugin_root),
         "QT_QPA_PLATFORM_PLUGIN_PATH": str(plugin_root / "platforms"),
     }
+
+
+def _wslg_display_env(
+    env: dict[str, str],
+    wslg_runtime_dir: Path = WSLG_RUNTIME_DIR,
+) -> dict[str, str]:
+    """Display settings that make Qt behave under WSLg.
+
+    FreeCAD runs on X11 (xcb) by default. Without XCURSOR_SIZE, libxcb-cursor
+    sizes the cursor as 1/48 of the whole multi-monitor X screen, which makes
+    it far too large, so a standard size is set.
+
+    Native Wayland stays available with QT_QPA_PLATFORM=wayland. With systemd
+    enabled, WSL mounts a fresh tmpfs over $XDG_RUNTIME_DIR, which hides the
+    wayland-0 socket WSLg publishes there, so WAYLAND_DISPLAY is pointed at the
+    socket WSLg still exposes under /mnt/wslg. Values the user already set are
+    left alone.
+    """
+    if not sys.platform.startswith("linux") or not wslg_runtime_dir.is_dir():
+        return {}
+
+    updates: dict[str, str] = {}
+
+    if env.get("DISPLAY", "").strip() and not env.get("QT_QPA_PLATFORM", "").strip():
+        updates["QT_QPA_PLATFORM"] = "xcb"
+
+    wayland_display = env.get("WAYLAND_DISPLAY", "").strip()
+    if wayland_display and not os.path.isabs(wayland_display):
+        runtime_dir = env.get("XDG_RUNTIME_DIR", "").strip()
+        if not (runtime_dir and (Path(runtime_dir) / wayland_display).exists()):
+            wslg_socket = wslg_runtime_dir / wayland_display
+            if wslg_socket.exists():
+                updates["WAYLAND_DISPLAY"] = str(wslg_socket)
+
+    if not env.get("XCURSOR_SIZE", "").strip():
+        updates["XCURSOR_SIZE"] = DEFAULT_CURSOR_SIZE
+
+    return updates
 
 
 def _pixi_for_freecad(freecad_exe: Path) -> str | None:
@@ -844,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
         setup = scripts / "setup_isolated_profile.py"
         isolated_launcher = scripts / "start_freecad_isolated.py"
         environment = os.environ.copy()
+        environment.update(_wslg_display_env(environment))
         if args.freecad:
             environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
         print("Starting manifest-bound authenticated isolated MCP profile.")

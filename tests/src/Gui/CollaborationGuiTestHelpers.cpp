@@ -13,6 +13,7 @@
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
+#include <App/MutationClassification.h>
 #include <App/PropertyLinks.h>
 #include <App/DocumentObject.h>
 #include <App/RecoverySnapshot.h>
@@ -30,6 +31,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -452,10 +454,36 @@ App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& docu
         [&] { return document.saveAsWithOutcome(path, overwrite); });
 }
 
+App::DocumentCommitResult serializeWithPresentationAdmissionRetry(
+    const std::function<App::DocumentCommitResult()>& attempt,
+    const std::function<void()>& onDeferred,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<std::chrono::steady_clock::time_point()>& now)
+{
+    for (;;) {
+        auto result = attempt();
+        if (result.status != App::DocumentCommitStatus::Busy
+            || !result.presentationAdmissionDeferred) {
+            return result;
+        }
+        if (onDeferred) {
+            onDeferred();
+        }
+        // The App wait has no timed overload. This deadline bounds retries;
+        // tests holding a refresh must release it under their own watchdog.
+        if (now() >= deadline || !App::waitForLivePresentationRefresh()
+            || now() >= deadline) {
+            return result;
+        }
+        // Re-enter the serializer to recheck every prerequisite after waiting.
+    }
+}
+
 SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
     Document& guiDocument,
     SharedPresentationCommitRequest request,
-    SharedPresentationCommitCallbacks callbacks)
+    SharedPresentationCommitCallbacks callbacks,
+    const std::function<void()>& onAdmissionDeferred)
 {
     App::Document* const appDocument = guiDocument.getDocument();
     auto allowedGuiWrites = request.presentationWrites;
@@ -469,18 +497,29 @@ SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
         allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
     }
     callbacks.serialize =
-        [appDocument, allowedAppWrites = std::move(allowedAppWrites)](
+        [appDocument, allowedAppWrites = std::move(allowedAppWrites), onAdmissionDeferred](
             SharedPresentationCommitWork&& work,
             SharedPresentationCommitCompletion&& complete) mutable {
-            invokeOnOwnerWorkerWhilePumpingGui([&] {
-                return SharedPresentationSerializeTestAccess::serializeAtomic(
-                    appDocument->collaborationService(),
-                    allowedAppWrites,
-                    [&] {
-                        work();
-                        complete({true, {}});
-                    });
+            const auto result = invokeOnOwnerWorkerWhilePumpingGui([&] {
+                bool workStarted = false;
+                return serializeWithPresentationAdmissionRetry([&] {
+                    auto admitted = SharedPresentationSerializeTestAccess::serializeAtomic(
+                        appDocument->collaborationService(),
+                        allowedAppWrites,
+                        [&] {
+                            workStarted = true;
+                            work();
+                            complete({true, {}});
+                        });
+                    if (workStarted) {
+                        admitted.presentationAdmissionDeferred = false;
+                    }
+                    return admitted;
+                }, onAdmissionDeferred);
             });
+            if (!result.committed()) {
+                throw std::runtime_error(result.message);
+            }
         };
     return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
 }

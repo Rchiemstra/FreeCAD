@@ -1257,6 +1257,66 @@ class UndoRedoCases(unittest.TestCase):
         self.Doc.addObject("App::FeatureTest", "Del")
         self.Doc.getObject("Del").Integer = 2
 
+    def checkAddedDynamicPropertyUndoRedo(self, locked):
+        self.Doc.openTransaction("Create Object")
+        box = self.Doc.addObject("App::FeatureTest", "TestBox")
+        original = box.Integer
+        self.Doc.commitTransaction()
+        self.Doc.openTransaction("Add and Change Property")
+        box.addProperty("App::PropertyLength", "DummyLength", "DummyProperties", locked=locked)
+        box.DummyLength = 123
+        box.Integer = 15
+        self.Doc.commitTransaction()
+        self.Doc.recompute()
+
+        for cycle in range(3):
+            with self.subTest(cycle=cycle):
+                self.Doc.undo()
+                self.assertNotIn("DummyLength", box.PropertiesList)
+                self.assertEqual(box.Integer, original)
+                self.Doc.redo()
+                self.assertEqual(box.DummyLength.Value, 123)
+                self.assertEqual(box.Integer, 15)
+                self.assertEqual("LockDynamic" in box.getPropertyStatus("DummyLength"), locked)
+                if locked:
+                    self.assertFalse(box.removeProperty("DummyLength"))
+
+    def testUndoRedoLockedDynamicProperty(self):
+        # Issue #32285: undo must remove even a locked property added by this step.
+        self.checkAddedDynamicPropertyUndoRedo(True)
+
+    def testUndoRedoUnlockedDynamicProperty(self):
+        self.checkAddedDynamicPropertyUndoRedo(False)
+
+    def testUndoRedoEarlierLockedDynamicProperty(self):
+        box = self.Doc.getObject("Base")
+        self.Doc.openTransaction("Add Locked Property")
+        box.addProperty("App::PropertyLength", "DummyLength", locked=True)
+        box.DummyLength = 42
+        self.Doc.commitTransaction()
+        self.Doc.openTransaction("Change Earlier Locked Property")
+        box.DummyLength = 123
+        self.Doc.commitTransaction()
+
+        for cycle in range(3):
+            with self.subTest(cycle=cycle):
+                self.Doc.undo()
+                self.assertEqual(box.DummyLength.Value, 42)
+                self.assertIn("LockDynamic", box.getPropertyStatus("DummyLength"))
+                self.assertFalse(box.removeProperty("DummyLength"))
+                self.Doc.redo()
+                self.assertEqual(box.DummyLength.Value, 123)
+                self.assertIn("LockDynamic", box.getPropertyStatus("DummyLength"))
+                self.assertFalse(box.removeProperty("DummyLength"))
+
+    def testAbortLockedDynamicProperty(self):
+        box = self.Doc.getObject("Base")
+        self.Doc.openTransaction("Add Locked Property")
+        box.addProperty("App::PropertyLength", "DummyLength", locked=True)
+        box.DummyLength = 123
+        self.Doc.abortTransaction()
+        self.assertNotIn("DummyLength", box.PropertiesList)
+
     def testUndoProperties(self):
         # first transaction
         self.Doc.openTransaction("Transaction1")

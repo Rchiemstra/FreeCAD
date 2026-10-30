@@ -390,7 +390,9 @@ void CmdSketcherLeaveSketch::activated(int iMsg)
 
     // See also TaskDlgEditSketch::reject
     doCommand(Gui, "Gui.activeDocument().resetEdit()");
-    PartGui::submitActiveDocumentRecomputeOrReport(nullptr);
+    if (auto* document = getActiveDocument(); document && document->mustExecute()) {
+        PartGui::submitDocumentRecomputeOrReport(*document);
+    }
 }
 
 bool CmdSketcherLeaveSketch::isActive()

@@ -26,6 +26,10 @@
 
 #pragma once
 
+#include <atomic>
+#include <functional>
+#include <memory>
+
 #include <QFuture>
 #include <QFutureWatcher>
 
@@ -247,10 +251,17 @@ public:
 
 
 public Q_SLOTS:
-    void onHlrFinished(void);
+    void onHlrFinished(void) noexcept;
     void onFacesFinished(void);
 
 protected:
+    // Publish model state on the owner before arming a GUI-affine watcher. Its
+    // completion is posted back to that owner; queued work resolves the object
+    // by lifetime and ID so destruction and undo-retained removal are safe.
+    QMetaObject::Connection watchGeometryFuture(QFutureWatcher<void>& watcher,
+                                                const QFuture<void>& future,
+                                                std::atomic_bool& busy,
+                                                std::function<void()> finished);
     bool checkXDirection() const;
 
     TechDraw::GeometryObjectPtr geometryObject;
@@ -286,9 +297,10 @@ protected:
     std::vector<TechDraw::VertexPtr> m_referenceVerts;
 
 private:
+    std::shared_ptr<int> m_geometryLifetime = std::make_shared<int>(0);
     bool nowUnsetting;
-    bool m_waitingForFaces;
-    bool m_waitingForHlr;
+    std::atomic_bool m_waitingForFaces;
+    std::atomic_bool m_waitingForHlr;
 
     QMetaObject::Connection connectHlrWatcher;
     QFutureWatcher<void> m_hlrWatcher;

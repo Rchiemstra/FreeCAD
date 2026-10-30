@@ -11,7 +11,7 @@ behavior.
 
 | File | Purpose |
 | --- | --- |
-| `rules.py` | The eight inventory categories, their search rules (regex, per language), scope, and default migration dispositions. |
+| `rules.py` | The inventory categories, their search rules (regex, per language), scope, and default migration dispositions. |
 | `scanner.py` | The reproducible scanner. Walks the GUI source (C++ and Python), masks comments/literals per language, applies the rules, and emits sorted findings. Runnable standalone. |
 | `inventory.json` | The committed snapshot: `scanner --write` output (scanner results minus exclusions). |
 | `exclusions.json` | Narrow, justified false-positive exclusions. |
@@ -94,9 +94,14 @@ Every rule is a pair of deliberately narrow regular expressions — one applied
 to C++ source and one to Python source — run *after* comments and string/char/
 raw literals are masked (so a commented-out `processEvents()` or a string
 containing `getDocument(` is never a finding). Each finding records:
-repository-relative `path`, 1-based `line`, `category`, owning `subsystem` (the
-`Gui` framework or the owning workbench), migration `disposition`, and the
-matched source line(s) as `evidence`.
+repository-relative `path`, `category`, matched source text as `evidence`, and
+a 1-based `occurrence` within the same path/category/evidence group. This is
+the stable finding identity. Findings also retain the owning `subsystem` (the
+`Gui` framework or the owning workbench) and migration `disposition`. Runtime
+scan results retain line numbers for diagnostics; committed snapshots and
+exclusions never store them. Occurrences are assigned before exclusions, so
+excluding one repeated finding does not renumber the others. Snapshot order is
+POSIX byte order by path, category, evidence, then numeric occurrence.
 
 | Category | Search rule (C++ regex) | Default disposition |
 | --- | --- | --- |
@@ -187,7 +192,24 @@ FREECAD_SOURCE_ROOT="$PWD" \
 `--write` regenerates `inventory.json` in place (scanner results minus the
 committed exclusions). Without `--write` it prints the JSON to stdout. The
 command is deterministic: identical source and rules always produce identical
-output, and two fresh scans are byte-identical.
+output, and two fresh scans are byte-identical. Inserting blank lines/comments
+above findings also leaves both this JSON and the ViewProvider inventory
+byte-identical. Added or removed findings, including repeated evidence, still
+require an explicit snapshot update.
+
+`REPORT.md` keeps category descriptions, dispositions, and follow-up proposals;
+it contains no machine-derived counts and `--write` does not modify it. Print
+current totals, per-category counts, language split, and subsystem counts with:
+
+```bash
+python3 tests/architecture/gui_blocking_live_model/scanner.py --summary
+```
+
+The companion ViewProvider snapshot is regenerated with
+`python3 tests/architecture/generate_view_provider_updatedata_inventory.py`.
+It records file, class/symbol, and classification. Repeated providers retain
+repeated rows, and the gate checks their multiplicity. Optional classification
+overrides use file, symbol, and 1-based occurrence, independent of source lines.
 
 ## Validation
 
@@ -199,11 +221,11 @@ FREECAD_SOURCE_ROOT="$PWD" \
 The validation test (also registered as CTest `GuiBlockingLiveModelInventory`)
 rejects:
 
-* **duplicate** findings (same `path:line:category`);
+* **duplicate** findings (same `path/category/evidence/occurrence`);
 * **malformed** findings (missing/ill-typed fields, unknown category or
   disposition, `..` path components, unclean paths);
-* **nonexistent** findings (path missing, line out of range, or evidence that
-  no longer matches the source line);
+* **nonexistent** findings (path missing, or evidence/occurrence that
+  no longer matches a scanned finding);
 * **wrong subsystem** (a finding's `subsystem` must equal
   `scanner.subsystem_for(path)`);
 * **malformed or stale** exclusions (an exclusion the scanner no longer

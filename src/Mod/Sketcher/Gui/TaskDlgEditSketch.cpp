@@ -141,7 +141,8 @@ bool TaskDlgEditSketch::accept()
 {
     std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
-    if (auto* appDoc = App::GetApplication().getDocument(document.c_str())) {
+    if (auto* appDoc = App::GetApplication().getDocument(document.c_str());
+        appDoc && appDoc->mustExecute()) {
         PartGui::submitDocumentRecomputeOrReport(*appDoc);
     }
 

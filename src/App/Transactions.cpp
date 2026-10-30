@@ -28,6 +28,7 @@
 #include <atomic>
 #include <Base/Console.h>
 #include <Base/Reader.h>
+#include <Base/Tools.h>
 #include <Base/Writer.h>
 
 #include "Transactions.h"
@@ -537,16 +538,16 @@ void TransactionObject::applyDel(Document& /*Doc*/, TransactionalObject* /*pcObj
 void TransactionObject::applyNew(Document& /*Doc*/, TransactionalObject* /*pcObj*/)
 {}
 
-void TransactionObject::applyChn(Document& /*Doc*/, TransactionalObject* pcObj, bool /* Forward */)
+void TransactionObject::applyChn(Document& Doc, TransactionalObject* pcObj, bool /* Forward */)
 {
-    applyChnImpl(pcObj, false);
+    applyChnImpl(Doc, pcObj, false);
 }
 
-void TransactionObject::applyChnChecked(Document& /*Doc*/,
+void TransactionObject::applyChnChecked(Document& Doc,
                                         TransactionalObject* pcObj,
                                         bool /*Forward*/)
 {
-    applyChnImpl(pcObj, true);
+    applyChnImpl(Doc, pcObj, true);
 }
 
 namespace
@@ -580,7 +581,7 @@ void restoreSerializedStaticPropertyStatus(Property& live, const Property& snaps
 
 }  // namespace
 
-void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateErrors)
+void TransactionObject::applyChnImpl(Document& Doc, TransactionalObject* pcObj, bool propagateErrors)
 {
     if (status == New || status == Chn) {
         if (auto* object = freecad_cast<DocumentObject*>(pcObj)) {
@@ -651,6 +652,21 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                     // another entry. Do not mistake it for the property whose
                     // addition this entry is undoing.
                     continue;
+                }
+                const bool wasLocked = currentProp->testStatus(Property::LockDynamic);
+                Base::ScopeGuard restoreLock([&, propertyId = currentProp->getID()]() {
+                    if (wasLocked) {
+                        auto* surviving = pcObj->getDynamicPropertyByName(data.name.c_str());
+                        if (surviving && surviving->getID() == propertyId) {
+                            surviving->setStatus(Property::LockDynamic, true);
+                        }
+                    }
+                });
+                if (wasLocked) {
+                    // Preserve the lock in the inverse snapshot before allowing
+                    // this transaction to remove the property it added.
+                    Doc.captureInverseTransactionProperty(pcObj, currentProp, false);
+                    currentProp->setStatus(Property::LockDynamic, false);
                 }
                 if (!pcObj->removeDynamicProperty(v.second.name.c_str()) && propagateErrors) {
                     throw Base::RuntimeError("dynamic property removal failed");

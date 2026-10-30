@@ -699,7 +699,7 @@ TEST_F(CollaborationResponsivenessTest,
     // Refusing the overlapping admission is temporary: the legitimate owner
     // can rejoin once the GUI refresh has returned.
     EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_document, [&] {
-        App::beginAtomicPresentationMutationTarget(*_document);
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(*_document);
         const auto endAdmission = qScopeGuard([&] {
             App::endAtomicPresentationMutationTarget(*_document);
         });
@@ -806,7 +806,7 @@ TEST_F(CollaborationResponsivenessTest,
               "Refreshed after changed-object check");
 
     EXPECT_NO_THROW(Gui::Test::runOnDocumentOwnerWhilePumpingGui(*_document, [&] {
-        App::beginAtomicPresentationMutationTarget(*_document);
+        Gui::Test::beginAtomicPresentationMutationTargetWithRetry(*_document);
         const auto endAdmission = qScopeGuard([&] {
             App::endAtomicPresentationMutationTarget(*_document);
         });

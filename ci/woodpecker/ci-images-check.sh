@@ -1,81 +1,48 @@
 #!/bin/sh
-# Decide whether the CI images already exist in the local registry.
-#
-# Writes one flag file per image into .ci-images/ for the conditional build
-# steps that follow. This step never fails: a missing image is a normal state
-# that the build steps repair, not an error.
-#
-# Why this exists: the registry has a short retention policy, so
-# freecad-ci-deps/freecad-ci-mcp can be evicted between runs. build-images.yml
-# does not run on pull_request, so nothing would republish them and ci.yml used
-# to wait 60 minutes for tags that were never coming.
-set -e
-
-registry="$FREECAD_CI_REGISTRY"
-[ -n "$registry" ] || { echo "FREECAD_CI_REGISTRY is required"; exit 1; }
-
-expected_tag="$CI_COMMIT_SHA"
-if [ "$CI_PIPELINE_EVENT" = "pull_request" ]; then
-  expected_tag="24.04"
+# Missing images are recoverable; stale keys and registry errors fail closed.
+# The consumer gives a concurrently scheduled build-images workflow a bounded
+# grace period. The producer never waits for itself; PRs have no companion run.
+set -eu
+sh ci/woodpecker/ci-images-key.sh check
+image_state=${FREECAD_CI_IMAGE_STATE:-.ci-images}
+rm -rf "$image_state"
+mkdir -p "$image_state"
+if [ -z "${CRANE_BIN:-}" ]; then
+  cp /ko-app/crane "$image_state/crane"
 fi
-
-# ci.yml always pulls :24.04, so that tag must exist no matter what the
-# freshness tag is. Check both and rebuild if either is absent.
-required_tags="24.04"
-if [ "$expected_tag" != "24.04" ]; then
-  required_tags="24.04 $expected_tag"
+sh ci/woodpecker/ci-images-key.sh tags > "$image_state/tags"
+sed -n '1p' "$image_state/tags" > "$image_state/deps-tag"
+sed -n '2p' "$image_state/tags" > "$image_state/mcp-tag"
+. ci/woodpecker/ci-images-common.sh
+load_image_tags
+attempts=1
+if [ "${CI_IMAGES_WORKFLOW:-producer}" = consumer ]; then
+  case "${CI_PIPELINE_EVENT:-}" in
+    push|tag|manual) attempts=${FREECAD_CI_CHECK_ATTEMPTS:-90} ;;
+  esac
 fi
-
-rm -rf .ci-images
-mkdir -p .ci-images
-echo "$expected_tag" > .ci-images/expected-tag
-
-# On push/tag/manual, build-images.yml starts alongside this pipeline and may
-# already be building. Give it a bounded grace period before we duplicate a
-# ~15 minute apt build. On pull_request it never runs, so do not wait at all.
-if [ "$CI_PIPELINE_EVENT" = "pull_request" ]; then
-  attempts=1
-else
-  attempts=90   # 90 x 10s = 15 minutes
-fi
-
-check_repo() {
-  tags="$(wget -qO- "$registry/v2/$1/tags/list" 2>/dev/null || true)"
-  for t in $required_tags; do
-    echo "$tags" | grep -q "\"$t\"" || return 1
-  done
-  return 0
-}
-
 attempt=1
-while [ "$attempt" -le "$attempts" ]; do
-  deps_ok=0; mcp_ok=0
-  check_repo freecad-ci-deps && deps_ok=1
-  check_repo freecad-ci-mcp && mcp_ok=1
-  if [ "$deps_ok" = 1 ] && [ "$mcp_ok" = 1 ]; then
-    echo "CI images already present in $registry (tags: $required_tags)"
+while :; do
+  deps_digest=; mcp_digest=; parent=
+  if deps_digest=$(image_digest deps "$deps_tag"); then :; else
+    rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
+  fi
+  if mcp_digest=$(image_digest mcp "$mcp_tag"); then
+    parent=$(image_parent "$mcp_digest")
+  else
+    rc=$?; [ "$rc" -eq 1 ] || exit "$rc"
+  fi
+  if [ -n "$deps_digest" ] && [ -n "$mcp_digest" ] && [ "$parent" = "$deps_digest" ]; then
+    echo 'CI keyed images present; MCP parent matches deps'
     exit 0
   fi
-  if [ "$attempt" -eq "$attempts" ]; then
-    break
-  fi
-  if [ "$attempt" -eq 1 ] || [ $((attempt % 30)) -eq 0 ]; then
-    echo "waiting for a concurrent build-images run ($attempt/$attempts)"
-  fi
-  sleep 10
+  [ "$attempt" -lt "$attempts" ] || break
+  echo "waiting for a concurrent build-images run ($attempt/$attempts)"
+  sleep "${FREECAD_CI_CHECK_INTERVAL:-10}"
   attempt=$((attempt + 1))
 done
-
-[ "$deps_ok" = 1 ] || touch .ci-images/deps-missing
-[ "$mcp_ok" = 1 ] || touch .ci-images/mcp-missing
-
-# The mcp image FROMs the deps image, so a deps rebuild invalidates it.
-if [ -f .ci-images/deps-missing ] && [ ! -f .ci-images/mcp-missing ]; then
-  echo "deps is being rebuilt; rebuilding mcp on top of it as well"
-  touch .ci-images/mcp-missing
+[ -n "$deps_digest" ] || touch "$image_state/deps-missing"
+if [ -z "$deps_digest" ] || [ -z "$mcp_digest" ] || [ "$parent" != "$deps_digest" ]; then
+  touch "$image_state/mcp-missing"
 fi
-
-echo "missing images will be built in this pipeline:"
-[ -f .ci-images/deps-missing ] && echo "  freecad-ci-deps"
-[ -f .ci-images/mcp-missing ] && echo "  freecad-ci-mcp"
-exit 0
+echo 'Missing images or MCP parent mismatch; conditional builders will repair them'

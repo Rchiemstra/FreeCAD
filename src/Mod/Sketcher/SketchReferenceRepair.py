@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Conservative, explicit repair of cached Sketcher references.
 
-Ranking is read-only and restricted to the original source object. This first
-slice accepts one-to-one projections whose ordered geometry is unchanged within
-model tolerance. A nearby edge is offered for inspection, but cannot silently
-move a constrained endpoint. Faces are supported for single-face attachments.
+Ranking is read-only and restricted to the original source object; an explicit
+viewport pick can use another source and move/resize same-kind geometry.
+Automatic repair accepts only one-to-one projections whose ordered geometry is
+unchanged within model tolerance. Faces support single-face attachments.
 No persistent cache or document properties are added.
 """
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import FreeCAD as App
 import Part
@@ -40,6 +40,7 @@ class Candidate:
     reason: str = ""
     source_identity: tuple = ()
     shape_signature: tuple = ()
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,7 @@ def _distance(first, second):
     )
 
 
-def _external_score(sketch, facade, shape):
+def _external_score(sketch, facade, shape, explicit=False):
     geometry = facade.geometry
     is_point = isinstance(geometry, Part.Point)
     if is_point:
@@ -142,19 +143,26 @@ def _external_score(sketch, facade, shape):
             return score, False, "Replacement edge no longer projects to a point"
     elif not is_point:
         if type(geometry.toShape().Curve) is not type(shape.Curve):
-            return score, False, "Incompatible curve type"
+            return score, False, (
+                App.Qt.translate(
+                    "Sketcher_RepairReferences",
+                    "Pick a replacement edge with the same curve type",
+                )
+                if explicit else "Incompatible curve type"
+            )
         # Ordered samples include both endpoints. Native reattachment is also
         # checked below for exact geometry type, cardinality and geometry IDs;
         # a projection that splits cannot commit.
-        if (old[0] - new[0]).Length > TOLERANCE or (
-            old[-1] - new[-1]
-        ).Length > TOLERANCE:
+        if not explicit and (
+            (old[0] - new[0]).Length > TOLERANCE
+            or (old[-1] - new[-1]).Length > TOLERANCE
+        ):
             return (
                 score,
                 False,
                 "Split, reversed or moved edge would change constraint endpoints",
             )
-    if score > TOLERANCE:
+    if not explicit and score > TOLERANCE:
         return score, False, "Replacement would move constraint endpoints"
     return score, True, ""
 
@@ -187,7 +195,7 @@ def _source_stamp(source):
     )
 
 
-def iter_candidates(sketch, reference):
+def iter_candidates(sketch, reference, source=None, *, explicit=False):
     """Rank same-type subelements; include refusal reasons for inspection."""
     if reference not in broken_references(sketch):
         raise RepairError("Reference is no longer broken; refresh the list")
@@ -197,10 +205,12 @@ def iter_candidates(sketch, reference):
             raise RepairError(
                 "Attachments in another document cannot be repaired by this command"
             )
-    else:
+    elif source is None:
         source = sketch.Document.getObject(reference.source)
     if source is None or not hasattr(source, "Shape"):
         return []
+    if source is sketch or source.Document is not sketch.Document:
+        raise RepairError("Pick external geometry in the sketch document")
     facade = None
     if reference.kind == "external":
         facades = external_geometry(sketch)
@@ -224,7 +234,7 @@ def iter_candidates(sketch, reference):
             score, compatible, reason = (
                 _face_score(sketch, shape)
                 if facade is None
-                else _external_score(sketch, facade, shape)
+                else _external_score(sketch, facade, shape, explicit)
             )
         except (RuntimeError, ValueError, Part.OCCError) as error:
             score, compatible, reason = (
@@ -262,6 +272,37 @@ def candidates(sketch, reference):
     )
 
 
+def picked_candidate(sketch, reference, source, subelement):
+    """Validate an explicit viewport choice, including a different source object.
+
+    A user pick allows same-kind movement/resizing and disambiguates ties.
+    Automatic ranking remains strict; topology and constraint settings are kept.
+    """
+    if reference.kind != "external":
+        raise RepairError(
+            App.Qt.translate(
+                "Sketcher_RepairReferences", "Only external edges and vertices can be picked"
+            )
+        )
+    selected = next(
+        (
+            c
+            for c in iter_candidates(sketch, reference, source, explicit=True)
+            if c.subelement == subelement
+        ),
+        None,
+    )
+    if selected is None:
+        raise RepairError(
+            App.Qt.translate(
+                "Sketcher_RepairReferences", "Pick an edge or vertex of the same reference type"
+            )
+        )
+    if not selected.compatible:
+        raise RepairError(selected.reason)
+    return replace(selected, explicit=True)
+
+
 _CONSTRAINT_FIELDS = (
     "Type",
     "Name",
@@ -278,9 +319,15 @@ _CONSTRAINT_FIELDS = (
 )
 
 
-def _identity(sketch):
+def _identity(sketch, *, allow_movement=False):
     constraints = tuple(
-        tuple(getattr(c, name) for name in _CONSTRAINT_FIELDS)
+        tuple(
+            # Reference dimensions report the solver's measurement, rather than
+            # a user setting. Only their measured value may follow a user pick.
+            None if allow_movement and name == "Value" and not c.Driving
+            else getattr(c, name)
+            for name in _CONSTRAINT_FIELDS
+        )
         for c in sketch.Constraints
     )
     ids = tuple(sketch.getGeometryId(i) for i in range(sketch.GeometryCount))
@@ -309,7 +356,15 @@ def prepare_repair(sketch, choices):
         raise RepairError("Finish the current transaction before repairing references")
     keys, targets = set(), set()
     for reference, selected in choices:
-        ranked = candidates(sketch, reference)
+        ranked = (
+            list(
+                iter_candidates(
+                    sketch, reference, doc.getObject(selected.source), explicit=True
+                )
+            )
+            if selected.explicit
+            else candidates(sketch, reference)
+        )
         fresh = next(
             (
                 c
@@ -330,7 +385,8 @@ def prepare_repair(sketch, choices):
         if not fresh.compatible:
             raise RepairError(fresh.reason)
         if (
-            sum(
+            not selected.explicit
+            and sum(
                 c.compatible and abs(c.score - fresh.score) <= TOLERANCE for c in ranked
             )
             > 1
@@ -360,7 +416,10 @@ def prepare_repair(sketch, choices):
             ]
             predicted = attacher.calculateAttachedPlacement(sketch.Placement)
             _check_placement(sketch, geometry, sketch.Placement, predicted)
-    return choices, _identity(sketch), geometry, sketch.Placement
+    allow_movement = any(selected.explicit for _, selected in choices)
+    return (
+        choices, _identity(sketch, allow_movement=allow_movement), geometry, sketch.Placement
+    )
 
 
 def _check_placement(sketch, geometry, before, after):
@@ -411,14 +470,31 @@ def check_repair(sketch, prepared):
         raise RepairError("Reference remains broken after recompute")
     if "Invalid" in sketch.State:
         raise RepairError("Sketch failed to recompute after repair")
-    if _identity(sketch) != identity:
+    allow_movement = any(selected.explicit for _, selected in choices)
+    if _identity(sketch, allow_movement=allow_movement) != identity:
         raise RepairError(
             "Repair would change constraints, expressions or geometry IDs"
         )
     _check_placement(sketch, geometry, placement, sketch.Placement)
     current = _geometry(sketch)
+    explicit_ids = {
+        ref.geo_id
+        for ref, selected in choices
+        if ref.kind == "external" and selected.explicit
+    }
+
+    def unchanged(index, old, new):
+        movable = explicit_ids and (
+            index < sketch.GeometryCount
+            or -(index - sketch.GeometryCount) - 3 in explicit_ids
+        )
+        return (
+            type(old) is type(new)
+            if movable else old.isSame(new, TOLERANCE, TOLERANCE)
+        )
+
     if len(current) != len(geometry) or any(
-        not a.isSame(b, TOLERANCE, TOLERANCE) for a, b in zip(geometry, current)
+        not unchanged(i, a, b) for i, (a, b) in enumerate(zip(geometry, current))
     ):
         raise RepairError("Repair would change geometry or constraint endpoints")
     return True

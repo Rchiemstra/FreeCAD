@@ -16,6 +16,7 @@
 #include "App/Expression.h"
 #include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
+#include "App/PropertyUnits.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
 #include "App/private/PreparedLabelReferenceUpdates.h"
 #include <src/App/InitApplication.h>
@@ -70,6 +71,26 @@ public:
     {
         DocumentCommitCoordinator coordinator(document);
         return coordinator.rollbackNativeCommitTransaction(false);
+    }
+
+    static void setCompatibilityWaitHook(void (*hook)())
+    {
+        DocumentCommitCoordinator::_preCompatibilityWaitTestHook.store(hook);
+    }
+
+    static DocumentCommitResult commitWithAdmission(Document& document, const PreparedEdit& edit)
+    {
+        DocumentCommitCoordinator coordinator(document);
+        auto admission = coordinator.acquireCompatibilityMutationTarget();
+        return coordinator.commitOnDocumentThreadWithOptions(
+            edit,
+            false,
+            false,
+            CollaborationCompatibilityRecomputePolicy::Eager,
+            true,
+            false,
+            std::move(admission)
+        );
     }
 
     static void setPostReservationHook(void (*hook)())
@@ -785,6 +806,54 @@ protected:
     std::string _documentName;
 };
 
+class DeferredCompatibilityAdmissionTest:
+    public DocumentCollaborationServiceTest,
+    public ::testing::WithParamInterface<CollaborationCompatibilityRecomputePolicy>
+{};
+
+}  // namespace
+
+namespace
+{
+
+// Pause after the document mutex is released, immediately before the refresh wait.
+class CompatibilityWaitLatch
+{
+public:
+    CompatibilityWaitLatch()
+        : entered(enteredPromise.get_future())
+        , resume(resumePromise.get_future().share())
+    {
+        active = this;
+        Internal::DocumentCommitCoordinatorTestAccess::setCompatibilityWaitHook([] {
+            active->enteredPromise.set_value();
+            active->resume.wait();
+        });
+    }
+
+    ~CompatibilityWaitLatch()
+    {
+        Internal::DocumentCommitCoordinatorTestAccess::setCompatibilityWaitHook(nullptr);
+        active = nullptr;
+    }
+
+    void release()
+    {
+        resumePromise.set_value();
+    }
+
+private:
+    std::promise<void> enteredPromise;
+    std::promise<void> resumePromise;
+
+public:
+    std::future<void> entered;
+
+private:
+    std::shared_future<void> resume;
+    inline static CompatibilityWaitLatch* active {};
+};
+
 }  // namespace
 
 static_assert(!std::is_constructible_v<DocumentCollaborationService, Document&>);
@@ -837,6 +906,263 @@ TEST_F(DocumentCollaborationServiceTest,
     EXPECT_EQ(calls.load(), 1);
     EXPECT_EQ(_target->Label.getStrValue(), "After");
     EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+}
+
+TEST_P(DeferredCompatibilityAdmissionTest, recapturesInternalFenceAfterRefresh)
+{
+    std::atomic_int calls {0};
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto before = _document->collaborationRevisions().current(wildcard);
+    CompatibilityWaitLatch latch;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    auto result = _document->executionLane()->postToOwner([&] {
+        return _document->collaborationService().commitCompatibilityMutationWithPolicy(
+            {}, [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            }, GetParam());
+    });
+    latch.entered.wait();
+    {
+        // The admission hook holds the owner after releasing the document mutex.
+        EXPECT_EQ(calls.load(), 0);
+        EXPECT_EQ(result.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+        static_cast<void>(_document->collaborationRevisions().publish(
+            std::vector<DocumentRevisionKey> {wildcard}));
+        EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 1);
+    }
+    refresh.reset();
+    latch.release();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), before + 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RecomputePolicies,
+    DeferredCompatibilityAdmissionTest,
+    ::testing::Values(CollaborationCompatibilityRecomputePolicy::Eager,
+                      CollaborationCompatibilityRecomputePolicy::Deferred));
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshSettlesNewPendingWorkBeforeCompatibilityFence)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executionsBefore = target->ExecCount.getValue();
+    std::atomic_int calls {0};
+    CompatibilityWaitLatch latch;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    auto result = _document->executionLane()->postToOwner([&] {
+        return _document->collaborationService().commitCompatibilityMutation(
+            {}, [&] {
+                ++calls;
+                EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+                EXPECT_FALSE(_document->mustExecute());
+                _target->Label.setValue("After");
+            });
+    });
+    latch.entered.wait();
+    {
+        // Publish new pending work while presentation admission is deferred.
+        EXPECT_EQ(calls.load(), 0);
+        target->touch();
+        EXPECT_TRUE(_document->mustExecute());
+    }
+    refresh.reset();
+    latch.release();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+}
+
+TEST_F(
+    DocumentCollaborationServiceTest,
+    idlePresentationRefreshCapturesCompatibilityRevisionsAfterAdmission
+)
+{
+    auto* length = dynamic_cast<PropertyLength*>(
+        _target->addDynamicProperty("App::PropertyLength", "Length", "Size", "", App::Prop_Output)
+    );
+    ASSERT_NE(length, nullptr);
+    _document->recompute();
+    std::atomic_int calls {0};
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation(
+            {CollaborationCompatibilityScope::Structural, {}, {}, {}},
+            [&] {
+                ++calls;
+                _target->Label.setValue("After");
+            }
+        );
+    });
+    started.wait();
+    EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
+    EXPECT_EQ(calls.load(), 0);
+    // A real automatic resize publishes while compatibility is awaiting admission.
+    length->setValue(42.0);
+    refresh.reset();
+    const auto committed = result.get();
+    EXPECT_EQ(committed.status, DocumentCommitStatus::Committed) << committed.message;
+    EXPECT_EQ(calls.load(), 1);
+    EXPECT_DOUBLE_EQ(length->getValue(), 42.0);
+}
+
+TEST_F(DocumentCollaborationServiceTest, compatibilityWaitSettlesNewPendingRecomputeBeforeCapture)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    ASSERT_FALSE(_document->mustExecute());
+    const auto executionsBefore = target->ExecCount.getValue();
+    CompatibilityWaitLatch latch;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    int calls = 0;
+    auto pending = _document->executionLane()->postToOwner([&] {
+        return _document->collaborationService().commitCompatibilityMutation({}, [&] {
+            ++calls;
+            EXPECT_GT(target->ExecCount.getValue(), executionsBefore);
+            target->Label.setValue("After");
+        });
+    });
+    latch.entered.wait();
+    target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    refresh.reset();
+    latch.release();
+    const auto result = pending.get();
+    EXPECT_EQ(result.status, DocumentCommitStatus::Committed) << result.message;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(target->Label.getStrValue(), "After");
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(
+    DocumentCollaborationServiceTest,
+    compatibilityNativeTransactionBusyPrecedesForeignRefreshWait
+)
+{
+    _document->openTransaction("caller transaction");
+    CompatibilityWaitLatch latch;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    int calls = 0;
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto pending = _document->executionLane()->postToOwner([&] {
+        entered.set_value();
+        return _document->collaborationService().commitCompatibilityMutation({}, [&] { ++calls; });
+    });
+    started.wait();
+    EXPECT_EQ(pending.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    // On the regression, admission waits and aborting the native transaction
+    // turns an initially inadmissible callback into a successful commit.
+    _document->abortTransaction();
+    refresh.reset();
+    latch.release();
+    const auto result = pending.get();
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy) << result.message;
+    EXPECT_EQ(result.message, "document already has a native transaction in progress");
+    EXPECT_FALSE(result.presentationAdmissionDeferred);
+    EXPECT_EQ(calls, 0);
+}
+
+TEST_F(DocumentCollaborationServiceTest, compatibilityWaitRechecksNativeTransactionBeforeAdmission)
+{
+    CompatibilityWaitLatch latch;
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    int calls = 0;
+    auto pending = _document->executionLane()->postToOwner([&] {
+        return _document->collaborationService().commitCompatibilityMutation({}, [&] { ++calls; });
+    });
+    latch.entered.wait();
+    _document->openTransaction("opened while waiting");
+    refresh.reset();
+    latch.release();
+    const auto result = pending.get();
+    _document->abortTransaction();
+    EXPECT_EQ(result.status, DocumentCommitStatus::Busy) << result.message;
+    EXPECT_EQ(result.message, "document already has a native transaction in progress");
+    EXPECT_EQ(calls, 0);
+    const auto next = _document->collaborationService().commitCompatibilityMutation({}, [&] {
+        ++calls;
+    });
+    EXPECT_TRUE(next.committed()) << next.message;
+    EXPECT_EQ(calls, 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest, compatibilityAdmissionReleasedBeforeDeferredObservers)
+{
+    int observers = 0;
+    auto connection = _document->signalChangedObject.connect([&](const DocumentObject& object,
+                                                                 const Property& property) {
+        if (&object != _target || &property != &_target->Label) {
+            return;
+        }
+        ++observers;
+        EXPECT_FALSE(atomicPresentationMutationAdmissionHeldFor(*_document));
+        LivePresentationRefreshScope refresh;
+        EXPECT_TRUE(refresh.acquired());
+        EXPECT_EQ(object.Label.getStrValue(), "After");
+    });
+    const auto result = _document->collaborationService().commitCompatibilityMutation({}, [&] {
+        EXPECT_TRUE(atomicPresentationMutationAdmissionHeldFor(*_document));
+        _target->Label.setValue("After");
+        EXPECT_EQ(observers, 0);
+    });
+    connection.disconnect();
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(observers, 1);
+}
+
+TEST_F(DocumentCollaborationServiceTest, compatibilityAdmissionReacquiredAfterEarlyBusyAndConflict)
+{
+    for (const auto status : {DocumentCommitStatus::Busy, DocumentCommitStatus::Conflict}) {
+        SCOPED_TRACE(documentCommitStatusName(status));
+        auto prepared = prepare("early-refusal", "Must not apply");
+        if (status == DocumentCommitStatus::Busy) {
+            _document->openTransaction("caller transaction");
+        }
+        else {
+            _target->Label.setValue("Intervening change");
+        }
+        const auto rejected = _document->executionLane()->dispatchToOwner([&] {
+            return Internal::DocumentCommitCoordinatorTestAccess::commitWithAdmission(
+                *_document,
+                prepared
+            );
+        });
+        if (status == DocumentCommitStatus::Busy) {
+            _document->abortTransaction();
+        }
+        EXPECT_EQ(rejected.status, status) << rejected.message;
+        EXPECT_FALSE(atomicPresentationMutationAdmissionHeldFor(*_document));
+        {
+            LivePresentationRefreshScope refresh;
+            EXPECT_TRUE(refresh.acquired());
+        }
+        int calls = 0;
+        const auto next = _document->collaborationService().commitCompatibilityMutation({}, [&] {
+            ++calls;
+            EXPECT_TRUE(atomicPresentationMutationAdmissionHeldFor(*_document));
+            _target->Label.setValue("Next commit");
+        });
+        EXPECT_TRUE(next.committed()) << next.message;
+        EXPECT_EQ(calls, 1);
+        EXPECT_FALSE(atomicPresentationMutationAdmissionHeldFor(*_document));
+    }
 }
 
 TEST_F(DocumentCollaborationServiceTest,
@@ -945,6 +1271,31 @@ TEST_F(DocumentCollaborationServiceTest,
     started.wait();
     EXPECT_EQ(result.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout);
     _target->Label.setValue("Intervening change");
+    refresh.reset();
+    const auto conflict = result.get();
+    EXPECT_EQ(conflict.status, DocumentCommitStatus::Conflict) << conflict.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Intervening change");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       idlePresentationRefreshKeepsCallerPreparedFenceAfterRevisionBump)
+{
+    auto prepared = prepare("presentation-conflict", "Must Not Apply");
+    std::optional<LivePresentationRefreshScope> refresh(std::in_place);
+    ASSERT_TRUE(refresh->acquired());
+    std::promise<void> entered;
+    auto started = entered.get_future();
+    auto result = _document->executionLane()->postToOwner([&] {
+        Base::PyGILStateLocker gil;
+        entered.set_value();
+        return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    });
+    started.wait();
+    {
+        Base::PyGILStateLocker gil;
+        EXPECT_EQ(result.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+        _target->Label.setValue("Intervening change");
+    }
     refresh.reset();
     const auto conflict = result.get();
     EXPECT_EQ(conflict.status, DocumentCommitStatus::Conflict) << conflict.message;

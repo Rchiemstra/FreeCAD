@@ -1104,6 +1104,19 @@ class Joint:
         if not sameDir:
             moving_part_global_jcs = UtilsAssembly.flipPlacement(moving_part_global_jcs)
 
+        if joint.JointType in ("Slider", "Cylindrical"):
+            # Align the constrained axes without removing the free axial translation.
+            relative_jcs = fixed_part_global_jcs.inverse() * moving_part_global_jcs
+            target = App.Placement(App.Vector(0, 0, relative_jcs.Base.z), App.Rotation())
+            if joint.JointType == "Cylindrical":
+                # Remove only the tilt, keeping the free rotation about the joint axis.
+                z_axis = App.Vector(0, 0, 1)
+                target.Rotation = (
+                    App.Rotation(relative_jcs.Rotation.multVec(z_axis), z_axis)
+                    * relative_jcs.Rotation
+                )
+            fixed_part_global_jcs = fixed_part_global_jcs * target
+
         transform_plc = fixed_part_global_jcs * moving_part_global_jcs.inverse()
 
         for part in parts_to_move:
@@ -1385,15 +1398,24 @@ class ViewProviderJoint:
         action.triggered.connect(lambda: self.editJoint(vobj))
         return False
 
+    def getTransactionText(self, vobj):
+        # The panel owns its transaction through validation and cleanup. A tree
+        # auto-transaction would commit the previous edit before it can validate.
+        return None
+
     def doubleClicked(self, vobj):
         return self.editJoint(vobj)
 
     def editJoint(self, vobj):
-        App.ActiveDocument.abortTransaction()  # Close the auto-transaction
-
-        task = Gui.Control.activeTaskDialog()
-        if task:
-            task.reject()
+        if activeTask is not None:
+            # Validate and finish the previous edit in its original transaction.
+            # If it is incomplete, keep it open so Cancel can restore everything.
+            if not activeTask.accept():
+                return False
+        else:
+            task = Gui.Control.activeTaskDialog()
+            if task:
+                task.reject()
 
         assembly = vobj.Object.Proxy.getAssembly(vobj.Object)
 
@@ -1811,6 +1833,10 @@ class MakeJointSelGate:
         self.assembly = assembly
 
     def allow(self, doc, obj, sub):
+        selected = UtilsAssembly.getObject([obj, [sub]]) if sub else obj
+        if not self.taskbox.creating and isinstance(getattr(selected, "Proxy", None), Joint):
+            # Permit tree selection for another joint's Edit Joint context action.
+            return selected.Proxy.getAssembly(selected) == self.assembly
         if not sub:
             return False
 
@@ -1892,6 +1918,7 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
         # Load the joint creation UI and parent it to `self.form`
         self.jForm = Gui.PySideUic.loadUi(":/panels/TaskAssemblyCreateJoint.ui", self.form)
+        self.jForm.featureList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         # Create a layout for `self.form` and add `self.jForm` to it
         layout = QtWidgets.QVBoxLayout(self.form)
@@ -2470,12 +2497,18 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             self.accept()
 
     def _removeSelectedItems(self, selected_indexes):
-        for index in selected_indexes:
-            row = index.row()
-            if row < len(self.refs):
+        # updateJoint() rebuilds the list, invalidating every QModelIndex.
+        rows = sorted({index.row() for index in selected_indexes}, reverse=True)
+        for row in rows:
+            if 0 <= row < len(self.refs):
                 ref = self.refs[row]
                 sub = UtilsAssembly.addTipNameToSub(ref)
                 Gui.Selection.removeSelection(ref[0], sub)
+                # The tree or an empty-space click may have cleared the GUI
+                # selection without removing the edited joint's references.
+                if ref in self.refs:
+                    self.refs.remove(ref)
+                    self.updateJoint()
             else:
                 print(f"Row {row} is out of bounds for refs (length: {len(self.refs)})")
 
@@ -2535,6 +2568,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
     # selectionObserver stuff
     def addSelection(self, doc_name, obj_name, sub_name, mousePos):
         rootObj = App.getDocument(doc_name).getObject(obj_name)
+        selected = UtilsAssembly.getObject([rootObj, [sub_name]]) if sub_name else rootObj
+        if not self.creating and isinstance(getattr(selected, "Proxy", None), Joint):
+            # Selecting a joint in the tree prepares its context menu, not a connector.
+            return
 
         comp, new_sub = UtilsAssembly.getComponentReference(self.assembly, rootObj, sub_name)
         if not comp:
@@ -2616,5 +2653,8 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.presel_ref = [comp, [new_sub]]
 
     def clearSelection(self, doc_name):
-        self.refs.clear()
-        self.updateJoint()
+        # Tree selection changes while switching editors must not erase the
+        # existing joint. Individual viewport deselection uses removeSelection.
+        if self.creating:
+            self.refs.clear()
+            self.updateJoint()

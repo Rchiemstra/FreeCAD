@@ -810,6 +810,10 @@ TaskDlgDressUpParameters::~TaskDlgDressUpParameters() = default;
 
 bool TaskDlgDressUpParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     getViewObject<ViewProviderDressUp>()->highlightReferences(false);
     std::vector<std::string> refs = parameter->getReferences();
     std::stringstream str;

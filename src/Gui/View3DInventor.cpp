@@ -211,6 +211,13 @@ void View3DInventor::deleteSelf()
 
 View3DInventor* View3DInventor::clone()
 {
+    // Documentless viewers (for example Gui.createViewer previews) cannot be
+    // recreated through Gui::Document. Keep their scene and Python handles
+    // alive using MDIView::changeViewMode's in-place fallback.
+    if (!_pcDocument) {
+        return nullptr;
+    }
+
     auto mdiView = _pcDocument->createView(getClassTypeId(), CreateViewMode::Clone);
     auto view3D = static_cast<View3DInventor*>(mdiView);
 

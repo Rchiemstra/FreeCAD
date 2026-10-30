@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import io
 import json
+from functools import lru_cache
 from pathlib import Path
 import re
+import sys
 import tokenize
 
 
@@ -14,6 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ARCH_DIR = Path(__file__).resolve().parent
 INVENTORY_PATH = ARCH_DIR / "gui_blocking_live_model" / "inventory.json"
 EXCLUSIONS_PATH = ARCH_DIR / "gui_blocking_live_model" / "exclusions.json"
+
+sys.path.insert(0, str(ARCH_DIR))
+from gui_blocking_live_model import scanner  # noqa: E402
 
 EXCLUDED_WORKBENCHES = frozenset({"Test", "TemplatePyMod"})
 EXCLUDED_FILES = frozenset(
@@ -853,21 +858,33 @@ def _scan_pattern(
     return matches
 
 
+@lru_cache(maxsize=None)
+def _current_finding_locations(relative: str) -> dict[tuple, int]:
+    """Resolve stable reviewed identities to current diagnostic line numbers."""
+    path = REPO_ROOT / relative
+    source = path.read_text(encoding="utf-8", errors="surrogateescape")
+    return {finding.key(): finding.line
+            for finding in scanner.scan_source(source, path.suffix, relative)}
+
+
+def _reviewed_locations(entries: list[dict]) -> set[tuple[str, int, str]]:
+    locations = set()
+    for entry in entries:
+        line = _current_finding_locations(entry["path"]).get(scanner.snapshot_key(entry))
+        if line is not None:
+            locations.add((entry["path"], line, entry["category"]))
+    return locations
+
+
 def _inventory_keys(category: str) -> set[tuple[str, int]]:
     payload = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
-    return {
-        (item["path"], int(item["line"]))
-        for item in payload["findings"]
-        if item["category"] == category
-    }
+    entries = [item for item in payload["findings"] if item["category"] == category]
+    return {(path, line) for path, line, _category in _reviewed_locations(entries)}
 
 
 def _excluded_keys() -> set[tuple[str, int, str]]:
     payload = json.loads(EXCLUSIONS_PATH.read_text(encoding="utf-8"))
-    return {
-        (entry["path"], int(entry["line"]), entry["category"])
-        for entry in payload["exclusions"]
-    }
+    return _reviewed_locations(payload["exclusions"])
 
 
 def _assert_inventoried(
@@ -915,12 +932,7 @@ def test_recompute_handle_wait_is_absent_from_gui_production_paths() -> None:
 
 
 def test_live_reference_payload_signals_are_inventoried() -> None:
-    payload = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
-    inventoried = {
-        (item["path"], int(item["line"]))
-        for item in payload["findings"]
-        if item["category"] == "live-reference-payload"
-    }
+    inventoried = _inventory_keys("live-reference-payload")
     excluded = {
         (path, line)
         for path, line, category in _excluded_keys()

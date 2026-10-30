@@ -35,6 +35,7 @@
 #include "MDIView.h"
 #include "PropertyEditor.h"
 #include "PropertyItem.h"
+#include "PropertyModel.h"
 #include "Tree.h"
 
 
@@ -109,7 +110,8 @@ void PropertyItemDelegate::paint(
 
     QPen savedPen = painter->pen();
 
-    if (index.column() == 1 && property && dynamic_cast<PropertyBoolItem*>(property)) {
+    if (index.column() == 1 && property && dynamic_cast<PropertyBoolItem*>(property)
+        && index.data(Qt::EditRole).isValid()) {
         bool checked = index.data(Qt::EditRole).toBool();
         bool readonly = property->isReadOnly();
 
@@ -284,6 +286,27 @@ QWidget* PropertyItemDelegate::createEditor(
     }
 
     auto childItem = static_cast<PropertyItem*>(index.internalPointer());
+    PropertyReadGuard read(childItem);
+    if (!read.readable()) {
+        pendingCreateIndex = index;
+        QPointer<PropertyEditor> view(qobject_cast<PropertyEditor*>(this->parent()));
+        QPointer<const PropertyItemDelegate> delegate(this);
+        const QPersistentModelIndex persistent(index);
+        deferPropertyRead(childItem, "propertyEditorCreation", [delegate, view, persistent] {
+            if (!delegate || !view || !persistent.isValid()
+                || delegate->pendingCreateIndex != persistent) {
+                return true;
+            }
+            PropertyReadGuard read(static_cast<PropertyItem*>(persistent.internalPointer()));
+            if (!read.readable()) {
+                return false;
+            }
+            view->openEditor(persistent);
+            return true;
+        });
+        return nullptr;
+    }
+    pendingCreateIndex = QPersistentModelIndex();
     if (!childItem || childItem->isSeparator() || childItem->isReadOnly()) {
         return nullptr;
     }
@@ -372,8 +395,33 @@ void PropertyItemDelegate::setEditorData(QWidget* editor, const QModelIndex& ind
     if (!index.isValid()) {
         return;
     }
-    QVariant data = index.data(Qt::EditRole);
+    const auto* model = qobject_cast<const PropertyModel*>(index.model());
+    if (model && model->isReadRetry()) {
+        return;
+    }
     auto childItem = static_cast<PropertyItem*>(index.internalPointer());
+    PropertyReadGuard read(childItem);
+    if (!read.readable()) {
+        // Existing editors own their contents. Only initialisation needs retrying.
+        if (!editor->property("propertyEditorInitialised").toBool()) {
+            const QPersistentModelIndex persistent(index);
+            QPointer<const PropertyItemDelegate> delegate(this);
+            deferPropertyRead(editor, "propertyEditorInitialisation", [delegate, editor, persistent] {
+                if (!delegate || !persistent.isValid()
+                    || editor->property("propertyEditorInitialised").toBool()) {
+                    return true;
+                }
+                PropertyReadGuard read(static_cast<PropertyItem*>(persistent.internalPointer()));
+                if (!read.readable()) {
+                    return false;
+                }
+                delegate->setEditorData(editor, persistent);
+                return true;
+            });
+        }
+        return;
+    }
+    QVariant data = index.data(Qt::EditRole);
     editor->blockSignals(true);
     if (expressionEditor == editor) {
         childItem->setExpressionEditorData(editor, data);
@@ -385,6 +433,7 @@ void PropertyItemDelegate::setEditorData(QWidget* editor, const QModelIndex& ind
         childItem->setEditorData(editor, data);
     }
     editor->blockSignals(false);
+    editor->setProperty("propertyEditorInitialised", true);
     return;
 }
 
