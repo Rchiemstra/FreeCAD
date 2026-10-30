@@ -26,6 +26,7 @@
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 
+#include "LinkedOffset.h"
 #include "Constraint.h"
 #include "ConstraintPy.h"
 #include "ExternalGeometryExtension.h"
@@ -89,6 +90,8 @@ PyMOD_INIT_FUNC(Sketcher)
     // call PyType_Ready, otherwise we run into a segmentation fault, later on.
     // This function is responsible for adding inherited slots from a type's base class.
 
+    Sketcher::LinkedOffsetExtension::init();
+    Sketcher::registerLinkedOffsetPython(sketcherModule);
     Sketcher::SketchGeometryType::init();
     Sketcher::SketchGeometryExtension::init();
     Sketcher::ExternalGeometryExtension::init();

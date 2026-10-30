@@ -43,3 +43,5 @@ from SketcherTests.TestSketcherSolver import CreateRectangleSketch
 from SketcherTests.TestSketcherSolver import CreateSlotPlateSet
 
 from SketcherTests.TestSketchReferenceRepair import TestSketchReferenceRepair
+
+from SketcherTests.TestLinkedOffset import TestLinkedOffset, TestLinkedOffsetOperations

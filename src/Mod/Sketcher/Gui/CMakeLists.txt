@@ -74,6 +74,8 @@ SET(SketcherGui_SRCS
     DrawSketchHandlerCarbonCopy.h
     DrawSketchHandlerSlot.h
     DrawSketchHandlerOffset.h
+    DrawSketchHandlerBSplineOffset.h
+    DrawSketchHandlerOffsetChain.h
     DrawSketchHandlerRotate.h
     DrawSketchHandlerScale.h
     DrawSketchHandlerSymmetry.h
@@ -82,6 +84,8 @@ SET(SketcherGui_SRCS
     CommandConstraints.cpp
     CommandSketcherTools.h
     CommandSketcherTools.cpp
+    CommandSketcherLinkedOffset.h
+    CommandSketcherLinkedOffset.cpp
     CommandSketcherBSpline.cpp
     CommandSketcherOverlay.cpp
     CommandSketcherVirtualSpace.cpp
