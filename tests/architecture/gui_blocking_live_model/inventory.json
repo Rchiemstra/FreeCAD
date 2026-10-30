@@ -73,6 +73,7 @@
     "src/Mod/TechDraw/TechDrawTools",
     "src/Mod/Points/pointscommands",
     "src/Mod/PartDesign/WizardShaft",
+    "src/Mod/Import/StepViewsGui.py",
     "src/Mod/Draft/DraftGui.py",
     "src/Mod/Draft/DraftTools.py",
     "src/Mod/Draft/DxfImportDialog.py",

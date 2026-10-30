@@ -50,16 +50,84 @@ SET(DXF_Plate
 set(Import_Scripts
     Init.py
     stepZ.py
+    StepPmi.py
+    TestStepViews.py
+    TestStepAttributes.py
+    StepAttributes.py
+    StepAttributesExport.py
+    TestStepAttributesExport.py
+    StepViews.py
+    StepPmiExport.py
+    TestStepPmiExport.py
+    TestStepPmi.py
+    TestStepPmiExtended.py
 )
 
+set(Import_PmiFixtures
+    TestData/StepPmi/semantic.step
+    TestData/StepPmi/independent-inch.step
+    TestData/StepPmi/unmapped-modifier.step
+    TestData/StepPmi/positive-deviations.step
+    TestData/StepPmi/negative-deviations.step
+    TestData/StepPmi/absolute-range.step
+    TestData/StepPmi/conflicting-signs.step
+    TestData/StepPmi/unmatched-signs.step
+    TestData/StepPmi/placed-instances.step
+    TestData/StepPmi/shared-compartment.step
+    TestData/StepPmi/generate.tcl
+    TestData/StepPmi/README.txt
+)
+
+set(Import_ViewFixtures
+    TestData/StepViews/views-mm.step
+    TestData/StepViews/views-inch.step
+    TestData/StepViews/views-metre.step
+    TestData/StepViews/views-nested.step
+    TestData/StepViews/views-centered-mm.step
+    TestData/StepViews/views-centered-inch.step
+    TestData/StepViews/views-centered-metre.step
+    TestData/StepViews/README.txt
+)
+install(FILES ${Import_ViewFixtures} DESTINATION Mod/Import/TestData/StepViews)
+
+set(Import_AttributeFixtures
+    TestData/StepAttributes/README.txt
+    TestData/StepAttributes/attributes-mm.step
+    TestData/StepAttributes/attributes-inch.step
+    TestData/StepAttributes/attributes-metre.step
+    TestData/StepAttributes/attributes-assembly.step
+    TestData/StepAttributes/attributes-nested.step
+)
+install(FILES ${Import_AttributeFixtures} DESTINATION Mod/Import/TestData/StepAttributes)
+
 if(BUILD_GUI)
-    list (APPEND Import_Scripts InitGui.py)
-    list (APPEND Import_Scripts TestImportGui.py)
+    list (APPEND Import_Scripts InitGui.py StepViewsGui.py)
+    list (APPEND Import_Scripts TestImportGui.py TestStepPmiGui.py TestStepViewsGui.py)
 endif(BUILD_GUI)
 
 add_custom_target(ImportScripts ALL
-    SOURCES ${Import_Scripts} ${DXF_Plate}
+    SOURCES ${Import_Scripts} ${DXF_Plate} ${Import_PmiFixtures}
 )
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_AttributeFixtures}
+)
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_ViewFixtures}
+)
+
+fc_target_copy_resource(ImportScripts
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/Mod/Import
+    ${Import_PmiFixtures}
+)
+
+install(FILES ${Import_PmiFixtures} DESTINATION Mod/Import/TestData/StepPmi)
 
 fc_target_copy_resource(ImportScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
