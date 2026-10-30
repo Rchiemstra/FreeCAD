@@ -31,6 +31,8 @@ namespace
 {
 // One definition, in one module. The hooks are installed by Gui or by a test
 // and read by App, so a per-module copy would silently disconnect the two.
+// Function-local statics are equivalent only when they live in this TU; the
+// service hook and blocking-invoke depth live here with them.
 MainThreadSignalConfig::IsMainThreadFn gIsMainThread {nullptr};
 MainThreadSignalConfig::InvokeFn gInvoke {nullptr};
 MainThreadSignalConfig::ServiceFn gService {nullptr};

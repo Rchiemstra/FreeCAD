@@ -9,7 +9,14 @@
 # helpers against one destination to measure it.
 add_executable(save_lock_probe save_lock_probe.cpp)
 
-target_link_libraries(save_lock_probe PRIVATE FreeCADApp)
+# FreeCADApp leaves Python symbols undefined when BUILD_DYNAMIC_LINK_PYTHON is
+# OFF. This helper is not a gtest runner, so it is not in that keep_python_linked
+# loop; link libpython here and stop --as-needed from dropping it.
+target_link_libraries(save_lock_probe PRIVATE
+    ${Python3_LIBRARIES}
+    FreeCADApp
+)
+keep_python_linked(save_lock_probe)
 
 target_compile_definitions(save_lock_probe PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
 
