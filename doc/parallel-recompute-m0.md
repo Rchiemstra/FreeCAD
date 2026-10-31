@@ -35,11 +35,11 @@ scope excludes. A specification is not an implemented or passing test.
 | Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
 | Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. The M0.2b subsection records the same test-only harness for Cut, Fuse and Common. Those kernels stay not detached. |
 | Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs are in the M0.2b subsection. That text is input to the owner, not a venue decision. Thread qualification stays open. |
-| Working instrumented race checks, including cold/error/cancel cases | Static gate design | **M0.3a:** FreeCAD TSan runs exist. Startup was a reported race, then the probe was removed. Boolean **fails** on the `Part::SignalException` static. Box is **blocked**: no FreeCAD-side race, and OCC is not instrumented. No suppressions. Thread adapters stay off. Cold/error/cancel TSan is still open. |
-| Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
+| Working instrumented race checks, including cold/error/cancel cases | Static gate design | **M0.3a:** FreeCAD TSan runs exist. Startup was a reported race, then the probe was removed. Boolean **fails** on the `Part::SignalException` static. Box is **blocked**: no FreeCAD-side race, and OCC is not instrumented. No suppressions. Thread adapters stay off. Cold/error/cancel TSan is still open. **M0.3b:** serial cold restore, failed feature, and mid-recompute cancel (results, publications visible inside the observer, undo/redo signal traces) are pinned on the `RecomputeHandle` path in `tests/src/App/RecomputePublicationContracts.cpp`. Lane PartialFailure/Cancelled finalization is a known defect, `FIX-LANE-TERMINAL-FINALIZE`, not that contract. |
+| Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. **M0.3b:** seven small serial documents are copied with the Test module to `Mod/Test/TestData/parallel-recompute` and asserted by `ParallelRecomputeBaseline`, including a forced rebuild of volumes and box bounds. Element names and topology equivalence stay outstanding. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
 | Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
-| Exact sibling publication, broad conflict invalidation and existing client visibility | Static assertions/test placement | **Done (design); needs build** for demonstration; generic serialization stays intact. |
-| Callback order A/B/Z, PR #114, terminal failure/cancel presentation, undo/rollback | Static source comparison/test matrix | **Done (design); needs build** for traces and equivalence. Existing finalization difference is unresolved. |
+| Exact sibling publication, broad conflict invalidation and existing client visibility | Static assertions/test placement | **Done (serial pin, M0.3b):** `tests/src/App/RecomputePublicationContracts.cpp`. An exact publication invalidates prepared clients that cover that key. A disjoint exact publication leaves the other client valid. A legacy recompute publishes `unknownModelMutation` and informs existing clients; covered contracts conflict. Generic serialization is unchanged. |
+| Callback order A/B/Z, PR #114, terminal failure/cancel presentation, undo/rollback | Static source comparison/test matrix | **Done (serial pin, M0.3b):** siblings, chain, A/B/Z readiness, and the PR #114 same-value Length/Width path, including `PartPresentationCaptureTest.UnchangedDatumExtentsPreserveRevisionFence`. Changed callbacks already see the new value and its journal entry. Handle PartialFailure and Cancelled emit `signalRecomputedObject`, `signalRecomputed`, and one presentation callback. The lane skips those for the same states (`FIX-LANE-TERMINAL-FINALIZE`, section 5 item 5). Caller-transaction undo restores property values; a failed feature's error bit, touch, and recompute-log diagnostic are not undone. |
 | Safe process transport/lifetime, justified cost/venue and credible end-to-end gain supporting M1 | Static acceptance conditions | **Needs build** and harness implementation; conditional process-only pilot **blocked** on owner decision if thread qualification cannot be achieved. |
 
 ## 2. Feature contracts from this source
@@ -949,6 +949,80 @@ No report in class (b), (c), or (d). No suppressions file. `Base::SignalExceptio
 
 Startup was a reported race and exit 66, then the probe was removed. This run is not a startup failure.
 
+### M0.3b contracts and callback order
+
+Date: 2026-10-31, round 2 the same day. Tree: `feat/parallel-recompute-m0` at `7a27574045`, plus this uncommitted test and documentation slice. No production change. `git diff` of `src/App`, `src/Mod/Part`, and `src/Mod/PartDesign` is empty. Generic serialization in `GenericIsolatedRecompute.cpp` is intact. `build/tsan` was not touched.
+
+This slice pins today's serial recompute path. M1 may relax generic serialization only after these tests still describe the behaviour that must survive, or after they are updated in the same change that intentionally changes that behaviour.
+
+#### What is pinned
+
+Publication, in `tests/src/App/RecomputePublicationContracts.cpp` (`RecomputePublicationContract`):
+
+- `exactPublicationInvalidatesPreparedClientsCoveringThatKey`. An exact integer publication invalidates a prepared client whose read set covers that property key. The assertion is a commit `Conflict` on the journal, after `pollPublications`.
+- `siblingCompatibleExactPublicationLeavesDisjointPreparedClientValid`. A disjoint exact publication leaves the other prepared client valid and able to commit.
+- `broadRecomputePublicationInformsExistingClientsAndInvalidatesCoveredContracts`. After a settled document, a forced recompute of one touched feature publishes `unknownModelMutation` (and that feature's object model). An existing exact client and an existing prepared recompute client both conflict on the wildcard. A client prepared after that publication still commits. Reading the key's current revision is not the assertion.
+- `realAndBroadMutationsRejectPreparedRecomputeClient`. A prepared recompute client conflicts on an exact property write, on `objectStructure` from `addDynamicProperty`, on `documentStructure` from `addObject`, and on `unknownModelMutation` from a `PropertyLength` write.
+- `pr114SameValueExtentWritesPublishWildcardAndInvalidatePreparedClients`. Writing the same `PropertyLength` value for `Length` and then `Width` still emits document, object, and property signals, publishes the wildcard, and invalidates prepared clients. That is the setter behaviour PR #114 had to stop calling from an unchanged datum refresh.
+
+The same recorder checks publication from inside the changed callbacks, before the recompute call returns. For an integer or string it requires that property key, or that object's model key, to have advanced and to be present in `pollPublications` from the cursor taken before the recompute. A `PropertyLength` same-value write may instead show the wildcard. The live property value is read in that same callback. `expectPublications` then requires those readbacks and an empty failure list. A later journal poll is not a substitute: moving publication to after observer delivery fails this check while the new value is already readable.
+
+Callback order, same file. Each test records document, object, and property signals and compares the full sequence:
+
+- `independentSiblingsCommitAndNotifyInNameOrder`. Touched siblings `A` and `B`: commit and `signalRecomputedObject` both follow name order, then `signalRecomputed` and `signalBecameStable`.
+- `chainCommitsSourceBeforeConsumerAndNotifiesByName`. `A_consumer` depends on `Z_source`. Commit order is the source, then the consumer. Final `signalRecomputedObject` follows snapshot name order (`A_consumer`, then `Z_source`).
+- `abzReadinessCommitsDependentBeforeIndependentSibling`. Names `A`, `B`, `Z`, with `B` depending on `A`. Serial readiness commits `A`, then `B` (newly ready, and before `Z` in the ready-name scan), then `Z`. `signalRecomputedObject` is `A`, `B`, `Z`. The distinguisher is `B`'s `ExecCount` change before `Z`'s.
+
+PR #114 GUI half: `PartPresentationCaptureTest.UnchangedDatumExtentsPreserveRevisionFence` in `tests/src/Gui/DocumentPresentationCache.cpp` records `signalBeforeChangeObject` and `signalChangedObject` for `Length` and `Width` only during `view->updateData(placement)`. An unchanged refresh, including a difference of half `Precision::Confusion()`, emits neither property. A real size change emits `before:Length`, `changed:Length`, `before:Width`, `changed:Width`, and still rejects the old capture.
+
+Cold, error, and cancel, same App file. Each pins the serial result, the publication journal, undo, and the signal trace:
+
+- `coldRestoredDocumentRecomputePinsResultsPublicationsUndoAndSignals` opens `data/tests/parallel-recompute/featuretest-abz-dirty.FCStd`. Open does not recompute. `A` is touched at `ExecCount` 1; `B` and `Z` are up to date at 1. Recompute runs `A` and `B` to 2, leaves `Z` at 1, adds no user undo, publishes the wildcard, and ends stable.
+- `failedFeaturePinsPartialSuccessPublicationsUndoAndSignals`. `Down` depends on `Bad`; `Bad` throws before `ExecCount` changes. The job is `PartialFailure`. `Bad` is `Failed`, still touched, with a diagnostic containing `Test Exception`. `Down` is `Blocked` and keeps its pre-failure `ExecCount`. `Keep` and `Other` commit. `signalRecomputed` names every snapshot feature. The document does not become stable. With no caller transaction there is no user undo. The caller-transaction case sets `ExceptionType` before `openTransaction`, so that failure cause is not an undo record. Undo and redo restore `Keep` and `Other` `ExecCount` and emit that property's before/changed signals, then `undo` or `redo`, then `becameStable`. After both, `Bad` stays in error, stays touched, and the diagnostic still contains `Test Exception`. The `executed` flag on a `Blocked` node is not the assertion; it defaults true.
+- `healthyFailureInsideCallerTransactionUndoesAndRedoes`. `Bad`, `Keep`, and `Down` (`Down` depends on `Bad`) are settled first. Aborting a transaction that only sets `ExceptionType` restores that value to 0 and leaves `Bad` touched. Setting `ExceptionType` inside a caller transaction and recomputing is `PartialFailure`: `Keep` advances, `Bad` and `Down` do not. Undo restores `ExceptionType` to 0 and `Keep`'s `ExecCount` and `ExecResult`. It does not clear `Bad`'s error bit, `Bad` or `Down` touch, or the recompute-log diagnostic. Redo puts `ExceptionType` and `Keep`'s two properties back. Those undo and redo signal sequences are pinned.
+- `cancelMidRecomputeKeepsCommittedPrefixAndPinsSignals`. Cancel is requested from another thread once `A`'s `ExecCount` is publishing, and the slot waits until `cancel()` returns. A rendezvous or gate timeout fails the test with that message; the cancel thread is joined on every exit, including an exception from `cancel()`. The job is `Cancelled`. `A` is committed; `B` is `Cancelled`, still touched, and not executed. The document does not become stable. `A`'s object-model key is in the journal. With no caller transaction there is no user undo. Inside an open caller transaction, undo and redo move only `A.ExecCount`, then `undo` or `redo`, then `becameStable`. `B` stays touched.
+
+Those three are the `RecomputeHandle` path used by serial `Document::recompute`. Two paired tests, `handlePartialFailureFinalizesCommittedSiblingsAndPresentation` and `handleCancelFinalizesCommittedPrefixAndPresentation`, require one presentation-boundary callback, `signalRecomputedObject` for each committed sibling, and `signalRecomputed` naming the snapshot. The lane twins, `lanePartialFailureSkipsTerminalFinalization` and `laneCancelSkipsTerminalFinalization`, perform the same setup and then `GTEST_SKIP` with `known defect: lane skips terminal finalization for PartialFailure/Cancelled; tracked as FIX-LANE-TERMINAL-FINALIZE`. Their bodies assert the handle behaviour and are not a contract for the lane. Run once without the skip, the lane still updates the successful siblings' values and property signals, and a failed feature's diagnostic is present, but the presentation callback stays at 0 and both `signalRecomputedObject` and `signalRecomputed` are absent.
+
+Compatibility fixtures, for M1 to reopen:
+
+| File | Serial result asserted by `ParallelRecomputeBaseline` |
+| --- | --- |
+| `featuretest-abz-clean.FCStd` | `A`→`B` plus independent `Z`, each `ExecCount` 1; recompute leaves them there |
+| `featuretest-abz-dirty.FCStd` | only `A` touched; recompute returns 2 and advances `A` and `B` to 2; `Z` stays 1 |
+| `part-siblings.FCStd` | box volumes 6000 and 120; recompute returns 0 |
+| `part-chain.FCStd` | `Base` 8000, `Tool` 4000, unrefined `Cut` 4000, one solid; recompute returns 0 |
+| `part-abz.FCStd` | box `A` 1000, cut `B` 500, independent box `Z` 24; recompute returns 0 |
+| `part-invalid-box.FCStd` | `Length` 0, state `Invalid`, null shape, still so after recompute |
+| `part-dirty-box.FCStd` | `Length` 20 mm, touched, volume 2000; recompute clears touched and keeps 2000 |
+
+Volumes use a delta of `1e-4`. After the restore and no-op checks, each test force-recomputes (`recompute(None, True)`). Clean FeatureTest counts become 2. The dirty document becomes `A`/`B` 3 and `Z` 2. Box and cut volumes are checked again, and each box bound box matches `Length`, `Width`, and `Height`. Element names and topology equivalence (which face is which) are not compared. The invalid box stays invalid with a null shape after the forced recompute; that case does not require a positive recompute count. `fixture_dir()` resolves only `FreeCAD.getHomePath()` plus `Mod/Test/TestData/parallel-recompute`. CMake copies `data/tests/parallel-recompute/*.FCStd` there for the build tree and installs the same relative path. The Python unit is `src/Mod/Test/ParallelRecomputeBaseline.py`, registered in `src/Mod/Test/Init.py` and `src/Mod/Test/CMakeLists.txt`. The App file is listed in `tests/src/App/CMakeLists.txt`.
+
+#### What M1 must not change
+
+Until generic serialization is relaxed on purpose, and in that same change the affected tests are updated:
+
+- Dropping `unknownModelMutation` from the legacy recompute publication, or leaving a prepared client that covers it valid across that publication.
+- Treating a disjoint exact publication as a conflict, or treating a real or broad overlap as compatible.
+- Informing existing clients only by a later read of a revision key. The publication journal is the contract, and a changed callback must already see that journal entry together with the new value.
+- Treating the lane's skipped PartialFailure/Cancelled finalization as the serial presentation contract. The handle path is the pin. `FIX-LANE-TERMINAL-FINALIZE` stays open.
+- Public commit order for `A` → `B` plus independent `Z`. Serial readiness commits `A`, then `B`, then `Z`. A frontier that commits `A`, then `Z`, then `B` changes property callbacks.
+- Final `signalRecomputedObject` order. It follows snapshot name order and is separate from execute/commit order.
+- The cold, failed-feature, healthy-edit, and cancel results above: published keys, which touch and error bits undo restores and which it leaves, and the pinned signal traces, including absence of `signalBecameStable` when the document stays touched.
+- The seven fixture results in the table, including the forced rebuild of volumes and box bounds. Naming and topology equivalence are not yet part of that pin.
+
+#### Break-to-prove
+
+Two scratches were applied, the named test failed, and the production file was restored.
+
+- Ready-name scan in `DocumentRecomputeCoordinator::scheduleReady` selected the last ready node. `abzReadinessCommitsDependentBeforeIndependentSibling` failed: `Z`'s `ExecCount` change preceded `B`'s, while `signalRecomputedObject` stayed `A`, `B`, `Z`. Log: `~/Documents/code/agents/PRC/logs/m0-3b/break-abz.log`. Restored to `std::ranges::find_if`.
+- Owner-thread legacy recompute in `GenericIsolatedRecompute.cpp` skipped the `preserveLegacyRevisionSemantics` wildcard. `broadRecomputePublicationInformsExistingClientsAndInvalidatesCoveredContracts` failed `eventsContain` and `conflictsOn` for `unknownModelMutation`. Log: `~/Documents/code/agents/PRC/logs/m0-3b/break-broad.log`. The condition was restored.
+- The success tail of `DocumentCommitCoordinator::commitOnDocumentThreadWithOptions` cancelled the reservation, delivered `finishCollaborationCommitNotificationBarrier`, then published the effects. `independentSiblingsCommitAndNotifyInNameOrder` failed inside the changed callbacks: `ExecCount` already read 1 and `ExecResult` already read `Exec` while the property revision stayed 0 and the object-model revision stayed at its baseline. Log: `~/Documents/code/agents/PRC/logs/m0-3b/break-publication-after-observers.log`. Publish-then-barrier was restored.
+
+#### Still open
+
+Cold/error/cancel under TSan (M0.3a). Pinned upstream `74168a8ae2d0c1a6e3006297673a871e8c1c8399` and the add-on corpus. `FIX-LANE-TERMINAL-FINALIZE` (section 5 item 5). Element names and topology equivalence of the force-recomputed fixtures. The failed feature's error bit, touch, and recompute-log diagnostic surviving undo of the caller transaction are pinned as observed serial behaviour; this slice does not change them. A touch bit set by a value write also survives `abortTransaction` after that value rolls back.
+
 ### Compatibility and failure matrix to run with builds
 
 Use exactly pinned upstream `74168a8ae2d0c1a6e3006297673a871e8c1c8399`
@@ -1006,12 +1080,19 @@ and revision/notification boundaries.
    without M1's integration. Decide whether an optimistic measured-stage model
    plus a strict M1 go/no-go suffices, or fund a test-only integrated prototype
    in M0. Do not mark the real performance gate green from P3/raw kernels.
-5. **Terminal presentation difference is real in this source:**
-   `src/App/RecomputeHandle.cpp:91–98` finalizes any terminal snapshot;
-   `src/App/DocumentExecutionLane.cpp:1001–1006` only finalizes Completed.
-   Determine intended Failed/Cancelled callbacks and visible revision behavior
-   against the serial reference, then test/fix in an implementation slice;
-   do not assume these entry points are already equivalent.
+5. **`FIX-LANE-TERMINAL-FINALIZE` is unresolved and is not the contract.**
+   `RecomputeHandle::finalizeIfTerminal` (`src/App/RecomputeHandle.cpp:92–99`)
+   finalizes any terminal snapshot.
+   `DocumentExecutionLane::executeActiveRecompute`
+   (`src/App/DocumentExecutionLane.cpp:1024–1046`) calls
+   `finalizeDetachedRecompute` only when the snapshot state is `Completed`.
+   Observed on the lane for PartialFailure and Cancelled: successful siblings'
+   values and property-change signals are already updated, and a failed
+   feature's diagnostic is set, but the presentation-boundary callback is not
+   invoked and `signalRecomputedObject` / `signalRecomputed` are absent. The
+   handle path emits those. Paired tests assert the handle behaviour. The lane
+   variants use the same assertions and `GTEST_SKIP` after setup. Fix the lane
+   in an implementation slice; do not pin the skip as intended behaviour.
 6. **Owner/CI decisions:** choose instrumented OCC/FreeCAD runner and supported
    OCC/TBB builds; retain thread adapters disabled until coverage works. Choose
    exact add-on versions/large user corpus and artifact retention location.
