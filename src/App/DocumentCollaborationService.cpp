@@ -7,6 +7,7 @@
 #include "Application.h"
 #include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
+#include "RecomputePhaseTrace.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
 #include "GenericIsolatedRecompute.h"
@@ -1262,6 +1263,9 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
     }
 
     if (geometryTerminal) {
+        const DocumentObject* tracedObject = RecomputePhaseTrace::objectForOperation(
+            _document, pending.operationId);
+        RecomputePhaseSpan transferSpan(RecomputePhase::Transfer, tracedObject);
         terminal.emplace();
         terminal->id = executionId;
         terminal->status = preparationStatus(geometryTerminal->state);
@@ -1291,6 +1295,15 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
                         "isolated geometry result publication digest mismatch");
                 }
                 terminal->operation = pending.isolatedResultDecoder(*decoded.archive);
+                if (RecomputePhaseTrace::recording() && terminal->operation) {
+                    if (const auto* timing = terminal->operation->isolatedExecuteTiming()) {
+                        RecomputePhaseTrace::noteIsolatedExecute(
+                            _document,
+                            tracedObject,
+                            timing->startMonotonicNs,
+                            timing->endMonotonicNs);
+                    }
+                }
                 if (pending.isolatedPublicationEffectDecoder) {
                     auto refinedEffects =
                         pending.isolatedPublicationEffectDecoder(*decoded.archive);

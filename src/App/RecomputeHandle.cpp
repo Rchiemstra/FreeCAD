@@ -6,6 +6,7 @@
 #include "DocumentExecutionLane.h"
 #include "DocumentObserver.h"
 #include "DocumentWouldBlock.h"
+#include "RecomputePhaseTrace.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -154,6 +155,20 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
     }
 
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
+        RecomputePhaseTraceActivation activation;
+        RecomputePhaseTrace::bindCurrent(*owner);
+        const bool traceDeferred = RecomputePhaseTrace::pushDefer(*owner);
+        struct TraceDefer
+        {
+            Document* document {nullptr};
+            bool armed {false};
+            ~TraceDefer()
+            {
+                if (armed && document) {
+                    RecomputePhaseTrace::popDefer(*document);
+                }
+            }
+        } traceDefer {owner, traceDeferred};
         while (true) {
             // Pump coordinator work on the owner thread only inside wait().
             static_cast<void>(owner->recomputeCoordinator().poll(_id));

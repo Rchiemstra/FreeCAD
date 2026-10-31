@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import statistics
 import sys
 import time
 
@@ -102,6 +103,23 @@ def shape_summary(doc):
     return result
 
 
+def _span_ns(span):
+    if isinstance(span, dict):
+        return span["end_ns"] - span["start_ns"]
+    return sum(item["end_ns"] - item["start_ns"] for item in span)
+
+
+def phase_totals(trace):
+    totals = {}
+    for obj in trace.get("objects", []):
+        for name, span in obj.get("phases", {}).items():
+            totals[name] = totals.get(name, 0) + _span_ns(span)
+    boundary = trace.get("presentation_boundary")
+    if boundary:
+        totals["presentation_boundary"] = _span_ns(boundary)
+    return totals
+
+
 def main():
     import FreeCAD as app
     import Part
@@ -154,6 +172,15 @@ def main():
     if scenario == "edit" and edit is None:
         raise ValueError("file edit scenario requires M0_EDIT=ObjectName:NumericProperty")
 
+    # After fixture creation so its recompute stays outside the timed samples.
+    # Unset, or a build without the trace method, leaves the probe output identical.
+    trace = os.environ.get("M0_PHASE_TRACE") == "1" and hasattr(doc, "lastRecomputeTrace")
+    if trace:
+        prefs = app.ParamGet("User parameter:BaseApp/Preferences/Document")
+        prefs.SetBool("RecomputePhaseTrace", True)
+        prefs.SetString("RecomputePhaseTracePath", str(out / "phase-trace.jsonl"))
+    phase_rows = []
+
     with (out / "samples.jsonl").open("x") as stream:
         def emit(record):
             stream.write(json.dumps(record, sort_keys=True) + "\n")
@@ -180,14 +207,21 @@ def main():
             "venue": "existing-serial", "phase_timings": None,
             "aggregate_rss": None, "gui_presentation": None, "native_overlap": None,
         })
+        setter_samples = []
+        recompute_samples = []
         for index in range(warmups + repetitions):
+            # Box::onChanged executes outside document recompute. Time that
+            # assignment by itself; recompute_ns stays the document recompute.
+            setter_ns = 0
             action_start = time.perf_counter_ns()
             if scenario == "all":
                 for obj in doc.Objects:
                     obj.touch()
             elif scenario == "edit":
                 obj, prop, original = edit
+                setter_start = time.perf_counter_ns()
                 setattr(obj, prop, original + (0.01 if index % 2 == 0 else 0.0))
+                setter_ns = time.perf_counter_ns() - setter_start
             mutation_ns = time.perf_counter_ns() - action_start
             dirty = [obj.Name for obj in doc.Objects if "Touched" in obj.State]
             cpu_start = time.process_time_ns()
@@ -199,11 +233,37 @@ def main():
             verify(doc)
             emit({
                 "kind": "sample", "warmup": index < warmups, "index": index,
-                "mutation_ns": mutation_ns, "recompute_ns": recompute_ns,
+                "mutation_ns": mutation_ns, "setter_ns": setter_ns,
+                "recompute_ns": recompute_ns,
                 "action_total_ns": action_total_ns, "process_cpu_ns": cpu_ns,
                 "dirty_before": dirty, "returned_count": returned,
             })
+            if index >= warmups:
+                setter_samples.append(setter_ns)
+                recompute_samples.append(recompute_ns)
+            if trace and index >= warmups:
+                phase_sample = doc.lastRecomputeTrace()
+                if phase_sample:
+                    phase_rows.append(phase_totals(phase_sample))
         emit({"kind": "summary", "shapes": shape_summary(doc), "completed": True})
+    if trace:
+        medians = {}
+        keys = sorted({key for row in phase_rows for key in row})
+        for key in keys:
+            values = [row[key] for row in phase_rows if key in row]
+            if values:
+                medians[key] = statistics.median(values)
+        report = {"case": case, "scenario": scenario, "medians_ns": medians}
+        print("phase_medians " + json.dumps(report, sort_keys=True))
+        (out / "phase-medians.json").write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
+    if setter_samples:
+        split = {
+            "case": case,
+            "scenario": scenario,
+            "setter_ns": statistics.median(setter_samples),
+            "recompute_ns": statistics.median(recompute_samples),
+        }
+        print("setter_vs_recompute " + json.dumps(split, sort_keys=True))
     app.closeDocument(doc.Name)
 
 

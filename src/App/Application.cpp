@@ -124,6 +124,7 @@
 #include "TranslationQtBridge.h"
 #include "Services.h"
 #include "Document.h"
+#include "RecomputePhaseTrace.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
@@ -2304,6 +2305,8 @@ void Application::destruct()
         }
     }
 
+    RecomputePhaseTrace::removePreferenceCache();
+
     paramMgr.clear();
     _pcSysParamMngr = nullptr;
     _pcUserParamMngr = nullptr;
@@ -3576,6 +3579,10 @@ void Application::LoadParameters()
                               "Continue with an empty configuration.\n",
                               e.what(), mConfig["UserParameter"]);
         _pcUserParamMngr->CreateDocument();
+    }
+
+    if (_pcUserParamMngr) {
+        RecomputePhaseTrace::installPreferenceCache(*_pcUserParamMngr);
     }
 }
 

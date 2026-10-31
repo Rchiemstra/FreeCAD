@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "CollaborativeOperation.h"
 #include "Document.h"
+#include "RecomputePhaseTrace.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentObject.h"
 #include "GeometryWorkerOperationRegistry.h"
@@ -197,6 +198,19 @@ void appendU32(std::vector<std::uint8_t>& target, const std::uint32_t value)
     }
 }
 
+void appendI64(std::vector<std::uint8_t>& target, const std::int64_t value)
+{
+    const auto bits = static_cast<std::uint64_t>(value);
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+        target.push_back(static_cast<std::uint8_t>((bits >> shift) & 0xffU));
+    }
+}
+
+std::int64_t monotonicNs() noexcept
+{
+    return App::recomputePhaseMonotonicNs();
+}
+
 void appendString(std::vector<std::uint8_t>& target, const std::string_view value)
 {
     if (value.size() > MaxFieldBytes
@@ -252,6 +266,21 @@ public:
     std::string value()
     {
         return bytes(static_cast<std::size_t>(u32()));
+    }
+
+    std::int64_t i64()
+    {
+        require(sizeof(std::int64_t));
+        std::uint64_t value = 0;
+        for (unsigned shift = 0; shift < 64; shift += 8) {
+            value |= static_cast<std::uint64_t>(_bytes[_offset++]) << shift;
+        }
+        return static_cast<std::int64_t>(value);
+    }
+
+    [[nodiscard]] std::size_t remaining() const
+    {
+        return _bytes.size() - _offset;
     }
 
     void finish() const
@@ -740,9 +769,44 @@ std::vector<ObjectManifest> manifestsFor(const std::vector<App::DocumentObject*>
     return result;
 }
 
+struct DecodedParameters
+{
+    std::string target;
+    std::vector<ObjectManifest> manifests;
+    bool recordExecuteTiming {false};
+};
+
+void appendExecuteTiming(std::vector<std::uint8_t>& target,
+                         const App::IsolatedExecuteTiming* timing)
+{
+    if (!timing) {
+        return;
+    }
+    appendI64(target, timing->startMonotonicNs);
+    appendI64(target, timing->endMonotonicNs);
+}
+
+std::optional<App::IsolatedExecuteTiming> takeExecuteTiming(BinaryReader& reader)
+{
+    const auto leftover = reader.remaining();
+    if (leftover == 0) {
+        reader.finish();
+        return std::nullopt;
+    }
+    if (leftover != sizeof(std::int64_t) * 2) {
+        throw std::invalid_argument("generic recompute execute timing is truncated");
+    }
+    App::IsolatedExecuteTiming timing;
+    timing.startMonotonicNs = reader.i64();
+    timing.endMonotonicNs = reader.i64();
+    reader.finish();
+    return timing;
+}
+
 std::vector<std::uint8_t> encodeParameters(
     const std::string& target,
-    const std::vector<ObjectManifest>& manifests)
+    const std::vector<ObjectManifest>& manifests,
+    const bool recordExecuteTiming = false)
 {
     std::vector<std::uint8_t> result;
     appendU32(result, ProtocolMagic);
@@ -759,11 +823,13 @@ std::vector<std::uint8_t> encodeParameters(
             appendU32(result, property.output ? 1U : 0U);
         }
     }
+    if (recordExecuteTiming) {
+        appendU32(result, 1U);
+    }
     return result;
 }
 
-std::pair<std::string, std::vector<ObjectManifest>> decodeParameters(
-    const std::vector<std::uint8_t>& bytes)
+DecodedParameters decodeParameters(const std::vector<std::uint8_t>& bytes)
 {
     BinaryReader reader(bytes);
     if (reader.u32() != ProtocolMagic || reader.u32() != ProtocolVersion) {
@@ -806,6 +872,13 @@ std::pair<std::string, std::vector<ObjectManifest>> decodeParameters(
         }
         manifests.push_back(std::move(object));
     }
+    bool recordExecuteTiming = false;
+    if (reader.remaining() != 0) {
+        if (reader.u32() != 1U) {
+            throw std::invalid_argument("generic recompute execute timing flag is invalid");
+        }
+        recordExecuteTiming = true;
+    }
     reader.finish();
     if (!std::ranges::is_sorted(manifests, {}, &ObjectManifest::name)
         || std::ranges::adjacent_find(manifests, {}, &ObjectManifest::name)
@@ -820,7 +893,7 @@ std::pair<std::string, std::vector<ObjectManifest>> decodeParameters(
             throw std::invalid_argument("generic recompute property manifest is not canonical");
         }
     }
-    return {std::move(target), std::move(manifests)};
+    return {std::move(target), std::move(manifests), recordExecuteTiming};
 }
 
 void validateDetachedSchema(
@@ -1142,7 +1215,8 @@ std::vector<std::uint8_t> encodeOutputs(
     const std::string& targetName,
     const App::DocumentObject& target,
     const ObjectManifest& targetManifest,
-    const PropertySnapshots& baseline)
+    const PropertySnapshots& baseline,
+    const App::IsolatedExecuteTiming* executeTiming = nullptr)
 {
     struct OutputValue
     {
@@ -1184,12 +1258,14 @@ std::vector<std::uint8_t> encodeOutputs(
         appendString(result, output.type);
         appendBytes(result, output.bytes);
     }
+    appendExecuteTiming(result, executeTiming);
     return result;
 }
 
 std::vector<std::uint8_t> encodeFailure(
     const std::string& targetName,
-    std::string diagnostic)
+    std::string diagnostic,
+    const App::IsolatedExecuteTiming* executeTiming = nullptr)
 {
     if (diagnostic.empty()) {
         diagnostic = "detached feature recompute failed";
@@ -1200,6 +1276,7 @@ std::vector<std::uint8_t> encodeFailure(
     appendString(result, targetName);
     appendU32(result, 0);
     appendString(result, diagnostic);
+    appendExecuteTiming(result, executeTiming);
     return result;
 }
 
@@ -1364,6 +1441,16 @@ public:
                                   : std::string_view {};
     }
 
+    const App::IsolatedExecuteTiming* isolatedExecuteTiming() const noexcept override
+    {
+        return _executeTiming ? &*_executeTiming : nullptr;
+    }
+
+    void setIsolatedExecuteTiming(App::IsolatedExecuteTiming timing)
+    {
+        _executeTiming = std::move(timing);
+    }
+
 private:
     App::DocumentObject* requireTarget(const App::Document& document) const
     {
@@ -1380,6 +1467,7 @@ private:
     std::vector<DecodedOutput> _outputs;
     bool _authoritativeTransientSchema {false};
     std::optional<std::string> _failureDiagnostic;
+    std::optional<App::IsolatedExecuteTiming> _executeTiming;
     mutable bool _applied {false};
     mutable std::vector<std::unique_ptr<App::Property>> _appliedOutputs;
 };
@@ -1636,9 +1724,13 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
         if (diagnostic.empty()) {
             throw std::invalid_argument("generic recompute failure diagnostic is empty");
         }
-        reader.finish();
-        return std::make_unique<const GenericRecomputeOperation>(
+        auto timing = takeExecuteTiming(reader);
+        auto operation = std::make_unique<GenericRecomputeOperation>(
             target, stableIdentity, std::move(diagnostic));
+        if (timing) {
+            operation->setIsolatedExecuteTiming(*timing);
+        }
+        return operation;
     }
     const auto count = static_cast<std::size_t>(reader.u32());
     if (count > expectedOutputs.size()) {
@@ -1658,12 +1750,16 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
         }
         outputs.push_back({std::move(name), type, restoreProperty(type, value)});
     }
-    reader.finish();
-    return std::make_unique<const GenericRecomputeOperation>(
+    auto timing = takeExecuteTiming(reader);
+    auto operation = std::make_unique<GenericRecomputeOperation>(
         target,
         stableIdentity,
         std::move(outputs),
         authoritativeTransientSchema);
+    if (timing) {
+        operation->setIsolatedExecuteTiming(*timing);
+    }
+    return operation;
 }
 
 std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffects(
@@ -1687,7 +1783,7 @@ std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffe
         if (diagnostic.empty()) {
             throw std::invalid_argument("generic recompute failure diagnostic is empty");
         }
-        reader.finish();
+        static_cast<void>(takeExecuteTiming(reader));
         std::erase_if(effects, [&](const auto& effect) {
             return effect.key != App::DocumentRevisionKey::objectModel(target)
                 && effect.key.kind
@@ -1713,7 +1809,7 @@ std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffe
             throw std::invalid_argument("generic recompute returned an undeclared output");
         }
     }
-    reader.finish();
+    static_cast<void>(takeExecuteTiming(reader));
 
     const auto outputDelta = static_cast<App::DocumentRevision>(count) + 2;
     for (auto& effect : effects) {
@@ -1887,6 +1983,7 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     if (!target || !target->isAttachedToDocument() || target->getDocument() != &document) {
         throw std::invalid_argument("generic recompute target does not exist");
     }
+    App::RecomputePhaseSpan captureSpan(App::RecomputePhase::Capture, target);
 
     // The two exact-type predicates below are proven-inert contracts -- an
     // App::FeaturePython with a null Proxy literally cannot run Python execute
@@ -2141,7 +2238,9 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     input.sections.push_back(
         {"document.fcstd",
          std::vector<std::uint8_t>(snapshotBegin, snapshotBegin + snapshotBytes.size())});
-    input.sections.push_back({"recompute.params", encodeParameters(targetName, manifests)});
+    input.sections.push_back(
+        {"recompute.params",
+         encodeParameters(targetName, manifests, App::RecomputePhaseTrace::recording())});
 
     std::vector<App::DocumentRevisionKey> reads {
         App::DocumentRevisionKey::documentStructure(),
@@ -2224,7 +2323,10 @@ App::GeometryArchive executeGenericRecompute(
     }
     const auto& documentSection = requireSection(input, "document.fcstd", 2);
     const auto& parameterSection = requireSection(input, "recompute.params", 2);
-    auto [targetName, manifests] = decodeParameters(parameterSection.bytes);
+    auto decoded = decodeParameters(parameterSection.bytes);
+    const std::string targetName = std::move(decoded.target);
+    auto manifests = std::move(decoded.manifests);
+    const bool recordExecuteTiming = decoded.recordExecuteTiming;
 
     App::DocumentInitFlags flags;
     flags.createView = false;
@@ -2269,8 +2371,18 @@ App::GeometryArchive executeGenericRecompute(
     if (stopToken.stop_requested()) {
         throw std::runtime_error("generic recompute cancelled before feature execution");
     }
+    std::optional<App::IsolatedExecuteTiming> executeTiming;
+    if (recordExecuteTiming) {
+        executeTiming = App::IsolatedExecuteTiming {};
+        executeTiming->startMonotonicNs = monotonicNs();
+    }
     const int result = App::Internal::GenericIsolatedRecomputeAccess::execute(
         *detached, *target);
+    if (executeTiming) {
+        executeTiming->endMonotonicNs = monotonicNs();
+    }
+    const App::IsolatedExecuteTiming* recordedTiming =
+        executeTiming ? &*executeTiming : nullptr;
     const char* failureDescription = result == 0
         ? nullptr
         : detached->getErrorDescription(target);
@@ -2287,7 +2399,7 @@ App::GeometryArchive executeGenericRecompute(
     if (result != 0) {
         App::GeometryArchive output;
         output.sections.push_back(
-            {"recompute.outputs", encodeFailure(targetName, failureDiagnostic)});
+            {"recompute.outputs", encodeFailure(targetName, failureDiagnostic, recordedTiming)});
         return output;
     }
     const auto targetManifest = std::ranges::find(
@@ -2318,7 +2430,7 @@ App::GeometryArchive executeGenericRecompute(
     App::GeometryArchive output;
     output.sections.push_back(
         {"recompute.outputs",
-         encodeOutputs(targetName, *target, *targetManifest, baseline)});
+         encodeOutputs(targetName, *target, *targetManifest, baseline, recordedTiming)});
     return output;
 }
 

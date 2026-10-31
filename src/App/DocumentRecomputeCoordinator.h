@@ -145,6 +145,7 @@ public:
 private:
     friend class RecomputeHandle;
     friend class DocumentExecutionLane;
+    friend class RecomputePhaseTrace;
 
     /** Reserve one coordinator id before owner-thread submit binds a job. */
     [[nodiscard]] DocumentRecomputeId reserveAdmissionId();
@@ -153,6 +154,8 @@ private:
 
     void scheduleReady(DocumentRecomputeId id);
     void finalizeIfTerminal(DocumentRecomputeId id);
+    /** Drop job session pointers once those sessions have sealed. */
+    void releaseSealedTraceSessions() noexcept;
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> statusLocked(
         DocumentRecomputeId id) const;
     [[nodiscard]] bool claimPresentationFinalization(DocumentRecomputeId id);

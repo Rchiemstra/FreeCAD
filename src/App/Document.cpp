@@ -89,6 +89,7 @@
 #include "DocumentExecutionLane.h"
 #include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
+#include "RecomputePhaseTrace.h"
 #include "DocumentWouldBlock.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
@@ -4223,6 +4224,7 @@ Document::FileChangeTrackingScope::~FileChangeTrackingScope()
 
 Document::~Document()
 {
+    RecomputePhaseTrace::forgetDocument(*this);
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: {} {}\n", getName(), this);
 #endif
@@ -7601,6 +7603,8 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
 
 void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot)
 {
+    RecomputePhaseTraceActivation activation;
+    RecomputePhaseTrace::bindCurrent(*this);
     std::vector<DocumentObject*> recomputed;
     recomputed.reserve(snapshot.features.size());
     for (const auto& node : snapshot.features) {
@@ -7624,7 +7628,10 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             : node.diagnostic;
         d->addRecomputeLog(diagnostic.c_str(), object);
     }
-    invokeDocumentPresentationBoundary(*this);
+    {
+        RecomputePhaseBoundarySpan presentationBoundary(*this);
+        invokeDocumentPresentationBoundary(*this);
+    }
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::Recomputed};
@@ -7635,6 +7642,7 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
         signalRecomputed(*this, recomputed);
     }
     finalizeCollaborationRecomputeTeardown();
+    RecomputePhaseTrace::onOwnerTerminal(*this, snapshot.id);
 }
 
 void Document::finalizeEmptyDetachedRecompute()
@@ -7805,6 +7813,10 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
+    // Tracing only observes this sequence. The hold shares the admitted
+    // session with the job; it does not admit onto the owner by itself.
+    RecomputePhaseTraceHold traceHold(*this);
+
     // On the GUI thread recomputeAsync() and RecomputeHandle::wait() hop to the
     // document owner and wait without running the Qt event loop (see
     // DocumentExecutionLane::dispatchToOwner()), so this stays synchronous.
@@ -7832,13 +7844,16 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
 
     int recomputed = 0;
     bool failed = false;
+    const auto compatibilityWait = RecomputePhaseTrace::testing::compatibilityWaitPrimary();
+    const auto compatibilityFollowUp = RecomputePhaseTrace::testing::compatibilityWaitFollowUp();
     for (int pass = 0; pass < 2; ++pass) {
         auto handle = recomputeAsync(objs, force, options);
-        auto snapshot = handle->wait(std::chrono::minutes(6));
+        traceHold.retain();
+        auto snapshot = handle->wait(compatibilityWait);
         if (!snapshot.terminal()) {
             static_cast<void>(
                 handle->cancel("document recompute compatibility wait timed out"));
-            snapshot = handle->wait(std::chrono::seconds(30));
+            snapshot = handle->wait(compatibilityFollowUp);
         }
         failed = failed || snapshot.state != DocumentRecomputeState::Completed;
         // The legacy loop counted the objects it executed, not the nodes it
@@ -8060,6 +8075,7 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
         return 1;
     }
 
+    RecomputePhaseSpan executeSpan(RecomputePhase::Execute, Feat);
     DocumentObjectExecReturn* returnCode = nullptr;
     try {
         returnCode = Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);
@@ -8181,6 +8197,16 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         activeCompatibilityWaits.erase(this);
     };
 
+    DocumentRecomputeId recomputeId = 0;
+    const auto closeTrace = [&]() {
+        if (recomputeId == 0) {
+            return;
+        }
+        const auto id = recomputeId;
+        recomputeId = 0;
+        RecomputePhaseTrace::onOwnerTerminal(*this, id);
+        RecomputePhaseTrace::publishIfIdle(*this);
+    };
     try {
         Internal::ensureGenericIsolatedRecomputeRegistered();
         auto request = Internal::makeGenericIsolatedRecomputeRequest(
@@ -8193,7 +8219,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         }
 
         auto& coordinator = recomputeCoordinator();
-        const auto recomputeId = coordinator.submit(std::move(request));
+        recomputeId = coordinator.submit(std::move(request));
         const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(6);
         std::optional<DocumentRecomputeSnapshot> snapshot;
         while ((snapshot = coordinator.status(recomputeId)) && !snapshot->terminal()) {
@@ -8211,6 +8237,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         }
         snapshot = coordinator.status(recomputeId);
         if (!snapshot) {
+            closeTrace();
             d->addRecomputeLog("isolated feature recompute result is unavailable", feature);
             return false;
         }
@@ -8239,15 +8266,19 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
                 succeeded = false;
             }
         }
+        closeTrace();
         return succeeded;
     }
     catch (const Base::Exception& error) {
+        closeTrace();
         d->addRecomputeLog(error.what(), feature);
     }
     catch (const std::exception& error) {
+        closeTrace();
         d->addRecomputeLog(error.what(), feature);
     }
     catch (...) {
+        closeTrace();
         d->addRecomputeLog("isolated feature recompute failed with an unknown exception", feature);
     }
     return false;

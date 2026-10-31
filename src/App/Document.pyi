@@ -632,6 +632,23 @@ class Document(PropertyContainer):
         """
         ...
 
+    def lastRecomputeTrace(self) -> dict[str, object] | None:
+        """
+        Return the latest opt-in recompute phase trace, or None when tracing is off.
+
+        Phase values and presentation_boundary are lists of
+        ``{start_ns, end_ns, pass_id}``. ``truncated`` is false: attempts are kept.
+        ``dropped_records`` and ``io_errors`` are 0 here; each JSONL line carries
+        the writer's running counts. ``rss_kb`` is a procfs sample, and
+        ``sampled_peak`` is the larger of the start and end samples. ``git_hash``
+        is omitted when the build has no revision hash. Direct
+        ``DocumentObject.recompute()`` outside a document recompute is not
+        included. Box dimension setters run at edit time and are timed by the M0
+        probe separately from recompute. Object ``type`` is empty until a span
+        sees that feature.
+        """
+        ...
+
     def recomputeAsync(
         self,
         objs: Sequence[DocumentObject] = None,
