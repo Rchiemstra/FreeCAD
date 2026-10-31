@@ -12,6 +12,7 @@ Examples:
 
   python start_freecad.py
   python start_freecad.py --build
+  python start_freecad.py --codex
   python start_freecad.py model.FCStd
   python start_freecad.py --freecad build/release/bin/FreeCAD.exe
   python start_freecad.py --no-wait-for-mcp

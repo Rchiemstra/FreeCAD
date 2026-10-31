@@ -43,6 +43,7 @@
 #include <functional>
 #include <future>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -207,13 +208,27 @@ protected:
 
     void TearDown() override
     {
+        cleanupDocument();
+    }
+
+    void cleanupDocument()
+    {
+        if (auto* current = App::GetApplication().getDocument(documentName.c_str())) {
+            // A fatal assertion may leave an unpolled completion capturing
+            // test-body locals. Drop it before pumping events in teardown or
+            // in the next suite, then retire the writer before closing.
+            auto lane = current->executionLane()->shared_from_this();
+            Gui::AutoSaver::instance()->cancelRecoveryWrite(*current);
+            EXPECT_TRUE(processEventsUntil([&] { return lane->isIdle(); }));
+        }
+        document = App::GetApplication().getDocument(documentName.c_str());
         if (document) {
             const QFileInfo metadataInfo(metadataPath());
             if (metadataInfo.isDir()) {
                 QDir(metadataInfo.absoluteFilePath()).removeRecursively();
             }
             if (App::GetApplication().getDocument(documentName.c_str())) {
-                App::GetApplication().closeDocument(documentName.c_str());
+                EXPECT_TRUE(App::GetApplication().closeDocument(documentName.c_str()));
                 QCoreApplication::processEvents(QEventLoop::AllEvents);
             }
         }
@@ -1352,6 +1367,36 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOwnerIngressCloseCancelsPendingWrite)
     EXPECT_FALSE(called);
 }
 
+TEST_F(AutoSaverRecoveryTest, CleanupCancelsUnpolledCompletionBeforeLocalsExpire)
+{
+    using namespace std::chrono_literals;
+    auto called = std::make_shared<bool>(false);
+    ASSERT_TRUE(Gui::scheduleRecoverySnapshotWrite(*document, {},
+        [called](bool, std::exception_ptr) { *called = true; }));
+    auto lane = document->executionLane()->shared_from_this();
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
+        App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
+    }
+    ASSERT_TRUE(lane->isIdle());
+    // Make the executor's 10 ms poll due without dispatching its callback.
+    std::this_thread::sleep_for(20ms);
+    ASSERT_FALSE(*called);
+
+    // Exercise the same cleanup used after an assertion returns from a test.
+    // Own the probe so a broken cleanup reports a failure instead of corrupting
+    // the stack of the next test that services the completion timer.
+    cleanupDocument();
+    EXPECT_EQ(App::GetApplication().getDocument(documentName.c_str()), nullptr);
+    bool polled = false;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, [&] { polled = true; });
+    timer.start(30);
+    ASSERT_TRUE(processEventsUntil([&] { return polled; }));
+    EXPECT_FALSE(*called);
+}
+
 void AutoSaverRecoveryTest::verifyCloseBeforeCompletionPoll(ClosePath path)
 {
     using namespace std::chrono_literals;
@@ -1369,7 +1414,9 @@ void AutoSaverRecoveryTest::verifyCloseBeforeCompletionPoll(ClosePath path)
     // Service serialization's marshalled GUI work, but never the executor's
     // Qt completion timer. The write retires while its GUI pin remains held.
     const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (barrier.wait_for(0ms) != std::future_status::ready
+    // The marker's future becomes ready before the lane retires its active
+    // task. Wait for both without dispatching the Qt completion timer.
+    while ((barrier.wait_for(0ms) != std::future_status::ready || !lane->isIdle())
            && std::chrono::steady_clock::now() < deadline) {
         App::MainThreadSignalConfig::serviceMarshalledTasks(2ms);
     }
