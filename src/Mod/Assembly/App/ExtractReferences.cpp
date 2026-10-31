@@ -13,6 +13,8 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
+#include <App/DocumentPy.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/PropertyExpressionEngine.h>
@@ -36,6 +38,58 @@ struct Report
     std::vector<Reference> leftover;
     std::vector<App::DocumentObject*> referenced;
     std::vector<App::DocumentObject*> shapes;
+};
+
+// Setting Support on an existing binder runs SubShapeBinder::update(), which
+// adds cache properties. Inside a structural compatibility commit that addition
+// is refused unless the document is in the coordinator's recompute boundary.
+// The rewrite itself is the boundary that has to publish those caches; mark it
+// for the duration of the apply so the existing gate accepts the properties.
+class ExistingObjectRecomputeGrant
+{
+public:
+    ExistingObjectRecomputeGrant(App::Document* document,
+                                 const std::vector<App::DocumentObject*>& objects)
+        : _document(document)
+    {
+        if (!_document) {
+            return;
+        }
+        _documentWasRecomputing = _document->testStatus(App::Document::Recomputing);
+        _document->setStatus(App::Document::Recomputing, true);
+        _objects.reserve(objects.size());
+        for (auto* object : objects) {
+            if (!object) {
+                continue;
+            }
+            _objects.push_back({object, object->isRecomputing()});
+            object->setStatus(App::ObjectStatus::Recompute, true);
+        }
+    }
+
+    ~ExistingObjectRecomputeGrant()
+    {
+        for (auto& entry : _objects) {
+            entry.object->setStatus(App::ObjectStatus::Recompute, entry.wasRecomputing);
+        }
+        if (_document) {
+            _document->setStatus(App::Document::Recomputing, _documentWasRecomputing);
+        }
+    }
+
+    ExistingObjectRecomputeGrant(const ExistingObjectRecomputeGrant&) = delete;
+    ExistingObjectRecomputeGrant& operator=(const ExistingObjectRecomputeGrant&) = delete;
+
+private:
+    struct ObjectState
+    {
+        App::DocumentObject* object;
+        bool wasRecomputing;
+    };
+
+    App::Document* _document = nullptr;
+    bool _documentWasRecomputing = false;
+    std::vector<ObjectState> _objects;
 };
 
 class CopyOwnerScope
@@ -318,7 +372,13 @@ PyObject* extractionReferences(PyObject* args)
                                     pair.size() > 6 ? object(pair[6].ptr()) : nullptr,
                                     pair.size() > 7 ? object(pair[7].ptr()) : nullptr});
         }
-        const auto operation = [&] { return replaceReferences(owners, replacements, apply); };
+        const auto operation = [&] {
+            std::unique_ptr<ExistingObjectRecomputeGrant> grant;
+            if (apply) {
+                grant = std::make_unique<ExistingObjectRecomputeGrant>(document, owners);
+            }
+            return replaceReferences(owners, replacements, apply);
+        };
         auto lane = document ? document->executionLane() : nullptr;
         auto report = lane ? lane->dispatchToOwner(operation) : operation();
         Py::List referenced;
@@ -341,5 +401,35 @@ PyObject* extractionReferences(PyObject* args)
         // Preserve the Python exception.
     }
     return nullptr;
+}
+
+PyObject* serviceDocumentOwner(PyObject* args)
+{
+    PyObject* documentArg = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &App::DocumentPy::Type, &documentArg)) {
+        return nullptr;
+    }
+    auto* document = static_cast<App::DocumentPy*>(documentArg)->getDocumentPtr();
+    try {
+        // An empty owner hop is how the GUI thread drains marshalled tasks
+        // during another document's commit without recomputing anything. A
+        // recompute here races that commit's read-only postcondition.
+        if (auto* lane = document ? document->executionLane() : nullptr;
+            lane && !lane->isOwnerThread()) {
+            lane->dispatchToOwner([] {});
+        }
+    } catch (const Base::Exception& exception) {
+        exception.setPyException();
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+PyObject* isGuiThread(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return Py::new_reference_to(Py::Boolean(App::DocumentWouldBlock::isGuiThread()));
 }
 } // namespace Assembly

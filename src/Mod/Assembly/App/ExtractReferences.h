@@ -20,4 +20,6 @@ struct ReferenceReplacement
     App::DocumentObject* attachment;
 };
 PyObject* extractionReferences(PyObject* args);
+PyObject* serviceDocumentOwner(PyObject* args);
+PyObject* isGuiThread(PyObject* args);
 } // namespace Assembly

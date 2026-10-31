@@ -8,9 +8,21 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 import UtilsAssembly
+import ExtractComponent
 from ExtractComponent import ExtractionError, _parent, extract, preflight
 
 translate = App.Qt.translate
+
+
+def _record_removed_view_providers(objects):
+    # Imported lazily: this module is loaded with the workbench, including
+    # from tests that call extract() directly rather than the command.
+    import AssemblyGui
+
+    AssemblyGui.recordViewProviderRemovals(list(objects))
+
+
+ExtractComponent._record_removed_view_providers = _record_removed_view_providers
 
 
 def _saveAssemblyThenExtract(assembly, component):
@@ -127,6 +139,10 @@ def extractWithDialog(assembly, component):
         path += ".FCStd"
     try:
         # Report all unsupported references before entering the operation.
+        # Model work inside extract() runs on each document owner. This method
+        # only does GUI work: dialogs, the warning, and selection. The same
+        # cross-document window as Insert Link / Insert New Part / tree
+        # copy-move remains; see ExtractComponent.preflight.
         preflight(assembly, component, path)
         result = extract(assembly, component, path)
     except Exception as exc:

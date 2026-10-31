@@ -46,6 +46,13 @@ class TestExtractComponent(unittest.TestCase):
         self.doc.clearUndos()
 
     def tearDown(self):
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            for name in list(App.listDocuments()):
+                gui_document = Gui.getDocument(name)
+                if gui_document:
+                    gui_document.resetEdit()
         self.flushGui()
         for name in list(App.listDocuments()):
             if name not in self.before:
@@ -707,6 +714,156 @@ class TestExtractComponent(unittest.TestCase):
         self.assertEqual(self.part.Payload["profile"], self.sketch)
         self.assertFalse(os.path.exists(self.path))
 
+    def test_refuse_slotted_python_reference(self):
+        class BaseState:
+            __slots__ = ("__reference",)
+
+            def __init__(self, reference):
+                self.__reference = reference
+
+            def dumps(self):
+                return {}
+
+        class State(BaseState):
+            __slots__ = ("cycle",)
+
+            def __init__(self, reference):
+                super().__init__(reference)
+                self.cycle = self
+
+        reader = self.doc.addObject("App::FeaturePython", "SlottedReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        # dumps() hides the slot, so a check of the serialized form accepts it.
+        reader.Payload = State(self.part)
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+
+    def test_refuse_frozenset_python_reference(self):
+        class Holder:
+            def __init__(self, refs):
+                self.refs = refs
+
+            def dumps(self):
+                return {"hidden": True}
+
+        reader = self.doc.addObject("App::FeaturePython", "FrozenSetReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = Holder(frozenset([self.part]))
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+
+    def test_refuse_uninspectable_python_state(self):
+        calls = []
+
+        class State:
+            @property
+            def __dict__(self):
+                calls.append(True)
+                return {}
+
+            def dumps(self):
+                return {}
+
+        reader = self.doc.addObject("App::FeaturePython", "OpaqueReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = State()
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertEqual(calls, [])
+
+    def test_refuse_flexible_assembly_link(self):
+        definition = App.newDocument("LinkedAssembly")
+        subassembly = Assembly.createAssembly(definition)
+        definition.recompute()
+        definition.saveAs(os.path.join(self.directory.name, "LinkedAssembly.FCStd"))
+        flexible = self.assembly.newObject("Assembly::AssemblyLink", "Flexible")
+        flexible.LinkedObject = subassembly
+        flexible.Rigid = False
+        self.doc.recompute()
+        with patch("ExtractComponent.App.newDocument") as new_document:
+            error = self.assertRefused(flexible)
+            new_document.assert_not_called()
+        self.assertIn("AssemblyLink", str(error))
+        self.assertFalse(flexible.Rigid)
+
+    def test_refuse_nested_flexible_assembly_link(self):
+        definition = App.newDocument("NestedLinkedAssembly")
+        subassembly = Assembly.createAssembly(definition)
+        definition.recompute()
+        definition.saveAs(os.path.join(self.directory.name, "NestedLinkedAssembly.FCStd"))
+        flexible = self.part.newObject("Assembly::AssemblyLink", "NestedFlexible")
+        flexible.LinkedObject = subassembly
+        flexible.Rigid = False
+        self.doc.recompute()
+        with patch("ExtractComponent.App.newDocument") as new_document:
+            error = self.assertRefused()
+            new_document.assert_not_called()
+        self.assertIn("AssemblyLink", str(error))
+        self.assertFalse(flexible.Rigid)
+
+    def test_refuse_frozen_source_before_writing(self):
+        self.doc.RecomputesFrozen = True
+        self.pad.Length = 9
+        try:
+            with patch("ExtractComponent.App.newDocument") as new_document:
+                self.assertIn("Unfreeze", str(self.assertRefused()))
+                new_document.assert_not_called()
+            self.assertFalse(os.path.exists(self.path))
+            self.assertIsNotNone(self.doc.LocalPart)
+        finally:
+            self.doc.RecomputesFrozen = False
+
+    def test_refuse_unwritable_destination_before_creating_document(self):
+        locked = os.path.join(self.directory.name, "locked")
+        os.mkdir(locked)
+        os.chmod(locked, 0o555)
+        path = os.path.join(locked, "Component.FCStd")
+        if os.access(locked, os.W_OK):
+            os.chmod(locked, 0o755)
+            self.skipTest("process can write a mode-0555 directory")
+        try:
+            with patch("ExtractComponent.App.newDocument") as new_document:
+                error = self.assertRefused(path=path)
+                new_document.assert_not_called()
+            self.assertIn("writable", str(error).lower())
+            self.assertFalse(os.path.exists(path))
+        finally:
+            if os.path.isdir(locked):
+                os.chmod(locked, 0o755)
+
+    def test_failed_extraction_keeps_redo_history_and_undo_mode(self):
+        import AssemblyApp
+
+        self.doc.openTransaction("Rename component")
+        self.part.Label = "Before extract"
+        self.doc.commitTransaction()
+        self.doc.undo()
+        self.assertGreater(self.doc.RedoCount, 0)
+        self.assertEqual(self.part.Label, "Component label")
+        redos = list(self.doc.RedoNames)
+        undos = list(self.doc.UndoNames)
+        undo_count = self.doc.UndoCount
+        self.doc.UndoMode = 0
+        mode = self.doc.UndoMode
+        original = AssemblyApp._extractionReferences
+
+        def fail(owners, pairs, apply=False):
+            report = original(owners, pairs, apply)
+            if apply:
+                raise RuntimeError("replacement rejected")
+            return report
+
+        with patch.object(AssemblyApp, "_extractionReferences", side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, "replacement rejected"):
+                self.runExtract()
+        self.assertEqual(list(self.doc.RedoNames), redos)
+        self.assertEqual(list(self.doc.UndoNames), undos)
+        self.assertEqual(self.doc.UndoCount, undo_count)
+        self.assertEqual(self.doc.UndoMode, mode)
+        self.assertEqual(self.part.Label, "Component label")
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        self.assertFalse(os.path.exists(self.path))
+
     def test_refuse_missing_external_component_file(self):
         definition = App.newDocument("ExternalDefinition")
         box = definition.addObject("Part::Box", "Box")
@@ -855,17 +1012,101 @@ class TestExtractComponentGui(TestExtractComponent):
 
         Gui.activeDocument().setEdit(self.assembly.Name)
 
+    def _rgb(self, color):
+        channels = tuple(float(channel) for channel in color)
+        return channels[:3]
+
+    def _assert_color_close(self, actual, expected):
+        # View materials round through an 8-bit channel on the way into the
+        # copied document and the Coin scene.
+        got = self._rgb(actual)
+        want = self._rgb(expected)
+        self.assertEqual(len(got), 3)
+        for channel, target in zip(got, want):
+            self.assertLess(abs(channel - target), 1.0 / 255.0 + 1e-4, (got, want))
+
+    def _assert_colors_close(self, actual, expected):
+        self.assertEqual(len(actual), len(expected))
+        for item, target in zip(actual, expected):
+            self._assert_color_close(item, target)
+
+    def _scene_diffuse_colors(self, view):
+        from pivy import coin
+
+        action = coin.SoSearchAction()
+        action.setType(coin.SoMaterial.getClassTypeId())
+        action.setInterest(coin.SoSearchAction.ALL)
+        action.apply(view.RootNode)
+        paths = action.getPaths()
+        found = []
+        for index in range(paths.getLength()):
+            material = paths.get(index).getTail()
+            found.extend(self._rgb(color.getValue()) for color in material.diffuseColor.getValues())
+        return found
+
+    def _assert_link_appearance(self, link, pad, faces, color, transparency):
+        self.flushGui()
+        self.assertFalse(link.ViewObject.OverrideMaterial)
+        self.assertIsNot(link.ViewObject, pad.ViewObject)
+        self._assert_color_close(pad.ViewObject.ShapeColor, color)
+        self.assertEqual(pad.ViewObject.Transparency, transparency)
+        self._assert_colors_close(pad.ViewObject.DiffuseColor, faces)
+        self._assert_colors_close(
+            [item.DiffuseColor for item in pad.ViewObject.ShapeAppearance], faces
+        )
+        rendered = self._scene_diffuse_colors(link.ViewObject)
+        missing = []
+        for face in faces:
+            if not any(
+                all(abs(channel - target) < 1.0 / 255.0 + 1e-4 for channel, target in zip(color, face))
+                for color in rendered
+            ):
+                missing.append(face)
+        self.assertEqual(missing, [], rendered)
+
     def test_appearance(self):
+        from Test.GuiRecompute import close_document_by_name, redo_document, save_document, undo_document
+
         self.pad.ViewObject.ShapeColor = (0.2, 0.6, 0.8)
+        face_count = len(self.pad.Shape.Faces)
+        self.pad.ViewObject.DiffuseColor = [
+            ((index + 1) / (face_count + 1), 0.15, 0.55, 1.0) for index in range(face_count)
+        ]
         self.pad.ViewObject.Transparency = 35
         color = self.pad.ViewObject.ShapeColor
+        transparency = self.pad.ViewObject.Transparency
+        faces = [self._rgb(item) for item in self.pad.ViewObject.DiffuseColor]
+        self.assertEqual(len(faces), face_count)
+        self.assertEqual(len(set(tuple(round(channel, 5) for channel in face) for face in faces)), face_count)
         result = self.runExtract()
-        self.assertEqual(result.document.Pad.ViewObject.ShapeColor, color)
-        self.assertEqual(result.document.Pad.ViewObject.Transparency, 35)
-        self.assertFalse(result.link.ViewObject.OverrideMaterial)
-        self.assertEqual(
-            result.component.ViewObject.ShapeAppearance[0].DiffuseColor,
-            result.link.LinkedObject.ViewObject.ShapeAppearance[0].DiffuseColor,
+        self._assert_link_appearance(result.link, result.document.Pad, faces, color, transparency)
+
+        undo_document(self.doc)
+        self.flushGui()
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        self.assertIsNone(self.doc.getObject("LocalPartLink"))
+        self._assert_colors_close(self.doc.Pad.ViewObject.DiffuseColor, faces)
+        self.assertEqual(self.doc.Pad.ViewObject.Transparency, transparency)
+        redo_document(self.doc)
+        self.flushGui()
+        link = self.doc.getObject("LocalPartLink")
+        self.assertIsNotNone(link)
+        self._assert_link_appearance(link, result.document.Pad, faces, color, transparency)
+
+        save_document(self.doc)
+        save_document(result.document)
+        source_path = self.doc.FileName
+        destination_path = result.document.FileName
+        assembly_name = self.assembly.Name
+        close_document_by_name(self.doc.Name)
+        close_document_by_name(result.document.Name)
+        reopened_source = App.openDocument(source_path)
+        reopened_destination = App.openDocument(destination_path)
+        self.flushGui()
+        assembly = reopened_source.getObject(assembly_name)
+        reopened_link = next(obj for obj in assembly.Group if obj.TypeId == "App::Link")
+        self._assert_link_appearance(
+            reopened_link, reopened_destination.Pad, faces, color, transparency
         )
 
     def test_command_and_tree_context(self):

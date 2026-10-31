@@ -77,6 +77,7 @@
 #include <App/GeoFeature.h>
 #include <App/PropertyStandard.h>
 #include <App/Transactions.h>
+#include <App/private/DocumentP.h>
 #include <App/ElementNamingUtils.h>
 #include <App/MutationClassification.h>
 #include <App/MainThreadSignal.h>
@@ -1612,6 +1613,20 @@ void Document::slotTouchedObject(const App::DocumentObject& Obj)
         window->updateActions(true);
     }
     FC_LOG(Obj.getFullName() << " touched");
+}
+
+void Document::recordViewProviderRemoval(const App::DocumentObject& object)
+{
+    // slotTransactionRemove deletes the provider when the transaction is null.
+    // Only record while the compatibility commit's undo transaction is open.
+    App::Transaction* transaction = nullptr;
+    if (d->_pcDocument) {
+        transaction = d->_pcDocument->d->activeUndoTransaction;
+    }
+    if (!transaction) {
+        return;
+    }
+    slotTransactionRemove(object, transaction);
 }
 
 void Document::addViewProvider(Gui::ViewProviderDocumentObject* vp)
