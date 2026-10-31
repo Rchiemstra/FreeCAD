@@ -31,6 +31,31 @@ class TestPrimitive(unittest.TestCase):
     def setUp(self):
         self.Doc = FreeCAD.newDocument("PartDesignTestPrimitive")
 
+    def testRefinedBoxChainElementNameGrowth(self):
+        body = self.Doc.addObject("PartDesign::Body", "Body")
+        boxes = []
+        # Check an initial batch before extending the chain: an uncompressed
+        # naming history doubles at each step and a full failing chain can OOM.
+        for end in (12, 50):
+            for i in range(len(boxes), end):
+                box = body.newObject("PartDesign::AdditiveBox", "Box")
+                box.Length = 10
+                box.Width = 10
+                box.Height = 2
+                box.Placement.Base = FreeCAD.Vector(0, 0, i * 1.8)
+                box.Refine = True
+                boxes.append(box)
+            self.Doc.recompute()
+            for i, box in enumerate(boxes):
+                self.assertFalse(box.Shape.isNull())
+                self.assertAlmostEqual(box.Shape.Volume, 100 * (2 + i * 1.8))
+                self.assertEqual(len(box.Shape.Faces), 6)
+                if i:
+                    # Bound the stored naming data directly, independently of
+                    # allocator/OS RSS, while retaining every named element.
+                    self.assertEqual(box.Shape.ElementMapSize, 26)
+                    self.assertLess(max(map(len, box.Shape.ElementMap)), 256)
+
     def testPrimitiveBox(self):
         self.Body = self.Doc.addObject("PartDesign::Body", "Body")
         self.Box = self.Doc.addObject("PartDesign::AdditiveBox", "Box")

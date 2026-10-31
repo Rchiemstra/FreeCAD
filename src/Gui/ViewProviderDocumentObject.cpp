@@ -977,6 +977,16 @@ bool ViewProviderDocumentObject::getDetailPath(
 
 void ViewProviderDocumentObject::onPropertyStatusChanged(const App::Property& prop, unsigned long oldStatus)
 {
+    // Match Property::setStatusValue(): runtime re-entrancy lockers bypass
+    // preflight and publication, so they must not require a GUI audit record.
+    // A transition that also changes any other bit still follows the audit.
+    constexpr unsigned long runtimeLockerMask =
+        (1UL << App::Property::User1) | (1UL << App::Property::User2)
+        | (1UL << App::Property::User3);
+    if (((oldStatus ^ prop.getStatus()) & ~runtimeLockerMask) == 0) {
+        return;
+    }
+
     if (!App::Document::isAnyRestoring() && pcObject && pcObject->getDocument()) {
         constexpr unsigned long serializedStatusMask =
             (1UL << App::Property::ReadOnly) | (1UL << App::Property::Hidden)

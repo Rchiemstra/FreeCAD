@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+ <g stroke="#2e3436" stroke-width="3" stroke-linejoin="round">
+  <path fill="#729fcf" d="m22 22 14 8v17l-14 8-14-8V30Z"/>
+  <path fill="none" d="m8 30 14 8 14-8M22 38v17"/>
+  <path fill="#8ae234" d="M56 14 43 3v8H30v8h13v8Z"/>
+ </g>
+</svg>

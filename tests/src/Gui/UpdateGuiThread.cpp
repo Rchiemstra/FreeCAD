@@ -3,12 +3,15 @@
 #include <gtest/gtest.h>
 
 #include <App/Application.h>
+#include <App/Document.h>
 #include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Sequencer.h>
+#include <Base/Writer.h>
 #include <Gui/ApplicationPy.h>
 #include <Gui/Application.h>
+#include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/ProgressBar.h>
 #include <src/App/InitApplication.h>
@@ -18,6 +21,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -154,6 +158,57 @@ TEST_F(UpdateGuiThreadTest, updateGuiOffMainThreadIsSilent)
     EXPECT_TRUE(eventProcessed.load());
 }
 
+TEST_F(UpdateGuiThreadTest, progressChangesDeferPainting)
+{
+    class PaintObserver: public QObject
+    {
+    public:
+        int paints {0};
+        bool eventFilter(QObject*, QEvent* event) override
+        {
+            if (event->type() == QEvent::Paint) {
+                ++paints;
+            }
+            return false;
+        }
+    } observer;
+
+    Gui::ProgressBar bar(Gui::SequencerBar::instance());
+    bar.installEventFilter(&observer);
+    bar.setRange(0, 100);
+    bar.setValue(0);
+    bar.show();
+    QApplication::processEvents();
+    ASSERT_GT(observer.paints, 0);
+
+    const auto checkDeferred = [&](const auto& change) {
+        observer.paints = 0;
+        change();
+        EXPECT_EQ(observer.paints, 0) << "progress must not paint inside model work";
+        QApplication::processEvents();
+        EXPECT_GT(observer.paints, 0) << "progress must paint on the next event turn";
+    };
+    checkDeferred([&] {
+        EXPECT_TRUE(QMetaObject::invokeMethod(
+            &bar, "setValueEx", Qt::DirectConnection, Q_ARG(int, 50)));
+    });
+    EXPECT_EQ(bar.value(), 50);
+    checkDeferred([&] {
+        EXPECT_TRUE(QMetaObject::invokeMethod(&bar, "resetEx", Qt::DirectConnection));
+    });
+    EXPECT_EQ(bar.value(), -1);
+    bar.setValue(50);
+    QApplication::processEvents();
+    checkDeferred([&] {
+        EXPECT_TRUE(QMetaObject::invokeMethod(
+            &bar, "setRangeEx", Qt::DirectConnection, Q_ARG(int, 0), Q_ARG(int, 10)));
+    });
+    EXPECT_EQ(bar.maximum(), 10);
+    bar.setUpdatesEnabled(false);
+    EXPECT_TRUE(QMetaObject::invokeMethod(&bar, "resetEx", Qt::DirectConnection));
+    EXPECT_FALSE(bar.updatesEnabled());
+}
+
 TEST_F(UpdateGuiThreadTest, progressIndicatorOffMainThreadDoesNotLogOrThrow)
 {
     std::string message;
@@ -212,4 +267,40 @@ TEST_F(UpdateGuiThreadTest, progressIndicatorOffMainThreadDoesNotLogOrThrow)
     sequencer.join();
     EXPECT_TRUE(sequencerError.empty()) << sequencerError;
     EXPECT_TRUE(errors.errors.empty()) << errors.errors;
+}
+
+TEST_F(UpdateGuiThreadTest, guiDocumentSaveReleasesGilBeforeBlockingInvoke)
+{
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* document = App::GetApplication().newDocument("GuiSaveGil", "", flags);
+    ASSERT_NE(document, nullptr);
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    ASSERT_NE(guiDocument, nullptr);
+
+    struct SaveInvokeProbe {};
+    App::MainThreadSignalConfig::setHooks(
+        &updateGuiTestIsMainThread,
+        [](std::function<void()>&&, bool blocking) {
+            EXPECT_TRUE(blocking);
+            EXPECT_FALSE(PyGILState_Check());
+            // Inspect the caller before any invoke hook can release the GIL.
+            // Stop here so a regression fails without deadlocking the test.
+            throw SaveInvokeProbe {};
+        });
+    for (const bool withGil : {false, true}) {
+        std::thread worker([&] {
+            std::optional<Base::PyGILStateLocker> gil;
+            if (withGil) {
+                gil.emplace();
+            }
+            Base::StringWriter writer;
+            EXPECT_THROW(guiDocument->SaveDocFile(writer), SaveInvokeProbe);
+            EXPECT_EQ(PyGILState_Check() != 0, withGil);
+        });
+        worker.join();
+    }
+    App::MainThreadSignalConfig::setHooks(
+        &updateGuiTestIsMainThread, &updateGuiTestInvokeOnMain);
+    App::GetApplication().closeDocument("GuiSaveGil");
 }

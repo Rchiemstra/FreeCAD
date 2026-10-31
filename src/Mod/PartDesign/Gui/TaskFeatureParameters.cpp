@@ -27,8 +27,10 @@
 
 
 #include <App/DocumentObserver.h>
+#include <App/DocumentHandle.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/Control.h>
 #include <Gui/InputHint.h>
 #include <Gui/Inventor/Draggers/Gizmo.h>
 #include <Gui/MainWindow.h>
@@ -39,6 +41,7 @@
 #include "ui_TaskPreviewParameters.h"
 
 #include "TaskFeatureParameters.h"
+#include "TaskRecomputeRetry.h"
 #include "TaskSketchBasedParameters.h"
 #include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
@@ -170,10 +173,37 @@ void TaskFeatureParameters::recomputeFeature()
 {
     if (!blockUpdate) {
         auto* feature = getObject<PartDesign::Feature>();
-        assert(feature);
+        if (!feature) {
+            return;
+        }
 
-        PartGui::submitDocumentRecomputeOrReport(*feature);
-        feature->recomputePreview();
+        const auto retry = [this] {
+            retryTaskAction(this, "preview_retry_pending", [this] { recomputeFeature(); });
+        };
+        // Joining an identical active request can lose edits made after its
+        // snapshot. Submit the latest preview only once the lane is idle.
+        if (Gui::documentExecutionLaneBusy(*feature->getDocument())) {
+            retry();
+            return;
+        }
+        if (property("preview_recompute_pending").toBool()) {
+            setProperty("preview_recompute_pending", false);
+            feature->recomputePreview();
+            if (!feature->isTouched() || feature->isError()) {
+                return;
+            }
+        }
+        const auto outcome = PartGui::trySubmitDocumentRecompute(*feature);
+        if (outcome.result == App::DocumentCommandSubmitResult::Busy) {
+            retry();
+            return;
+        }
+        if (PartGui::reportDocumentRecomputeSubmitOutcome(outcome)) {
+            // PreviewShape must be derived from the committed feature, and
+            // must not mutate the model while its recompute is still active.
+            setProperty("preview_recompute_pending", true);
+            retry();
+        }
     }
 }
 
@@ -189,46 +219,111 @@ TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* 
 
 TaskDlgFeatureParameters::~TaskDlgFeatureParameters() = default;
 
+bool TaskDlgFeatureParameters::deferParameterApplication()
+{
+    if (acceptPending || cancelPending) {
+        return true;
+    }
+    auto* object = getObject();
+    if (!object || !Gui::documentExecutionLaneBusy(*object->getDocument())) {
+        return false;
+    }
+    // Dress-up accept overrides write Base before calling this base class.
+    // Defer that first application too; completion uses finishAccept instead.
+    retryTaskAction(this, "apply_retry_pending", [this] {
+        auto* feature = getObject();
+        if (!cancelPending && feature
+            && Gui::Control().activeDialog(feature->getDocument()) == this) {
+            Gui::Control().accept(feature->getDocument());
+        }
+    });
+    return true;
+}
+
 bool TaskDlgFeatureParameters::accept()
 {
+    if (acceptPending || cancelPending) {
+        return false;
+    }
+    acceptPending = true;
+    return finishAccept();
+}
+
+bool TaskDlgFeatureParameters::deferAccept()
+{
+    retryTaskAction(this, "accept_retry_pending", [this] {
+        auto* object = getObject();
+        if (!acceptPending || !object
+            || Gui::Control().activeDialog(object->getDocument()) != this) {
+            return;
+        }
+        auto* document = object->getDocument();
+        // Match TaskView's deletion guard while completing directly: a retry
+        // must never re-enter derived accept() and apply dress-up Base again.
+        setProperty("taskview_accept_or_reject", true);
+        const bool success = finishAccept();
+        setProperty("taskview_accept_or_reject", QVariant());
+        if (success || property("taskview_remove_dialog").isValid()) {
+            Gui::Control().closeDialog(document);
+        }
+    });
+    return false;
+}
+
+bool TaskDlgFeatureParameters::finishAccept()
+{
     App::DocumentObject* feature = getObject();
-    bool isUpdateBlocked = false;
+    if (!feature) {
+        return false;
+    }
+    if (Gui::documentExecutionLaneBusy(*feature->getDocument())) {
+        return deferAccept();
+    }
     try {
-        // Iterate over parameter dialogs and apply all parameters from them
-        for (QWidget* wgt : Content) {
-            TaskFeatureParameters* param = qobject_cast<TaskFeatureParameters*>(wgt);
-            if (!param) {
-                continue;
+        if (!acceptParametersApplied) {
+            for (QWidget* wgt : Content) {
+                auto* param = qobject_cast<TaskFeatureParameters*>(wgt);
+                if (param) {
+                    param->saveHistory();
+                    param->apply();
+                }
             }
-
-            param->saveHistory();
-            param->apply();
-            isUpdateBlocked |= param->isUpdateBlocked();
-        }
-        // Make sure the feature is what we are expecting
-        // Should be fine but you never know...
-        if (!feature->isDerivedFrom<PartDesign::Feature>()) {
-            throw Base::TypeError("Bad object processed in the feature dialog.");
+            if (!feature->isDerivedFrom<PartDesign::Feature>()) {
+                throw Base::TypeError("Bad object processed in the feature dialog.");
+            }
+            acceptParametersApplied = true;
         }
 
-        if (isUpdateBlocked) {
-            if (!PartGui::submitDocumentRecomputeOrReport(*feature)) {
-                return false;
+        if (acceptRecompute) {
+            const auto status = acceptRecompute->status();
+            if (!status.terminal()) {
+                return deferAccept();
+            }
+            acceptRecompute.reset();
+            if (status.state != App::DocumentCommandState::Completed
+                || !status.recompute
+                || status.recompute->state != App::DocumentCommandRecomputeState::Completed
+                || feature->isError()) {
+                throw Base::RuntimeError(feature->getStatusString());
             }
         }
         else {
-            // object was already computed, nothing more to do with it...
-            Gui::cmdAppDocument(feature, "purgeTouched()");
-
-            // ...but touch parents to signal the change...
-            for (auto obj : feature->getInList()) {
-                obj->touch();
+            // Even an already previewed feature needs a full document pass:
+            // Body and downstream consumers must be current before committing.
+            const auto outcome = PartGui::trySubmitDocumentRecompute(*feature->getDocument());
+            if (outcome.result == App::DocumentCommandSubmitResult::Busy) {
+                return deferAccept();
             }
-            // ...and recompute them
-            if (!PartGui::submitDocumentRecomputeOrReport(*feature->getDocument())) {
+            if (!PartGui::reportDocumentRecomputeSubmitOutcome(outcome)) {
+                acceptPending = acceptParametersApplied = false;
                 return false;
             }
+            acceptRecompute.emplace(
+                outcome.commandId, feature->getDocument()->executionHandle().identity()
+            );
+            return deferAccept();
         }
+        acceptPending = acceptParametersApplied = false;
 
         App::DocumentObject* previous = static_cast<PartDesign::Feature*>(feature)->getBaseObject(
             /* silent = */ true
@@ -249,6 +344,8 @@ bool TaskDlgFeatureParameters::accept()
         feature->getDocument()->commitTransaction();
     }
     catch (const Base::Exception& e) {
+        acceptPending = acceptParametersApplied = false;
+        acceptRecompute.reset();
         QString errorText = QString::fromUtf8(e.what());
         QString statusText = QString::fromUtf8(getObject()->getStatusString());
 
@@ -273,7 +370,18 @@ bool TaskDlgFeatureParameters::accept()
 
 bool TaskDlgFeatureParameters::reject()
 {
+    acceptPending = false;
+    cancelPending = true;
     auto feature = getObject<PartDesign::Feature>();
+    if (Gui::documentExecutionLaneBusy(*feature->getDocument())) {
+        retryTaskAction(this, "reject_retry_pending", [this] {
+            auto* object = getObject();
+            if (object && Gui::Control().activeDialog(object->getDocument()) == this) {
+                Gui::Control().reject(object->getDocument());
+            }
+        });
+        return false;
+    }
     App::DocumentObjectWeakPtrT weakptr(feature);
     App::Document* document = feature->getDocument();
 

@@ -151,15 +151,16 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    // No default arguments: the scope type is incomplete in this header, and an
+    // empty default scope would need its destructor here (Clang, C++23).
     [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithOptions(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
         bool retainUndoHistory,
-        bool nestInCallerTransaction = false,
-        std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget = {}
-    );
+        bool nestInCallerTransaction,
+        std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget);
     [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
         const PreparedEdit& edit);
 

@@ -39,6 +39,7 @@ from Test.GuiRecompute import (
     save_document_as,
     touch_on_owner_thread,
     undo_document,
+    wait_for_mutation_ready,
     write_recovery_snapshot,
 )
 
@@ -56,6 +57,86 @@ class TestGuiDocument(unittest.TestCase):
         # Close the document
         if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
             close_document(self.doc)
+
+    def testSaveAsRelabelRunsOnGuiThread(self):
+        notifications = []
+        document = self.doc
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Observer:
+            def slotRelabelDocument(self, doc):
+                if doc == document:
+                    notifications.append(QtCore.QThread.currentThread() == gui_thread)
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                self.doc.saveAs(os.path.join(directory, "Relabeled.FCStd"))
+                self.assertEqual(self.doc.Label, "Relabeled")
+                self.assertEqual(notifications, [True])
+                self.doc.Label = "Renamed after Save As"
+                self.assertEqual(notifications, [True, True])
+                # A pending Qt dataChanged must never outlive the tree item.
+                close_document(self.doc)
+                self.doc = None
+                QtWidgets.QApplication.processEvents()
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+    def testSaveAsRelabelRejectsSynchronousClose(self):
+        document = self.doc
+        errors = []
+
+        class Observer:
+            def slotRelabelDocument(self, doc):
+                if doc == document:
+                    try:
+                        FreeCAD.closeDocument(doc.Name)
+                    except RuntimeError as exc:
+                        errors.append(str(exc))
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "Relabeled.FCStd")
+                save_document_as(document, path)
+                self.assertEqual(len(errors), 1)
+                self.assertIn("blocking document notification", errors[0])
+                self.assertIn("closeAsync", errors[0])
+                self.assertEqual(FreeCAD.getDocument(document.Name), document)
+                self.assertTrue(os.path.isfile(path))
+                self.assertFalse(document.hasPendingFileChanges())
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+    def testTextRunnerDrainsDeferredDeletesBetweenCases(self):
+        import TestApp
+        import shiboken6
+        from unittest.mock import patch
+
+        objects = []
+        callbacks = []
+
+        class ScheduleDelete(unittest.TestCase):
+            def runTest(self):
+                obj = QtCore.QObject()
+                objects.append(obj)
+                obj.deleteLater()
+                QtCore.QTimer.singleShot(0, lambda: callbacks.append(True))
+
+        class CheckDeleted(unittest.TestCase):
+            def runTest(self):
+                self.assertFalse(shiboken6.isValid(objects[0]))
+                self.assertEqual(callbacks, [True])
+
+        suite = unittest.TestSuite([ScheduleDelete(), CheckDeleted()])
+        with patch.object(
+            unittest.defaultTestLoader, "loadTestsFromName", return_value=suite
+        ), patch.object(TestApp, "_drain_gui_after_tests"):
+            result = TestApp.TestText("DeferredDeleteProbe")
+        self.assertTrue(result.wasSuccessful())
 
     def _findAutoSaver(self):
         app = QtWidgets.QApplication.instance()
@@ -331,8 +412,8 @@ class TestGuiDocument(unittest.TestCase):
         thread inside its commit boundary.
 
         What has to hold is that the refresh command does not *block* on it and
-        that the proxy never runs off the main thread, not that the feature is
-        left unrecomputed.
+        that the proxy runs on the document owner thread, not that the feature
+        is left unrecomputed.
         """
 
         class RefreshProxy:
@@ -363,6 +444,10 @@ class TestGuiDocument(unittest.TestCase):
             QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
             FreeCADGui.updateGui()
             time.sleep(0.005)
+
+        # Object state can settle before commit finalization and notification
+        # replay finish. Wait for the document before reading live results.
+        wait_for_mutation_ready(self.doc, timeout_seconds=5.0)
 
         # Dispatched, not run inline: the proxy sleeps 50ms and the command
         # still returns immediately.
