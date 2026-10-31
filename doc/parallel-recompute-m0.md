@@ -35,7 +35,7 @@ scope excludes. A specification is not an implemented or passing test.
 | Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
 | Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. The M0.2b subsection records the same test-only harness for Cut, Fuse and Common. Those kernels stay not detached. |
 | Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs are in the M0.2b subsection. That text is input to the owner, not a venue decision. Thread qualification stays open. |
-| Working instrumented race checks, including cold/error/cancel cases | Static gate design | **Done (design); needs build** plus instrumented OCC and a compatible runner. No race pass claimed. |
+| Working instrumented race checks, including cold/error/cancel cases | Static gate design | **M0.3a:** FreeCAD TSan runs exist. Startup was a reported race, then the probe was removed. Boolean **fails** on the `Part::SignalException` static. Box is **blocked**: no FreeCAD-side race, and OCC is not instrumented. No suppressions. Thread adapters stay off. Cold/error/cancel TSan is still open. |
 | Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
 | Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
 | Exact sibling publication, broad conflict invalidation and existing client visibility | Static assertions/test placement | **Done (design); needs build** for demonstration; generic serialization stays intact. |
@@ -703,7 +703,7 @@ kernel is the same geometry as the owner kernel and was not run concurrently
 with other OCC work. It stays **U**. These numbers do not justify an M1
 speedup claim. Boolean kernels, TShape and cache sharing, OCC globals and the
 owner callbacks that fire today are in the M0.2b subsection. The kernel stays
-**U**. Callback order across features and TSan remain later.
+**U**. Callback order across features remains later. TSan is the M0.3a subsection.
 
 ### M0.2b Boolean venues
 
@@ -852,6 +852,102 @@ owner. A per-call process does not win. A persistent worker plus a cached
 fingerprint is not shown to beat either in-process venue while the 3149.620 ms
 after pid exit remains unresolved, and the 12.055 ms that would remain without
 that interval still does not beat `cut:1`. No M1 speedup is claimed.
+
+### M0.3a race runs
+
+Measured locally on 2026-10-31. Tree `build/tsan` only. `build/relWithDebInfo` was not reconfigured. Production scheduling is unchanged. The new test is `concurrentFrozenKernelsWithOwnerRecompute` in `tests/src/Mod/Part/App/DetachedKernelQualificationTest.cpp`. No production change. The Boolean finding is described and left open.
+
+#### Build
+
+Pixi clang 21.1.8, Ninja, CMake 4.4.3. From the repository, inside the pixi environment (`CONDA_PREFIX` set, `CFLAGS` and `CXXFLAGS` empty):
+
+```
+cmake -S . -B build/tsan -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER="$CONDA_PREFIX/bin/clang" \
+  -DCMAKE_CXX_COMPILER="$CONDA_PREFIX/bin/clang++" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_JOB_POOL_COMPILE=compile_jobs \
+  -DCMAKE_JOB_POOL_LINK=link_jobs \
+  -DCMAKE_PROJECT_INCLUDE="$HOME/Documents/code/agents/PRC/logs/m0-3a/preload-linguist.cmake" \
+  -DBUILD_WITH_CONDA=ON \
+  -DBUILD_GUI=OFF \
+  -DBUILD_FEM_NETGEN=ON \
+  -DENABLE_DEVELOPER_TESTS=ON \
+  -DFREECAD_LIBPACK_USE=OFF \
+  -DFREECAD_USE_EXTERNAL_SMESH=ON \
+  -DFREECAD_USE_EXTERNAL_JSON=ON \
+  -DFREECAD_USE_PCH=OFF \
+  -DFREECAD_USE_PCL=ON \
+  -DFREECAD_USE_PYBIND11=ON \
+  -DFREECAD_VERSION_INCLUDE_GIT=OFF \
+  -DFREECAD_USE_SANITIZER_TSAN=ON \
+  -DOCCT_CMAKE_FALLBACK=ON \
+  -DQT_HOST_PATH="$CONDA_PREFIX" \
+  -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" \
+  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+  -DOCC_INCLUDE_DIR="$CONDA_PREFIX/include/opencascade" \
+  -DOCC_LIBRARY_DIR="$CONDA_PREFIX/lib" \
+  -DCMAKE_C_FLAGS="-fsanitize=thread -g -O1 -fno-omit-frame-pointer" \
+  -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1 -fno-omit-frame-pointer" \
+  -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O1 -g -DNDEBUG" \
+  -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g -DNDEBUG" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$HOME/Documents/code/agents/PRC/logs/m0-3a/ld-mold-tsan.sh -fsanitize=thread" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=$HOME/Documents/code/agents/PRC/logs/m0-3a/ld-mold-tsan.sh -fsanitize=thread" \
+  -DCMAKE_MODULE_LINKER_FLAGS="-fuse-ld=$HOME/Documents/code/agents/PRC/logs/m0-3a/ld-mold-tsan.sh -fsanitize=thread"
+cmake --build build/tsan --target Part_tests_run FreeCADMainCmd -j 6
+cp -a build/tsan/bin/FreeCADCmd build/tsan/tests/FreeCADCmd
+```
+
+`FreeCADMainCmd` is the sibling `FreeCADCmd` the harness spawns. The backend looks for it next to the test executable, so the copy is required. `BUILD_GUI=OFF` keeps in-tree Coin out of this binary. App translations still call `qt_add_translation`, and LinguistTools is otherwise searched only when GUI is on, so `preload-linguist.cmake` is `find_package(Qt6 REQUIRED COMPONENTS LinguistTools)`. FreeCAD appends `-Wl,--no-undefined` to shared libraries. Clang does not link the TSan runtime into those libraries; the executable exports it (`--dynamic-list` on `libclang_rt.tsan-x86_64.a`). mold then rejects the link. `ld-mold-tsan.sh` drops only `--no-undefined` and execs pixi `ld.mold`.
+
+Generated FreeCAD compile lines contain `-fsanitize=thread -g -O1 -fno-omit-frame-pointer` and RelWithDebInfo `-O1 -g -DNDEBUG`. They do not contain `-O2`. Checked on `src/Mod/Part/App/SignalException.cpp` and `src/Base/Exception.cpp`. `__tsan_init` is defined in `tests/Part_tests_run` and undefined in `lib/libFreeCADBase.so`.
+
+#### Coverage
+
+Not rebuilt and not instrumented: pixi OCC 8.0.1, Qt 6.11.2, Python 3.13.15, gtest 1.18.0. Coin is not in the link (`BUILD_GUI=OFF`). This harness does not need Gui. Vendored sources compiled into FreeCADBase are instrumented: zipios++, PyCXX, and fastsignals.
+
+TSan interposes `malloc`/`free` and pthread for the whole process, so allocation and mutex calls from OCC, Qt, and Python are visible. Plain loads and stores inside those libraries are not. A report requires both conflicting accesses in instrumented code, or one intercepted call. A race inside OCC, or a FreeCAD access racing an uninstrumented OCC store, is not reported. `BRepPrimAPI_MakeBox` and the Boolean work inside OCC (`TShape`, `BOPAlgo`) are outside this coverage. Section 3.C item 2 asks for instrumented OCC. That is unavailable, so a clean FreeCAD log is not a pass, and thread adapters stay disabled.
+
+#### Startup
+
+`TsanStartupProbe.deliberateTwoThreadRace` was compiled into `Part_tests_run`, run once, and removed (source and the `CMakeLists.txt` line). TSan reported a data race at `tests/src/Mod/Part/App/TsanStartupProbe.cpp:16` and the process exited 66. Log: `~/Documents/code/agents/PRC/logs/m0-3a/startup-probe.log`. The qualification binary does not list that test.
+
+#### Runs
+
+`TSAN_OPTIONS=halt_on_error=0:exitcode=66:die_after_fork=0:report_thread_leaks=0`, log path under `logs/m0-3a/`. `FREECAD_USER_HOME` for the test process is `logs/m0-3a/user-home`. The harness overwrites the child `FreeCADCmd` home to a directory it creates under `XDG_CACHE_HOME` (`logs/m0-3a/cache`).
+
+Filter, `--gtest_repeat=20` after one smoke iteration:
+
+- `detachedBoxHarnessMatchesOwnerThreadAndIsolatedProcess`
+- `booleanHarnessMatchesOwnerThreadAndIsolatedProcess`
+- `concurrentFrozenKernelsWithOwnerRecompute`
+
+Gtest on the 20 repeats: 60/60 passed, no skips. Process exit 66. Logs: `repeat20-gtest.log` and `repeat20.1921222` (21 warnings). The smoke log `smoke.1919835` is the same race, three warnings.
+
+The stress test uses 4 workers. Each gets a private `BRepBuilderAPI_Copy` of a frozen Box and of Cut operands, then runs `executeBoxKernel` and `executeBooleanKernel` (Cut, Fuse, or Common) plus `completeBooleanComputation`. The owner recomputes unrelated boxes and an unrelated Cut on the document lane. The test requires at least two workers active together and at least one owner recompute during that window. It passed. No sleep is used to force overlap.
+
+`boxVenueCostsWideAndNarrow` and `booleanVenueCostsWideAndNarrow` were not in the 20 repeats. They call the same kernels on one joined thread and spend the wall on the isolated process. They are not a second race sample.
+
+#### Findings
+
+All 21 warnings are one race. `nm -C -S Part.so` shows `currentSignalMode` as a 1-byte BSS symbol. The TSan address matches it.
+
+| Class | Report | Shared state | Proposal |
+| --- | --- | --- | --- |
+| (a) real | `SignalException.cpp:211` static, ctor lines 217–218, dtor line 229. Reached from `FCBRepAlgoAPI_BooleanOperation.cpp:107` and `:139`. Worker side is `executeBooleanKernel` (Cut, Fuse, Common). Owner side is `Part::Boolean::execute` (`FeaturePartBoolean.cpp:150`) through `Part::Cut::makeOperation` (`FeaturePartCut.cpp:46`) on the document execution lane | Process-global `currentSignalMode`. Concurrent `Build` calls read and write it with no lock | Do not construct `Part::SignalException` on a worker. Keep signal-policy changes on the owner. The same dtor then calls `Base::SystemHandler::installSegfaultHandler()` at line 232 and does not put the previous `SIGSEGV` handler back. That restore bug is the one fixed on a separate branch; it is still in this tree. A mutex around the whole Boolean would hide the race and remove the overlap. No product edit in this slice |
+
+No report in class (b), (c), or (d). No suppressions file. `Base::SignalException` (`src/Base/Exception.cpp:733`) did not appear. The Box kernel did not appear. MakeBox still ran in uninstrumented OCC.
+
+#### Gate
+
+| Kernel | Status | Evidence |
+| --- | --- | --- |
+| Box | blocked | No FreeCAD-side race in these runs. The kernel is OCC and is not instrumented. Thread adapters stay off |
+| Boolean | fail | Unresolved race on `currentSignalMode` when concurrent `Build` calls overlap. OCC `BOPAlgo` / `TShape` coverage is also missing, so fixing this static would still not be an OCC pass |
+
+Startup was a reported race and exit 66, then the probe was removed. This run is not a startup failure.
 
 ### Compatibility and failure matrix to run with builds
 

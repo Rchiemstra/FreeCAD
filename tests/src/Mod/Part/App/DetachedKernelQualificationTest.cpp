@@ -5058,3 +5058,242 @@ TEST_F(DetachedKernelQualificationTest, booleanVenueCostsWideAndNarrow)
     appendCost(std::string("m0.2a_amortized_fixed_ms=") + std::to_string(kM02aAmortizedMs));
 #endif
 }
+
+namespace
+{
+
+FrozenOperand privateOperand(const FrozenOperand& source, long tag)
+{
+    FrozenOperand copy;
+    copy.label = source.label;
+    Part::TopoShape named;
+    named.Hasher = nullptr;
+    named.setShape(deepCopyShape(source.shape), /*resetElementMap=*/true);
+    named.Tag = tag;
+    named.resetElementMap(seededElementMap());
+    copy.named = std::move(named);
+    copy.shape = copy.named.getShape();
+    return copy;
+}
+
+struct ConcurrentKernelInputs
+{
+    FrozenBoxInputs box;
+    BooleanOp kind {BooleanOp::Cut};
+    bool checkModel {true};
+    double fuzzy {1};
+    double confusion {0};
+    FrozenOperand base;
+    FrozenOperand tool;
+};
+
+void runConcurrentKernels(const ConcurrentKernelInputs& inputs,
+                          std::atomic<bool>& go,
+                          std::atomic<bool>& stop,
+                          std::atomic<int>& ready,
+                          std::atomic<int>& active,
+                          std::atomic<int>& peak,
+                          std::atomic<int>& boxOk,
+                          std::atomic<int>& booleanOk,
+                          std::atomic<int>& failures)
+{
+    ready.fetch_add(1, std::memory_order_release);
+    ready.notify_all();
+    go.wait(false, std::memory_order_acquire);
+    while (!stop.load(std::memory_order_acquire)) {
+        const int now = active.fetch_add(1, std::memory_order_acq_rel) + 1;
+        int seen = peak.load(std::memory_order_relaxed);
+        while (now > seen
+               && !peak.compare_exchange_weak(
+                   seen, now, std::memory_order_relaxed, std::memory_order_relaxed)) {
+        }
+        struct LeaveActive
+        {
+            std::atomic<int>& active;
+            ~LeaveActive()
+            {
+                active.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        } leave {active};
+
+        try {
+            const auto box = executeBoxKernel(inputs.box);
+            if (box.succeeded && !box.shape.IsNull()) {
+                boxOk.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                failures.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            FrozenBoolean frozen;
+            frozen.kind = inputs.kind;
+            frozen.checkModel = inputs.checkModel;
+            frozen.fuzzy = inputs.fuzzy;
+            frozen.confusion = inputs.confusion;
+            frozen.base = inputs.base;
+            frozen.tool = inputs.tool;
+            auto kernel = executeBooleanKernel(frozen.kind,
+                                               frozen.base.shape,
+                                               frozen.tool.shape,
+                                               frozen.base.label,
+                                               frozen.tool.label);
+            if (kernel.succeeded && kernel.operation && !kernel.shape.IsNull()) {
+                completeBooleanComputation(kernel, frozen);
+                if (!kernel.validationRejected && !kernel.named.isNull()) {
+                    booleanOk.fetch_add(1, std::memory_order_relaxed);
+                }
+                else {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            else {
+                failures.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        catch (const std::exception&) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        catch (...) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+}  // namespace
+
+TEST_F(DetachedKernelQualificationTest, concurrentFrozenKernelsWithOwnerRecompute)
+{
+    // M0.3a stress. N workers run the Box and Boolean kernels on private frozen
+    // copies while the owner recomputes unrelated features. Production
+    // scheduling is unchanged. No sleep is used to manufacture overlap.
+    constexpr int kWorkers = 4;
+    constexpr int kOwnerPasses = 4;
+    const BooleanOp kinds[] = {BooleanOp::Cut, BooleanOp::Fuse, BooleanOp::Common};
+
+    auto* source = addBox(*_document, "RaceSource");
+    ASSERT_NE(source, nullptr);
+    source->Placement.setValue(rotatedPlacement());
+    auto raceCut = prepareBoolean<Part::Cut>(*_document, "Race");
+    ASSERT_NE(raceCut.feature, nullptr);
+    _document->recompute();
+    ASSERT_FALSE(source->isError());
+    ASSERT_FALSE(raceCut.feature->isError());
+
+    const auto frozenBox = freezeBox(*source);
+    const auto frozenCut = freezeBoolean(*raceCut.feature, BooleanOp::Cut);
+    const auto liveShape = source->Shape.getValue();
+    const auto liveBase = raceCut.base->Shape.getValue();
+    const auto liveTool = raceCut.tool->Shape.getValue();
+    const auto liveVolume = PartTestHelpers::getVolume(liveShape);
+    const auto liveBaseIds = tshapeIds(liveBase);
+    const auto liveToolIds = tshapeIds(liveTool);
+
+    std::vector<Part::Box*> unrelated;
+    unrelated.reserve(4);
+    for (int index = 0; index < 4; ++index) {
+        const std::string name = "Unrelated" + std::to_string(index);
+        auto* box = addBox(*_document, name.c_str(), 12.0 + index, 8.0, 6.0);
+        ASSERT_NE(box, nullptr);
+        box->Placement.setValue(
+            Base::Placement(Base::Vector3d(80.0 + (20.0 * index), 0, 0), Base::Rotation()));
+        unrelated.push_back(box);
+    }
+    auto unrelatedCut = prepareBoolean<Part::Cut>(*_document, "Owner");
+    ASSERT_NE(unrelatedCut.feature, nullptr);
+    _document->recompute();
+    ASSERT_FALSE(unrelatedCut.feature->isError());
+    for (const auto* box : unrelated) {
+        ASSERT_FALSE(box->isError());
+    }
+
+    std::vector<ConcurrentKernelInputs> inputs(static_cast<std::size_t>(kWorkers));
+    for (int index = 0; index < kWorkers; ++index) {
+        auto& slot = inputs[static_cast<std::size_t>(index)];
+        slot.box = frozenBox;
+        slot.kind = kinds[index % 3];
+        slot.checkModel = frozenCut.checkModel;
+        slot.fuzzy = frozenCut.fuzzy;
+        slot.confusion = frozenCut.confusion;
+        const long tag = 1000L + index;
+        slot.base = privateOperand(frozenCut.base, tag);
+        slot.tool = privateOperand(frozenCut.tool, tag + 100L);
+        EXPECT_FALSE(anyPartner(slot.base.shape, liveBase));
+        EXPECT_FALSE(anyPartner(slot.tool.shape, liveTool));
+        EXPECT_FALSE(anyPartner(slot.base.shape, slot.tool.shape));
+    }
+
+    std::atomic<bool> go {false};
+    std::atomic<bool> stop {false};
+    std::atomic<int> ready {0};
+    std::atomic<int> active {0};
+    std::atomic<int> peak {0};
+    std::atomic<int> boxOk {0};
+    std::atomic<int> booleanOk {0};
+    std::atomic<int> failures {0};
+    std::atomic<int> ownerSawActive {0};
+
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<std::size_t>(kWorkers));
+    for (int index = 0; index < kWorkers; ++index) {
+        workers.emplace_back([&, index] {
+            runConcurrentKernels(inputs[static_cast<std::size_t>(index)],
+                                 go,
+                                 stop,
+                                 ready,
+                                 active,
+                                 peak,
+                                 boxOk,
+                                 booleanOk,
+                                 failures);
+        });
+    }
+
+    int arrived = ready.load(std::memory_order_acquire);
+    while (arrived < kWorkers) {
+        ready.wait(arrived, std::memory_order_acquire);
+        arrived = ready.load(std::memory_order_acquire);
+    }
+    go.store(true, std::memory_order_release);
+    go.notify_all();
+
+    int passes = 0;
+    while (passes < kOwnerPasses || booleanOk.load(std::memory_order_acquire) < kWorkers) {
+        unrelated[0]->Length.setValue(12.0 + passes);
+        unrelated[0]->touch();
+        unrelatedCut.base->touch();
+        unrelatedCut.tool->touch();
+        unrelatedCut.feature->touch();
+        const bool overlapped = active.load(std::memory_order_acquire) > 0;
+        _document->recompute();
+        if (overlapped || active.load(std::memory_order_acquire) > 0) {
+            ownerSawActive.fetch_add(1, std::memory_order_relaxed);
+        }
+        ++passes;
+        if (passes > kOwnerPasses + 8) {
+            break;
+        }
+    }
+
+    stop.store(true, std::memory_order_release);
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    EXPECT_GE(peak.load(), 2);
+    EXPECT_GT(ownerSawActive.load(), 0);
+    EXPECT_GE(boxOk.load(), kWorkers);
+    EXPECT_GE(booleanOk.load(), kWorkers);
+    EXPECT_EQ(failures.load(), 0);
+    EXPECT_TRUE(source->Shape.getValue().IsSame(liveShape));
+    EXPECT_TRUE(raceCut.base->Shape.getValue().IsSame(liveBase));
+    EXPECT_TRUE(raceCut.tool->Shape.getValue().IsSame(liveTool));
+    EXPECT_EQ(tshapeIds(raceCut.base->Shape.getValue()), liveBaseIds);
+    EXPECT_EQ(tshapeIds(raceCut.tool->Shape.getValue()), liveToolIds);
+    EXPECT_NEAR(PartTestHelpers::getVolume(source->Shape.getValue()), liveVolume, 1e-6);
+    EXPECT_FALSE(source->isError());
+    EXPECT_FALSE(raceCut.feature->isError());
+    EXPECT_FALSE(unrelatedCut.feature->isError());
+    for (const auto* box : unrelated) {
+        EXPECT_FALSE(box->isError());
+    }
+}
