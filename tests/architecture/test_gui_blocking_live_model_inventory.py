@@ -3083,6 +3083,9 @@ def test_repository_inventory_fixture_collects_source_findings_once(tmp_path: Pa
 
 
 class RepositoryInventoryTests(unittest.TestCase):
+    def test_modeldiff_live_model_path_is_inventoried(self):
+        self.assertIn("src/Mod/ModelDiff/modeldiff.py", rules.EXTRA_GUI_FILES)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.inventory = _load_inventory()
