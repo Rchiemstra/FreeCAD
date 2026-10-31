@@ -28,7 +28,6 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
-#include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
 #include <Base/Tools.h>
@@ -234,17 +233,6 @@ void PropertyView::slotChangePropertyData(const App::Property& prop)
 
 void PropertyView::slotChangePropertyView(const Gui::ViewProvider&, const App::Property& prop)
 {
-    // Document undo replays view-provider properties on the owner thread and
-    // emits this signal there. Neither the editor nor the timer may be touched
-    // off the GUI thread, so only queue the refresh onto this widget. A
-    // blocking call would re-enter the GUI command that is waiting on the undo.
-    if (!App::MainThreadSignalConfig::isMainThread()) {
-        QMetaObject::invokeMethod(
-            this,
-            [this] { timer->start(ViewParams::instance()->getPropertyViewTimer()); },
-            Qt::QueuedConnection);
-        return;
-    }
     if (propertyEditorView->propOwners.contains(prop.getContainer())) {
         propertyEditorView->updateProperty(prop);
         timer->start(ViewParams::instance()->getPropertyViewTimer());

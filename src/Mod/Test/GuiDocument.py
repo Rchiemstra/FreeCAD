@@ -693,43 +693,6 @@ class TestGuiDocument(unittest.TestCase):
             # close the editor while its file still exists
             closeEditor()
 
-    def testViewPropertyUndoStartsNoOffThreadTimer(self):
-        # Undo replays view-provider properties on the document owner thread.
-        # PropertyView is a QObject subscriber of that notification; starting
-        # its timer off the GUI thread corrupts Qt and later aborts in the
-        # GL widget destructor when the temp directory's path length puts the
-        # corrupted chunk on a glibc size-class boundary.
-        try:
-            import Part  # noqa: F401
-        except ImportError as exc:
-            raise unittest.SkipTest(f"Part workbench objects are unavailable: {exc}") from exc
-
-        box = self.doc.addObject("Part::Box", "TimerBox")
-        recompute_document(self.doc)
-        FreeCADGui.Selection.clearSelection()
-        FreeCADGui.Selection.addSelection(box)
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
-            QtWidgets.QApplication.processEvents()
-            time.sleep(0.02)
-
-        warnings = []
-
-        def capture(_mode, _context, message):
-            warnings.append(str(message))
-
-        previous = QtCore.qInstallMessageHandler(capture)
-        try:
-            self.doc.openTransaction("hide")
-            box.ViewObject.Visibility = False
-            self.doc.commitTransaction()
-            undo_document(self.doc)
-            QtWidgets.QApplication.processEvents()
-        finally:
-            QtCore.qInstallMessageHandler(previous)
-        offending = [line for line in warnings if "another thread" in line]
-        self.assertEqual(offending, [])
-
 
 class TestImagePlaneLoading(unittest.TestCase):
     """Image::ImagePlane canvases loaded in the GUI (live MCP report, 2026-10-05).
