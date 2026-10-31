@@ -181,6 +181,7 @@
 // scriptings (scripts are built-in but can be overridden by command line option)
 #include <App/InitScript.h>
 #include <App/TestScript.h>
+#include <App/DiffScript.h>
 #include <App/CMakeScript.h>
 
 #include "SafeMode.h"
@@ -2700,6 +2701,7 @@ void parseProgramOptions(int ac, char ** av, const std::string& exe, boost::prog
     ("get-config", boost::program_options::value<std::string>(), "Prints the value of the requested configuration key")
     ("set-config", boost::program_options::value< std::vector<std::string> >()->multitoken(), "Sets the value of a configuration key")
     ("keep-deprecated-paths", "If set then config files are kept on the old location")
+    ("diff,d", "Run a diff between two files")
     ;
 
     // Declare a group of options that will be
@@ -3007,6 +3009,20 @@ void processProgramOptions(const boost::program_options::variables_map& vm, std:
             }
         }
     }
+
+    if (vm.contains("diff")) {
+        if (mConfig["OpenFileCount"] != "2") {
+            throw Base::UnknownProgramOption("Exactly two files must be specified for --diff\n");
+        }
+        if (vm.contains("run-test") || vm.contains("run-open")) {
+            throw Base::UnknownProgramOption("--diff cannot be combined with test options\n");
+        }
+        mConfig["RunMode"] = "Internal";
+        mConfig["ScriptFileName"] = "FreeCADDiff";
+        // A difftool must own its window and lifetime, even with a persisted
+        // SingleInstance setting or an explicit --single-instance option.
+        mConfig.erase("SingleInstance");
+    }
 }
 
 }
@@ -3306,6 +3322,7 @@ void Application::initApplication()
     new Base::ScriptProducer( "CMakeVariables", CMakeVariables );
     new Base::ScriptProducer( "FreeCADInit",    FreeCADInit    );
     new Base::ScriptProducer( "FreeCADTest",    FreeCADTest    );
+    new Base::ScriptProducer( "FreeCADDiff",    FreeCADDiff    );
 
     // creating the application
     if (mConfig["Verbose"] != "Strict")
@@ -3479,8 +3496,10 @@ void Application::processCmdLineFiles()
 
 void Application::runApplication()
 {
-    // process all files given through command line interface
-    processCmdLineFiles();
+    // The diff API reads isolated snapshots, without opening the inputs in the UI.
+    if (mConfig["ScriptFileName"] != "FreeCADDiff") {
+        processCmdLineFiles();
+    }
 
     if (mConfig["RunMode"] == "Cmd") {
         // Run the commandline interface

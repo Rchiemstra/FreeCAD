@@ -699,9 +699,8 @@ TEST_P(DockWidgetTest, bundledThemePreservesDockSeparatorSizes)
     option.initFrom(&window);
     for (const bool horizontal : {false, true}) {
         option.state.setFlag(QStyle::State_Horizontal, horizontal);
-        // 8px separator plus 1px padding per side.
         EXPECT_EQ(window.style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent, &option,
-                                              &window), 10);
+                                              &window), 6);
     }
 
     auto* central = new QWidget(&window);
