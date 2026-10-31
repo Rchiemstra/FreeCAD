@@ -1259,6 +1259,7 @@ SET(Workbench_CPP_SRCS
 )
 SET(Workbench_SRCS
     ${Workbench_CPP_SRCS}
+    DockWidget.h
     DockWindowManager.h
     OverlayManager.h
     OverlayWidgets.h
