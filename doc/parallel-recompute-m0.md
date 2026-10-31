@@ -1,17 +1,20 @@
 # Parallel recompute M0: contracts, runbook and measured serial baseline
 
-Research date: 2026-10-30. Inspected source/plan commit:
+Original audit date: 2026-10-30. Inspected source/plan commit:
 `e1446662caadf9ca2e2335fd81ee4eed460f01a4`, branch
-`research/parallel-recompute-m0`. This is the source in this clone, not a build
-identity. The plan cites an earlier product audit at `d7b0d2ffa7fce1ac21a5a9fdabdfd901fea434d8`;
+`research/parallel-recompute-m0`. That was the original audit source, not a build
+identity. Current branch: `feat/parallel-recompute-m0` at `dc285b47d2`.
+The plan cites an earlier product audit at `d7b0d2ffa7fce1ac21a5a9fdabdfd901fea434d8`;
 its measurements have not been repeated here.
 
 **The M0 exit gate is not satisfied.** The initial static audit used no
 FreeCAD/OCC executable; the local serial measurements added later are recorded
-in section 7. Sections 1–7 used no compiler, CMake build, package installation,
-upstream run or race detector; section 8 resolves py-spy into an isolated run
-cache for profiling. Nothing under `src/` changes. No production scheduling
-or parallel feature execution is introduced. All four live target methods need
+in section 7. At the original 2026-10-30 audit and serial baseline, sections 1–7
+used no compiler, CMake build, package installation, upstream run or race detector;
+section 8 resolved py-spy into an isolated run cache for profiling.
+M0.1 adds production phase instrumentation in `884963178d`; native builds/tests
+and FreeCAD TSan runs now exist, with production scheduling unchanged.
+No parallel feature execution is introduced. All four live target methods need
 serialization. Their proposed detached kernels remain unqualified.
 
 `tools/parallel_recompute_m0_probe.py` is a FreeCAD serial measurement probe,
@@ -24,23 +27,23 @@ an adapter, or a geometry/naming equivalence oracle.
 ## 1. Deliverables and present status
 
 This expands the three M0 slices and exit criteria in
-`doc/parallel-recompute-plan.md:597–622`. “Needs build” includes the indicated
-future native instrumentation/test implementation, which the research-only
-scope excludes. A specification is not an implemented or passing test.
+`doc/parallel-recompute-plan.md:597–622`. The original 2026-10-30 audit excluded
+native implementation; M0.1–M0.3 now provide the recorder, test-only harnesses
+and serial pins below. Complete qualification remains open.
 
 | M0 deliverable | Doable now? | Status / evidence or remaining work |
 | --- | --- | --- |
 | Enumerate M0 work, qualification template and negative admission cases | Static | **Done:** this table and sections 2–4. |
 | Candidate input/output/invalidation inventory: exact Box, Cut, Fuse, Common; naming, caches, callbacks and OCC settings | Static audit; runtime closure needed | **Done (static):** section 2. Complete *qualified* contracts still **need build**, dependency instrumentation and kernel coverage. |
-| Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
-| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. The M0.2b subsection records the same test-only harness for Cut, Fuse and Common. Those kernels stay not detached. |
-| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs are in the M0.2b subsection. That text is input to the owner, not a venue decision. Thread qualification stays open. |
-| Working instrumented race checks, including cold/error/cancel cases | Static gate design | **M0.3a:** FreeCAD TSan runs exist. Startup was a reported race, then the probe was removed. Boolean failed on the `Part::SignalException` static until #138; the rerun with #138 is clean, so Boolean and Box are both **blocked**: no FreeCAD-side race, and OCC is not instrumented. No suppressions. Thread adapters stay off. Cold/error/cancel TSan is still open. **M0.3b:** serial cold restore, failed feature, and mid-recompute cancel (results, publications visible inside the observer, undo/redo signal traces) are pinned on the `RecomputeHandle` path in `tests/src/App/RecomputePublicationContracts.cpp`. Lane PartialFailure/Cancelled finalization is a known defect, `FIX-LANE-TERMINAL-FINALIZE`, not that contract. |
+| Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe and native recorder | **Partial:** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7); native phase recorder implemented in `884963178d` (M0.1). Exclusive stage coverage, access/effects qualification, comparable measurements, production property graph and aggregate resources remain incomplete. |
+| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Test-only harnesses implemented | **Partial (Box and Boolean test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. The M0.2b subsection records the same test-only harness for Cut, Fuse and Common. Full detached contracts remain unqualified; those kernels stay not detached in production. |
+| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements and test-only venue costs | **Partial (Box and Boolean venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs are in the M0.2b subsection. The 16-cut result (132.571→93.183 ms) is an execution-route comparison with 16 sequential cuts in one worker; parallel feature speedup is unmeasured. Existing serial, detached-on-owner, one-worker and budgeted overlapping-worker comparisons with equivalent policies and aggregate memory remain incomplete. That text is input to the owner, not a venue decision. Thread qualification stays open. |
+| Working instrumented race checks, including cold/error/cancel cases | FreeCAD TSan runs; OCC qualification blocked | **M0.3a:** FreeCAD TSan runs exist. Startup was a reported race, then the probe was removed. Boolean failed on the `Part::SignalException` static until #138; the rerun with #138 is clean, so Boolean and Box are both **blocked** on uninstrumented OCC coverage. No suppressions. Thread adapters stay off. Synchronized control and cold/error/cancel TSan remain open. **M0.3b:** serial cold restore, failed feature, and mid-recompute cancel (results, publications visible inside the observer, undo/redo signal traces) are pinned on the `RecomputeHandle` path in `tests/src/App/RecomputePublicationContracts.cpp`. Lane PartialFailure/Cancelled finalization remains defective in this tested branch; separate fix `064ce5a475` must be included and the original lane tests enabled and passed here. |
 | Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. **M0.3b:** seven small serial documents are copied with the Test module to `Mod/Test/TestData/parallel-recompute` and asserted by `ParallelRecomputeBaseline`, including a forced rebuild of volumes and box bounds. Element names and topology equivalence stay outstanding. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
 | Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
-| Exact sibling publication, broad conflict invalidation and existing client visibility | Static assertions/test placement | **Done (serial pin, M0.3b):** `tests/src/App/RecomputePublicationContracts.cpp`. An exact publication invalidates prepared clients that cover that key. A disjoint exact publication leaves the other client valid. A legacy recompute publishes `unknownModelMutation` and informs existing clients; covered contracts conflict. Generic serialization is unchanged. |
-| Callback order A/B/Z, PR #114, terminal failure/cancel presentation, undo/rollback | Static source comparison/test matrix | **Done (serial pin, M0.3b):** siblings, chain, A/B/Z readiness, and the PR #114 same-value Length/Width path, including `PartPresentationCaptureTest.UnchangedDatumExtentsPreserveRevisionFence`. Changed callbacks already see the new value and its journal entry. Handle PartialFailure and Cancelled emit `signalRecomputedObject`, `signalRecomputed`, and one presentation callback. The lane skips those for the same states (`FIX-LANE-TERMINAL-FINALIZE`, section 5 item 5). Caller-transaction undo restores property values; a failed feature's error bit, touch, and recompute-log diagnostic are not undone. |
-| Safe process transport/lifetime, justified cost/venue and credible end-to-end gain supporting M1 | Static acceptance conditions | **Needs build** and harness implementation; conditional process-only pilot **blocked** on owner decision if thread qualification cannot be achieved. |
+| Exact sibling publication, broad conflict invalidation and existing client visibility | Serial pins implemented | **Done (serial pin, M0.3b):** `tests/src/App/RecomputePublicationContracts.cpp`. An exact publication invalidates prepared clients that cover that key. A disjoint exact publication leaves the other client valid. A legacy recompute publishes `unknownModelMutation` and informs existing clients; covered contracts conflict. Generic serialization is unchanged. Detached-adapter preservation and reverse completion remain pending. |
+| Callback order A/B/Z, PR #114, terminal failure/cancel presentation, undo/rollback | Serial pins implemented; lane integration pending | **Done (serial pin, M0.3b):** siblings, chain, A/B/Z readiness, and the PR #114 same-value Length/Width path, including `PartPresentationCaptureTest.UnchangedDatumExtentsPreserveRevisionFence`. Changed callbacks already see the new value and its journal entry. Handle PartialFailure and Cancelled emit `signalRecomputedObject`, `signalRecomputed`, and one presentation callback. The lane skips those for the same states in this branch; separate fix `064ce5a475` needs integration and requalification (section 5 item 5). Caller-transaction undo restores property values; a failed feature's error bit, touch, and recompute-log diagnostic are not undone. Detached-adapter preservation remains pending. |
+| Safe process transport/lifetime, justified cost/venue and credible end-to-end gain supporting M1 | Harness implemented; qualification incomplete | Complete process naming/transport/lifetime qualification and a justified integrated venue decision remain open. A process-only pilot requires a separate workload/cost/transport proposal and owner decision. |
 
 ## 2. Feature contracts from this source
 
@@ -174,7 +177,7 @@ observable behavior. A warm cache is not evidence that the cold path is absent.
 | Property publication, transactions, signals | `src/App/Property.cpp:374–437`: touch and setters publish mutations and call father change handlers/property signals. `src/App/DocumentObject.cpp:1199–1218,1391–1403`: object/document before/changed notifications. `src/App/Document.cpp:2017–2030` delivers deferred notifications. | **N**. Workers must emit no model signal. Owner callbacks run after validated publication; arbitrary callbacks can write other objects or reenter, expanding effects beyond the feature body. |
 | Application flags and static partial-document warning | `src/App/DocumentObject.cpp:1328–1352` reads GetApplication closing/restoring/fine-grained mode and document PartialDoc; writes static `warnedDoc` on partial-document warning path. | **N**. Reject partial restore/document modes; freeze/admit flags on owner. Even unrelated documents do not isolate this static. |
 | Python observers / GIL / signal marshalling | `src/App/DocumentObserverPython.cpp:434–481` takes GIL and calls Python for object-change/recompute/document callbacks. `src/App/MainThreadSignal.h:306–309,406–409` releases GIL while marshalling/waiting. | **N**. GIL serializes interpreter work, not OCC caches or C++ globals. Avoid owner/GIL/GUI wait inversion; record acquisition waits separately. |
-| **Process-wide signal policy** | `src/Mod/Part/App/FeaturePartBoolean.cpp:123–124` creates **Base** SignalException on GNU/Linux; `src/Base/Exception.cpp:733–747` installs/restores SIGSEGV handler. Every wrapper Build creates **Part** SignalException (`src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:105–108`); `src/Mod/Part/App/SignalException.cpp:60,144–146,187–197,210–232` writes static modes and installs/restores process signal handlers. | **N**, high priority blocker. Unsynchronized mode read/write and nested handler restoration can race even on fully private shapes. A different document or per-shape mutex is insufficient. Thread harness must reject this wrapper until a separately reviewed safe policy preserves error semantics; instrument signal-policy access explicitly. |
+| **Process-wide signal policy** | `src/Mod/Part/App/FeaturePartBoolean.cpp:123–124` creates **Base** SignalException on GNU/Linux; `src/Base/Exception.cpp:733–747` installs/restores SIGSEGV handler. Every wrapper Build creates **Part** SignalException (`src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:105–108`). At the 2026-10-30 audit, `src/Mod/Part/App/SignalException.cpp:60,144–146,187–197,210–232` wrote static modes and installed/restored process signal handlers without synchronization. | **N**. #138 fixes the historical Part race and restoration defect with mutex-guarded nesting and saved handlers (`SignalException.cpp:144–161,274–300`); Base/Part signal-policy semantics and uninstrumented OCC still require qualification. A different document or per-shape mutex is insufficient; instrument signal-policy access explicitly. |
 | **Global Boolean fuzzy tolerance** | `src/Mod/Part/App/FuzzyHelper.cpp:31–49` has mutable `BooleanFuzzy`, plain read/write and scoped save/set/call/restore. Wrapper reads it at `FCBRepAlgoAPI_BooleanOperation.cpp:83–85`. | **N**. Freeze/copy explicit tolerance and forbid global writes for duration. A worker must not use `withBooleanFuzzy`; its exception path also skips restore. |
 | TShape, cache and naming aliasing | `src/Mod/Part/App/TopoShapeExpansion.cpp:294–303` copies underlying shape, Hasher, cache, parent cache and element map references. `TopoShapeCache.h:59–77,79–102` stores mutable shared maps/locations/ancestry. `TopoShapeExpansion.cpp:144–152` mutates cache in const initCache. | **N** if shared; **U** until independent capture proven. Shallow TopoShape/TopoDS copies do not isolate a computation. Deep-copy geometry and prove subshape disjointness, not just different top-level handles. |
 | Document StringHasher and element maps | `src/Mod/Part/App/PropertyTopoShape.cpp:66–105` assigns/re-tags maps, obtains document hasher, hashes child maps; `src/App/StringHasher.cpp:262–298` looks up and allocates `lastID()+1` then inserts; `TopoShapeExpansion.cpp:929–957,1781` propagates/uses source hashers. | **N**. No lock is apparent in these hasher paths. Even adding a mutex would not establish deterministic ID allocation/order. Owner-only deterministic TNP integration is required. |
@@ -213,7 +216,7 @@ tracked and must not invalidate a previously captured sibling unnoticed.
 The current compatibility fence is justified by the source:
 `src/App/GenericIsolatedRecompute.cpp:2483–2496` explicitly describes broad
 UnknownModelMutation effects and sets refreshRevisionFenceAfterEachCommit. Keep
-this unchanged. Proposed tests in the existing coordinator/generic/commit suites:
+this unchanged. The original 2026-10-30 assertions were:
 
 1. Capture A/B from one revision, commit A's exact effects; B stays valid only
    when disjoint. A real edit to any B read/write key rejects B. Exercise each
@@ -237,8 +240,10 @@ this unchanged. Proposed tests in the existing coordinator/generic/commit suites
    keeps the fence; real size changes reject; presentation Busy retry reuses the
    same payload once and cancellation does not apply it.
 
-These are required new assertions, not claims about existing tests passing.
-Use the current tests in `tests/src/App/DocumentRecomputeCoordinator.cpp`,
+M0.3b now pins serial publication, callback readback, A/B/Z order and handle
+failure/cancel behavior in `tests/src/App/RecomputePublicationContracts.cpp`;
+detached-adapter reverse completion, complete effects and integration remain pending.
+Use the existing tests in `tests/src/App/DocumentRecomputeCoordinator.cpp`,
 `GenericIsolatedRecompute.cpp`, `DocumentCommitCoordinator.cpp`,
 `tests/src/Mod/Part/App/ShapeCacheIsolatedRecompute.cpp` and the GUI suite as hosts.
 No generic fence may relax until these tests and trace coverage pass.
@@ -281,21 +286,26 @@ touch downstream objects, but only in its own audited owner phase. Compute has
 zero live App object/property/document/interpreter/registry access. Compare
 sibling trace sets to the conflict rule and compare post-state with serial.
 
-### B. Instrumented detached-kernel stress job (test-only proposal)
+### B. Instrumented detached-kernel stress job (test-only)
 
-Implement a native test-only harness linked to relevant instrumented FreeCAD
+At the 2026-10-30 audit this was a test-only proposal; M0.3a now implements
+the FreeCAD-instrumented stress job, with instrumented OCC and the complete
+matrix still pending. The full gate requires a native test-only harness linked
+to relevant instrumented FreeCAD
 Part/Base/App code and **instrumented OCC**, with private geometry and no live
 feature calls in worker threads. Use exact admitted kernel/build policy. A
 raw-OCC shortcut must first match serial fuzzy tolerance, non-destructive mode,
 compound behavior, diagnostics and history semantics; it cannot silently omit
-the signal-wrapper problem. Until that is resolved, the existing FCB wrapper
-is a negative case, not an admitted thread kernel.
+the signal-wrapper problem. #138 fixes the historical Part race and restoration
+defect; Base/Part signal-policy semantics and OCC coverage remain unqualified,
+so the existing FCB wrapper is not an admitted thread kernel.
 
 The repository has `FREECAD_USE_SANITIZER_TSAN` support in
 `cMake/FreeCAD_Helpers/SetupSanitizers.cmake:37–42,72–110`; this only instruments
 targets built with it, not an externally supplied OCC. CI must record compiler,
 runtime/link map, exact FreeCAD/OCC SHAs, TBB setting and instrumented library
-hashes. No configure/build command is run by this research task.
+hashes. No configure/build command was run by the original 2026-10-30 research task;
+M0.3a records the later native build and FreeCAD TSan runs below.
 
 Before a useful run, a small deliberate data-race positive control must produce
 a TSan finding/nonzero status, and a synchronized control must complete normally.
@@ -365,7 +375,7 @@ actual executed subset and serial fraction for every case.
 
 Saved object counts above came only from reading zipped Document.xml at this
 source commit. Full hashes, byte counts and type counts were written to
-`../logs/m0-static/fixtures.json`. Counts are **not** a FreeCAD restore result:
+`/home/rch/Documents/code/agents/IDLE-S4/logs/m0-static/fixtures.json`. Counts are **not** a FreeCAD restore result:
 P4's expression/cross-reference/migration/carbon-copy runtime counts differ from
 these saved counts. Record any restored/migrated objects before comparing graphs.
 For reproducibility, run `sha256sum` on the listed archives and save the manifest
@@ -404,13 +414,13 @@ result is valid without invalid/error/unsettled checks and full serial oracle.
 
 ### Commands that can run with an existing RelWithDebInfo build
 
-Run only from this clone, with build artifacts **supplied by CI in an allowed
-workspace path**. The commands below are future commands, not commands already
-executed. Do not point them at either prohibited FreeCAD checkout. No package
-install or build step is part of this runbook.
+Run from the checkout being tested, with trusted build artifacts matching its
+source SHA and an archived build manifest. The commands below are a template,
+not commands already executed. Section 7's historical local results are not CI
+attestation. No package install or build step is part of this runbook.
 
 ```bash
-cd /home/rch/Documents/code/agents/IDLE-S4/repo
+cd /home/rch/Documents/code/agents/PRC/repo
 export M0_REPO="$PWD"
 export M0_BUILD="$PWD/../logs/ci-artifacts/RelWithDebInfo"
 export M0_CMD="$M0_BUILD/bin/FreeCADCmd"
@@ -431,7 +441,7 @@ lscpu > "$M0_RUN/cpu.txt"
 cat /proc/meminfo /proc/loadavg > "$M0_RUN/host-before.txt"
 ```
 
-The manifest filename is an artifact contract for CI, not a file claimed to
+The manifest filename is an artifact contract for trusted builds, not a file claimed to
 exist now. **Verify its built source SHA matches M0_BUILD_SHA and the binary
 hash**; an environment variable or nonempty Version string is not proof. Capture
 module library linkage as well (Part/App/OCC/TBB), not only the small launcher.
@@ -535,9 +545,10 @@ QT_QPA_PLATFORM=xcb xvfb-run -a "$M0_TESTS/Gui_tests_run" \
 ```
 
 Require exit 0, present expected testcase names, no errors/skips and complete
-reports. The M0.1 phase recorder exists. The M0.2a Box qualification tests are
-`DetachedKernelQualification*` in `Part_tests_run`. Publication, Boolean and
-race tests do not yet exist. No invented worker-count CLI in this document is
+reports. The M0.1 phase recorder exists. M0.2 Box/Boolean harnesses and M0.3a
+race tests are in `DetachedKernelQualification*` in `Part_tests_run`; M0.3b
+publication tests are in `RecomputePublicationContracts.cpp`. Complete coverage
+and qualification remain open. No invented worker-count CLI in this document is
 runnable. The current probe has no `parallel=true` switch.
 
 ### Measurements needing the future native harness
@@ -620,7 +631,9 @@ and the rotated placement applied to the thread kernel's raw shape. That
 published result matches the owner recompute. The same step applied to the
 process shape matches it as well. The isolated archive stores the OCC brep,
 so the process result's own element map is empty. This is not production
-publication. Boolean venue costs are in the next subsection. Sibling publication remains later.
+publication. Boolean venue costs are in the next subsection. At this M0.2a
+experiment, sibling publication was pending; M0.3b now pins serial sibling
+publication, with detached-adapter preservation remaining M1 work.
 
 | Venue | Workload | Capture ms | Execute ms | Transfer ms | Commit ms | Wall ms | Paid ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -700,10 +713,14 @@ has a 1551.825 ms wall, and that is the per-feature process cost. About
 interpreter startup plus the same fingerprint; Part import and restore are
 about 162 ms; teardown is about 60 ms; Box execute is 0.134 ms. The thread
 kernel is the same geometry as the owner kernel and was not run concurrently
-with other OCC work. It stays **U**. These numbers do not justify an M1
+with other OCC work in this 2026-10-31 cost experiment. Later M0.3a stress
+overlaps workers and owner recompute without qualifying OCC or performance.
+It stays **U**. These numbers do not justify an M1
 speedup claim. Boolean kernels, TShape and cache sharing, OCC globals and the
 owner callbacks that fire today are in the M0.2b subsection. The kernel stays
-**U**. Callback order across features remains later. TSan is the M0.3a subsection.
+**U**. Callback order across features was pending in M0.2a; M0.3b now pins
+serial order, with detached-adapter preservation remaining M1 work.
+TSan is the M0.3a subsection.
 
 ### M0.2b Boolean venues
 
@@ -740,8 +757,10 @@ On `cut:1` the owner paid wall is lower (5.960 ms versus 6.044 ms). The thread
 paid wall is lower on `cut:16` and `heavy:1`. On `chain:8` the owner paid wall
 is lower (202.891 ms versus 207.240 ms). The thread execute, 178.798 ms, is
 close to the owner's 185.108 ms, and the paid wall includes the publication
-between steps (commit 24.550 ms). That is the crossover in this set. A per-call
-process does not win.
+between steps (commit 24.550 ms). This is route ranking only: `cut:16` runs
+16 cuts sequentially in one worker, so parallel feature speedup is unmeasured.
+Dispatch crossover needs detached-on-owner and equivalent-policy controls.
+A per-call process does not win.
 
 The `cut:1` process partition is the repetition whose wall is the median.
 A persistent worker was not built. The M0.2a costs a cached fingerprint and a
@@ -793,18 +812,22 @@ The worker snapshots `BOPAlgo_Options::GetParallelMode`,
 `SIGSEGV` (`SignalException.cpp:173–174`) immediately before and after the
 raw Boolean, `BRepCheck` and `makeElementShape`. In `Part_tests_run` that
 window changed none of them. The pool was 16 threads, default launch 16, and
-not in use. In a process whose first Boolean `Build` is this worker, `SIGSEGV`
-changes and the other seven do not; later builds in that process change none.
+not in use. In the pre-#138 experiment on 2026-10-31, a process whose first
+Boolean `Build` was this worker changed `SIGSEGV` and not the other seven;
+later builds in that process changed none. #138 now saves/restores Part handlers
+under a mutex (`src/Mod/Part/App/SignalException.cpp:144–161,274–300`).
 `FCBRepAlgoAPI_BooleanOperation.cpp:43–44` and `:64–65` set per-operation
 `myRunParallel` and non-destructive mode, not `BOPAlgo_Options::SetParallelMode`.
 `Build` reads `BooleanFuzzy` (`FuzzyHelper.cpp:31`, wrapper lines 83–85) and
-does not write it. `Precision::Confusion` is constexpr `1e-7` in this OCC 7.9
-(`Precision.hxx:165`). `TopoShape.cpp:1677–1678` and
+does not write it. `Precision::Confusion` is constexpr `1e-7` in the configured
+OCC 8.0.1 (`build/relWithDebInfo/CMakeCache.txt:2234`, configured
+`Standard_Version.hxx:53`, `Precision.hxx:165`). `TopoShape.cpp:1677–1678` and
 `TopoShapeExpansion.cpp:6307–6323` are not on binary `Boolean::execute`.
-`Part::SignalException` (`FCBRepAlgoAPI_BooleanOperation.cpp:107`,
-`SignalException.cpp:214–233`) unsets its mode and then calls
-`installSegfaultHandler`, which does not put the previous `SIGSEGV` handler
-back. Owner execute also installs `Base::SignalException`
+Before #138, `Part::SignalException` (`FCBRepAlgoAPI_BooleanOperation.cpp:107`,
+historical `SignalException.cpp:214–233`) unset its mode and then called
+`installSegfaultHandler`, which did not put the previous `SIGSEGV` handler
+back. The current Part guard restores saved handlers; Base/Part policy semantics
+still require qualification. Owner execute also installs `Base::SignalException`
 (`FeaturePartBoolean.cpp:123–124`, `Base/Exception.cpp:733–747`), which saves
 and restores its handler on that path.
 
@@ -855,7 +878,7 @@ that interval still does not beat `cut:1`. No M1 speedup is claimed.
 
 ### M0.3a race runs
 
-Measured locally on 2026-10-31. Tree `build/tsan` only. `build/relWithDebInfo` was not reconfigured. Production scheduling is unchanged. The new test is `concurrentFrozenKernelsWithOwnerRecompute` in `tests/src/Mod/Part/App/DetachedKernelQualificationTest.cpp`. No production change. The Boolean finding is described and left open.
+Measured locally on 2026-10-31 at `0389c0373d` plus the test/documentation slice, committed as `7a27574045`. Tree `build/tsan` only. `build/relWithDebInfo` was not reconfigured. Production scheduling is unchanged. The new test is `concurrentFrozenKernelsWithOwnerRecompute` in `tests/src/Mod/Part/App/DetachedKernelQualificationTest.cpp`. No production change in that slice. The Boolean finding was left open at `7a27574045`; #138 is now included and the FreeCAD rerun below is clean, with both kernels blocked on OCC coverage.
 
 #### Build
 
@@ -932,11 +955,11 @@ The stress test uses 4 workers. Each gets a private `BRepBuilderAPI_Copy` of a f
 
 #### Findings
 
-All 21 warnings are one race. `nm -C -S Part.so` shows `currentSignalMode` as a 1-byte BSS symbol. The TSan address matches it.
+At `7a27574045`, all 21 warnings were one race. `nm -C -S Part.so` showed `currentSignalMode` as a 1-byte BSS symbol, matching the TSan address. #138 now fixes this Part race; the clean rerun below does not qualify uninstrumented OCC.
 
 | Class | Report | Shared state | Proposal |
 | --- | --- | --- | --- |
-| (a) real | `SignalException.cpp:211` static, ctor lines 217–218, dtor line 229. Reached from `FCBRepAlgoAPI_BooleanOperation.cpp:107` and `:139`. Worker side is `executeBooleanKernel` (Cut, Fuse, Common). Owner side is `Part::Boolean::execute` (`FeaturePartBoolean.cpp:150`) through `Part::Cut::makeOperation` (`FeaturePartCut.cpp:46`) on the document execution lane | Process-global `currentSignalMode`. Concurrent `Build` calls read and write it with no lock | Do not construct `Part::SignalException` on a worker. Keep signal-policy changes on the owner. The same dtor then calls `Base::SystemHandler::installSegfaultHandler()` at line 232 and does not put the previous `SIGSEGV` handler back. That restore bug is the one fixed on a separate branch; it is still in this tree. A mutex around the whole Boolean would hide the race and remove the overlap. No product edit in this slice |
+| (a) real at `7a27574045` | `SignalException.cpp:211` static, ctor lines 217–218, dtor line 229. Reached from `FCBRepAlgoAPI_BooleanOperation.cpp:107` and `:139`. Worker side is `executeBooleanKernel` (Cut, Fuse, Common). Owner side is `Part::Boolean::execute` (`FeaturePartBoolean.cpp:150`) through `Part::Cut::makeOperation` (`FeaturePartCut.cpp:46`) on the document execution lane | Process-global `currentSignalMode`. Concurrent `Build` calls read and wrote it with no lock | At `7a27574045`, the proposal was to keep signal-policy changes on the owner; the dtor called `Base::SystemHandler::installSegfaultHandler()` at line 232 without restoring the previous `SIGSEGV` handler, and the separate restore fix was absent. #138 now fixes the race and restoration with mutex-guarded nesting and saved handlers, without locking the whole Boolean; the FreeCAD rerun is clean, with OCC coverage still missing. No product edit in the original slice |
 
 No report in class (b), (c), or (d). No suppressions file. `Base::SignalException` (`src/Base/Exception.cpp:733`) did not appear. The Box kernel did not appear. MakeBox still ran in uninstrumented OCC.
 
@@ -955,7 +978,7 @@ Startup was a reported race and exit 66, then the probe was removed. This run is
 
 ### M0.3b contracts and callback order
 
-Date: 2026-10-31, round 2 the same day. Tree: `feat/parallel-recompute-m0` at `7a27574045`, plus this uncommitted test and documentation slice. No production change. `git diff` of `src/App`, `src/Mod/Part`, and `src/Mod/PartDesign` is empty. Generic serialization in `GenericIsolatedRecompute.cpp` is intact. `build/tsan` was not touched.
+Date: 2026-10-31, round 2 the same day. At `7a27574045`, this was an uncommitted test and documentation slice on `feat/parallel-recompute-m0`, with no production change and an empty `git diff` of `src/App`, `src/Mod/Part`, and `src/Mod/PartDesign`. It is now committed as `9057e0a9ff` and included in `dc285b47d2`. Generic serialization in `GenericIsolatedRecompute.cpp` is intact. `build/tsan` was not touched by that slice.
 
 This slice pins today's serial recompute path. M1 may relax generic serialization only after these tests still describe the behaviour that must survive, or after they are updated in the same change that intentionally changes that behaviour.
 
@@ -986,7 +1009,7 @@ Cold, error, and cancel, same App file. Each pins the serial result, the publica
 - `healthyFailureInsideCallerTransactionUndoesAndRedoes`. `Bad`, `Keep`, and `Down` (`Down` depends on `Bad`) are settled first. Aborting a transaction that only sets `ExceptionType` restores that value to 0 and leaves `Bad` touched. Setting `ExceptionType` inside a caller transaction and recomputing is `PartialFailure`: `Keep` advances, `Bad` and `Down` do not. Undo restores `ExceptionType` to 0 and `Keep`'s `ExecCount` and `ExecResult`. It does not clear `Bad`'s error bit, `Bad` or `Down` touch, or the recompute-log diagnostic. Redo puts `ExceptionType` and `Keep`'s two properties back. Those undo and redo signal sequences are pinned.
 - `cancelMidRecomputeKeepsCommittedPrefixAndPinsSignals`. Cancel is requested from another thread once `A`'s `ExecCount` is publishing, and the slot waits until `cancel()` returns. A rendezvous or gate timeout fails the test with that message; the cancel thread is joined on every exit, including an exception from `cancel()`. The job is `Cancelled`. `A` is committed; `B` is `Cancelled`, still touched, and not executed. The document does not become stable. `A`'s object-model key is in the journal. With no caller transaction there is no user undo. Inside an open caller transaction, undo and redo move only `A.ExecCount`, then `undo` or `redo`, then `becameStable`. `B` stays touched.
 
-Those three are the `RecomputeHandle` path used by serial `Document::recompute`. Two paired tests, `handlePartialFailureFinalizesCommittedSiblingsAndPresentation` and `handleCancelFinalizesCommittedPrefixAndPresentation`, require one presentation-boundary callback, `signalRecomputedObject` for each committed sibling, and `signalRecomputed` naming the snapshot. The lane twins, `lanePartialFailureSkipsTerminalFinalization` and `laneCancelSkipsTerminalFinalization`, perform the same setup and then `GTEST_SKIP` with `known defect: lane skips terminal finalization for PartialFailure/Cancelled; tracked as FIX-LANE-TERMINAL-FINALIZE`. Their bodies assert the handle behaviour and are not a contract for the lane. Run once without the skip, the lane still updates the successful siblings' values and property signals, and a failed feature's diagnostic is present, but the presentation callback stays at 0 and both `signalRecomputedObject` and `signalRecomputed` are absent.
+Those three are the `RecomputeHandle` path used by serial `Document::recompute`. Two paired tests, `handlePartialFailureFinalizesCommittedSiblingsAndPresentation` and `handleCancelFinalizesCommittedPrefixAndPresentation`, require one presentation-boundary callback, `signalRecomputedObject` for each committed sibling, and `signalRecomputed` naming the snapshot. The lane twins, `lanePartialFailureSkipsTerminalFinalization` and `laneCancelSkipsTerminalFinalization`, perform the same setup and then `GTEST_SKIP` with `known defect: lane skips terminal finalization for PartialFailure/Cancelled; tracked as FIX-LANE-TERMINAL-FINALIZE`. Their bodies assert the handle behaviour and are not a contract for the lane. In the 2026-10-31 M0.3b run without the skip, the lane still updated the successful siblings' values and property signals, and a failed feature's diagnostic was present, but the presentation callback stayed at 0 and both `signalRecomputedObject` and `signalRecomputed` were absent. Separate fix `064ce5a475` exists; it must be included and the original lane tests enabled and passed in this tested branch.
 
 Compatibility fixtures, for M1 to reopen:
 
@@ -1009,7 +1032,7 @@ Until generic serialization is relaxed on purpose, and in that same change the a
 - Dropping `unknownModelMutation` from the legacy recompute publication, or leaving a prepared client that covers it valid across that publication.
 - Treating a disjoint exact publication as a conflict, or treating a real or broad overlap as compatible.
 - Informing existing clients only by a later read of a revision key. The publication journal is the contract, and a changed callback must already see that journal entry together with the new value.
-- Treating the lane's skipped PartialFailure/Cancelled finalization as the serial presentation contract. The handle path is the pin. `FIX-LANE-TERMINAL-FINALIZE` stays open.
+- Treating the lane's skipped PartialFailure/Cancelled finalization as the serial presentation contract. The handle path is the pin. `FIX-LANE-TERMINAL-FINALIZE` stays open in this tested branch; separate fix `064ce5a475` needs inclusion, enabled original lane tests and requalification.
 - Public commit order for `A` → `B` plus independent `Z`. Serial readiness commits `A`, then `B`, then `Z`. A frontier that commits `A`, then `Z`, then `B` changes property callbacks.
 - Final `signalRecomputedObject` order. It follows snapshot name order and is separate from execute/commit order.
 - The cold, failed-feature, healthy-edit, and cancel results above: published keys, which touch and error bits undo restores and which it leaves, and the pinned signal traces, including absence of `signalBecameStable` when the document stays touched.
@@ -1017,7 +1040,7 @@ Until generic serialization is relaxed on purpose, and in that same change the a
 
 #### Break-to-prove
 
-Two scratches were applied, the named test failed, and the production file was restored.
+Three scratches were applied in the 2026-10-31 M0.3b slice, the named tests failed, and the production files were restored.
 
 - Ready-name scan in `DocumentRecomputeCoordinator::scheduleReady` selected the last ready node. `abzReadinessCommitsDependentBeforeIndependentSibling` failed: `Z`'s `ExecCount` change preceded `B`'s, while `signalRecomputedObject` stayed `A`, `B`, `Z`. Log: `~/Documents/code/agents/PRC/logs/m0-3b/break-abz.log`. Restored to `std::ranges::find_if`.
 - Owner-thread legacy recompute in `GenericIsolatedRecompute.cpp` skipped the `preserveLegacyRevisionSemantics` wildcard. `broadRecomputePublicationInformsExistingClientsAndInvalidatesCoveredContracts` failed `eventsContain` and `conflictsOn` for `unknownModelMutation`. Log: `~/Documents/code/agents/PRC/logs/m0-3b/break-broad.log`. The condition was restored.
@@ -1025,7 +1048,7 @@ Two scratches were applied, the named test failed, and the production file was r
 
 #### Still open
 
-Cold/error/cancel under TSan (M0.3a). Pinned upstream `74168a8ae2d0c1a6e3006297673a871e8c1c8399` and the add-on corpus. `FIX-LANE-TERMINAL-FINALIZE` (section 5 item 5). Element names and topology equivalence of the force-recomputed fixtures. The failed feature's error bit, touch, and recompute-log diagnostic surviving undo of the caller transaction are pinned as observed serial behaviour; this slice does not change them. A touch bit set by a value write also survives `abortTransaction` after that value rolls back.
+Cold/error/cancel under TSan (M0.3a). Pinned upstream `74168a8ae2d0c1a6e3006297673a871e8c1c8399` and the add-on corpus. Inclusion of separate fix `064ce5a475`, enabling the original lane tests and requalification for `FIX-LANE-TERMINAL-FINALIZE` in this tested branch (section 5 item 5). Element names and topology equivalence of the force-recomputed fixtures. The failed feature's error bit, touch, and recompute-log diagnostic surviving undo of the caller transaction are pinned as observed serial behaviour; this slice does not change them. A touch bit set by a value write also survives `abortTransaction` after that value rolls back.
 
 ### Compatibility and failure matrix to run with builds
 
@@ -1041,10 +1064,12 @@ state, callback execution context/order and undo/redo. Byte-identical FCStd is
 not required. The probe's area/volume summary cannot pass this comparison.
 
 Pin and require genuine Assembly3 hooks, Draft/Arch proxies, FeaturePython and
-the MCP add-on. This clone's MCP submodule is **uninitialized**, with gitlink
-`8899541b41443e6c9d24faf5be620898420bf3f3`; its scripts were not read or executed
-here. Have CI supply that exact dependency before using the plan's `--native`
-qualification lane; missing/skipped native work is a failure. Exact add-on
+the MCP add-on. At the original 2026-10-30 audit, the MCP submodule was
+uninitialized at gitlink `8899541b41443e6c9d24faf5be620898420bf3f3`, and its
+scripts were not read or executed. The current initialized gitlink is
+`5e8aa60bcc3e96e9e907b51712a7ba02f80bfaf3`; initialization does not qualify
+the plan's `--native` lane. Require that pinned dependency in CI;
+missing/skipped native work is a failure. Exact add-on
 versions and user-model corpus remain an owner decision.
 
 Failure/cancel/undo matrix covers ordinary partial-success and open caller
@@ -1084,19 +1109,21 @@ and revision/notification boundaries.
    without M1's integration. Decide whether an optimistic measured-stage model
    plus a strict M1 go/no-go suffices, or fund a test-only integrated prototype
    in M0. Do not mark the real performance gate green from P3/raw kernels.
-5. **`FIX-LANE-TERMINAL-FINALIZE` is unresolved and is not the contract.**
+5. **`FIX-LANE-TERMINAL-FINALIZE` is unresolved in this tested branch and is not the contract.**
    `RecomputeHandle::finalizeIfTerminal` (`src/App/RecomputeHandle.cpp:92–99`)
    finalizes any terminal snapshot.
    `DocumentExecutionLane::executeActiveRecompute`
    (`src/App/DocumentExecutionLane.cpp:1024–1046`) calls
    `finalizeDetachedRecompute` only when the snapshot state is `Completed`.
-   Observed on the lane for PartialFailure and Cancelled: successful siblings'
+   Observed in the 2026-10-31 M0.3b run on the lane for PartialFailure and Cancelled: successful siblings'
    values and property-change signals are already updated, and a failed
    feature's diagnostic is set, but the presentation-boundary callback is not
    invoked and `signalRecomputedObject` / `signalRecomputed` are absent. The
    handle path emits those. Paired tests assert the handle behaviour. The lane
-   variants use the same assertions and `GTEST_SKIP` after setup. Fix the lane
-   in an implementation slice; do not pin the skip as intended behaviour.
+   variants use the same assertions and `GTEST_SKIP` after setup. Separate fix
+   `064ce5a475` exists and passes its local lane tests; include it, enable the
+   original lane tests and requalify at the tested SHA before claiming a pass.
+   Early `RecomputeHandle.done()` remains a separate observation/settlement issue.
 6. **Owner/CI decisions:** choose instrumented OCC/FreeCAD runner and supported
    OCC/TBB builds; retain thread adapters disabled until coverage works. Choose
    exact add-on versions/large user corpus and artifact retention location.
@@ -1110,14 +1137,14 @@ and revision/notification boundaries.
 - Verified branch/worktree and source SHA, inspected the plan and source anchors;
   no AGENTS.md was present in this clone or its traversed parent directories.
 - Read FCStd archives as ZIP/XML only to inventory saved object/type counts and
-  SHA-256 hashes; raw inventory is in `../logs/m0-static/fixtures.json`.
+  SHA-256 hashes; raw inventory is in `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-static/fixtures.json`.
 - Used `uv run --offline --no-project --with pytest python ...` with a copied
-  pre-existing uv cache under `../logs/m0-static/uv-cache` (default cache is
+  pre-existing uv cache under `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-static/uv-cache` (default cache is
   read-only). No packages were installed. Checked probe syntax/import without
   FreeCAD, 71 source citations comprising 100 line spans, and all five shell
   blocks with `bash -n`. Native probe/race/performance/compatibility runs were
   pending at that revision; later local serial runs are in section 7. Validation details and source excerpts live under
-  `../logs/m0-static/`.
+  `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-static/`.
 - Changed only this report and the research probe; no src edits, compiler/CMake
   invocation, forbidden checkout access, push or PR action.
 
@@ -1128,8 +1155,8 @@ RelWithDebInfo artifact is from `FreeCAD-start` source
 `ec84cacee3440461e142c29ba9cfa6a7aac21453`. Its build directory is
 `/home/rch/Documents/code/FreeCAD-integration/build/relWithDebInfo`.
 The local checkout HEAD read, CMake cache, FreeCADCmd/App/Part SHA-256 hashes and
-their `ldd` output are retained in `../logs/m0-runtime/build-manifest.json`
-and `CMakeCache.txt`. The FreeCADCmd SHA-256 is
+their `ldd` output are retained in `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-runtime/build-manifest.json`
+and `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-runtime/CMakeCache.txt`. The FreeCADCmd SHA-256 is
 `bb83c5b27271938ba7535bbb744b15ebd5e5e8decf196b763355ccc950d1663f`.
 Runtime versions are FreeCAD 27.1.0 development, OCC 8.0.1, Python 3.13.15
 (conda-forge, GCC 15.3.0), Qt 6.11.2. These are local provenance records,
@@ -1383,12 +1410,16 @@ kernel invocation or the existing geometry-worker transport protocol.
 All expected names match `native-expected-tests.json`; there are no unexpected
 cases. Full XML/console/time output is under `native/{App,Part,Gui}/` and test
 binary hashes are in `native-binary-hashes.txt`. These are the pre-existing
-baseline tests, not the unimplemented M0 recorder/detached/race/publication gate.
+baseline tests; the M0 recorder/detached/race/publication gate was unimplemented
+at this 2026-10-30 baseline. Later M0 slices implement the recorder, test-only
+harnesses, serial contracts and FreeCAD race runs, with full qualification open.
 
 ### Interpretation and owner decisions
 
-- **The phase serial fraction is still unmeasured.** Kernel, capture, TNP,
-  publication, GIL waits and presentation spans are unavailable. CPU/wall is
+- **The phase serial fraction is still unmeasured.** At this 2026-10-30 baseline,
+  kernel, capture, TNP, publication, GIL waits and presentation spans were
+  unavailable. M0.1 now records nested phase spans; exclusive serial fraction,
+  complete stage coverage and integration costs remain unmeasured. CPU/wall is
   process utilization over recompute, not a serial-fraction estimate. Ratios
   above one (EngineBlock 1.97, chain 200 all 1.25) also show why this default
   inner-policy baseline must not be called inner-one.
@@ -1411,8 +1442,10 @@ baseline tests, not the unimplemented M0 recorder/detached/race/publication gate
   Bodies 500 (112.459→116.507 s). Nothing is removed as an outlier; cause and
   long-run stationarity are unqualified. Do not apply performance gates or
   extrapolate a parallel speedup from these medians alone.
-- **Owner decisions:** fund the native phase recorder and instrumented
-  FreeCAD/OCC race harness; choose the heavy/user corpus and pinned upstream/
+- **Owner decisions:** the 2026-10-30 baseline proposed funding the native phase
+  recorder and instrumented FreeCAD/OCC race harness. The recorder, test-only
+  harness/contracts and FreeCAD race runs now exist; prioritize full OCC
+  coverage, exclusive stage measurements and integration costs. Choose the heavy/user corpus and pinned upstream/
   add-on versions; obtain a genuine GUI BIM annotation/presentation baseline.
   Defer the thread/process venue decision until capture/transport/naming/commit
   costs and qualification exist. Keep thread adapters disabled. A process-only
@@ -1423,7 +1456,7 @@ run/sample counts, synthetic restored counts and analytic one-solid volumes,
 unchanged source archive and build binary/library hashes, identical runtime
 versions, one common cold input hash, resource-wrapper arguments, exact native
 case names and no overlapping measured process intervals. Raw data and generated
-statistics are in `../logs/m0-runtime/{summary.json,tables.md,edit-timings.md,trends.json}`.
+statistics are in `/home/rch/Documents/code/agents/IDLE-S4/logs/m0-runtime/{summary.json,tables.md,edit-timings.md,trends.json}`.
 The two contaminated smoke attempts and failed FEM summaries remain separately
 retained with their reasons. No production source or scheduling changes, build,
 package installation, upstream run or race detector is part of this measurement.
@@ -1699,7 +1732,10 @@ is a guarantee. The short small profiles, cold-versus-warm difference, sampling
 noise, allocator effects and changed execution mixture after optimization all
 limit precision. Validate changes on the existing all/edit/noop and error/
 cancellation/rollback/observer controls before treating this as a performance
-prediction. No fix or performance A/B was implemented here.
+prediction. At this 2026-10-30 profile, no fix or performance A/B was implemented.
+The later opt-in `b9dd398e86` implements these three changes; local A/B medians
+are Bodies:500 106.706→48.874 s and Pair:512 36.860→24.014 s
+(`/home/rch/Documents/code/agents/IDLE-S5/report.md`), pending branch requalification.
 
 There is further quadratic work even when its *relative share decreases*.
 `Document::beginCollaborationCommitNotificationBarrier` copies document-wide
@@ -1720,10 +1756,12 @@ not evidence of superlinear geometry. `_recomputeFeature` shrinks from 6.1%
 to 2.1% for Bodies and 50.5% to 31.3% for Pair. Parallelizing just feature
 execution cannot remove the growing coordinator/property/status loops.
 
-**Owner decisions:** prioritize the already-exempt eligibility-check reorder,
-then ordered incremental scheduling and internal status counters. Keep the
+**Owner decisions:** the 2026-10-30 profile proposed prioritizing the
+already-exempt eligibility-check reorder, ordered incremental scheduling and
+internal status counters. Prioritize review and requalification of the existing
+opt-in `b9dd398e86` implementation and measured A/B results. Keep the
 current broad invalidation fence, callback order and public observations.
-Choose whether to fund the more involved rollback-journal design after those
+Choose whether to fund the separate, more involved rollback-journal design after those
 measurements. These findings do not qualify detached kernels, change the M0
 race/behavior gate, or decide thread versus process execution. Bodies remains
 outside the four exact-type pilot. Raw evidence and validation are local only;

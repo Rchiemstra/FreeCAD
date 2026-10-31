@@ -109,9 +109,12 @@ invalid inputs, cancellation, import/export and error callbacks were untested.
 Tiny primitive costs (about 17.4 microseconds per box and 5.7 per cylinder) argue
 against dispatching one worker job per primitive for performance.
 
-**The race gate is open.** P3's ThreadSanitizer executable exited 66 before the
+**The race gate is open.** In the P3 evidence supplied on 2026-10-28,
+ThreadSanitizer exited 66 before the
 benchmark with `unexpected memory mapping`; OCC libraries were uninstrumented.
-No working race-detector result exists. Successful repeated outputs are useful
+No working race-detector result existed in P3. M0 now has working FreeCAD TSan,
+a reported positive control and a clean post-#138 rerun, with full instrumented
+OCC qualification still unresolved. Successful repeated outputs are useful
 evidence, not a thread-safety qualification.
 
 ### P4: document width and critical paths
@@ -175,7 +178,8 @@ fan-out. In AssemblyExample, Python joints consume 19.9% and one native Assembly
 object 55.3% (0.4596 s). That native solver also calls Python and moves multiple
 objects; visual component count is not independent solver work.
 
-The executable's exact revision is unverified: runtime reported 27.1.0 Dev Build
+In the P4 evidence supplied on 2026-10-28, the executable's
+exact revision was unverified: runtime reported 27.1.0 Dev Build
 with an empty BuildRevisionHash. Assembly required local source Python modules
 to restore its real 17 joint proxies; the initial incomplete restore was
 discarded. EngineBlock was excluded because Draft proxies could not restore
@@ -183,10 +187,14 @@ discarded. EngineBlock was excluded because Draft proxies could not restore
 Peak process RSS was 1,062,936 KiB, about 1.01 GiB, for serial experiments. No ASan
 error log appeared; leak detection was disabled, and ASan is not a race detector.
 
-Open measurements are a verified optimized build, dirty-subgraph incremental
+P4's open measurements were a verified optimized build, dirty-subgraph incremental
 edits, larger imported and user models, complete add-on restores, native compute
 versus capture/commit timings, GIL waits, actual concurrent recompute memory and
 end-to-end speedup. Neither P3 nor P4 supplies the last of these.
+M0 now adds local optimized-labelled serial, incremental, nested-stage and
+restored-fixture evidence, including Draft/EngineBlock/BIM/FEM; trusted branch
+and upstream builds, GUI BIM, CAM, real add-on/user coverage and parallel
+end-to-end results remain open.
 
 ## Target architecture
 
@@ -399,7 +407,8 @@ isolated geometry jobs, with queue capacities 64
 (`src/App/PreparedEditExecutor.cpp`, `src/App/GeometryJobManager.h`). These are
 capacities, not measured utilization or a budget for multiplying nested pools.
 
-For this shared 16-logical-CPU, 15 GB machine, start qualification runs with two
+The supplied host snapshot reports 16 logical CPUs and 30 GB; actual CI runner
+limits remain unknown. For that shared machine, start qualification runs with two
 outer calculations and one OCC thread each. Propose a four-CPU total experimental
 cap across this feature's work; reserve capacity for the GUI and CI. A job using
 `k` effective inner threads consumes `k` tokens including its caller; the sum of
@@ -488,10 +497,13 @@ wave-wide rollback or silently change which command is atomic.
 Native cancellation is cooperative; a long kernel may delay it. Only isolated
 processes may be terminated for containment. Timeout does not guarantee a bound
 on live synchronous execution. Keep stable terminal failure presentation and
-the previous complete view if presentation itself fails. M0 must resolve/test
-the existing difference between `RecomputeHandle::wait()` terminal finalization
-and the lane's Completed-only finalization; do not assume identical partial
-failure/cancellation signal and display behavior today.
+the previous complete view if presentation itself fails. At the M0 tested SHA
+`dc285b47d2`, `RecomputeHandle::wait()` terminal finalization differs from the
+lane's Completed-only finalization. Separate fix `064ce5a475` passes its local
+tests; M0 still requires its inclusion, enabling the original skipped lane
+tests and requalification on the tested branch. Early `RecomputeHandle.done()`
+remains separate; do not assume identical partial failure/cancellation signal
+and display behavior today.
 
 ### Undo and rollback
 
@@ -678,7 +690,10 @@ No claimed gain for a chain whose critical path prevents it.
    smaller experiment? Confirm the proposed 1.20x benefit/5% control thresholds
    and four-CPU/2 GiB experimental limits once release-build noise is known.
 2. **Race qualification.** Where will compatible instrumented OCC/FreeCAD runs
-   execute? P3's failed TSan launch leaves this unresolved. A process venue may
+   execute? P3's TSan launch failed in the 2026-10-28 evidence;
+   M0 now has working FreeCAD TSan, positive-control evidence and a clean
+   post-#138 rerun, with full instrumented OCC qualification still unresolved.
+   A process venue may
    contain a crash but still needs input/output, transport and lifetime safety.
 3. **Publication and callbacks.** Can exact effects preserve every existing
    prepared-client invalidation and macro observer trace? If not, keep affected
@@ -688,8 +703,12 @@ No claimed gain for a chain whose critical path prevents it.
    and deterministically without spending the kernel gain on copying or owner
    TNP work? Shared inputs, cold caches and naming collisions are high-risk.
 5. **Corpus and compatibility scope.** Which real large documents and exact
-   add-on versions must qualify? P4 lacks working Draft/EngineBlock, large
-   BIM/Arch/FEM/CAM coverage, incremental timings and a verified release build.
+   add-on versions must qualify? In the 2026-10-28 evidence, P4 lacked
+   working Draft/EngineBlock, large BIM/Arch/FEM/CAM coverage,
+   incremental timings and a verified release build. M0 now adds local
+   optimized-labelled serial, incremental, nested-stage and restored-fixture
+   evidence; trusted branch/upstream builds, GUI BIM, CAM, real add-on/user
+   coverage and parallel end-to-end results remain open.
    Decide who retains the research artifacts and pinned upstream build results.
 
 Other risks are process startup and serialization dominating small jobs, large
