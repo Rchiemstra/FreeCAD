@@ -30,7 +30,11 @@ class ViewProviderAssembly(ViewProvider):
         ...
 
     def isolateComponents(
-        self, components: List[DocumentObject] | Tuple[DocumentObject, ...], mode: int, /
+        self,
+        components: List[DocumentObject] | Tuple[DocumentObject, ...],
+        mode: int,
+        selection: bool = False,
+        /,
     ) -> None:
         """
         Temporarily isolates a given set of components in the 3D view.
@@ -43,12 +47,16 @@ class ViewProviderAssembly(ViewProvider):
                 - 0: Transparent
                 - 1: Wireframe
                 - 2: Hidden
+            selection (bool): Use scene-only user isolation. Hidden selected contents are shown without
+                changing persisted visibility. Joint isolation and transactions cannot clear it;
+                call clearIsolate(True) to exit. Defaults to legacy joint isolation.
         """
         ...
 
-    def clearIsolate(self) -> None:
+    def clearIsolate(self, selection: bool = False, /) -> None:
         """
-        Restores the visual state of all components, clearing any active isolation.
+        Restores component state. Pass True to also clear user isolation.
+        The default clears only legacy joint isolation, preserving user isolation.
         """
         ...
     EnableMovement: bool

@@ -247,6 +247,23 @@ class ResultCheckerTests(unittest.TestCase):
         self.check("gtest", "--binary", binary.name, "--executable", binary,
                    "--log", self.directory / "stale.log", report, message="result.xml")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux signal status contract")
+    def test_crash_before_xml_preserves_status_and_last_test(self):
+        binary = self.directory / "Gui_tests_run"
+        binary.write_text(
+            f"#!{sys.executable}\n"
+            "import os, resource, signal\n"
+            "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+            "print('[ RUN      ] DockWidgetTest.example', flush=True)\n"
+            "os.kill(os.getpid(), signal.SIGSEGV)\n")
+        binary.chmod(0o755)
+        result = self.check(
+            "gtest", "--binary", binary.name, "--executable", binary,
+            "--log", self.directory / "crash.log", self.directory / "missing.xml",
+            message="process exit -11")
+        self.assertIn("DockWidgetTest.example", result.stderr)
+        self.assertIn("missing.xml", result.stderr)
+
     def summary(self, content, rc=0, success=False, message=None):
         log = self.directory / "integration.log"
         log.write_text(content)

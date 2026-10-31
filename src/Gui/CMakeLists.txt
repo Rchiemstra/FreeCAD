@@ -1180,6 +1180,7 @@ SET(Widget_HPP_SRCS
     Widgets.h
     Window.h
     WindowLayout.h
+    ViewDropDocking.h
     WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
@@ -1260,6 +1261,7 @@ SET(Workbench_CPP_SRCS
 )
 SET(Workbench_SRCS
     ${Workbench_CPP_SRCS}
+    DockWidget.h
     DockWindowManager.h
     OverlayManager.h
     OverlayWidgets.h
