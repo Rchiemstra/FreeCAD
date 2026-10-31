@@ -693,6 +693,183 @@ class TestGuiDocument(unittest.TestCase):
             # close the editor while its file still exists
             closeEditor()
 
+    def testPartialLaneFailurePublishesRecomputedSignal(self):
+        """A partially failed Std_Refresh must tell the GUI the recompute finished.
+
+        Std_Refresh admits a lane command and does not wait on RecomputeHandle,
+        so only the lane's terminal finalization emits signalRecomputed.
+        Gui::Document::slotRecomputed queues the tree refresh that updateGui drains.
+        """
+        kept = self.doc.addObject("App::FeatureTest", "Keep")
+        bad = self.doc.addObject("App::FeatureTest", "Bad")
+        self.assertIsNotNone(kept)
+        self.assertIsNotNone(bad)
+        FreeCAD.setActiveDocument(self.doc.Name)
+        recompute_document(self.doc, timeout_seconds=30.0)
+        FreeCADGui.updateGui()
+        kept_count = kept.ExecCount
+
+        bad.ExceptionType = 1
+        touch_on_owner_thread(self.doc, kept)
+        touch_on_owner_thread(self.doc, bad)
+        self.assertTrue(self.doc.mustExecute(), self.doc.getMutationReadiness())
+
+        def icon_state(item):
+            icon = item.icon(0)
+            key = None if icon.isNull() else icon.cacheKey()
+            return (key, item.text(0), item.text(2))
+
+        def error_overlay_pixels(item):
+            """Count red pixels in the top-right error badge.
+
+            TreeWidget paints overlay_error there when the object is in error
+            (State contains Invalid). The touched badge is blue, so a cache-key
+            change alone is not the error presentation.
+            """
+            icon = item.icon(0)
+            if icon.isNull():
+                return 0
+            sizes = icon.availableSizes()
+            pixmap = icon.pixmap(sizes[-1] if sizes else QtCore.QSize(32, 32))
+            image = pixmap.toImage()
+            if image.isNull() or image.width() == 0 or image.height() == 0:
+                return 0
+            span = max(6, int(round(12 * (pixmap.devicePixelRatio() or 1.0))))
+            width = image.width()
+            height = image.height()
+            red = 0
+            for y in range(min(height, span)):
+                for x in range(max(0, width - span), width):
+                    color = image.pixelColor(x, y)
+                    if color.alpha() < 40:
+                        continue
+                    if (
+                        color.red() >= 140
+                        and color.red() > color.green() + 50
+                        and color.red() > color.blue() + 50
+                    ):
+                        red += 1
+            return red
+
+        def document_object_samples(internal_name):
+            """Icon samples for this document's rows. Read before the next refresh.
+
+            updateGui rebuilds tree items, so a wrapper kept across pumps is deleted.
+            Column 2 is the internal name.
+            """
+            label = self.doc.Label
+            samples = []
+            window = FreeCADGui.getMainWindow()
+            for widget in window.findChildren(QtWidgets.QTreeWidget):
+                root = widget.invisibleRootItem()
+                for index in range(root.childCount()):
+                    doc_item = root.child(index)
+                    if doc_item.type() != 1000 or doc_item.text(0) != label:
+                        continue
+
+                    def walk(item):
+                        for child_index in range(item.childCount()):
+                            child = item.child(child_index)
+                            if child.type() == 1001 and child.text(2) == internal_name:
+                                samples.append((icon_state(child), error_overlay_pixels(child)))
+                            walk(child)
+
+                    walk(doc_item)
+            return samples
+
+        def pump_until_stable(internal_name, deadline, quiet_seconds):
+            """Pump updateGui until the row stops changing, or the deadline hits.
+
+            Tree status refresh is a timer (StatusTimeout, default 100 ms). The
+            quiet window is longer than that timer, so a refresh that is still
+            pending changes the icon and the wait starts over.
+            """
+            previous = None
+            stable_since = None
+            samples = []
+            while time.monotonic() < deadline:
+                FreeCADGui.updateGui()
+                samples = document_object_samples(internal_name)
+                signature = tuple(state for state, _count in samples) if samples else None
+                now = time.monotonic()
+                if signature is not None and signature == previous:
+                    if stable_since is None:
+                        stable_since = now
+                    elif now - stable_since >= quiet_seconds:
+                        return samples
+                else:
+                    stable_since = None
+                    previous = signature
+                time.sleep(0.02)
+            self.fail(
+                f"{self.doc.Name} tree row {internal_name} did not settle "
+                f"({len(samples)} row(s))"
+            )
+
+        bad_before = pump_until_stable("Bad", time.monotonic() + 5.0, 0.3)
+        before_overlay = [count for _state, count in bad_before]
+        self.assertTrue(bad_before)
+        self.assertTrue(
+            all(count < 4 for count in before_overlay),
+            f"error overlay already present before Std_Refresh: {before_overlay}",
+        )
+
+        seen = []
+
+        class Observer:
+            def slotRecomputedObject(self, obj):
+                seen.append(("object", obj.Name))
+
+            def slotRecomputedDocument(self, doc):
+                seen.append(("document", doc.Name))
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            FreeCADGui.runCommand("Std_Refresh", 0)
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                FreeCADGui.updateGui()
+                if ("document", self.doc.Name) in seen:
+                    break
+                time.sleep(0.02)
+            FreeCADGui.updateGui()
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+        overlay_deadline = time.monotonic() + 30.0
+        bad_overlay = []
+        keep_overlay = []
+        while time.monotonic() < overlay_deadline:
+            FreeCADGui.updateGui()
+            if ("document", self.doc.Name) not in seen:
+                time.sleep(0.02)
+                continue
+            bad_overlay = [count for _state, count in document_object_samples("Bad")]
+            keep_overlay = [count for _state, count in document_object_samples("Keep")]
+            if (
+                bad_overlay
+                and keep_overlay
+                and all(count >= 4 for count in bad_overlay)
+                and all(count < 4 for count in keep_overlay)
+            ):
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(seen.count(("document", self.doc.Name)), 1)
+        self.assertEqual(seen.count(("object", "Keep")), 1)
+        self.assertEqual(seen.count(("object", "Bad")), 0)
+        self.assertIn("Invalid", bad.State)
+        self.assertGreater(kept.ExecCount, kept_count)
+        self.assertTrue(
+            bad_overlay and all(count >= 4 for count in bad_overlay),
+            f"{self.doc.Name} Bad tree row is missing the error overlay: {bad_overlay}",
+        )
+        self.assertTrue(
+            keep_overlay and all(count < 4 for count in keep_overlay),
+            f"{self.doc.Name} Keep tree row shows the error overlay: {keep_overlay}",
+        )
+
 
 class TestImagePlaneLoading(unittest.TestCase):
     """Image::ImagePlane canvases loaded in the GUI (live MCP report, 2026-10-05).
