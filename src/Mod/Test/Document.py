@@ -2409,14 +2409,9 @@ class DocumentObserverCases(unittest.TestCase):
             self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
         self.assertEqual(self.Obs.signal.pop(0), "DocCreated")
         self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.signal.pop(0), "DocBeforeChange")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocChanged")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocRelabled")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
+        # The bootstrap label is constructor state: observers see it when the
+        # document is created, and creation announces no Label change.
+        self.assertEqual(self.Doc1.Label, "Observer1")
         self.assertTrue(not self.Obs.signal and not self.Obs.parameter and not self.Obs.parameter2)
 
         self.Doc2 = FreeCAD.newDocument("Observer2")
@@ -2425,14 +2420,9 @@ class DocumentObserverCases(unittest.TestCase):
             self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
         self.assertEqual(self.Obs.signal.pop(0), "DocCreated")
         self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.signal.pop(0), "DocBeforeChange")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocChanged")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocRelabled")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
+        # The bootstrap label is constructor state: observers see it when the
+        # document is created, and creation announces no Label change.
+        self.assertEqual(self.Doc2.Label, "Observer2")
         self.assertTrue(not self.Obs.signal and not self.Obs.parameter and not self.Obs.parameter2)
 
         FreeCAD.setActiveDocument("Observer1")
@@ -2621,8 +2611,7 @@ class DocumentObserverCases(unittest.TestCase):
         self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
         self.assertTrue(self.GuiObs.signal.pop(0) == "DocActivated")
         self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
-        self.assertTrue(self.GuiObs.signal.pop(0) == "DocRelabled")
-        self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
+        # The label is initialized before creation is announced: no relabel.
         self.assertTrue(
             not self.GuiObs.signal and not self.GuiObs.parameter and not self.GuiObs.parameter2
         )
