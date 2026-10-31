@@ -4088,6 +4088,10 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 // constructor
 //--------------------------------------------------------------------------
 Document::Document(const char* documentName)
+    : Document(documentName, "Unnamed")
+{}
+
+Document::Document(const char* documentName, const char* documentLabel)
     : d(new DocumentP), myName(documentName)
 {
     d->collaborationService.reset(new DocumentCollaborationService(*this));
@@ -4113,7 +4117,7 @@ Document::Document(const char* documentName)
         GetApplication()
             .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
             ->GetASCII("prefCompany", "");
-    ADD_PROPERTY_TYPE(Label, ("Unnamed"), 0, Prop_ReadOnly, "The name of the document");
+    ADD_PROPERTY_TYPE(Label, (documentLabel), 0, Prop_ReadOnly, "The name of the document");
     ADD_PROPERTY_TYPE(FileName,
                       (""),
                       0,

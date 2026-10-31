@@ -1757,6 +1757,8 @@ protected:
      * the empty string.
      */
     explicit Document(const char* documentName = "");
+    /// Initialize the label before publishing the document to observers.
+    Document(const char* documentName, const char* documentLabel);
 
     /**
      *@brief Remove an object from the document.

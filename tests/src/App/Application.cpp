@@ -7,6 +7,9 @@
 #include <src/App/InitApplication.h>
 
 #include <App/Application.h>
+#include <App/Document.h>
+
+#include <QScopeGuard>
 
 #include <algorithm>
 #include <string>
@@ -63,6 +66,57 @@ TEST_F(ApplicationTest, fCustomSyntaxEmptyIn)
     Spr exp {"", ""};
     EXPECT_EQ(res, exp);
 };
+
+TEST_F(ApplicationTest, newDocumentObserversSeeInitializedLabel)
+{
+    auto& app = App::GetApplication();
+    const auto name = app.getUniqueDocumentName("initializedDocumentLabel");
+    std::string observedLabel;
+    bool observed = false;
+    auto connection = app.signalNewDocument.connect([&](const App::Document& document, bool) {
+        if (name == document.getName()) {
+            observed = true;
+            observedLabel = document.Label.getStrValue();
+        }
+    });
+    const auto cleanup = qScopeGuard([&] {
+        connection.disconnect();
+        if (app.getDocument(name.c_str())) {
+            app.closeDocument(name.c_str());
+        }
+    });
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* document = app.newDocument(name.c_str(), "Ready for observers", flags);
+    ASSERT_NE(document, nullptr);
+    EXPECT_TRUE(observed);
+    EXPECT_EQ(observedLabel, "Ready for observers");
+    EXPECT_EQ(document->Label.getStrValue(), observedLabel);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+}
+
+TEST_F(ApplicationTest, newDocumentObserverLabelEditRemainsAuthoritative)
+{
+    auto& app = App::GetApplication();
+    const auto name = app.getUniqueDocumentName("observerDocumentLabel");
+    auto connection = app.signalNewDocument.connect([&](const App::Document& document, bool) {
+        if (name == document.getName()) {
+            const_cast<App::Document&>(document).Label.setValue("Observer label");
+        }
+    });
+    const auto cleanup = qScopeGuard([&] {
+        connection.disconnect();
+        if (app.getDocument(name.c_str())) {
+            app.closeDocument(name.c_str());
+        }
+    });
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    auto* document = app.newDocument(name.c_str(), "Bootstrap label", flags);
+    ASSERT_NE(document, nullptr);
+    EXPECT_EQ(document->Label.getStrValue(), "Observer label");
+    EXPECT_TRUE(document->hasPendingFileChanges());
+}
 
 namespace
 {

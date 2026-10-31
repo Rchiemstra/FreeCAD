@@ -549,7 +549,9 @@ Document* Application::newDocument(const char * proposedName, const char * propo
         }
     }
     // create the FreeCAD document
-    auto doc = new Document(name.c_str());
+    // Observers may schedule owner-thread work as soon as the document is published.
+    // Install the bootstrap label as constructor state before exposing the document.
+    auto doc = new Document(name.c_str(), label.c_str());
     doc->setStatus(Document::TempDoc, CreateFlags.temporary);
 
     // add the document to the internal list
@@ -602,14 +604,6 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     }
     else {
         signalNewDocument(*doc, CreateFlags.createView);
-    }
-
-    {
-        // The application-assigned bootstrap label is part of a new
-        // document's root state.  Suppress only this write: mutations made by
-        // signalNewDocument observers above remain authoritative.
-        Document::FileChangeTrackingScope fileStateScope(*doc);
-        doc->Label.setValue(label);
     }
 
     // set the old document active again if the new is temporary
