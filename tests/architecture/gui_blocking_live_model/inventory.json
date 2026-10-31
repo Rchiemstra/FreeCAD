@@ -270,6 +270,8 @@
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
@@ -27000,6 +27002,22 @@
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "and source.Document == App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument is None or Gui.Control.activeDialog():"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
