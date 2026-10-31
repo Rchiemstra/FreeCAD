@@ -37,6 +37,7 @@ from PySide import QtGui, QtCore
 from PySide.QtGui import QApplication
 
 from PartDesignTests.TestMaterial import TestMaterial
+from PartDesignTests.TestAllowanceProfileGui import TestAllowanceProfileGui
 from PartDesignTests.TestTaskFeatureCompletion import TestTaskFeatureCompletion
 from PartDesignTests.TestActiveObject import TestActiveObject
 from PartDesignTests.TestSuppressed import TestSuppressedStrikethrough

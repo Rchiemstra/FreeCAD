@@ -66,6 +66,11 @@ if(FREECAD_USE_PCH)
     target_precompile_headers(PointsGui PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:"${CMAKE_CURRENT_LIST_DIR}/PreCompiled.h">
     )
+    # Owner-thread presentation capture must stay free of Coin; the GUI
+    # precompiled header pulls in Inventor.
+    set_source_files_properties(
+            DocumentPresentationCapture.cpp
+            PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
 endif(FREECAD_USE_PCH)
 
 target_include_directories(

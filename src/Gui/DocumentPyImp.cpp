@@ -875,6 +875,21 @@ void DocumentPy::setModified(Py::Boolean arg)
     getDocumentPtr()->setModified(arg);
 }
 
+Py::Boolean DocumentPy::getSkipSaveOnClose() const
+{
+    return {getDocumentPtr()->skipsSaveOnClose()};
+}
+
+void DocumentPy::setSkipSaveOnClose(Py::Boolean arg)
+{
+    if (arg.isTrue()) {
+        getDocumentPtr()->markSkipSaveOnClose();
+    }
+    else {
+        getDocumentPtr()->consumeSkipSaveOnClose();
+    }
+}
+
 Py::List DocumentPy::getTreeRootObjects() const
 {
     std::vector<App::DocumentObject*> objs = getDocumentPtr()->getTreeRootObjects();

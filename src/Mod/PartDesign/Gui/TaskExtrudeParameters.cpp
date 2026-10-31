@@ -112,6 +112,8 @@ void TaskExtrudeParameters::setupDialog()
     ui->startMode->setCurrentIndex(extrude->StartType.getValue());
     ui->startOffsetEdit->setValue(extrude->StartOffset.getQuantityValue());
     ui->startOffsetEdit->bind(extrude->StartOffset);
+    ui->fittingToleranceEdit->setValue(extrude->FittingTolerance.getQuantityValue());
+    ui->fittingToleranceEdit->bind(extrude->FittingTolerance);
 
     updateStartReferenceName();
 
@@ -356,6 +358,24 @@ void TaskExtrudeParameters::connectSlots()
         qOverload<double>(&Gui::PrefQuantitySpinBox::valueChanged),
         this,
         [this](double value) { onStartOffsetChanged(value); }
+    );
+    connect(
+        ui->fittingToleranceEdit,
+        qOverload<double>(&Gui::PrefQuantitySpinBox::valueChanged),
+        this,
+        [this](double value) {
+            getObject<PartDesign::FeatureExtrude>()->FittingTolerance.setValue(value);
+            // Let the expression binding finish committing the editor first.
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    if (getObject<PartDesign::FeatureExtrude>()) {
+                        tryRecomputeFeature();
+                    }
+                },
+                Qt::QueuedConnection
+            );
+        }
     );
     connect(ui->buttonStartReference, &QAbstractButton::toggled, this, [this](bool checked) {
         onSelectStartReferenceToggle(checked);
@@ -1408,6 +1428,7 @@ void TaskExtrudeParameters::applyParameters()
     ui->lengthEdit->apply();
     ui->lengthEdit2->apply();
     ui->startOffsetEdit->apply();
+    ui->fittingToleranceEdit->apply();
     ui->taperEdit->apply();
     ui->taperEdit2->apply();
     FCMD_OBJ_CMD(obj, "UseCustomVector = " << (getCustom() ? 1 : 0));
@@ -1428,6 +1449,10 @@ void TaskExtrudeParameters::applyParameters()
     FCMD_OBJ_CMD(obj, "StartOffset = " << ui->startOffsetEdit->value().getValue());
     FCMD_OBJ_CMD(obj, "StartType = " << ui->startMode->currentIndex());
     FCMD_OBJ_CMD(obj, "StartReference = " << getFaceName(ui->lineStartReference).toUtf8().data());
+    // An OK click can precede the queued tolerance preview.
+    if (getObject<PartDesign::FeatureExtrude>()->FittingTolerance.isTouched()) {
+        setUpdateBlocked(true);
+    }
 }
 
 void TaskExtrudeParameters::onSidesModeChanged(int index)

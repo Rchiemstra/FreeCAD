@@ -25,6 +25,7 @@
 
 #include <Base/Converter.h>
 #include <Base/GeometryPyCXX.h>
+#include <Base/Interpreter.h>
 #include <Base/MatrixPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
 #include <Base/Stream.h>
@@ -103,7 +104,12 @@ int MeshPy::PyInit(PyObject* args, PyObject*)
             }
         }
         else if (PyUnicode_Check(pcObj)) {
-            getMeshObjectPtr()->load(PyUnicode_AsUTF8(pcObj));
+            // The constructor owns this detached mesh; no live property is
+            // touched while the native file loader runs without the GIL.
+            const std::string filename(PyUnicode_AsUTF8(pcObj));
+            auto* mesh = getMeshObjectPtr();
+            Base::PyGILStateRelease release;
+            mesh->load(filename.c_str());
         }
         else {
             PyErr_Format(PyExc_TypeError, "Cannot create a mesh out of a '%s'", pcObj->ob_type->tp_name);

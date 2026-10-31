@@ -21,6 +21,7 @@ endif(BUILD_GUI)
 
 set(Assembly_Scripts
     Init.py
+    CommandIsolate.py
     CommandCreateAssembly.py
     CommandCreateBom.py
     CommandInsertLink.py
@@ -67,6 +68,7 @@ SET(AssemblyScripts_SRCS
 
 SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
+    AssemblyTests/TestIsolateSelectionGui.py
     AssemblyTests/TestCore.py
     AssemblyTests/TestExtractComponent.py
     AssemblyTests/TestComponentPattern.py

@@ -46,6 +46,7 @@ class PreferencesPage:
         pref.SetBool("PartInNewFile", self.form.checkBoxPartInNewFile.isChecked())
         pref.SetBool("DetachStdPart", self.form.checkBoxDetachStdPart.isChecked())
         pref.SetBool("LogSolverDebug", self.form.checkBoxSolverDebug.isChecked())
+        pref.SetBool("IsolateSelectionTransparent", self.form.isolateTransparent.isChecked())
         pref.SetInt("GroundFirstPart", self.form.groundFirstPart.currentIndex())
 
     def loadSettings(self):
@@ -54,6 +55,7 @@ class PreferencesPage:
         self.form.checkBoxSolverDebug.setChecked(pref.GetBool("LogSolverDebug", False))
         self.form.checkBoxPartInNewFile.setChecked(pref.GetBool("PartInNewFile", True))
         self.form.checkBoxDetachStdPart.setChecked(pref.GetBool("DetachStdPart", False))
+        self.form.isolateTransparent.setChecked(pref.GetBool("IsolateSelectionTransparent", False))
         self.form.groundFirstPart.clear()
         self.form.groundFirstPart.addItem(translate("Assembly", "Ask"))
         self.form.groundFirstPart.addItem(translate("Assembly", "Always"))

@@ -122,6 +122,18 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         editor.setText(str(value) + " mm")
         QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
 
+    def change_tolerance(self, value):
+        field = Gui.getMainWindow().findChild(QtGui.QWidget, "fittingToleranceEdit")
+        self.assertIsNotNone(field)
+        update = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
+        self.assertIsNotNone(update)
+        update.setChecked(False)
+        editor = field.findChild(QtGui.QLineEdit)
+        self.assertIsNotNone(editor)
+        editor.setFocus()
+        editor.setText(str(value) + " mm")
+        QtGui.QApplication.sendEvent(field, QtGui.QFocusEvent(QtCore.QEvent.FocusOut))
+
     def wait_closed(self):
         _pump_gui_until(lambda: not Gui.Control.activeDialog(), 8,
                         lambda: [(o.Name, o.State) for o in self.doc.Objects])
@@ -145,6 +157,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         feature, copy = self.feature(kind)
         if kind in ("Pad", "Pocket"):
             self.change_length(3)
+            self.change_tolerance(0.4)
         with self.busy():
             Gui.Control.activeTaskDialog().accept()
             Gui.Control.activeTaskDialog().accept()
@@ -152,12 +165,13 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         self.wait_closed()
         self.assert_complete(feature, copy)
         if kind in ("Pad", "Pocket"):
-            volume = math.pi * 5**2 * 3
+            volume = math.pi * (4.8 if kind == "Pad" else 5.2)**2 * 3
             self.assertAlmostEqual(feature.Shape.Volume, volume if kind == "Pad" else 1600-volume)
 
     def testPocketPreviewWhileBusy(self):
         feature, copy = self.feature("Pocket")
         self.change_length(3)
+        self.change_tolerance(0.4)
         update = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
         with self.busy():
             update.setChecked(True)
@@ -166,7 +180,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
             lambda: _left_commit(self.doc) and "Touched" not in feature.State, 30,
             lambda: {"feature": feature.State, "status": feature.getStatusString()},
         )
-        self.assertAlmostEqual(feature.Shape.Volume, 1600 - math.pi * 5**2 * 3)
+        self.assertAlmostEqual(feature.Shape.Volume, 1600 - math.pi * 5.2**2 * 3)
         self.assertTrue(Gui.Control.activeDialog())
         self.assertTrue(self.doc.HasPendingTransaction)
         Gui.Control.activeTaskDialog().accept()
@@ -176,12 +190,13 @@ class TestTaskFeatureCompletion(unittest.TestCase):
     def testPocketOKImmediatelyAfterPreview(self):
         feature, copy = self.feature("Pocket")
         self.change_length(3)
+        self.change_tolerance(0.4)
         update = Gui.getMainWindow().findChild(QtGui.QCheckBox, "checkBoxUpdateView")
         update.setChecked(True)
         Gui.Control.activeTaskDialog().accept()
         self.wait_closed()
         self.assert_complete(feature, copy)
-        self.assertAlmostEqual(feature.Shape.Volume, 1600 - math.pi * 5**2 * 3)
+        self.assertAlmostEqual(feature.Shape.Volume, 1600 - math.pi * 5.2**2 * 3)
 
     def dress_up_ok(self, kind):
         feature, copy = self.feature(kind)
@@ -216,23 +231,26 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         Gui.runCommand("PartDesign_Pad")
         self.settle()
         self.change_length(3)
+        self.change_tolerance(0.4)
         Gui.Control.activeTaskDialog().accept()
         self.wait_closed()
         pad = self.doc.getObject("Pad")
         self.assertFalse(self.doc.mustExecute())
-        self.assertAlmostEqual(pad.Shape.Volume, math.pi * 5**2 * 3)
+        self.assertAlmostEqual(pad.Shape.Volume, math.pi * 4.8**2 * 3)
         self.assertAlmostEqual(self.body.Shape.Volume, pad.Shape.Volume)
 
     def testPendingCancel(self):
         feature, copy = self.feature("Pad")
         before = feature.Shape.Volume
         self.change_length(3)
+        self.change_tolerance(0.4)
         with self.busy():
             Gui.Control.activeTaskDialog().accept()
             Gui.Control.activeTaskDialog().reject()
         self.wait_closed()
         self.settle()
         self.assertAlmostEqual(feature.Length.Value, 2)
+        self.assertAlmostEqual(feature.FittingTolerance.Value, 0)
         self.assertAlmostEqual(feature.Shape.Volume, before)
         self.assertFalse(self.doc.HasPendingTransaction)
 
@@ -265,6 +283,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         self.assertIsNotNone(Gui.Control.activeTaskDialog(Gui.getDocument(other.Name)))
         App.setActiveDocument(self.doc.Name)
         self.change_length(3)
+        self.change_tolerance(0.4)
         with self.busy() as (release, handle):
             Gui.Control.activeTaskDialog().accept()
             self.assertTrue(self.doc.HasPendingTransaction)
@@ -289,6 +308,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
     def testFeatureErrorOKRemainsEditable(self):
         feature, copy = self.feature("Pad")
         self.change_length(3)
+        self.change_tolerance(0.4)
         # An empty profile makes an ordinary Pad fail at recompute time.
         sketch = feature.Profile[0]
         sketch.delGeometry(0)
@@ -301,7 +321,24 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         self.assertTrue(self.doc.HasPendingTransaction)
         sketch.addGeometry(Part.Circle(App.Vector(), App.Vector(0, 0, 1), 5), False)
         self.change_length(3)
+        self.change_tolerance(0.4)
         Gui.Control.activeTaskDialog().accept()
         self.wait_closed()
         self.assert_complete(feature, copy)
-        self.assertAlmostEqual(feature.Shape.Volume, math.pi * 5**2 * 3)
+        self.assertAlmostEqual(feature.Shape.Volume, math.pi * 4.8**2 * 3)
+
+    def testToleranceErrorOKRemainsEditable(self):
+        feature, copy = self.feature("Pad")
+        self.change_tolerance(11)
+        with self.busy():
+            Gui.Control.activeTaskDialog().accept()
+        _pump_gui_until(lambda: "Invalid" in feature.State and _left_commit(self.doc), 8)
+        start = time.monotonic()
+        _pump_gui_until(lambda: time.monotonic() - start > 0.3, 2)
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.doc.HasPendingTransaction)
+        self.change_tolerance(0.4)
+        Gui.Control.activeTaskDialog().accept()
+        self.wait_closed()
+        self.assert_complete(feature, copy)
+        self.assertAlmostEqual(feature.Shape.Volume, math.pi * 4.8**2 * 2)

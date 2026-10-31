@@ -1146,6 +1146,7 @@ SET(Widget_CPP_SRCS
     WorkbenchSelector.cpp
     ElideLabel.cpp
     ElideCheckBox.cpp
+    OpenGLViewportResize.cpp
     FontScaledSVG.cpp
     SplitButton.cpp
 )
@@ -1179,10 +1180,12 @@ SET(Widget_HPP_SRCS
     Widgets.h
     Window.h
     WindowLayout.h
+    ViewDropDocking.h
     WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
     ElideCheckBox.h
+    OpenGLViewportResize.h
     FontScaledSVG.h
     SplitButton.h
 )

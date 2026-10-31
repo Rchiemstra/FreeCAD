@@ -3129,7 +3129,7 @@ void tryRunEventLoop(GUISingleApplication& mainApp)
         boost::interprocess::file_lock flock(filename.c_str());
         if (flock.try_lock()) {
             Base::Console().log("Init: Executing event loop…\n");
-            QApplication::exec();
+            const int exitCode = QApplication::exec();
 
             // Qt can't handle exceptions thrown from event handlers, so we need
             // to manually rethrow SystemExitExceptions.
@@ -3142,6 +3142,14 @@ void tryRunEventLoop(GUISingleApplication& mainApp)
             flock.unlock();
             lock.close();
             fi.deleteFile();
+            if (exitCode != 0) {
+                // Propagate async startup failures after leaving Qt's event
+                // handlers, through the existing executable exit-code path.
+                Base::PyGILStateLocker gil;
+                Py::Long code(exitCode);
+                PyErr_SetObject(PyExc_SystemExit, code.ptr());
+                throw Base::SystemExitException();
+            }
         }
         else {
             Base::Console().error(

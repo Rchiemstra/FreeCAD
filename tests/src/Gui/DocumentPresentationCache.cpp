@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <Inventor/SoDB.h>
+#include <Inventor/sensors/SoOneShotSensor.h>
+#include <Inventor/sensors/SoSensorManager.h>
 #include <Inventor/SoPath.h>
 #include <Inventor/actions/SoGetPrimitiveCountAction.h>
 #include <Inventor/actions/SoSearchAction.h>
@@ -34,11 +36,18 @@
 
 #if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
 #include <Mod/Part/Gui/DocumentPresentationCapture.h>
+#include <Mod/Part/Gui/ViewProviderExt.h>
+#include <Mod/Part/Gui/SoFCShapeObject.h>
+#include <Mod/Part/Gui/SoBrepFaceSet.h>
+#include <Inventor/nodes/SoCoordinate3.h>
+#include <Inventor/nodes/SoNormal.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
@@ -710,6 +719,103 @@ TEST_F(PartPresentationCaptureTest, DocumentBoundaryExpandsFaceColoursOverUnequa
 
 #if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
 
+TEST_F(PartPresentationCaptureTest, CaptureMatchesCoinFields)
+{
+    const auto box = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    const auto fused = BRepAlgoAPI_Fuse(box, BRepPrimAPI_MakeCylinder(1, 5).Shape()).Shape();
+    for (const auto& shape : {box, fused, TopoDS_Shape()}) {
+        for (bool fromUV : {false, true}) {
+            auto* coin = new PartGui::SoFCShape;
+            coin->ref();
+            coin->addChild(coin->coords);
+            coin->addChild(coin->norm);
+            coin->addChild(coin->faceset);
+            coin->addChild(coin->lineset);
+            coin->addChild(coin->nodeset);
+            PartGui::ViewProviderPartExt::setupCoinGeometry(shape, coin, 0.2, 28.65, fromUV);
+            Gui::PresentationRenderBuffer buffer;
+            bool captured = false;
+            std::thread owner([&] {
+                captured = PartGui::capturePartPresentationRenderBuffer(
+                    *document, "fields-capture", shape, 0.2, 28.65, fromUV, buffer);
+            });
+            owner.join();
+            EXPECT_TRUE(captured);
+            const auto flatten = [](const auto& field) {
+                std::vector<float> values;
+                for (int i = 0; i < field.getNum(); ++i) {
+                    for (int c = 0; c < 3; ++c) {
+                        values.push_back(field[i][c]);
+                    }
+                }
+                return values;
+            };
+            const auto packed = [](const auto& field) {
+                std::vector<std::uint32_t> values;
+                for (int i = 0; i < field.getNum(); ++i) {
+                    if (field[i] >= 0) {
+                        values.push_back(static_cast<std::uint32_t>(field[i]));
+                    }
+                }
+                return values;
+            };
+            EXPECT_EQ(buffer.vertices, flatten(coin->coords->point));
+            EXPECT_EQ(buffer.normals, flatten(coin->norm->vector));
+            EXPECT_EQ(buffer.indices, packed(coin->faceset->coordIndex));
+            EXPECT_EQ(buffer.topology, packed(coin->faceset->partIndex));
+            coin->unref();
+        }
+    }
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureInvalidFaceFailsWithoutPublishingGeometry)
+{
+    TopoDS_Face invalid;
+    BRep_Builder().MakeFace(invalid);
+    const auto before = PartGui::presentationCaptureCacheStatistics();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        Gui::PresentationRenderBuffer buffer;
+        buffer.vertices = {1, 2, 3};
+        bool captured = true;
+        std::thread owner([&] {
+            captured = PartGui::capturePartPresentationRenderBuffer(
+                *document, "invalid-capture", invalid, 0.2, 28.65, false, buffer);
+        });
+        owner.join();
+        EXPECT_FALSE(captured);
+        EXPECT_TRUE(buffer.vertices.empty());
+        EXPECT_TRUE(buffer.normals.empty());
+        EXPECT_TRUE(buffer.indices.empty());
+        EXPECT_TRUE(buffer.topology.empty());
+        EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().entries, before.entries);
+    }
+    EXPECT_EQ(PartGui::presentationCaptureCacheStatistics().tessellations, before.tessellations + 2);
+}
+
+TEST_F(PartPresentationCaptureTest, CaptureDoesNotDispatchGuiCoinSensorOnWorker)
+{
+    const auto shape = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    const auto guiThread = std::this_thread::get_id();
+    std::thread::id dispatchedOn;
+    SoOneShotSensor sensor([](void* context, SoSensor*) {
+        *static_cast<std::thread::id*>(context) = std::this_thread::get_id();
+    }, &dispatchedOn);
+    sensor.setPriority(0);
+    sensor.schedule();
+    Gui::PresentationRenderBuffer buffer;
+    bool captured = false;
+    std::thread owner([&] {
+        captured = PartGui::capturePartPresentationRenderBuffer(
+            *document, "sensor-capture", shape, 0.2, 28.65, false, buffer);
+    });
+    owner.join();
+    EXPECT_TRUE(captured);
+    EXPECT_FALSE(buffer.vertices.empty());
+    EXPECT_EQ(dispatchedOn, std::thread::id());
+    SoDB::getSensorManager()->processImmediateQueue();
+    EXPECT_EQ(dispatchedOn, guiThread);
+}
+
 TEST_F(PartPresentationCaptureTest, CaptureCacheReusesPackedGeometryFromBothProducers)
 {
     Base::Interpreter().runString(
@@ -1156,7 +1262,7 @@ TEST_F(PartPresentationCaptureTest, CaptureCacheRetriesFailuresWithoutReturningO
         ASSERT_FALSE(buffer.vertices.empty());
         const auto before = PartGui::presentationCaptureCacheStatistics();
         for (int attempt = 0; attempt < 2; ++attempt) {
-            EXPECT_TRUE(PartGui::capturePartPresentationRenderBuffer(
+            EXPECT_FALSE(PartGui::capturePartPresentationRenderBuffer(
                 *document, "failure", broken, 0.2, 28.65, false, buffer));
             EXPECT_TRUE(buffer.vertices.empty());
             EXPECT_TRUE(buffer.normals.empty());
