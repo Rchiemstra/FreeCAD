@@ -3083,6 +3083,9 @@ def test_repository_inventory_fixture_collects_source_findings_once(tmp_path: Pa
 
 
 class RepositoryInventoryTests(unittest.TestCase):
+    def test_modeldiff_live_model_path_is_inventoried(self):
+        self.assertIn("src/Mod/ModelDiff/modeldiff.py", rules.EXTRA_GUI_FILES)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.inventory = _load_inventory()
@@ -3178,10 +3181,10 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Gui/Assistant.cpp", 165, "thread-waits")
 
     def test_thread_wait_bytes_written_found(self) -> None:
-        self._assert_site("src/Gui/GuiApplication.cpp", 317, "thread-waits")
+        self._assert_site("src/Gui/GuiApplication.cpp", 322, "thread-waits")
 
     def test_thread_wait_connected_found(self) -> None:
-        for line in (235, 298):
+        for line in (240, 303):
             self._assert_site("src/Gui/GuiApplication.cpp", line, "thread-waits")
 
     def test_thread_wait_condition_wait_found(self) -> None:

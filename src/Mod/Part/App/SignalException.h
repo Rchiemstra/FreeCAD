@@ -34,10 +34,12 @@ public:
     SignalException();
     ~SignalException();
 
-    SignalException(const SignalException&) = default;
-    SignalException(SignalException&&) = default;
-    SignalException& operator=(const SignalException&) = default;
-    SignalException& operator=(SignalException&&) = default;
+    // Owns one level of the process-wide handler nest. A copy would restore
+    // the previous handlers while another owner was still inside a Boolean.
+    SignalException(const SignalException&) = delete;
+    SignalException(SignalException&&) = delete;
+    SignalException& operator=(const SignalException&) = delete;
+    SignalException& operator=(SignalException&&) = delete;
 
 private:
     [[maybe_unused]] bool enabled {false};
