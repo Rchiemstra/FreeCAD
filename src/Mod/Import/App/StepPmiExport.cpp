@@ -8,13 +8,16 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <Standard_Version.hxx>
 #include <UnitsMethods.hxx>
 #include <TDataStd_Name.hxx>
+#include <TDF_LabelSequence.hxx>
 #include <StepData_StepModel.hxx>
 #include <StepBasic_LengthMeasureWithUnit.hxx>
 #include <StepBasic_NamedUnit.hxx>
 #include <StepBasic_PlaneAngleMeasureWithUnit.hxx>
 #include <StepBasic_MeasureValueMember.hxx>
+#include <StepBasic_MeasureWithUnit.hxx>
 #include <StepShape_ToleranceValue.hxx>
 #include <STEPConstruct_UnitContext.hxx>
 #include <STEPCAFControl_GDTProperty.hxx>
@@ -24,6 +27,7 @@
 #include <StepDimTol_ToleranceZoneForm.hxx>
 #include <StepDimTol_HArray1OfToleranceZoneTarget.hxx>
 #include <StepRepr_ShapeAspect.hxx>
+#include <StepRepr_ReprItemAndMeasureWithUnit.hxx>
 #include <StepShape_DimensionalLocation.hxx>
 #include <StepShape_DimensionalSize.hxx>
 #include <XCAFDoc_Datum.hxx>
@@ -420,7 +424,18 @@ void StepPmiExport::complete(const Handle(StepData_StepModel)& model) const
                 value->SetReal(projection->second.first);
                 Handle(StepBasic_LengthMeasureWithUnit) length
                     = new StepBasic_LengthMeasureWithUnit;
+#if OCC_VERSION_HEX >= 0x080000
+                auto magnitude = Handle(StepBasic_MeasureWithUnit)::DownCast(tolerance->Magnitude());
+                auto combined = Handle(StepRepr_ReprItemAndMeasureWithUnit)
+                    ::DownCast(tolerance->Magnitude());
+                if (!combined.IsNull()) { magnitude = combined->GetMeasureWithUnit(); }
+                if (magnitude.IsNull()) {
+                    throw std::runtime_error("writer emitted an unsupported tolerance magnitude");
+                }
+                length->Init(value, magnitude->UnitComponent());
+#else
                 length->Init(value, tolerance->Magnitude()->UnitComponent());
+#endif
                 Handle(StepDimTol_ProjectedZoneDefinition) definition
                     = new StepDimTol_ProjectedZoneDefinition;
                 definition->Init(zone, nullptr, aspect, length);

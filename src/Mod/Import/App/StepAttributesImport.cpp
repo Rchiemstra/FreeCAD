@@ -25,7 +25,12 @@
 #include <StepBasic_SiUnit.hxx>
 #include <StepBasic_SiUnitAndLengthUnit.hxx>
 #include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
+#include <Standard_Version.hxx>
+#if OCC_VERSION_HEX >= 0x080000
+#include <StepData_Factors.hxx>
+#else
 #include <StepData_GlobalFactors.hxx>
+#endif
 #include <StepData_StepModel.hxx>
 #include <StepData_UndefinedEntity.hxx>
 #include <StepRepr_DescriptiveRepresentationItem.hxx>
@@ -335,7 +340,14 @@ std::string unitDescription(const Handle(StepBasic_NamedUnit)& unit,
     }
     if (!conversion.IsNull()) {
         result += " " + text(conversion->Name());
+#if OCC_VERSION_HEX >= 0x080000
+        auto measure = Handle(StepBasic_MeasureWithUnit)::DownCast(conversion->ConversionFactor());
+        auto combined = Handle(StepRepr_ReprItemAndMeasureWithUnit)
+            ::DownCast(conversion->ConversionFactor());
+        if (!combined.IsNull()) { measure = combined->GetMeasureWithUnit(); }
+#else
         auto measure = conversion->ConversionFactor();
+#endif
         if (!measure.IsNull()) {
             result += " factor=" + id(model, measure) + " " + number(measure->ValueComponent());
             auto source = scalars.find(id(model, measure));
@@ -371,13 +383,25 @@ std::string unitFactor(Handle(StepBasic_NamedUnit) unit, bool angle,
                 ? !Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(unit).IsNull()
                 : !Handle(StepBasic_SiUnitAndLengthUnit)::DownCast(unit).IsNull();
             STEPConstruct_UnitContext context;
+#if OCC_VERSION_HEX >= 0x080000
+            StepData_Factors localFactors;
+            localFactors.SetCascadeUnit(model->LocalLengthUnit());
+            if (!correct || context.ComputeFactors(si, localFactors) != 0
+#else
             if (!correct || context.ComputeFactors(si) != 0
+#endif
                 || (angle ? !context.PlaneAngleDone() || context.LengthDone()
                           : !context.LengthDone() || context.PlaneAngleDone())) {
                 return fail("conflicting measure type and SI unit");
             }
+#if OCC_VERSION_HEX >= 0x080000
+            // Lengths are stored in mm and angles in degrees, independent of the model's unit.
+            factor *= angle ? context.PlaneAngleFactor() * 180 / M_PI
+                : context.LengthFactor() * localFactors.CascadeUnit();
+#else
             factor *= angle ? context.PlaneAngleFactor() * 180 / M_PI
                 : context.LengthFactor() * StepData_GlobalFactors::Intance().CascadeUnit(); // codespell:ignore intance
+#endif
             return std::isfinite(factor) && factor > 0 ? "" : fail("invalid converted unit factor");
         }
         if (conversion.IsNull()) { return fail("unsupported explicit unit"); }
@@ -403,7 +427,14 @@ std::string unitFactor(Handle(StepBasic_NamedUnit) unit, bool angle,
                 return fail(dimKey + ": conflicting conversion dimensions");
             }
         }
+#if OCC_VERSION_HEX >= 0x080000
+        auto measure = Handle(StepBasic_MeasureWithUnit)::DownCast(conversion->ConversionFactor());
+        auto combined = Handle(StepRepr_ReprItemAndMeasureWithUnit)
+            ::DownCast(conversion->ConversionFactor());
+        if (!combined.IsNull()) { measure = combined->GetMeasureWithUnit(); }
+#else
         auto measure = conversion->ConversionFactor();
+#endif
         if (measure.IsNull()) { return fail("missing conversion factor"); }
         const auto measureKey = id(model, measure);
         auto scalar = scalars.find(measureKey);

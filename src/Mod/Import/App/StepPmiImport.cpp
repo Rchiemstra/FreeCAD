@@ -8,6 +8,7 @@
 #include <utility>
 #include <CXX/Objects.hxx>
 #include <TDF_Tool.hxx>
+#include <TDF_LabelSequence.hxx>
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <XCAFDoc_Datum.hxx>
@@ -567,8 +568,25 @@ std::vector<StepPmiRecord> StepPmiImport::extract(
                 else if (record.hasDeviations) {
                     record.lower = std::abs(object->GetLowerTolValue());
                     record.upper = std::abs(object->GetUpperTolValue());
+#if OCC_VERSION_HEX >= 0x080000
+                    const auto legacy = legacyBounds.find({record.unit, record.lower, record.upper});
+                    const bool legacyConflict = legacy != legacyBounds.end()
+                        && legacy->second.conflicting;
+                    if (legacy != legacyBounds.end() && !legacyConflict) {
+                        record.lower = std::abs(legacy->second.lower);
+                        record.upper = std::abs(legacy->second.upper);
+                        if (record.values.size() == 3) {
+                            record.values[1] = record.lower;
+                            record.values[2] = record.upper;
+                        }
+                    }
+#endif
                     const auto found = signedBounds.find({record.unit, record.lower, record.upper});
+#if OCC_VERSION_HEX >= 0x080000
+                    if (found != signedBounds.end() && !found->second.conflicting && !legacyConflict) {
+#else
                     if (found != signedBounds.end() && !found->second.conflicting) {
+#endif
                         record.lower = found->second.lower;
                         record.upper = found->second.upper;
                         record.deviationStatus = "signed source values (exact magnitude match)";

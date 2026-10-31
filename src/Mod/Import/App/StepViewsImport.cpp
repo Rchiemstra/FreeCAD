@@ -7,7 +7,12 @@
 #include <CXX/Objects.hxx>
 #include <STEPCAFControl_Reader.hxx>
 #include <STEPConstruct_UnitContext.hxx>
+#include <Standard_Version.hxx>
+#if OCC_VERSION_HEX >= 0x080000
+#include <StepData_Factors.hxx>
+#else
 #include <StepData_GlobalFactors.hxx>
+#endif
 #include <StepData_StepModel.hxx>
 #include <StepData_UndefinedEntity.hxx>
 #include <Interface_UndefinedContent.hxx>
@@ -19,6 +24,7 @@
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_Plane.hxx>
 #include <StepRepr_GlobalUnitAssignedContext.hxx>
+#include <StepRepr_ReprItemAndMeasureWithUnit.hxx>
 #include <StepBasic_NamedUnit.hxx>
 #include <StepBasic_ConversionBasedUnit.hxx>
 #include <StepBasic_MeasureWithUnit.hxx>
@@ -34,6 +40,7 @@
 #include <StepVisual_PlanarBox.hxx>
 #include <StepVisual_ViewVolume.hxx>
 #include <TDF_Tool.hxx>
+#include <TDF_LabelSequence.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <XCAFDoc_View.hxx>
@@ -154,6 +161,10 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
     std::set<int> dimensions;
     bool valid = !units.IsNull();
     double length = 0;
+#if OCC_VERSION_HEX >= 0x080000
+    StepData_Factors localFactors;
+    localFactors.SetCascadeUnit(model->LocalLengthUnit());
+#endif
     if (!units.IsNull()) {
         for (int i = 1; i <= units->NbUnits(); ++i) {
             auto unit = units->UnitsValue(i);
@@ -168,7 +179,14 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
             auto si = Handle(StepBasic_SiUnit)::DownCast(unit);
             if (!conversion.IsNull()) {
                 definitions += " " + text(conversion->Name());
+#if OCC_VERSION_HEX >= 0x080000
+                auto measure = Handle(StepBasic_MeasureWithUnit)::DownCast(conversion->ConversionFactor());
+                auto combined = Handle(StepRepr_ReprItemAndMeasureWithUnit)
+                    ::DownCast(conversion->ConversionFactor());
+                if (!combined.IsNull()) { measure = combined->GetMeasureWithUnit(); }
+#else
                 auto measure = conversion->ConversionFactor();
+#endif
                 if (!measure.IsNull()) {
                     definitions += " value=" + std::to_string(measure->ValueComponent())
                         + " unit=" + id(model, measure->UnitComponent().Value());
@@ -184,7 +202,11 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
             // ComputeFactors(context) in 7.6 overwrites earlier errors. Validate
             // every declaration independently, including duplicate dimensions.
             STEPConstruct_UnitContext single;
+#if OCC_VERSION_HEX >= 0x080000
+            if (single.ComputeFactors(unit, localFactors) != 0) { valid = false; }
+#else
             if (single.ComputeFactors(unit) != 0) { valid = false; }
+#endif
             int dimension = single.LengthDone() ? 1 : single.PlaneAngleDone() ? 2
                 : single.SolidAngleDone() ? 3 : single.AreaDone() ? 4 : single.VolumeDone() ? 5 : 0;
             double value = dimension == 1 ? single.LengthFactor() : dimension == 2
@@ -196,9 +218,14 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
         }
     }
     if (!valid || !dimensions.count(1)) { return 0; }
+#if OCC_VERSION_HEX >= 0x080000
+    // Undo the model's transfer unit to obtain mm, as on 7.6.3.
+    double result = length * localFactors.CascadeUnit();
+#else
     // 7.6.3 ComputeFactors divides by CascadeUnit; undo that to obtain mm.
     double result = length
         * StepData_GlobalFactors::Intance().CascadeUnit(); // codespell:ignore intance
+#endif
     return std::isfinite(result) && result > 0 ? result : 0;
 }
 

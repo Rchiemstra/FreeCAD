@@ -30,6 +30,7 @@
 #include <StepShape_ShapeDefinitionRepresentation.hxx>
 #include <StepShape_ContextDependentShapeRepresentation.hxx>
 #include <TransferBRep.hxx>
+#include <TDF_LabelSequence.hxx>
 #include <TransferBRep_ShapeMapper.hxx>
 #include <Transfer_FinderProcess.hxx>
 #include <XSControl_TransferWriter.hxx>
