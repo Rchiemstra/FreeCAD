@@ -8,21 +8,9 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 import UtilsAssembly
-import ExtractComponent
 from ExtractComponent import ExtractionError, _parent, extract, preflight
 
 translate = App.Qt.translate
-
-
-def _record_removed_view_providers(objects):
-    # Imported lazily: this module is loaded with the workbench, including
-    # from tests that call extract() directly rather than the command.
-    import AssemblyGui
-
-    AssemblyGui.recordViewProviderRemovals(list(objects))
-
-
-ExtractComponent._record_removed_view_providers = _record_removed_view_providers
 
 
 def _saveAssemblyThenExtract(assembly, component):

@@ -22,16 +22,7 @@
  ***************************************************************************/
 
 
-#include <App/DocumentObject.h>
-#include <App/DocumentObjectPy.h>
-#include <App/MainThreadSignal.h>
 #include <Base/Interpreter.h>
-#include <Gui/Application.h>
-#include <Gui/Document.h>
-
-#include <functional>
-#include <optional>
-#include <vector>
 
 #ifdef ASSEMBLY_ENABLE_TEST_HOOKS
 # include "ViewProviderReviewNoteTestHarness.h"
@@ -75,54 +66,7 @@ public:
             "reviewNoteTestApplyExceptionsCaughtCount() -> int — test harness only"
         );
 #endif
-        add_varargs_method(
-            "recordViewProviderRemovals",
-            &Module::recordViewProviderRemovals,
-            "recordViewProviderRemovals(objects) -- put view providers into the open undo transaction"
-        );
         initialize("This module is the Assembly module.");  // register with Python
-    }
-
-    Py::Object recordViewProviderRemovals(const Py::Tuple& args)
-    {
-        PyObject* sequenceArg = nullptr;
-        if (!PyArg_ParseTuple(args.ptr(), "O", &sequenceArg)) {
-            throw Py::Exception();
-        }
-        std::vector<App::DocumentObject*> objects;
-        Py::Sequence sequence(sequenceArg);
-        objects.reserve(sequence.size());
-        for (const auto& item : sequence) {
-            if (!PyObject_TypeCheck(item.ptr(), &App::DocumentObjectPy::Type)) {
-                throw Py::TypeError("recordViewProviderRemovals expects document objects");
-            }
-            objects.push_back(static_cast<App::DocumentObjectPy*>(item.ptr())->getDocumentObjectPtr());
-        }
-        const auto record = [objects] {
-            for (auto* object : objects) {
-                if (!object || !object->getDocument()) {
-                    continue;
-                }
-                auto* guiDocument = Gui::Application::Instance->getDocument(object->getDocument());
-                if (guiDocument) {
-                    guiDocument->recordViewProviderRemoval(*object);
-                }
-            }
-        };
-        if (App::MainThreadSignalConfig::isMainThread()) {
-            record();
-        }
-        else {
-            // The extraction commit runs on the document owner. View-provider
-            // teardown has to stay on the GUI thread, and that thread needs the GIL.
-            std::optional<Base::PyGILStateRelease> release;
-            if (Py_IsInitialized() && PyGILState_Check()) {
-                release.emplace();
-            }
-            App::MainThreadSignalConfig::invoke(
-                std::function<void()>(record), /*blocking=*/true);
-        }
-        return Py::None();
     }
 
 private:

@@ -129,11 +129,6 @@ protected:
 
 public:
     void addViewProvider(Gui::ViewProviderDocumentObject*);
-    /// Move this object's view provider into the open undo transaction before
-    /// the document object itself is recorded as removed. A deferred
-    /// transaction-remove signal runs too late and a later undo then leaks the
-    /// replacement view provider.
-    void recordViewProviderRemoval(const App::DocumentObject& object);
     void notifyCameraActivity();
 
     /** @name Signals of the document */

@@ -443,9 +443,6 @@ def preflight(assembly, component, path):
 _LOCAL, _TRACED, _ATTACHED = range(3)
 
 
-_record_removed_view_providers = None
-
-
 def _geometryProperties(owner):
     properties = []
     if owner.TypeId == "PartDesign::ShapeBinder":
@@ -744,12 +741,6 @@ def extract(assembly, component, path):
                 )
             # Copying preserves original names inside the new document; component-
             # rooted sub-element paths therefore retain their topology names.
-            # The commit defers transaction-remove until after the document
-            # object is already in the undo transaction. The GUI registers a
-            # recorder that puts view providers into that transaction first,
-            # so Undo does not leak the provider signalNewObject creates.
-            if _record_removed_view_providers is not None:
-                _record_removed_view_providers(owned)
             for name in original_names:
                 if source.getObject(name) is not None:
                     source.removeObject(name)
