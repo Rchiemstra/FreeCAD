@@ -1109,6 +1109,56 @@ class TestExtractComponentGui(TestExtractComponent):
             reopened_link, reopened_destination.Pad, faces, color, transparency
         )
 
+    def _selection_roots(self, view):
+        # Importing pivy loads the Coin SWIG wrappers getSceneGraph() requires.
+        from pivy import coin  # noqa: F401
+
+        found = set()
+        seen = set()
+        pending = [view.getSceneGraph()]
+        while pending:
+            node = pending.pop()
+            # The SWIG pointer is the C++ address; getNodeId() changes on edits.
+            address = int(node.this)
+            if address in seen:
+                continue
+            seen.add(address)
+            if node.getTypeId().getName() == "SoFCSelectionRoot":
+                found.add(address)
+            if hasattr(node, "getNumChildren"):
+                pending.extend(node.getChild(index) for index in range(node.getNumChildren()))
+        return found
+
+    def test_undo_restores_original_view_providers(self):
+        import FreeCADGui as Gui
+        from Test.GuiRecompute import redo_document, undo_document
+
+        gui_document = Gui.getDocument(self.doc.Name)
+        view = gui_document.mdiViewsOfType("Gui::View3DInventor")[0]
+        names = ("LocalPart", "Body", "Profile", "Pad")
+        providers = {name: gui_document.getObject(name) for name in names}
+        self.assertNotIn(None, providers.values())
+        before = self._selection_roots(view)
+        self.runExtract()
+        self.flushGui()
+        extracted = len(self._selection_roots(view))
+
+        # Extraction removes the component, its children and their origins in
+        # one commit. Undo must restore the original providers and nothing
+        # else: a provider recorded after its object made undo create a
+        # duplicate for every removed object, whose roots stayed in the scene.
+        for _ in range(2):
+            undo_document(self.doc)
+            self.flushGui()
+            for name in names:
+                self.assertIsNotNone(self.doc.getObject(name), name)
+                self.assertIs(gui_document.getObject(name), providers[name], name)
+            self.assertEqual(self._selection_roots(view), before)
+            redo_document(self.doc)
+            self.flushGui()
+            self.assertIsNone(self.doc.getObject("LocalPart"))
+            self.assertEqual(len(self._selection_roots(view)), extracted)
+
     def test_command_and_tree_context(self):
         import FreeCADGui as Gui
         import CommandExtractComponent as command
