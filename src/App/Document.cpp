@@ -4087,10 +4087,6 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 //--------------------------------------------------------------------------
 // constructor
 //--------------------------------------------------------------------------
-Document::Document(const char* documentName)
-    : Document(documentName, "Unnamed")
-{}
-
 Document::Document(const char* documentName, const char* documentLabel)
     : d(new DocumentP), myName(documentName)
 {
