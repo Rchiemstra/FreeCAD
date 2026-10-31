@@ -67,6 +67,23 @@ def test_capture_and_tessellation_sources_are_coin_free(path):
             assert header in checked, f"Add worker helper {header} to the Coin-free boundary"
 
 
+GUI_SOURCES = [path for path in CAPTURES + HELPERS if "Gui" in path.parts and path.suffix == ".cpp"]
+
+
+@pytest.mark.parametrize("path", GUI_SOURCES, ids=str)
+def test_capture_sources_skip_the_gui_precompiled_header(path):
+    # A GUI precompiled header is force-included into every source and pulls in Inventor.
+    cmake = (REPOSITORY / path.parent / "CMakeLists.txt").read_text(encoding="utf-8")
+    if "target_precompile_headers" not in cmake:
+        return
+    skipped = re.findall(
+        r"set_source_files_properties\(([^)]*?)PROPERTIES\s+SKIP_PRECOMPILE_HEADERS\s+TRUE\)", cmake
+    )
+    assert any(path.name in sources.split() for sources in skipped), (
+        f"{path} must be excluded from the precompiled header"
+    )
+
+
 def test_coin_scanner_rejects_notifications_and_nodes():
     assert violations('#include <Inventor/nodes/SoNormal.h>\n')
     assert violations('auto node = new SoCoordinate3; node->ref();')
