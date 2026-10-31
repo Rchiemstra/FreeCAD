@@ -3181,10 +3181,10 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Gui/Assistant.cpp", 165, "thread-waits")
 
     def test_thread_wait_bytes_written_found(self) -> None:
-        self._assert_site("src/Gui/GuiApplication.cpp", 317, "thread-waits")
+        self._assert_site("src/Gui/GuiApplication.cpp", 322, "thread-waits")
 
     def test_thread_wait_connected_found(self) -> None:
-        for line in (235, 298):
+        for line in (240, 303):
             self._assert_site("src/Gui/GuiApplication.cpp", line, "thread-waits")
 
     def test_thread_wait_condition_wait_found(self) -> None:
