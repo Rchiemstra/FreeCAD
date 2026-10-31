@@ -7,9 +7,11 @@
 #include <src/App/InitApplication.h>
 
 #include <App/Application.h>
+#include <App/Datums.h>
 #include <App/Document.h>
 #include <App/GeometryWorkerMain.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/ElementMap.h>
 #include <App/Expression.h>
 #include <App/GenericIsolatedRecompute.h>
@@ -18,20 +20,41 @@
 #include <App/Link.h>
 #include <App/ObjectIdentifier.h>
 #include <App/Part.h>
+#include <Mod/Material/App/MaterialManager.h>
 #include <App/RecomputeHandle.h>
 #include <App/RecomputePhaseTrace.h>
 #include <Base/Interpreter.h>
+#include <Mod/Part/App/FCBRepAlgoAPI_Common.h>
+#include <Mod/Part/App/FCBRepAlgoAPI_Cut.h>
+#include <Mod/Part/App/FCBRepAlgoAPI_Fuse.h>
+#include <Mod/Part/App/FeaturePartBoolean.h>
 #include <Mod/Part/App/FeaturePartBox.h>
+#include <Mod/Part/App/FeaturePartCommon.h>
 #include <Mod/Part/App/FeaturePartCut.h>
+#include <Mod/Part/App/FeaturePartFuse.h>
+#include <Mod/Part/App/FuzzyHelper.h>
 #include <Mod/Part/App/PartFeature.h>
+#include <Mod/Part/App/TopoShapeOpCode.h>
 #include <Mod/Part/App/PrismExtension.h>
 #include <Mod/Part/App/PropertyTopoShape.h>
 
 #include "PartTestHelpers.h"
 
+#include <Bnd_Box.hxx>
+#include <BOPAlgo_Options.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <OSD_Parallel.hxx>
+#include <OSD_ThreadPool.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Precision.hxx>
@@ -52,8 +75,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -74,6 +99,22 @@
 # endif
 #endif
 
+// POSIX signal snapshots need sigaction, sigset_t and sigismember. The default
+// follows Linux. Set the macro to 0 to compile this file without those names
+// (Windows, macOS, or a scratch check). The signal comparison then skips.
+#ifndef PRC_M0_HAS_POSIX_SIGNALS
+# if defined(__linux__)
+#  define PRC_M0_HAS_POSIX_SIGNALS 1
+# else
+#  define PRC_M0_HAS_POSIX_SIGNALS 0
+# endif
+#endif
+
+#if PRC_M0_HAS_POSIX_SIGNALS
+# include <csignal>
+# include <signal.h>
+#endif
+
 #if PRC_M0_HAS_PROCESS_COST_PROBE
 # include <fcntl.h>
 # include <spawn.h>
@@ -84,6 +125,7 @@ extern char** environ;
 using PartQualification::AdmissionRefusal;
 using PartQualification::EffectClass;
 using PartQualification::QualificationField;
+using PartQualification::QualificationProbe;
 using PartQualification::qualifyForDetachedExecution;
 
 namespace
@@ -142,6 +184,9 @@ struct Postcondition
     std::string linkedName;
     double scale {1};
     Base::Vector3d scaleVector {1, 1, 1};
+    int historySize {-1};
+    bool hasRefine {false};
+    bool refine {false};
 };
 
 struct PhaseSample
@@ -291,13 +336,13 @@ Data::ElementMapPtr seededElementMap()
     return map;
 }
 
-void installSeededMap(Part::Box& box)
+void installSeededMap(Part::Feature& feature)
 {
-    Part::TopoShape shape = box.Shape.getShape();
-    shape.Tag = box.getID();
+    Part::TopoShape shape = feature.Shape.getShape();
+    shape.Tag = feature.getID();
     shape.resetElementMap(seededElementMap());
-    RecomputeStatus status(box);
-    box.Shape.setValue(shape);
+    RecomputeStatus status(feature);
+    feature.Shape.setValue(shape);
 }
 
 void publishKernel(Part::Box& box, const TopoDS_Shape& raw)
@@ -464,6 +509,11 @@ Postcondition capturePostcondition(const App::DocumentObject& object)
         value.elementMap = elementMapText(topo);
         value.materialUuid = feature->ShapeMaterial.getValue().getUUID().toStdString();
     }
+    if (const auto* boolean = dynamic_cast<const Part::Boolean*>(&object)) {
+        value.historySize = boolean->History.getSize();
+        value.hasRefine = true;
+        value.refine = boolean->Refine.getValue();
+    }
     if (const auto* link = dynamic_cast<const App::Link*>(&object)) {
         value.isLink = true;
         value.scale = link->Scale.getValue();
@@ -544,6 +594,11 @@ void expectEqualPostcondition(const Postcondition& left,
     EXPECT_NEAR(left.scaleVector.x, right.scaleVector.x, 1e-12);
     EXPECT_NEAR(left.scaleVector.y, right.scaleVector.y, 1e-12);
     EXPECT_NEAR(left.scaleVector.z, right.scaleVector.z, 1e-12);
+    EXPECT_EQ(left.historySize, right.historySize);
+    EXPECT_EQ(left.hasRefine, right.hasRefine);
+    if (left.hasRefine && right.hasRefine) {
+        EXPECT_EQ(left.refine, right.refine);
+    }
 }
 
 void expectVenueEqual(const Part::Box& left,
@@ -784,6 +839,22 @@ std::string processComm(int pid)
     return name;
 }
 
+bool processUsesWorkspace(int pid, const std::filesystem::path& workspace)
+{
+    std::error_code error;
+    const auto cwd = std::filesystem::weakly_canonical(
+        std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/cwd", error),
+        error);
+    const auto job = std::filesystem::weakly_canonical(workspace, error);
+    if (!error && !cwd.empty() && cwd == job) {
+        return true;
+    }
+    std::ifstream environ("/proc/" + std::to_string(pid) + "/environ", std::ios::binary);
+    const std::string data((std::istreambuf_iterator<char>(environ)),
+                           std::istreambuf_iterator<char>());
+    return data.find(workspace.string()) != std::string::npos;
+}
+
 std::int64_t processRchar(int pid)
 {
     std::ifstream in("/proc/" + std::to_string(pid) + "/io");
@@ -934,9 +1005,14 @@ ProcessMarks watchIsolatedProcess(const std::chrono::steady_clock::time_point wa
                 }
             }
         }
-        if (marks.pid < 0) {
+        // A FreeCADCmd that is not this job (it can appear while the parent
+        // fingerprints the binary, before the workspace exists) must not own
+        // the spawn and exit stamps. Latch only a process whose cwd or
+        // environment is this workspace, and drop it if it exits before the
+        // result file exists.
+        if (!workspace.empty() && marks.pid < 0) {
             for (const auto pid : freeCadCmdPids()) {
-                if (preexistingPids.contains(pid)) {
+                if (preexistingPids.contains(pid) || !processUsesWorkspace(pid, workspace)) {
                     continue;
                 }
                 marks.pid = pid;
@@ -944,9 +1020,15 @@ ProcessMarks watchIsolatedProcess(const std::chrono::steady_clock::time_point wa
                 break;
             }
         }
-        else if (marks.exitNs < 0
+        else if (marks.pid > 0 && marks.exitNs < 0
                  && !std::filesystem::exists("/proc/" + std::to_string(marks.pid))) {
-            marks.exitNs = now;
+            if (marks.resultNs < 0) {
+                marks.pid = -1;
+                marks.spawnNs = -1;
+            }
+            else {
+                marks.exitNs = now;
+            }
         }
         if (marks.pid > 0 && marks.partNs < 0 && marks.exitNs < 0 && processMapsPart(marks.pid)) {
             marks.partNs = now;
@@ -990,6 +1072,8 @@ struct ProcessAccount
     std::int64_t decodeNs {0};
     std::int64_t commitNs {0};
     std::int64_t settleNs {0};
+    std::int64_t republishNs {-1};
+    std::int64_t afterPublishNs {-1};
     std::int64_t wallNs {0};
 };
 
@@ -1009,6 +1093,7 @@ ProcessAccount accountProcess(ProcessMarks marks, const PhaseSample& sample)
     marks.heartbeatNs = clampStamp(marks.heartbeatNs, sample.wallNs);
     marks.resultNs = clampStamp(marks.resultNs, sample.wallNs);
     marks.exitNs = clampStamp(marks.exitNs, sample.wallNs);
+    marks.publishedNs = clampStamp(marks.publishedNs, sample.wallNs);
     marks.fingerprintStartNs = clampStamp(marks.fingerprintStartNs, sample.wallNs);
     marks.fingerprintEndNs = clampStamp(marks.fingerprintEndNs, sample.wallNs);
     ProcessAccount account;
@@ -1052,6 +1137,10 @@ ProcessAccount accountProcess(ProcessMarks marks, const PhaseSample& sample)
         tail = account.decodeNs + account.commitNs;
     }
     account.settleNs = tail - account.decodeNs - account.commitNs;
+    if (marks.publishedNs >= marks.exitNs && marks.exitNs >= 0 && sample.wallNs >= marks.publishedNs) {
+        account.republishNs = marks.publishedNs - marks.exitNs;
+        account.afterPublishNs = sample.wallNs - marks.publishedNs;
+    }
     const auto sum = account.captureNs + account.parentFingerprintNs + account.archiveNs
         + account.spawnNs + account.workerStartupNs + account.importNs + account.executeNs
         + account.teardownNs + account.decodeNs + account.commitNs + account.settleNs;
@@ -1096,6 +1185,570 @@ App::DocumentRecomputeSnapshot waitIsolated(App::Document& document, App::Docume
     return snapshot;
 }
 
+TopoDS_Shape deepCopyShape(const TopoDS_Shape& shape)
+{
+    if (shape.IsNull()) {
+        return {};
+    }
+    BRepBuilderAPI_Copy copier(shape);
+    return copier.Shape();
+}
+
+std::string serializedGeometry(const TopoDS_Shape& shape)
+{
+    if (shape.IsNull()) {
+        return {};
+    }
+    std::ostringstream out;
+    BRepTools::Write(shape, out, /*theWithTriangles=*/false, /*theWithNormals=*/false,
+                     TopTools_FormatVersion_VERSION_1);
+    return out.str();
+}
+
+std::vector<const void*> tshapeIds(const TopoDS_Shape& shape)
+{
+    std::vector<const void*> ids;
+    if (shape.IsNull()) {
+        return ids;
+    }
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> shapes;
+    TopExp::MapShapes(shape, shapes);
+    ids.reserve(static_cast<std::size_t>(shapes.Extent()));
+    for (int index = 1; index <= shapes.Extent(); ++index) {
+        ids.push_back(shapes(index).TShape().get());
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+bool anyPartner(const TopoDS_Shape& left, const TopoDS_Shape& right)
+{
+    if (left.IsNull() || right.IsNull()) {
+        return false;
+    }
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> leftShapes;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> rightShapes;
+    TopExp::MapShapes(left, leftShapes);
+    TopExp::MapShapes(right, rightShapes);
+    for (int i = 1; i <= leftShapes.Extent(); ++i) {
+        for (int j = 1; j <= rightShapes.Extent(); ++j) {
+            if (leftShapes(i).IsPartner(rightShapes(j))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+Part::TopoShape namedCopy(const Part::TopoShape& source)
+{
+    Part::TopoShape named;
+    named.setShape(deepCopyShape(source.getShape()), /*resetElementMap=*/true);
+    named.Tag = source.Tag;
+    named.setElementMap(source.getElementMap());
+    return named;
+}
+
+// Feature::copyMaterial is protected. The test applies the same owner-side rule
+// through the public ShapeMaterial property. See PartFeature.cpp.
+void copyOwnerMaterial(Part::Feature& target, App::DocumentObject* source)
+{
+    auto* feature = dynamic_cast<Part::Feature*>(source);
+    if (!feature) {
+        return;
+    }
+    const auto fallback = Materials::MaterialManager::defaultMaterial();
+    if (!fallback) {
+        return;
+    }
+    if (target.ShapeMaterial.getValue().getUUID() != feature->ShapeMaterial.getValue().getUUID()
+        && target.ShapeMaterial.getValue().getUUID() == fallback->getUUID()) {
+        target.ShapeMaterial.setValue(feature->ShapeMaterial.getValue());
+    }
+}
+
+enum class BooleanOp
+{
+    Cut,
+    Fuse,
+    Common
+};
+
+const char* booleanOpcode(BooleanOp kind)
+{
+    switch (kind) {
+        case BooleanOp::Fuse:
+            return Part::OpCodes::Fuse;
+        case BooleanOp::Common:
+            return Part::OpCodes::Common;
+        case BooleanOp::Cut:
+            return Part::OpCodes::Cut;
+    }
+    return Part::OpCodes::Cut;
+}
+
+struct FrozenOperand
+{
+    TopoDS_Shape shape;
+    Part::TopoShape named;
+    std::string label;
+};
+
+struct FrozenBoolean
+{
+    BooleanOp kind {BooleanOp::Cut};
+    bool checkModel {true};
+    double fuzzy {1};
+    double confusion {0};
+    FrozenOperand base;
+    FrozenOperand tool;
+};
+
+struct BooleanKernelResult
+{
+    bool succeeded {false};
+    std::string diagnostic;
+    TopoDS_Shape shape;
+    std::unique_ptr<FCBRepAlgoAPI_BooleanOperation> operation;
+    bool validationRejected {false};
+    Part::TopoShape named;
+};
+
+std::unique_ptr<FCBRepAlgoAPI_BooleanOperation> newBooleanOperation(BooleanOp kind,
+                                                                   const TopoDS_Shape& base,
+                                                                   const TopoDS_Shape& tool)
+{
+    switch (kind) {
+        case BooleanOp::Fuse:
+            return std::unique_ptr<FCBRepAlgoAPI_BooleanOperation>(new FCBRepAlgoAPI_Fuse(base, tool));
+        case BooleanOp::Common:
+            return std::unique_ptr<FCBRepAlgoAPI_BooleanOperation>(new FCBRepAlgoAPI_Common(base, tool));
+        case BooleanOp::Cut:
+            return std::unique_ptr<FCBRepAlgoAPI_BooleanOperation>(new FCBRepAlgoAPI_Cut(base, tool));
+    }
+    return {};
+}
+
+std::string notDoneText(const TopoDS_Shape& base,
+                        const TopoDS_Shape& tool,
+                        const std::string& baseLabel,
+                        const std::string& toolLabel)
+{
+    std::ostringstream error;
+    error << "Boolean operation failed";
+    if (!base.IsNull() && base.ShapeType() != TopAbs_SOLID) {
+        error << '\n' << baseLabel << " is not a solid";
+    }
+    if (!tool.IsNull() && tool.ShapeType() != TopAbs_SOLID) {
+        error << '\n' << toolLabel << " is not a solid";
+    }
+    return error.str();
+}
+
+BooleanKernelResult executeBooleanKernel(BooleanOp kind,
+                                         const TopoDS_Shape& base,
+                                         const TopoDS_Shape& tool,
+                                         const std::string& baseLabel,
+                                         const std::string& toolLabel)
+{
+    // Raw FCBRepAlgoAPI_* on frozen copies. CheckModel is not read here.
+    if (base.IsNull()) {
+        return {false, "Base shape is null", {}, {}};
+    }
+    if (tool.IsNull()) {
+        return {false, "Tool shape is null", {}, {}};
+    }
+    try {
+        auto operation = newBooleanOperation(kind, base, tool);
+        if (!operation || !operation->IsDone()) {
+            return {false, notDoneText(base, tool, baseLabel, toolLabel), {}, {}};
+        }
+        TopoDS_Shape shape = operation->Shape();
+        if (shape.IsNull()) {
+            return {false, "Resulting shape is null", {}, {}};
+        }
+        BooleanKernelResult result;
+        result.succeeded = true;
+        result.shape = shape;
+        result.operation = std::move(operation);
+        return result;
+    }
+    catch (const Standard_Failure& error) {
+        const char* text = error.GetMessageString();
+        return {false, text ? text : "OCC failure", {}, {}};
+    }
+    catch (const Base::Exception& error) {
+        return {false, error.what(), {}, {}};
+    }
+    catch (const std::exception& error) {
+        return {false, error.what(), {}, {}};
+    }
+}
+
+FrozenBoolean freezeBoolean(const Part::Boolean& boolean, BooleanOp kind)
+{
+    const auto options = Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform;
+    const auto baseShape = Part::Feature::getTopoShape(boolean.Base.getValue(), options);
+    const auto toolShape = Part::Feature::getTopoShape(boolean.Tool.getValue(), options);
+    FrozenBoolean frozen;
+    frozen.kind = kind;
+    frozen.checkModel = booleanPreferences()->GetBool("CheckModel", true);
+    frozen.fuzzy = Part::FuzzyHelper::getBooleanFuzzy();
+    frozen.confusion = Precision::Confusion();
+    frozen.base.named = namedCopy(baseShape);
+    frozen.base.shape = frozen.base.named.getShape();
+    const char* baseLabel = boolean.Base.getValue()->Label.getValue();
+    frozen.base.label = baseLabel ? baseLabel : "";
+    frozen.tool.named = namedCopy(toolShape);
+    frozen.tool.shape = frozen.tool.named.getShape();
+    const char* toolLabel = boolean.Tool.getValue()->Label.getValue();
+    frozen.tool.label = toolLabel ? toolLabel : "";
+    return frozen;
+}
+
+bool frozenCheckRejects(const FrozenBoolean& frozen, const TopoDS_Shape& shape)
+{
+    if (!frozen.checkModel || shape.IsNull()) {
+        return false;
+    }
+    BRepCheck_Analyzer checker(shape);
+    return !checker.IsValid();
+}
+
+void publishBooleanShape(Part::Boolean& boolean, const Part::TopoShape& named)
+{
+    RecomputeStatus status(boolean);
+    boolean.Shape.setValue(named);
+    copyOwnerMaterial(boolean, boolean.Base.getValue());
+    boolean.purgeTouched();
+}
+
+Part::TopoShape historyNamedShape(BooleanKernelResult& result, const FrozenBoolean& frozen)
+{
+    Part::TopoShape named;
+    std::vector<Part::TopoShape> sources {frozen.base.named, frozen.tool.named};
+    named.makeElementShape(*result.operation, sources, booleanOpcode(frozen.kind));
+    return named;
+}
+
+void completeBooleanComputation(BooleanKernelResult& kernel, const FrozenBoolean& frozen)
+{
+    if (!kernel.succeeded || !kernel.operation) {
+        return;
+    }
+    if (frozenCheckRejects(frozen, kernel.shape)) {
+        kernel.validationRejected = true;
+        return;
+    }
+    kernel.named = historyNamedShape(kernel, frozen);
+}
+
+struct SignalShot
+{
+    int signo {0};
+    int flags {0};
+    void* handler {nullptr};
+    bool valid {false};
+#if PRC_M0_HAS_POSIX_SIGNALS
+    sigset_t mask {};
+#endif
+};
+
+struct WorkerEnvironment
+{
+    bool parallelMode {false};
+    bool occtThreads {false};
+    double fuzzy {0};
+    double confusion {0};
+    bool checkModel {true};
+    int poolThreads {-1};
+    int poolDefaultLaunch {-1};
+    bool poolInUse {false};
+    std::vector<SignalShot> signals;
+};
+
+#if PRC_M0_HAS_POSIX_SIGNALS
+const int kPartSignalTypes[] = {SIGFPE, SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGBUS, SIGSYS, SIGSEGV};
+
+const char* signalName(int signo)
+{
+    switch (signo) {
+        case SIGFPE:
+            return "SIGFPE";
+        case SIGHUP:
+            return "SIGHUP";
+        case SIGINT:
+            return "SIGINT";
+        case SIGQUIT:
+            return "SIGQUIT";
+        case SIGILL:
+            return "SIGILL";
+        case SIGBUS:
+            return "SIGBUS";
+        case SIGSYS:
+            return "SIGSYS";
+        case SIGSEGV:
+            return "SIGSEGV";
+        default:
+            return "SIG";
+    }
+}
+
+bool sameSignalMask(const sigset_t& left, const sigset_t& right)
+{
+    // sigset_t padding is not part of the handler. Compare membership only.
+    for (int signo = 1; signo < NSIG; ++signo) {
+        const int leftSet = sigismember(&left, signo);
+        const int rightSet = sigismember(&right, signo);
+        if (leftSet < 0 || rightSet < 0) {
+            continue;
+        }
+        if (leftSet != rightSet) {
+            return false;
+        }
+    }
+    return true;
+}
+
+SignalShot captureSignal(int signo)
+{
+    SignalShot shot;
+    shot.signo = signo;
+    struct sigaction action;
+    std::memset(&action, 0, sizeof(action));
+    if (sigaction(signo, nullptr, &action) == 0) {
+        shot.valid = true;
+        shot.flags = action.sa_flags;
+        shot.mask = action.sa_mask;
+        if ((action.sa_flags & SA_SIGINFO) != 0) {
+            shot.handler = reinterpret_cast<void*>(action.sa_sigaction);
+        }
+        else {
+            shot.handler = reinterpret_cast<void*>(action.sa_handler);
+        }
+    }
+    return shot;
+}
+#endif
+
+WorkerEnvironment captureWorkerEnvironment()
+{
+    WorkerEnvironment value;
+    value.parallelMode = BOPAlgo_Options::GetParallelMode() == Standard_True;
+    value.occtThreads = OSD_Parallel::ToUseOcctThreads() == Standard_True;
+    value.fuzzy = Part::FuzzyHelper::getBooleanFuzzy();
+    value.confusion = Precision::Confusion();
+    value.checkModel = booleanPreferences()->GetBool("CheckModel", true);
+    occ::handle<OSD_ThreadPool> pool = OSD_ThreadPool::DefaultPool();
+    if (!pool.IsNull()) {
+        value.poolThreads = pool->NbThreads();
+        value.poolDefaultLaunch = pool->NbDefaultThreadsToLaunch();
+        value.poolInUse = pool->IsInUse();
+    }
+#if PRC_M0_HAS_POSIX_SIGNALS
+    value.signals.reserve(sizeof(kPartSignalTypes) / sizeof(kPartSignalTypes[0]));
+    for (const int signo : kPartSignalTypes) {
+        value.signals.push_back(captureSignal(signo));
+    }
+#endif
+    return value;
+}
+
+void expectWorkerComputationStable(const WorkerEnvironment& before, const WorkerEnvironment& after)
+{
+    EXPECT_EQ(before.parallelMode, after.parallelMode);
+    EXPECT_EQ(before.occtThreads, after.occtThreads);
+    EXPECT_DOUBLE_EQ(before.fuzzy, after.fuzzy);
+    EXPECT_DOUBLE_EQ(before.confusion, after.confusion);
+    EXPECT_EQ(before.checkModel, after.checkModel);
+    EXPECT_EQ(before.poolThreads, after.poolThreads);
+    EXPECT_EQ(before.poolDefaultLaunch, after.poolDefaultLaunch);
+}
+
+std::string describeWorkerEnvironmentDelta(const WorkerEnvironment& before, const WorkerEnvironment& after)
+{
+    std::string changed;
+    auto add = [&](const std::string& name) {
+        if (!changed.empty()) {
+            changed += ",";
+        }
+        changed += name;
+    };
+    if (before.parallelMode != after.parallelMode) {
+        add("parallelMode");
+    }
+    if (before.occtThreads != after.occtThreads) {
+        add("occtThreads");
+    }
+    if (before.fuzzy != after.fuzzy) {
+        add("fuzzy");
+    }
+    if (before.confusion != after.confusion) {
+        add("confusion");
+    }
+    if (before.checkModel != after.checkModel) {
+        add("checkModel");
+    }
+    if (before.poolThreads != after.poolThreads) {
+        add("poolThreads");
+    }
+    if (before.poolDefaultLaunch != after.poolDefaultLaunch) {
+        add("poolDefaultLaunch");
+    }
+    if (before.poolInUse != after.poolInUse) {
+        add("poolInUse");
+    }
+#if PRC_M0_HAS_POSIX_SIGNALS
+    const auto count = std::min(before.signals.size(), after.signals.size());
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& left = before.signals[index];
+        const auto& right = after.signals[index];
+        if (left.valid != right.valid || left.flags != right.flags || left.handler != right.handler
+            || !sameSignalMask(left.mask, right.mask)) {
+            add(signalName(left.signo));
+        }
+    }
+#endif
+    return changed.empty() ? std::string("none") : changed;
+}
+
+TopoDS_Shape prismSolid(int sides, double radius, double height, double shiftX)
+{
+    BRepBuilderAPI_MakePolygon polygon;
+    for (int index = 0; index < sides; ++index) {
+        const double angle = 6.283185307179586 * static_cast<double>(index) / static_cast<double>(sides);
+        polygon.Add(gp_Pnt(shiftX + radius * std::cos(angle), radius * std::sin(angle), 0.0));
+    }
+    polygon.Close();
+    BRepBuilderAPI_MakeFace face(polygon.Wire());
+    BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(0, 0, height));
+    return prism.Shape();
+}
+
+void expectGuardProvesTheRefusal(const App::DocumentObject& object, AdmissionRefusal reason)
+{
+    const auto decision = qualifyForDetachedExecution(object);
+    EXPECT_FALSE(decision.admitted);
+    EXPECT_FALSE(decision.detached);
+    EXPECT_TRUE(decision.has(reason));
+    QualificationProbe probe;
+    probe.suppress = true;
+    probe.guard = reason;
+    const auto broken = qualifyForDetachedExecution(object, probe);
+    EXPECT_FALSE(broken.has(reason));
+    for (const auto other : decision.reasons) {
+        if (other != reason) {
+            EXPECT_TRUE(broken.has(other)) << "disabling one guard dropped another reason";
+        }
+    }
+    if (decision.reasons.size() == 1) {
+        EXPECT_TRUE(broken.reasons.empty());
+        EXPECT_TRUE(broken.admitted);
+        EXPECT_FALSE(broken.detached);
+        EXPECT_FALSE(broken.pending.empty());
+    }
+    else {
+        EXPECT_FALSE(broken.admitted);
+    }
+}
+
+template <typename FeatureT>
+FeatureT* addBoolean(App::Document& document, const char* name)
+{
+    auto* feature = document.addObject<FeatureT>(name);
+    EXPECT_NE(feature, nullptr);
+    if (feature) {
+        feature->Refine.setValue(false);
+    }
+    return feature;
+}
+
+struct PreparedBoolean
+{
+    Part::Box* base {nullptr};
+    Part::Box* tool {nullptr};
+    Part::Boolean* feature {nullptr};
+};
+
+template <typename FeatureT>
+PreparedBoolean prepareBoolean(App::Document& document, const char* prefix)
+{
+    PreparedBoolean prepared;
+    const std::string baseName = std::string(prefix) + "Base";
+    const std::string toolName = std::string(prefix) + "Tool";
+    const std::string featureName = std::string(prefix) + "Bool";
+    prepared.base = addBox(document, baseName.c_str(), 40, 30, 20);
+    prepared.tool = addBox(document, toolName.c_str(), 10, 10, 30);
+    prepared.feature = addBoolean<FeatureT>(document, featureName.c_str());
+    if (!prepared.base || !prepared.tool || !prepared.feature) {
+        return prepared;
+    }
+    prepared.tool->Placement.setValue(Base::Placement(Base::Vector3d(15, 10, -5), Base::Rotation()));
+    prepared.feature->Base.setValue(prepared.base);
+    prepared.feature->Tool.setValue(prepared.tool);
+    prepared.feature->Placement.setValue(rotatedPlacement());
+    return prepared;
+}
+
+class CallbackConnections
+{
+public:
+    template <typename Connection>
+    void keep(Connection connection)
+    {
+        _disconnect.push_back([connection]() mutable { connection.disconnect(); });
+    }
+
+    ~CallbackConnections()
+    {
+        for (auto& disconnect : _disconnect) {
+            disconnect();
+        }
+    }
+
+private:
+    std::vector<std::function<void()>> _disconnect;
+};
+
+constexpr int kWideBooleans = 16;
+constexpr int kChainSteps = 8;
+constexpr int kHeavySides = 48;
+
+// Globals the binary Boolean path reads or writes. Line numbers are the
+// current tree. Helpers that this execute() does not call are listed as
+// not-on-path so they are not mistaken for the native contract.
+constexpr const char* kBooleanGlobalInventory[] = {
+    "src/Mod/Part/App/FuzzyHelper.cpp:31 read/write BooleanFuzzy; binary Build reads it at "
+    "FCBRepAlgoAPI_BooleanOperation.cpp:83 and does not call withBooleanFuzzy (FuzzyHelper.cpp:44)",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:43,64 SetRunParallel(true) sets the "
+    "operation flag myRunParallel, not BOPAlgo_Options::SetParallelMode",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:44,65 SetNonDestructive(true) is per operation",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:83-85 SetFuzzyValue from BooleanFuzzy, "
+    "bounding-box extent and Precision::Confusion",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:55-60 and FeaturePartBoolean.cpp:56 "
+    "BRepCheck_Analyzer reads the shape; this OCC has no mutable BRepCheck mode",
+    "usr/include/opencascade/Precision.hxx:165 Precision::Confusion is constexpr 1e-7 in OCC 7.9; "
+    "read at FCBRepAlgoAPI_BooleanOperation.cpp:84",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:101-110 Message_ProgressRange is a local "
+    "empty range. Part::ProgressIndicator and Base::Sequencer are not on this path",
+    "src/Mod/Part/App/FeaturePartBoolean.cpp:123-124 Base::SignalException installs and restores "
+    "SIGSEGV (Base/Exception.cpp:733-747) on the owner execute path only",
+    "src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp:107 Part::SignalException writes "
+    "SignalException.cpp:211 currentSignalMode and installs handlers. The destructor "
+    "(SignalException.cpp:225-233) unsets that mode and calls installSegfaultHandler, "
+    "which replaces the previous SIGSEGV handler",
+    "src/Mod/Part/App/FeaturePartBoolean.cpp:47-59 CheckModel is an application preference read, "
+    "not an OCC global",
+    "src/Mod/Part/App/TopoShape.cpp:1677-1678 BOPAlgo SetParallelMode/SetRunParallel is the separate "
+    "BOP-check helper, not binary Boolean::execute",
+    "src/Mod/Part/App/TopoShapeExpansion.cpp:6307-6323 OSD_Parallel::SetUseOcctThreads, "
+    "ProgressIndicator and Sequencer belong to the general Boolean helper, not this execute",
+    "src/Mod/Part/App/SignalException.cpp:173-174 the Part handler touches SIGFPE, SIGHUP, SIGINT, "
+    "SIGQUIT, SIGILL, SIGBUS, SIGSYS and SIGSEGV. The worker compares each full sigaction",
+    "OSD_ThreadPool::DefaultPool NbThreads and NbDefaultThreadsToLaunch. SetRunParallel can use "
+    "this pool. The worker compares both values across the computation",
+};
+
 }  // namespace
 
 TEST(DetachedKernelQualificationTemplate, narrowBoxDeclaresTheAuditContract)
@@ -1139,6 +1792,76 @@ TEST(DetachedKernelQualificationTemplate, narrowBoxDeclaresTheAuditContract)
     EXPECT_NE(std::string(contract.pending[0]).find("capture/commit"), std::string::npos);
     EXPECT_NE(std::string(contract.pending[1]).find("document-level callback"), std::string::npos);
     EXPECT_NE(std::string(contract.pending[2]).find("extension effects"), std::string::npos);
+}
+
+TEST(DetachedKernelQualificationTemplate, narrowBooleanDeclaresTheAuditContract)
+{
+    for (const char* type : {"Part::Cut", "Part::Fuse", "Part::Common"}) {
+        const auto& contract = PartQualification::narrowBooleanQualification(type);
+        EXPECT_STREQ(contract.exactType, type);
+        EXPECT_EQ(contract.liveRecompute, EffectClass::NeedsSerialization);
+        EXPECT_EQ(contract.proposedKernel, EffectClass::Unknown);
+        EXPECT_EQ(contract.preferenceReadingTypeCount, 0u);
+        ASSERT_NE(contract.failureSemantics, nullptr);
+        EXPECT_NE(std::string(contract.failureSemantics).find("before the Shape setter"), std::string::npos);
+        const auto* checkModel = findField(contract.reads, contract.readCount, "CheckModel");
+        ASSERT_NE(checkModel, nullptr);
+        EXPECT_EQ(checkModel->classification, EffectClass::Safe);
+        const auto* refine = findField(contract.reads, contract.readCount, "Refine");
+        ASSERT_NE(refine, nullptr);
+        EXPECT_EQ(refine->classification, EffectClass::Safe);
+        const auto* fuzzy = findField(contract.reads, contract.readCount, "Boolean fuzzy factor");
+        ASSERT_NE(fuzzy, nullptr);
+        EXPECT_EQ(fuzzy->classification, EffectClass::Safe);
+        EXPECT_NE(findField(contract.reads, contract.readCount, "History"), nullptr);
+        const auto* material = findField(contract.outputs, contract.outputCount, "ShapeMaterial");
+        ASSERT_NE(material, nullptr);
+        EXPECT_EQ(material->classification, EffectClass::NeedsSerialization);
+        const auto* materialRead =
+            findField(contract.reads, contract.readCount, "Base, target and default ShapeMaterial");
+        ASSERT_NE(materialRead, nullptr);
+        EXPECT_EQ(materialRead->classification, EffectClass::NeedsSerialization);
+        const std::string materialBoundary = materialRead->boundary;
+        EXPECT_NE(materialBoundary.find("target's current ShapeMaterial"), std::string::npos);
+        EXPECT_NE(materialBoundary.find("invalidates"), std::string::npos);
+        EXPECT_NE(std::string(contract.pending[0]).find("target ShapeMaterial"), std::string::npos);
+        EXPECT_NE(findField(contract.outputs, contract.outputCount, "History"), nullptr);
+        EXPECT_NE(findField(contract.outputs, contract.outputCount, "element map and history-derived names"),
+                  nullptr);
+        ASSERT_GE(contract.pendingCount, 10u);
+        bool mentionsSignal = false;
+        bool mentionsRefine = false;
+        bool mentionsCapture = false;
+        bool mentionsRenaming = false;
+        for (std::size_t index = 0; index < contract.pendingCount; ++index) {
+            const std::string text = contract.pending[index];
+            mentionsSignal = mentionsSignal || text.find("SignalException") != std::string::npos;
+            mentionsRefine = mentionsRefine || text.find("Refine") != std::string::npos;
+            mentionsCapture = mentionsCapture || text.find("capture/commit") != std::string::npos;
+            mentionsRenaming = mentionsRenaming || text.find("owner-side re-naming") != std::string::npos;
+        }
+        EXPECT_TRUE(mentionsSignal);
+        EXPECT_TRUE(mentionsRefine);
+        EXPECT_TRUE(mentionsCapture);
+        EXPECT_TRUE(mentionsRenaming);
+    }
+    EXPECT_GE(sizeof(kBooleanGlobalInventory) / sizeof(kBooleanGlobalInventory[0]), 10u);
+}
+
+TEST(DetachedKernelQualificationPlatform, posixWorkerSignalHandlers)
+{
+#if !PRC_M0_HAS_POSIX_SIGNALS
+    GTEST_SKIP() << "POSIX sigset_t, sigaction and sigismember are unavailable. "
+                    "Worker signal handlers are not compared on this platform.";
+#else
+    const auto before = captureSignal(SIGSEGV);
+    const auto after = captureSignal(SIGSEGV);
+    EXPECT_TRUE(before.valid);
+    EXPECT_TRUE(after.valid);
+    EXPECT_TRUE(sameSignalMask(before.mask, after.mask));
+    EXPECT_EQ(before.handler, after.handler);
+    EXPECT_EQ(sizeof(kPartSignalTypes) / sizeof(kPartSignalTypes[0]), 8u);
+#endif
 }
 
 class DetachedKernelQualificationTest: public ::testing::Test
@@ -1721,8 +2444,11 @@ TEST_F(DetachedKernelQualificationTest, expressionsThatReadOtherObjectsAreNotAdm
     EXPECT_TRUE(qualifyForDetachedExecution(*source).admitted);
 }
 
-TEST_F(DetachedKernelQualificationTest, preferenceReadsDuringExecuteAreNotAdmitted)
+TEST_F(DetachedKernelQualificationTest, settledCutFreezesCheckModelAndIsNotDetached)
 {
+    // M0.2a refused every Cut because execute reads CheckModel. The Boolean
+    // contract freezes that value on the owner instead. A direct Refine=false
+    // Cut is admitted and still not detached: the pending rows stay unchecked.
     auto* base = addBox(*_document, "Base", 40, 30, 20);
     auto* tool = addBox(*_document, "Tool", 10, 10, 30);
     auto* cut = _document->addObject<Part::Cut>("Cut");
@@ -1749,11 +2475,39 @@ TEST_F(DetachedKernelQualificationTest, preferenceReadsDuringExecuteAreNotAdmitt
     controlCut->Refine.setValue(false);
     controlDoc->recompute();
 
-    const auto decision =
-        expectRefused(*cut, AdmissionRefusal::PreferenceReadDuringExecute, controlCut);
-    EXPECT_TRUE(decision.has(AdmissionRefusal::Link));
+    const auto before = capturePostcondition(*cut);
+    const auto decision = qualifyForDetachedExecution(*cut);
+    if (!decision.admitted) {
+        for (const char* citation : decision.citations) {
+            ADD_FAILURE() << (citation ? citation : "");
+        }
+    }
+    EXPECT_TRUE(decision.admitted);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::PreferenceReadDuringExecute));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::Link));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+    expectPendingBlocksDetach(decision);
+    EXPECT_EQ(decision.proposedKernel, EffectClass::Unknown);
+    const auto& contract = PartQualification::narrowBooleanQualification("Part::Cut");
+    const auto* checkModel = findField(contract.reads, contract.readCount, "CheckModel");
+    ASSERT_NE(checkModel, nullptr);
+    EXPECT_EQ(checkModel->classification, EffectClass::Safe);
+    EXPECT_EQ(contract.preferenceReadingTypeCount, 0u);
     EXPECT_TRUE(legacyIsolatedPlanDetaches(*_document, *cut));
+
+    cut->touch();
+    setTrace(true);
+    _document->recompute();
+    const auto record = _document->lastRecomputeTrace();
+    ASSERT_NE(record, nullptr);
+    expectNoTransfer(*record);
+    setTrace(false);
+    controlCut->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*cut), capturePostcondition(*controlCut));
+    expectEqualPostcondition(before, capturePostcondition(*cut));
     EXPECT_FALSE(capturePostcondition(*cut).error);
+    EXPECT_EQ(cut->History.getSize(), 0);
 }
 
 TEST_F(DetachedKernelQualificationTest, checkModelPreferenceChangesBooleanOutcome)
@@ -2550,5 +3304,1757 @@ TEST_F(DetachedKernelQualificationTest, boxVenueCostsWideAndNarrow)
                + " settle_ms=" + milliseconds(paid.settleNs)
                + " sum_ms=" + milliseconds(paidSum)
                + " wall_ms=" + milliseconds(paid.wallNs));
+#endif
+}
+
+TEST_F(DetachedKernelQualificationTest, settledFuseAndCommonAreAdmittedAndStayOnTheOwner)
+{
+    for (const auto kind : {BooleanOp::Fuse, BooleanOp::Common}) {
+        auto* document = kind == BooleanOp::Fuse ? _document : makeControl("QualCommonDoc");
+        ASSERT_NE(document, nullptr);
+        const auto prepared = kind == BooleanOp::Fuse
+            ? prepareBoolean<Part::Fuse>(*document, "F")
+            : prepareBoolean<Part::Common>(*document, "C");
+        ASSERT_NE(prepared.feature, nullptr);
+        document->recompute();
+        const auto decision = qualifyForDetachedExecution(*prepared.feature);
+        if (!decision.admitted) {
+            for (const char* citation : decision.citations) {
+                ADD_FAILURE() << (kind == BooleanOp::Fuse ? "fuse " : "common ")
+                              << (citation ? citation : "");
+            }
+        }
+        EXPECT_TRUE(decision.admitted);
+        EXPECT_FALSE(decision.detached);
+        EXPECT_FALSE(decision.pending.empty());
+        EXPECT_EQ(prepared.feature->History.getSize(), 0);
+        EXPECT_FALSE(prepared.feature->isError());
+        prepared.feature->touch();
+        document->recompute();
+        EXPECT_FALSE(prepared.feature->isError());
+        EXPECT_EQ(prepared.feature->History.getSize(), 0);
+    }
+}
+
+TEST_F(DetachedKernelQualificationTest, operandFromLinkIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Lk");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* link = dynamic_cast<App::Link*>(_document->addObject("App::Link", "LkLink"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, prepared.tool);
+    prepared.feature->Tool.setValue(link);
+
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandLink);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandScaledTransform));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandGroup));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandExternal));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandShapeCache));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::Link));
+    EXPECT_EQ(link->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+
+    auto* controlDoc = makeControl("QualOpLink");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Lk");
+    ASSERT_NE(control.feature, nullptr);
+    auto* controlLink = dynamic_cast<App::Link*>(controlDoc->addObject("App::Link", "LkLink"));
+    ASSERT_NE(controlLink, nullptr);
+    controlLink->setLink(-1, control.tool);
+    control.feature->Tool.setValue(controlLink);
+    controlDoc->recompute();
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    const auto record = _document->lastRecomputeTrace();
+    ASSERT_NE(record, nullptr);
+    expectNoTransfer(*record);
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_FALSE(prepared.feature->isError());
+    EXPECT_EQ(link->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    EXPECT_EQ(prepared.feature->History.getSize(), 0);
+}
+
+TEST_F(DetachedKernelQualificationTest, operandFromGroupIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Gp");
+    ASSERT_NE(prepared.feature, nullptr);
+    // App::Part is a GeoFeatureGroup and pulls the Boolean in with the tool.
+    // A plain group refuses only the operand.
+    auto* group = _document->addObject<App::DocumentObjectGroup>("GpGroup");
+    ASSERT_NE(group, nullptr);
+    group->addObject(prepared.tool);
+    _document->recompute();
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandGroup);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandScaledTransform));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::ScalingOrPlacementTransform));
+
+    auto* controlDoc = makeControl("QualOpGroup");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Gp");
+    ASSERT_NE(control.feature, nullptr);
+    auto* controlGroup = controlDoc->addObject<App::DocumentObjectGroup>("GpGroup");
+    ASSERT_NE(controlGroup, nullptr);
+    controlGroup->addObject(control.tool);
+    controlDoc->recompute();
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_FALSE(prepared.feature->isError());
+}
+
+TEST_F(DetachedKernelQualificationTest, operandFromExternalDocumentIsNotAdmitted)
+{
+    CloseDocument foreignGuard;
+    foreignGuard.name = App::GetApplication().getUniqueDocumentName("QualBoolForeign");
+    auto* foreign = App::GetApplication().newDocument(foreignGuard.name.c_str(), "foreign");
+    ASSERT_NE(foreign, nullptr);
+    auto* foreignBox = addBox(*foreign, "ForeignBox", 10, 10, 30);
+    ASSERT_NE(foreignBox, nullptr);
+    foreignBox->Placement.setValue(Base::Placement(Base::Vector3d(15, 10, -5), Base::Rotation()));
+    foreign->recompute();
+
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Ex");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* link = dynamic_cast<App::Link*>(_document->addObject("App::Link", "ExLink"));
+    ASSERT_NE(link, nullptr);
+    TempArchive ownerArchive(
+        std::filesystem::temp_directory_path() / "prc-m0-2b" / "external-owner.FCStd");
+    TempArchive foreignArchive(
+        std::filesystem::temp_directory_path() / "prc-m0-2b" / "external-foreign.FCStd");
+    ASSERT_TRUE(_document->saveAs(ownerArchive.path().string().c_str()));
+    ASSERT_TRUE(foreign->saveAs(foreignArchive.path().string().c_str()));
+    link->setLink(-1, foreignBox);
+    prepared.feature->Tool.setValue(link);
+
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandExternal);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_TRUE(decision.has(AdmissionRefusal::OperandLink));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandGroup));
+    QualificationProbe probe;
+    probe.suppress = true;
+    probe.guard = AdmissionRefusal::OperandExternal;
+    const auto broken = qualifyForDetachedExecution(*prepared.feature, probe);
+    EXPECT_FALSE(broken.has(AdmissionRefusal::OperandExternal));
+    EXPECT_TRUE(broken.has(AdmissionRefusal::OperandLink));
+
+    auto* controlDoc = makeControl("QualOpExt");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Ex");
+    ASSERT_NE(control.feature, nullptr);
+    auto* controlLink = dynamic_cast<App::Link*>(controlDoc->addObject("App::Link", "ExLink"));
+    ASSERT_NE(controlLink, nullptr);
+    TempArchive controlArchive(
+        std::filesystem::temp_directory_path() / "prc-m0-2b" / "external-control.FCStd");
+    ASSERT_TRUE(controlDoc->saveAs(controlArchive.path().string().c_str()));
+    controlLink->setLink(-1, foreignBox);
+    control.feature->Tool.setValue(controlLink);
+    controlDoc->recompute();
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_FALSE(prepared.feature->isError());
+    EXPECT_EQ(prepared.feature->History.getSize(), 0);
+}
+
+TEST_F(DetachedKernelQualificationTest, operandScaledTransformIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Sc");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    gp_Trsf scale;
+    scale.SetScale(gp_Pnt(0, 0, 0), 2.0);
+    auto scaled = prepared.tool->Shape.getValue();
+    scaled.Location(TopLoc_Location(scale));
+    prepared.tool->Shape.setValue(scaled);
+    ASSERT_FALSE(prepared.tool->Shape.getValue().IsNull());
+
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandScaledTransform);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+
+    auto* controlDoc = makeControl("QualOpScale");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Sc");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    auto controlScaled = control.tool->Shape.getValue();
+    controlScaled.Location(TopLoc_Location(scale));
+    control.tool->Shape.setValue(controlScaled);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_FALSE(prepared.feature->isError());
+}
+
+TEST_F(DetachedKernelQualificationTest, pythonOperandIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Py");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* python = _document->addObject("Part::FeaturePython", "PyTool");
+    ASSERT_NE(python, nullptr);
+    prepared.feature->Tool.setValue(python);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandPython);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::PythonFeature));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+
+    auto* controlDoc = makeControl("QualOpPy");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Py");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    auto* controlPython = controlDoc->addObject("Part::FeaturePython", "PyTool");
+    ASSERT_NE(controlPython, nullptr);
+    control.feature->Tool.setValue(controlPython);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_TRUE(prepared.feature->isError());
+    EXPECT_TRUE(control.feature->isError());
+}
+
+TEST_F(DetachedKernelQualificationTest, operandShapeCacheIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Ca");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    EXPECT_EQ(prepared.tool->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    const auto direct = Part::Feature::getTopoShape(
+        prepared.tool,
+        Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform);
+    EXPECT_FALSE(direct.isNull());
+    EXPECT_EQ(prepared.tool->getDynamicPropertyByName("_Part_ShapeCache"), nullptr)
+        << "a direct Part operand must not take the cache-writing branch";
+
+    auto* cache = prepared.tool->addDynamicProperty(
+        "Part::PropertyShapeCache",
+        "_Part_ShapeCache",
+        "Part",
+        "Shape cache",
+        App::Prop_NoPersist | App::Prop_Output | App::Prop_Hidden);
+    ASSERT_NE(cache, nullptr);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandShapeCache);
+    const auto injected = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(injected.reasons.size(), 1u);
+    EXPECT_FALSE(injected.has(AdmissionRefusal::DynamicShapeCache));
+
+    auto* controlDoc = makeControl("QualOpCache");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Ca");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_NE(prepared.tool->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    EXPECT_EQ(control.tool->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+
+    auto* source = addBox(*_document, "CacheSource", 10, 10, 10);
+    auto* link = dynamic_cast<App::Link*>(_document->addObject("App::Link", "CacheLink"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->Scale.setValue(2.0);
+    EXPECT_EQ(link->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    const auto resolved = Part::Feature::getTopoShape(
+        link,
+        Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform);
+    EXPECT_FALSE(resolved.isNull());
+    EXPECT_NE(link->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    prepared.feature->Tool.setValue(link);
+    const auto populated = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_TRUE(populated.has(AdmissionRefusal::OperandShapeCache));
+    EXPECT_TRUE(populated.has(AdmissionRefusal::OperandLink));
+    EXPECT_TRUE(populated.has(AdmissionRefusal::OperandScaledTransform));
+    QualificationProbe probe;
+    probe.suppress = true;
+    probe.guard = AdmissionRefusal::OperandShapeCache;
+    const auto broken = qualifyForDetachedExecution(*prepared.feature, probe);
+    EXPECT_FALSE(broken.has(AdmissionRefusal::OperandShapeCache));
+    EXPECT_TRUE(broken.has(AdmissionRefusal::OperandLink));
+    EXPECT_TRUE(broken.has(AdmissionRefusal::OperandScaledTransform));
+
+    auto* populatedDoc = makeControl("QualOpCachePop");
+    ASSERT_NE(populatedDoc, nullptr);
+    auto populatedControl = prepareBoolean<Part::Cut>(*populatedDoc, "Ca");
+    ASSERT_NE(populatedControl.feature, nullptr);
+    auto* populatedSource = addBox(*populatedDoc, "CacheSource", 10, 10, 10);
+    auto* populatedLink = dynamic_cast<App::Link*>(populatedDoc->addObject("App::Link", "CacheLink"));
+    ASSERT_NE(populatedSource, nullptr);
+    ASSERT_NE(populatedLink, nullptr);
+    populatedLink->setLink(-1, populatedSource);
+    populatedLink->Scale.setValue(2.0);
+    const auto populatedResolved = Part::Feature::getTopoShape(
+        populatedLink,
+        Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform);
+    EXPECT_FALSE(populatedResolved.isNull());
+    EXPECT_NE(populatedLink->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    populatedControl.feature->Tool.setValue(populatedLink);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    populatedControl.feature->touch();
+    populatedDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*populatedControl.feature));
+    EXPECT_NE(link->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    EXPECT_NE(populatedLink->getDynamicPropertyByName("_Part_ShapeCache"), nullptr);
+    EXPECT_EQ(prepared.feature->History.getSize(), 0);
+    EXPECT_EQ(populatedControl.feature->History.getSize(), 0);
+}
+
+TEST_F(DetachedKernelQualificationTest, refineEnabledIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Rf");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    prepared.feature->Refine.setValue(true);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::RefineEnabled);
+    EXPECT_EQ(qualifyForDetachedExecution(*prepared.feature).reasons.size(), 1u);
+
+    auto* controlDoc = makeControl("QualRefine");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Rf");
+    ASSERT_NE(control.feature, nullptr);
+    control.feature->Refine.setValue(true);
+    controlDoc->recompute();
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_TRUE(prepared.feature->Refine.getValue());
+    EXPECT_FALSE(prepared.feature->isError());
+}
+
+TEST_F(DetachedKernelQualificationTest, historyWrittenIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Hi");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    ASSERT_EQ(prepared.feature->History.getSize(), 0);
+    prepared.feature->History.setSize(1);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::HistoryWritten);
+    EXPECT_EQ(qualifyForDetachedExecution(*prepared.feature).reasons.size(), 1u);
+
+    auto* controlDoc = makeControl("QualHist");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Hi");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    control.feature->History.setSize(1);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_EQ(prepared.feature->History.getSize(), 1);
+    EXPECT_EQ(control.feature->History.getSize(), 1);
+    EXPECT_FALSE(prepared.feature->isError());
+}
+
+TEST_F(DetachedKernelQualificationTest, operandNotFeatureIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Nf");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* line = _document->addObject<App::Line>("NfLine");
+    ASSERT_NE(line, nullptr);
+    prepared.feature->Tool.setValue(line);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandNotFeature);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandPython));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandExtension));
+
+    auto* controlDoc = makeControl("QualOpNotFeature");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Nf");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    auto* controlLine = controlDoc->addObject<App::Line>("NfLine");
+    ASSERT_NE(controlLine, nullptr);
+    control.feature->Tool.setValue(controlLine);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+}
+
+TEST_F(DetachedKernelQualificationTest, operandExtensionIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Exs");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* extension = new Part::PrismExtension();
+    extension->initExtension(prepared.tool);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandExtension);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandNotFeature));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::ExtensionSchema));
+
+    auto* controlDoc = makeControl("QualOpExten");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Exs");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    auto* controlExtension = new Part::PrismExtension();
+    controlExtension->initExtension(control.tool);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+}
+
+TEST_F(DetachedKernelQualificationTest, operandAttachmentIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "At");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* attachment = prepared.tool->getExtensionByType<Part::AttachExtension>(/*no_except=*/true);
+    ASSERT_NE(attachment, nullptr);
+    attachment->AttachmentSupport.setValue(prepared.base);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandAttachment);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandSourceClosure));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::ActiveAttachment));
+
+    auto* controlDoc = makeControl("QualOpAttach");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "At");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    auto* controlAttachment = control.tool->getExtensionByType<Part::AttachExtension>(/*no_except=*/true);
+    ASSERT_NE(controlAttachment, nullptr);
+    controlAttachment->AttachmentSupport.setValue(control.base);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+}
+
+TEST_F(DetachedKernelQualificationTest, operandSourceClosureIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "So");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    auto* source = addBox(*_document, "SoSource", 8, 8, 8);
+    auto* midBase = addBox(*_document, "SoMidBase", 20, 20, 20);
+    auto* link = dynamic_cast<App::Link*>(_document->addObject("App::Link", "SoLink"));
+    auto* mid = addBoolean<Part::Cut>(*_document, "SoMid");
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(midBase, nullptr);
+    ASSERT_NE(link, nullptr);
+    ASSERT_NE(mid, nullptr);
+    link->setLink(-1, source);
+    mid->Base.setValue(midBase);
+    mid->Tool.setValue(link);
+    _document->recompute();
+    prepared.feature->Tool.setValue(mid);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandSourceClosure);
+    const auto decision = qualifyForDetachedExecution(*prepared.feature);
+    EXPECT_EQ(decision.reasons.size(), 1u);
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandLink));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandNotFeature));
+    EXPECT_FALSE(decision.has(AdmissionRefusal::OperandShapeCache));
+
+    auto* controlDoc = makeControl("QualOpSource");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "So");
+    ASSERT_NE(control.feature, nullptr);
+    auto* controlSource = addBox(*controlDoc, "SoSource", 8, 8, 8);
+    auto* controlMidBase = addBox(*controlDoc, "SoMidBase", 20, 20, 20);
+    auto* controlLink = dynamic_cast<App::Link*>(controlDoc->addObject("App::Link", "SoLink"));
+    auto* controlMid = addBoolean<Part::Cut>(*controlDoc, "SoMid");
+    ASSERT_NE(controlSource, nullptr);
+    ASSERT_NE(controlMidBase, nullptr);
+    ASSERT_NE(controlLink, nullptr);
+    ASSERT_NE(controlMid, nullptr);
+    controlLink->setLink(-1, controlSource);
+    controlMid->Base.setValue(controlMidBase);
+    controlMid->Tool.setValue(controlLink);
+    controlDoc->recompute();
+    control.feature->Tool.setValue(controlMid);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_FALSE(prepared.feature->isError());
+    EXPECT_EQ(prepared.feature->History.getSize(), 0);
+}
+
+TEST_F(DetachedKernelQualificationTest, missingOperandIsNotAdmitted)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Ms");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    ASSERT_TRUE(qualifyForDetachedExecution(*prepared.feature).admitted);
+    const auto before = capturePostcondition(*prepared.feature);
+    prepared.feature->Tool.setValue(nullptr);
+    expectGuardProvesTheRefusal(*prepared.feature, AdmissionRefusal::OperandMissing);
+    EXPECT_EQ(qualifyForDetachedExecution(*prepared.feature).reasons.size(), 1u);
+
+    auto* controlDoc = makeControl("QualMissing");
+    ASSERT_NE(controlDoc, nullptr);
+    auto control = prepareBoolean<Part::Cut>(*controlDoc, "Ms");
+    ASSERT_NE(control.feature, nullptr);
+    controlDoc->recompute();
+    control.feature->Tool.setValue(nullptr);
+    prepared.feature->touch();
+    setTrace(true);
+    _document->recompute();
+    ASSERT_NE(_document->lastRecomputeTrace(), nullptr);
+    expectNoTransfer(*_document->lastRecomputeTrace());
+    setTrace(false);
+    control.feature->touch();
+    controlDoc->recompute();
+    expectEqualPostcondition(capturePostcondition(*prepared.feature),
+                             capturePostcondition(*control.feature));
+    EXPECT_TRUE(prepared.feature->isError());
+    EXPECT_NEAR(capturePostcondition(*prepared.feature).volume, before.volume, 1e-4);
+    EXPECT_EQ(prepared.feature->History.getSize(), 0);
+    EXPECT_EQ(capturePostcondition(*prepared.feature).elementMap,
+              before.elementMap);
+}
+
+std::pair<Materials::Material, Materials::Material> twoLibraryMaterials()
+{
+    const auto fallback = Materials::MaterialManager::defaultMaterial();
+    EXPECT_TRUE(static_cast<bool>(fallback));
+    Materials::Material first;
+    Materials::Material second;
+    if (fallback) {
+        first = *fallback;
+        second = *fallback;
+    }
+    const auto local = Materials::MaterialManager::getManager().getLocalMaterials();
+    EXPECT_TRUE(static_cast<bool>(local));
+    std::size_t count = 0;
+    if (fallback && local) {
+        for (const auto& entry : *local) {
+            if (!entry.second || entry.second->getUUID() == fallback->getUUID()) {
+                continue;
+            }
+            if (count == 0) {
+                first = *entry.second;
+            }
+            else {
+                second = *entry.second;
+                ++count;
+                break;
+            }
+            ++count;
+        }
+    }
+    EXPECT_EQ(count, 2u);
+    if (fallback) {
+        EXPECT_NE(first.getUUID(), fallback->getUUID());
+        EXPECT_NE(second.getUUID(), fallback->getUUID());
+    }
+    EXPECT_NE(first.getUUID(), second.getUUID());
+    return {first, second};
+}
+
+bool mapContains(const std::vector<std::string>& lines, const char* text)
+{
+    for (const auto& line : lines) {
+        if (line.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct DetachedBooleanRun
+{
+    BooleanKernelResult kernel;
+    WorkerEnvironment before;
+    WorkerEnvironment after;
+    std::string globalDelta;
+};
+
+DetachedBooleanRun runDetachedBoolean(const FrozenBoolean& frozen, bool nameResult)
+{
+    DetachedBooleanRun run;
+    std::thread worker([&] {
+        run.before = captureWorkerEnvironment();
+        run.kernel = executeBooleanKernel(
+            frozen.kind,
+            frozen.base.shape,
+            frozen.tool.shape,
+            frozen.base.label,
+            frozen.tool.label);
+        if (nameResult) {
+            completeBooleanComputation(run.kernel, frozen);
+        }
+        else if (run.kernel.succeeded && run.kernel.operation) {
+            run.kernel.validationRejected = frozenCheckRejects(frozen, run.kernel.shape);
+        }
+        run.after = captureWorkerEnvironment();
+    });
+    worker.join();
+    run.globalDelta = describeWorkerEnvironmentDelta(run.before, run.after);
+    expectWorkerComputationStable(run.before, run.after);
+    appendCost(std::string("worker-globals changed=") + run.globalDelta
+               + " pool_threads=" + std::to_string(run.after.poolThreads)
+               + " pool_default_launch=" + std::to_string(run.after.poolDefaultLaunch)
+               + " pool_in_use=" + (run.after.poolInUse ? "1" : "0")
+#if !PRC_M0_HAS_POSIX_SIGNALS
+               + " signals=skipped"
+#endif
+    );
+    return run;
+}
+
+void expectBooleanTopology(const TopoDS_Shape& left, const TopoDS_Shape& right)
+{
+    ASSERT_FALSE(left.IsNull());
+    ASSERT_FALSE(right.IsNull());
+    EXPECT_EQ(countShapes(left, TopAbs_SOLID), countShapes(right, TopAbs_SOLID));
+    EXPECT_EQ(countShapes(left, TopAbs_FACE), countShapes(right, TopAbs_FACE));
+    EXPECT_EQ(countShapes(left, TopAbs_EDGE), countShapes(right, TopAbs_EDGE));
+    EXPECT_EQ(countShapes(left, TopAbs_VERTEX), countShapes(right, TopAbs_VERTEX));
+    EXPECT_NEAR(PartTestHelpers::getVolume(left), PartTestHelpers::getVolume(right), 1e-3);
+    expectVerticesNear(left, right);
+    expectVerticesNear(left.Located(TopLoc_Location()), right.Located(TopLoc_Location()));
+}
+
+struct SerialBoolean
+{
+    TopoDS_Shape shape;
+    std::vector<std::string> elementMap;
+    Postcondition post;
+};
+
+SerialBoolean snapshotBoolean(const Part::Feature& feature)
+{
+    SerialBoolean serial;
+    serial.shape = feature.Shape.getValue();
+    serial.elementMap = elementMapText(feature.Shape.getShape());
+    serial.post = capturePostcondition(feature);
+    return serial;
+}
+
+int testPartCount()
+{
+    return ::testing::UnitTest::GetInstance()->current_test_info()->result()->total_part_count();
+}
+
+// Harness comparator: topology plus the canonical element map. A false return
+// means this result must not be timed.
+bool harnessGeometryMatches(const TopoDS_Shape& actual, const SerialBoolean& serial)
+{
+    const int before = testPartCount();
+    // Feature Placement is owner state baked into Shape.getShape() as a location.
+    // The raw kernel shape does not carry it. Compare the unlocated solids.
+    expectBooleanTopology(serial.shape.Located(TopLoc_Location()), actual.Located(TopLoc_Location()));
+    return testPartCount() == before;
+}
+
+bool harnessBooleanMatches(const TopoDS_Shape& actual, const std::vector<std::string>& actualMap,
+                           const SerialBoolean& serial)
+{
+    const int before = testPartCount();
+    if (!harnessGeometryMatches(actual, serial)) {
+        return false;
+    }
+    EXPECT_EQ(canonicalElementMap(serial.elementMap), canonicalElementMap(actualMap));
+    return testPartCount() == before;
+}
+
+bool publishedBooleanMatches(const Part::Boolean& feature, const SerialBoolean& serial)
+{
+    const int before = testPartCount();
+    expectEqualPostcondition(serial.post, capturePostcondition(feature));
+    expectBooleanTopology(serial.shape, feature.Shape.getValue());
+    return testPartCount() == before;
+}
+
+bool processBooleanMatches(const Part::Boolean& feature, const App::DocumentRecomputeSnapshot& snapshot,
+                           const SerialBoolean& serial)
+{
+    if (!snapshot.terminal() || snapshot.state != App::DocumentRecomputeState::Completed
+        || feature.isError() || serial.post.error) {
+        ADD_FAILURE() << snapshot.diagnostic << " status=" << feature.getStatusString();
+        return false;
+    }
+    const int before = testPartCount();
+    expectBooleanTopology(serial.shape, feature.Shape.getValue());
+    const auto published = capturePostcondition(feature);
+    EXPECT_EQ(published.historySize, serial.post.historySize);
+    EXPECT_EQ(published.materialUuid, serial.post.materialUuid);
+    EXPECT_EQ(published.status, serial.post.status);
+    EXPECT_FALSE(published.error);
+    EXPECT_TRUE(feature.Placement.getValue().isSame(serial.post.placement, 1e-9));
+    return testPartCount() == before;
+}
+
+TEST_F(DetachedKernelQualificationTest, booleanHarnessMatchesOwnerThreadAndIsolatedProcess)
+{
+    // Owner: Document::recompute. Thread: frozen copies, FCBRepAlgoAPI_*, BRepCheck
+    // and makeElementShape inside the worker, then a test-only owner publication.
+    // Process: RecomputeVenue::Isolated. Production scheduling is unchanged.
+    const auto libraryMaterials = twoLibraryMaterials();
+    const auto copiedMaterial = libraryMaterials.first;
+    const auto preservedMaterial = libraryMaterials.second;
+    const auto fallbackMaterial = Materials::MaterialManager::defaultMaterial();
+    ASSERT_TRUE(static_cast<bool>(fallbackMaterial));
+    const BooleanOp kinds[] = {BooleanOp::Cut, BooleanOp::Fuse, BooleanOp::Common};
+    for (const auto kind : kinds) {
+        const char* prefix = kind == BooleanOp::Cut ? "Hv" : kind == BooleanOp::Fuse ? "Hf" : "Hc";
+        auto owner = kind == BooleanOp::Fuse ? prepareBoolean<Part::Fuse>(*_document, prefix)
+            : kind == BooleanOp::Common      ? prepareBoolean<Part::Common>(*_document, prefix)
+                                              : prepareBoolean<Part::Cut>(*_document, prefix);
+        ASSERT_NE(owner.feature, nullptr);
+        auto* processDoc = makeControl(prefix);
+        ASSERT_NE(processDoc, nullptr);
+        auto process = kind == BooleanOp::Fuse ? prepareBoolean<Part::Fuse>(*processDoc, prefix)
+            : kind == BooleanOp::Common        ? prepareBoolean<Part::Common>(*processDoc, prefix)
+                                                : prepareBoolean<Part::Cut>(*processDoc, prefix);
+        ASSERT_NE(process.feature, nullptr);
+        auto* publishDoc = makeControl("QualBoolPublish");
+        ASSERT_NE(publishDoc, nullptr);
+        auto published = kind == BooleanOp::Fuse ? prepareBoolean<Part::Fuse>(*publishDoc, prefix)
+            : kind == BooleanOp::Common          ? prepareBoolean<Part::Common>(*publishDoc, prefix)
+                                                  : prepareBoolean<Part::Cut>(*publishDoc, prefix);
+        ASSERT_NE(published.feature, nullptr);
+        if (kind == BooleanOp::Cut) {
+            owner.base->ShapeMaterial.setValue(copiedMaterial);
+            process.base->ShapeMaterial.setValue(copiedMaterial);
+            published.base->ShapeMaterial.setValue(copiedMaterial);
+        }
+        else if (kind == BooleanOp::Fuse) {
+            owner.feature->ShapeMaterial.setValue(preservedMaterial);
+            process.feature->ShapeMaterial.setValue(preservedMaterial);
+            published.feature->ShapeMaterial.setValue(preservedMaterial);
+        }
+
+        _document->recompute();
+        installSeededMap(*owner.base);
+        installSeededMap(*owner.tool);
+        owner.feature->touch();
+        setTrace(true);
+        _document->recompute();
+        const auto ownerTrace = _document->lastRecomputeTrace();
+        ASSERT_NE(ownerTrace, nullptr);
+        expectNoTransfer(*ownerTrace);
+        setTrace(false);
+        ASSERT_FALSE(owner.feature->isError()) << owner.feature->getStatusString();
+        EXPECT_FALSE(elementMapText(owner.feature->Shape.getShape()).empty());
+        EXPECT_EQ(owner.feature->History.getSize(), 0);
+        EXPECT_FALSE(owner.feature->Placement.getValue().getRotation().isIdentity());
+
+        processDoc->recompute();
+        installSeededMap(*process.base);
+        installSeededMap(*process.tool);
+        process.feature->touch();
+        const auto processSnapshot = waitIsolated(*processDoc, *process.feature);
+        ASSERT_TRUE(processSnapshot.terminal()) << processSnapshot.diagnostic;
+        EXPECT_EQ(processSnapshot.state, App::DocumentRecomputeState::Completed)
+            << processSnapshot.diagnostic;
+        ASSERT_FALSE(process.feature->isError()) << process.feature->getStatusString();
+
+        publishDoc->recompute();
+        installSeededMap(*published.base);
+        installSeededMap(*published.tool);
+        published.feature->touch();
+        publishDoc->recompute();
+
+        const auto liveBase = owner.base->Shape.getValue();
+        const auto liveTool = owner.tool->Shape.getValue();
+        const auto liveBaseIds = tshapeIds(liveBase);
+        const auto liveToolIds = tshapeIds(liveTool);
+        const auto baseMap = elementMapText(owner.base->Shape.getShape());
+        const auto toolMap = elementMapText(owner.tool->Shape.getShape());
+        const auto baseGeometry = serializedGeometry(liveBase);
+        const auto toolGeometry = serializedGeometry(liveTool);
+        if (kind == BooleanOp::Cut) {
+            EXPECT_TRUE(TopoDS_Shape(liveBase).IsPartner(liveBase));
+            EXPECT_FALSE(deepCopyShape(liveBase).IsPartner(liveBase));
+            EXPECT_FALSE(anyPartner(deepCopyShape(liveBase), liveBase));
+        }
+
+        const auto frozen = freezeBoolean(*owner.feature, kind);
+        EXPECT_FALSE(frozen.base.shape.IsPartner(liveBase));
+        EXPECT_FALSE(frozen.tool.shape.IsPartner(liveTool));
+        EXPECT_FALSE(anyPartner(frozen.base.shape, liveBase));
+        EXPECT_FALSE(anyPartner(frozen.tool.shape, liveTool));
+        std::vector<std::string> callbacksDuringKernel;
+        CallbackConnections callbacks;
+        callbacks.keep(_document->signalBeforeRecompute.connect(
+            [&](const App::Document&) { callbacksDuringKernel.push_back("signalBeforeRecompute"); }));
+        callbacks.keep(_document->signalRecomputedObject.connect(
+            [&](const App::DocumentObject&) { callbacksDuringKernel.push_back("signalRecomputedObject"); }));
+        callbacks.keep(owner.feature->signalChanged.connect(
+            [&](const App::DocumentObject&, const App::Property&) {
+                callbacksDuringKernel.push_back("signalChanged");
+            }));
+
+        const auto run = runDetachedBoolean(frozen, /*nameResult=*/true);
+        EXPECT_TRUE(callbacksDuringKernel.empty());
+        EXPECT_TRUE(owner.base->Shape.getValue().IsSame(liveBase));
+        EXPECT_TRUE(owner.tool->Shape.getValue().IsSame(liveTool));
+        EXPECT_EQ(tshapeIds(owner.base->Shape.getValue()), liveBaseIds);
+        EXPECT_EQ(tshapeIds(owner.tool->Shape.getValue()), liveToolIds);
+        EXPECT_EQ(elementMapText(owner.base->Shape.getShape()), baseMap);
+        EXPECT_EQ(elementMapText(owner.tool->Shape.getShape()), toolMap);
+        EXPECT_EQ(serializedGeometry(owner.base->Shape.getValue()), baseGeometry);
+        EXPECT_EQ(serializedGeometry(owner.tool->Shape.getValue()), toolGeometry);
+        ASSERT_TRUE(run.kernel.succeeded) << run.kernel.diagnostic;
+        ASSERT_FALSE(run.kernel.validationRejected);
+        ASSERT_NE(run.kernel.operation, nullptr);
+        ASSERT_FALSE(run.kernel.named.isNull());
+        EXPECT_TRUE(run.kernel.operation->RunParallel());
+        EXPECT_FALSE(anyPartner(run.kernel.shape, liveBase));
+        EXPECT_FALSE(anyPartner(run.kernel.shape, liveTool));
+        Bnd_Box bounds;
+        BRepBndLib::Add(frozen.base.shape, bounds);
+        BRepBndLib::Add(frozen.tool.shape, bounds);
+        const double expectedFuzzy =
+            frozen.fuzzy * std::sqrt(bounds.SquareExtent()) * frozen.confusion;
+        EXPECT_NEAR(run.kernel.operation->FuzzyValue(), expectedFuzzy, 1e-9);
+
+        const auto stale = BRepPrimAPI_MakeBox(1.0, 2.0, 3.0).Shape();
+        const double ownerVolume = PartTestHelpers::getVolume(owner.feature->Shape.getValue());
+        const double staleVolume = PartTestHelpers::getVolume(stale);
+        EXPECT_GT(std::abs(ownerVolume - staleVolume), 1.0);
+        {
+            RecomputeStatus status(*published.feature);
+            published.feature->Shape.setValue(stale);
+        }
+        if (kind == BooleanOp::Cut) {
+            published.feature->ShapeMaterial.setValue(*fallbackMaterial);
+            EXPECT_EQ(published.feature->ShapeMaterial.getValue().getUUID(), fallbackMaterial->getUUID());
+            EXPECT_NE(owner.base->ShapeMaterial.getValue().getUUID(), fallbackMaterial->getUUID());
+        }
+        else if (kind == BooleanOp::Fuse) {
+            EXPECT_EQ(published.feature->ShapeMaterial.getValue().getUUID(), preservedMaterial.getUUID());
+            EXPECT_NE(preservedMaterial.getUUID(), fallbackMaterial->getUUID());
+        }
+        published.feature->Placement.setValue(rotatedPlacement());
+        EXPECT_NEAR(PartTestHelpers::getVolume(published.feature->Shape.getValue()), staleVolume, 1e-4);
+
+        publishBooleanShape(*published.feature, run.kernel.named);
+        EXPECT_GT(std::abs(PartTestHelpers::getVolume(published.feature->Shape.getValue()) - staleVolume), 1.0);
+        if (kind == BooleanOp::Cut) {
+            EXPECT_EQ(published.feature->ShapeMaterial.getValue().getUUID(), copiedMaterial.getUUID());
+            EXPECT_EQ(owner.feature->ShapeMaterial.getValue().getUUID(), copiedMaterial.getUUID());
+        }
+        else if (kind == BooleanOp::Fuse) {
+            EXPECT_EQ(published.feature->ShapeMaterial.getValue().getUUID(), preservedMaterial.getUUID());
+            EXPECT_EQ(owner.feature->ShapeMaterial.getValue().getUUID(), preservedMaterial.getUUID());
+            EXPECT_NE(published.feature->ShapeMaterial.getValue().getUUID(),
+                      owner.base->ShapeMaterial.getValue().getUUID());
+        }
+        expectEqualPostcondition(capturePostcondition(*owner.feature),
+                                 capturePostcondition(*published.feature));
+        expectBooleanTopology(owner.feature->Shape.getValue(), published.feature->Shape.getValue());
+        EXPECT_FALSE(elementMapText(published.feature->Shape.getShape()).empty());
+        const auto ownerMap = canonicalElementMap(elementMapText(owner.feature->Shape.getShape()));
+        EXPECT_TRUE(mapContains(ownerMap, "Qual"));
+        EXPECT_EQ(ownerMap, canonicalElementMap(elementMapText(published.feature->Shape.getShape())));
+        EXPECT_EQ(ownerMap, canonicalElementMap(elementMapText(run.kernel.named)));
+        EXPECT_EQ(owner.feature->History.getSize(), 0);
+        EXPECT_EQ(published.feature->History.getSize(), 0);
+        EXPECT_TRUE(owner.feature->Placement.getValue().isSame(
+            published.feature->Placement.getValue(),
+            1e-9));
+
+        expectBooleanTopology(owner.feature->Shape.getValue(), process.feature->Shape.getValue());
+        EXPECT_EQ(process.feature->History.getSize(), 0);
+        EXPECT_EQ(capturePostcondition(*owner.feature).materialUuid,
+                  capturePostcondition(*process.feature).materialUuid);
+        EXPECT_TRUE(owner.feature->Placement.getValue().isSame(process.feature->Placement.getValue(), 1e-9));
+        EXPECT_EQ(std::string(owner.feature->getStatusString()),
+                  std::string(process.feature->getStatusString()));
+        // PropertyPartShape::Save omits element maps while isExporting, so the
+        // child never sees the Qual seeds. Its execute builds a different map.
+        // That map is not empty, and it is not the seeded names.
+        const auto processMap = elementMapText(process.feature->Shape.getShape());
+        EXPECT_FALSE(processMap.empty());
+        EXPECT_FALSE(mapContains(processMap, "Qual"));
+        EXPECT_NE(canonicalElementMap(processMap), ownerMap);
+    }
+}
+
+TEST_F(DetachedKernelQualificationTest, ownerNamingOnFrozenInputsReproducesSeededNames)
+{
+    // Owner naming (makeElementShape on frozen operand inputs) reproduces the
+    // seeded names. Export drops those seeds, and the restored process shape
+    // carries the child's own map, which does not contain them. That is not
+    // cross-process seeded-name equivalence. A process venue needs owner-side
+    // re-naming.
+    const BooleanOp kinds[] = {BooleanOp::Cut, BooleanOp::Fuse, BooleanOp::Common};
+    for (const auto kind : kinds) {
+        const char* prefix = kind == BooleanOp::Cut ? "Nm" : kind == BooleanOp::Fuse ? "Nf" : "Nc";
+        auto owner = kind == BooleanOp::Fuse ? prepareBoolean<Part::Fuse>(*_document, prefix)
+            : kind == BooleanOp::Common      ? prepareBoolean<Part::Common>(*_document, prefix)
+                                              : prepareBoolean<Part::Cut>(*_document, prefix);
+        ASSERT_NE(owner.feature, nullptr);
+        _document->recompute();
+        installSeededMap(*owner.base);
+        installSeededMap(*owner.tool);
+        owner.feature->touch();
+        _document->recompute();
+        ASSERT_FALSE(owner.feature->isError()) << owner.feature->getStatusString();
+        const auto ownerMap = canonicalElementMap(elementMapText(owner.feature->Shape.getShape()));
+        EXPECT_TRUE(mapContains(ownerMap, "Qual"));
+
+        const auto frozen = freezeBoolean(*owner.feature, kind);
+        EXPECT_TRUE(mapContains(elementMapText(frozen.base.named), "Qual"));
+        EXPECT_TRUE(mapContains(elementMapText(frozen.tool.named), "Qual"));
+        auto named = executeBooleanKernel(
+            kind, frozen.base.shape, frozen.tool.shape, frozen.base.label, frozen.tool.label);
+        completeBooleanComputation(named, frozen);
+        ASSERT_TRUE(named.succeeded) << named.diagnostic;
+        ASSERT_FALSE(named.validationRejected);
+        ASSERT_FALSE(named.named.isNull());
+        const auto namedMap = canonicalElementMap(elementMapText(named.named));
+        EXPECT_TRUE(mapContains(namedMap, "Qual"));
+        EXPECT_EQ(ownerMap, namedMap);
+
+        auto* processDoc = makeControl(prefix);
+        ASSERT_NE(processDoc, nullptr);
+        auto process = kind == BooleanOp::Fuse ? prepareBoolean<Part::Fuse>(*processDoc, prefix)
+            : kind == BooleanOp::Common        ? prepareBoolean<Part::Common>(*processDoc, prefix)
+                                                : prepareBoolean<Part::Cut>(*processDoc, prefix);
+        ASSERT_NE(process.feature, nullptr);
+        processDoc->recompute();
+        installSeededMap(*process.base);
+        installSeededMap(*process.tool);
+        process.feature->touch();
+        const auto snapshot = waitIsolated(*processDoc, *process.feature);
+        ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+        EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed) << snapshot.diagnostic;
+        ASSERT_FALSE(process.feature->isError()) << process.feature->getStatusString();
+        const auto processMap = elementMapText(process.feature->Shape.getShape());
+        EXPECT_FALSE(processMap.empty());
+        EXPECT_FALSE(mapContains(processMap, "Qual"));
+        EXPECT_NE(canonicalElementMap(processMap), ownerMap);
+    }
+}
+
+TEST_F(DetachedKernelQualificationTest, booleanOwnerCallbacksDoNotFireOnTheDetachedKernel)
+{
+    auto prepared = prepareBoolean<Part::Cut>(*_document, "Cb");
+    ASSERT_NE(prepared.feature, nullptr);
+    _document->recompute();
+    std::vector<std::string> fired;
+    CallbackConnections callbacks;
+    callbacks.keep(_document->signalBeforeRecompute.connect(
+        [&](const App::Document&) { fired.push_back("signalBeforeRecompute"); }));
+    callbacks.keep(_document->signalRecomputed.connect(
+        [&](const App::Document&, const std::vector<App::DocumentObject*>&) {
+            fired.push_back("signalRecomputed");
+        }));
+    callbacks.keep(_document->signalRecomputedObject.connect(
+        [&](const App::DocumentObject&) { fired.push_back("signalRecomputedObject"); }));
+    callbacks.keep(_document->signalChangedObject.connect(
+        [&](const App::DocumentObject&, const App::Property&) { fired.push_back("signalChangedObject"); }));
+    callbacks.keep(_document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            fired.push_back("signalBeforeChangeObject");
+        }));
+    callbacks.keep(_document->signalBeforeChange.connect(
+        [&](const App::Document&, const App::Property&) { fired.push_back("signalBeforeChange"); }));
+    callbacks.keep(prepared.feature->signalChanged.connect(
+        [&](const App::DocumentObject&, const App::Property&) { fired.push_back("feature.signalChanged"); }));
+    callbacks.keep(prepared.feature->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            fired.push_back("feature.signalBeforeChange");
+        }));
+    callbacks.keep(prepared.base->signalChanged.connect(
+        [&](const App::DocumentObject&, const App::Property&) { fired.push_back("base.signalChanged"); }));
+    callbacks.keep(prepared.tool->signalChanged.connect(
+        [&](const App::DocumentObject&, const App::Property&) { fired.push_back("tool.signalChanged"); }));
+
+    fired.clear();
+    prepared.feature->touch();
+    _document->recompute();
+    std::set<std::string> unique(fired.begin(), fired.end());
+    EXPECT_TRUE(unique.count("signalBeforeRecompute"));
+    EXPECT_TRUE(unique.count("signalRecomputed"));
+    EXPECT_TRUE(unique.count("signalRecomputedObject"));
+    std::string recorded;
+    for (const auto& name : unique) {
+        if (!recorded.empty()) {
+            recorded += ",";
+        }
+        recorded += name;
+    }
+    appendCost("callbacks " + recorded);
+    EXPECT_FALSE(recorded.empty());
+
+    const auto frozen = freezeBoolean(*prepared.feature, BooleanOp::Cut);
+    fired.clear();
+    const auto run = runDetachedBoolean(frozen, /*nameResult=*/true);
+    EXPECT_TRUE(fired.empty());
+    ASSERT_TRUE(run.kernel.succeeded) << run.kernel.diagnostic;
+    ASSERT_FALSE(run.kernel.named.isNull());
+
+    publishBooleanShape(*prepared.feature, run.kernel.named);
+    EXPECT_FALSE(fired.empty());
+}
+
+TEST_F(DetachedKernelQualificationTest, booleanFailurePreservesShapeOnEveryVenue)
+{
+    auto* base = addBox(*_document, "FailBase", 40, 30, 20);
+    auto* tool = _document->addObject<Part::Feature>("FailEdge");
+    auto* cut = addBoolean<Part::Cut>(*_document, "FailCut");
+    ASSERT_NE(base, nullptr);
+    ASSERT_NE(tool, nullptr);
+    ASSERT_NE(cut, nullptr);
+    BRepBuilderAPI_MakeEdge edge(gp_Pnt(0, 0, 0), gp_Pnt(12, 0, 0));
+    tool->Shape.setValue(edge.Edge());
+    cut->Base.setValue(base);
+    cut->Tool.setValue(tool);
+    const auto previous = BRepPrimAPI_MakeBox(10, 10, 10).Shape();
+    cut->Shape.setValue(previous);
+    installSeededMap(*cut);
+    // Shape::setValue outside recompute copies the shape placement back onto
+    // the feature. Set the rotated placement after that write.
+    cut->Placement.setValue(rotatedPlacement());
+    const auto seeded = elementMapText(cut->Shape.getShape());
+    const auto before = capturePostcondition(*cut);
+    ASSERT_FALSE(seeded.empty());
+
+    cut->touch();
+    _document->recompute();
+    EXPECT_TRUE(cut->isError()) << cut->getStatusString();
+    const std::string ownerStatus = cut->getStatusString();
+    EXPECT_NE(ownerStatus.find("Boolean operation failed"), std::string::npos) << ownerStatus;
+    EXPECT_NEAR(PartTestHelpers::getVolume(cut->Shape.getValue()), before.volume, 1e-4);
+    EXPECT_EQ(elementMapText(cut->Shape.getShape()), seeded);
+    EXPECT_EQ(cut->History.getSize(), 0);
+    EXPECT_TRUE(cut->Placement.getValue().isSame(rotatedPlacement(), 1e-9));
+
+    auto* processDoc = makeControl("QualFailProcess");
+    ASSERT_NE(processDoc, nullptr);
+    auto* processBase = addBox(*processDoc, "FailBase", 40, 30, 20);
+    auto* processTool = processDoc->addObject<Part::Feature>("FailEdge");
+    auto* processCut = addBoolean<Part::Cut>(*processDoc, "FailCut");
+    ASSERT_NE(processBase, nullptr);
+    ASSERT_NE(processTool, nullptr);
+    ASSERT_NE(processCut, nullptr);
+    processTool->Shape.setValue(edge.Edge());
+    processCut->Base.setValue(processBase);
+    processCut->Tool.setValue(processTool);
+    processCut->Shape.setValue(previous);
+    installSeededMap(*processCut);
+    processCut->Placement.setValue(rotatedPlacement());
+    processCut->touch();
+    const auto snapshot = waitIsolated(*processDoc, *processCut);
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    EXPECT_TRUE(processCut->isError()) << processCut->getStatusString();
+    EXPECT_EQ(std::string(processCut->getStatusString()), ownerStatus);
+    EXPECT_NEAR(PartTestHelpers::getVolume(processCut->Shape.getValue()), before.volume, 1e-4);
+    EXPECT_EQ(elementMapText(processCut->Shape.getShape()), seeded);
+    EXPECT_EQ(processCut->History.getSize(), 0);
+    EXPECT_TRUE(processCut->Placement.getValue().isSame(rotatedPlacement(), 1e-9));
+
+    const auto frozen = freezeBoolean(*cut, BooleanOp::Cut);
+    const auto run = runDetachedBoolean(frozen, /*nameResult=*/false);
+    EXPECT_FALSE(run.kernel.succeeded);
+    EXPECT_NE(run.kernel.diagnostic.find("Boolean operation failed"), std::string::npos) << run.kernel.diagnostic;
+    EXPECT_NE(ownerStatus.find(run.kernel.diagnostic), std::string::npos) << run.kernel.diagnostic;
+    EXPECT_TRUE(run.kernel.shape.IsNull());
+    EXPECT_EQ(elementMapText(cut->Shape.getShape()), seeded);
+    EXPECT_NEAR(PartTestHelpers::getVolume(cut->Shape.getValue()), before.volume, 1e-4);
+}
+
+TEST_F(DetachedKernelQualificationTest, booleanCheckModelInvalidPreservesShape)
+{
+    booleanPreferences()->SetBool("CheckModel", true);
+    auto* base = _document->addObject<Part::Feature>("BadBase");
+    auto* tool = addBox(*_document, "FarTool", 10, 10, 10);
+    auto* cut = addBoolean<Part::Cut>(*_document, "BadCut");
+    ASSERT_NE(base, nullptr);
+    ASSERT_NE(tool, nullptr);
+    ASSERT_NE(cut, nullptr);
+    const auto solid = unorientableSolid();
+    ASSERT_FALSE(solid.IsNull());
+    ASSERT_FALSE(BRepCheck_Analyzer(solid).IsValid());
+    base->Shape.setValue(solid);
+    tool->Placement.setValue(Base::Placement(Base::Vector3d(1000, 0, 0), Base::Rotation()));
+    cut->Base.setValue(base);
+    cut->Tool.setValue(tool);
+    const auto previous = BRepPrimAPI_MakeBox(8, 8, 8).Shape();
+    cut->Shape.setValue(previous);
+    installSeededMap(*cut);
+    const auto seeded = elementMapText(cut->Shape.getShape());
+    const auto before = capturePostcondition(*cut);
+
+    cut->touch();
+    _document->recompute();
+    EXPECT_TRUE(cut->isError());
+    const std::string ownerStatus = cut->getStatusString();
+    EXPECT_NE(ownerStatus.find("Resulting shape is invalid"), std::string::npos) << ownerStatus;
+    EXPECT_NEAR(PartTestHelpers::getVolume(cut->Shape.getValue()), before.volume, 1e-4);
+    EXPECT_EQ(elementMapText(cut->Shape.getShape()), seeded);
+    EXPECT_EQ(cut->History.getSize(), 0);
+    EXPECT_EQ(capturePostcondition(*cut).materialUuid, before.materialUuid);
+
+    auto* processDoc = makeControl("QualCheckProcess");
+    ASSERT_NE(processDoc, nullptr);
+    auto* processBase = processDoc->addObject<Part::Feature>("BadBase");
+    auto* processTool = addBox(*processDoc, "FarTool", 10, 10, 10);
+    auto* processCut = addBoolean<Part::Cut>(*processDoc, "BadCut");
+    ASSERT_NE(processBase, nullptr);
+    ASSERT_NE(processTool, nullptr);
+    ASSERT_NE(processCut, nullptr);
+    processBase->Shape.setValue(solid);
+    processTool->Placement.setValue(tool->Placement.getValue());
+    processCut->Base.setValue(processBase);
+    processCut->Tool.setValue(processTool);
+    processCut->Shape.setValue(previous);
+    installSeededMap(*processCut);
+    processCut->touch();
+    const auto snapshot = waitIsolated(*processDoc, *processCut);
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    EXPECT_TRUE(processCut->isError()) << processCut->getStatusString();
+    EXPECT_NE(std::string(processCut->getStatusString()).find("Resulting shape is invalid"),
+              std::string::npos)
+        << processCut->getStatusString();
+    EXPECT_EQ(elementMapText(processCut->Shape.getShape()), seeded);
+    EXPECT_NEAR(PartTestHelpers::getVolume(processCut->Shape.getValue()), before.volume, 1e-4);
+
+    const auto frozen = freezeBoolean(*cut, BooleanOp::Cut);
+    EXPECT_TRUE(frozen.checkModel);
+    const auto run = runDetachedBoolean(frozen, /*nameResult=*/false);
+    ASSERT_TRUE(run.kernel.succeeded) << run.kernel.diagnostic;
+    EXPECT_TRUE(run.kernel.validationRejected);
+    EXPECT_EQ(elementMapText(cut->Shape.getShape()), seeded);
+    EXPECT_NEAR(PartTestHelpers::getVolume(cut->Shape.getValue()), before.volume, 1e-4);
+    EXPECT_EQ(cut->History.getSize(), 0);
+}
+
+TEST_F(DetachedKernelQualificationTest, booleanVenueCostsWideAndNarrow)
+{
+#if !PRC_M0_HAS_PROCESS_COST_PROBE
+    GTEST_SKIP() << "Isolated-process cost probe needs Linux /proc and posix_spawn. "
+                    "Qualification and harness tests still run.";
+#else
+    // Paid wall starts before capture and stops after the owner publication of
+    // the named shape and the conditional material copy. One warmup and the
+    // median of three repetitions, same as the Box venues. The thread execute
+    // clock includes the raw Boolean, BRepCheck and makeElementShape. A
+    // persistent worker is not implemented.
+    setTrace(true);
+    auto commitShape = [](Part::Boolean& feature, const Part::TopoShape& named) {
+        publishBooleanShape(feature, named);
+    };
+    auto summarize = [&](const char* venue, const char* workload, const std::vector<PhaseSample>& samples) {
+        std::vector<std::int64_t> capture;
+        std::vector<std::int64_t> execute;
+        std::vector<std::int64_t> transfer;
+        std::vector<std::int64_t> commit;
+        std::vector<std::int64_t> wall;
+        for (const auto& sample : samples) {
+            capture.push_back(sample.captureNs);
+            execute.push_back(sample.executeNs);
+            transfer.push_back(sample.transferNs);
+            commit.push_back(sample.commitNs);
+            wall.push_back(sample.wallNs);
+        }
+        const auto captureNs = medianOf(capture);
+        const auto executeNs = medianOf(execute);
+        const auto wallNs = medianOf(wall);
+        const double share = wallNs == 0 ? 0.0 : static_cast<double>(executeNs) / static_cast<double>(wallNs);
+        std::ostringstream shareText;
+        shareText << std::fixed << std::setprecision(3) << share;
+        appendCost(std::string("summary venue=") + venue + " workload=" + workload
+                   + " warmup=" + std::to_string(kWarmup) + " reps=" + std::to_string(kRepetitions)
+                   + " capture_ms=" + milliseconds(captureNs) + " execute_ms=" + milliseconds(executeNs)
+                   + " transfer_ms=" + milliseconds(medianOf(transfer))
+                   + " commit_ms=" + milliseconds(medianOf(commit)) + " wall_ms=" + milliseconds(wallNs)
+                   + " paid_ms=" + milliseconds(wallNs) + " execute_share=" + shareText.str());
+        return wallNs;
+    };
+
+    auto narrow = prepareBoolean<Part::Cut>(*_document, "N");
+    ASSERT_NE(narrow.feature, nullptr);
+    _document->recompute();
+    ASSERT_FALSE(narrow.feature->isError());
+
+    std::vector<PhaseSample> ownerNarrow;
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        narrow.feature->touch();
+        _document->recompute();
+    }
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        narrow.feature->touch();
+        const auto wallStart = std::chrono::steady_clock::now();
+        _document->recompute();
+        const auto wallNs = elapsedNs(wallStart);
+        const auto record = _document->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        expectNoTransfer(*record);
+        ownerNarrow.push_back({phaseSum(*record, App::RecomputePhase::Capture),
+                               phaseSum(*record, App::RecomputePhase::Execute),
+                               0,
+                               phaseSum(*record, App::RecomputePhase::Commit),
+                               wallNs});
+    }
+
+    const auto narrowSerial = snapshotBoolean(*narrow.feature);
+    std::vector<PhaseSample> threadNarrow;
+    for (int pass = 0; pass < kWarmup + kRepetitions; ++pass) {
+        BooleanKernelResult kernel;
+        std::int64_t captureNs = 0;
+        std::int64_t executeNs = 0;
+        std::int64_t commitNs = 0;
+        const auto wallStart = std::chrono::steady_clock::now();
+        const auto frozen = freezeBoolean(*narrow.feature, BooleanOp::Cut);
+        captureNs = elapsedNs(wallStart);
+        std::thread worker([&frozen, &kernel, &executeNs] {
+            const auto started = std::chrono::steady_clock::now();
+            kernel = executeBooleanKernel(
+                BooleanOp::Cut,
+                frozen.base.shape,
+                frozen.tool.shape,
+                frozen.base.label,
+                frozen.tool.label);
+            completeBooleanComputation(kernel, frozen);
+            executeNs = elapsedNs(started);
+        });
+        worker.join();
+        const auto commitStart = std::chrono::steady_clock::now();
+        if (kernel.succeeded && !kernel.validationRejected && !kernel.named.isNull()) {
+            commitShape(*narrow.feature, kernel.named);
+        }
+        commitNs = elapsedNs(commitStart);
+        const auto wallNs = elapsedNs(wallStart);
+        if (pass >= kWarmup) {
+            ASSERT_TRUE(kernel.succeeded) << kernel.diagnostic;
+            ASSERT_FALSE(kernel.validationRejected);
+            ASSERT_FALSE(kernel.named.isNull());
+            ASSERT_TRUE(harnessBooleanMatches(
+                kernel.named.getShape(), elementMapText(kernel.named), narrowSerial));
+            ASSERT_TRUE(publishedBooleanMatches(*narrow.feature, narrowSerial));
+            threadNarrow.push_back({captureNs, executeNs, 0, commitNs, wallNs});
+        }
+    }
+
+    auto* processDoc = makeControl("QualBoolCost");
+    ASSERT_NE(processDoc, nullptr);
+    auto process = prepareBoolean<Part::Cut>(*processDoc, "P");
+    ASSERT_NE(process.feature, nullptr);
+    processDoc->recompute();
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        process.feature->touch();
+        const auto snapshot = waitIsolated(*processDoc, *process.feature);
+        ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    }
+    std::vector<PhaseSample> processNarrow;
+    std::vector<ProcessAccount> processAccounts;
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        process.feature->touch();
+        const auto watchState = prepareIsolatedWatch();
+        std::atomic_bool stop {false};
+        ProcessMarks marks;
+        const auto wallStart = std::chrono::steady_clock::now();
+        std::thread watcher([&] { marks = watchIsolatedProcess(wallStart, stop, watchState); });
+        const auto snapshot = waitIsolated(*processDoc, *process.feature);
+        const auto wallNs = elapsedNs(wallStart);
+        stop.store(true, std::memory_order_release);
+        watcher.join();
+        ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+        const auto record = processDoc->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        PhaseSample sample {phaseSum(*record, App::RecomputePhase::Capture),
+                            phaseSum(*record, App::RecomputePhase::Execute),
+                            phaseSum(*record, App::RecomputePhase::Transfer),
+                            phaseSum(*record, App::RecomputePhase::Commit),
+                            wallNs};
+        ASSERT_TRUE(processBooleanMatches(*process.feature, snapshot, narrowSerial));
+        processNarrow.push_back(sample);
+        processAccounts.push_back(accountProcess(marks, sample));
+    }
+
+    auto* wideDoc = makeControl("QualBoolWide");
+    ASSERT_NE(wideDoc, nullptr);
+    std::vector<Part::Boolean*> wide;
+    for (int index = 0; index < kWideBooleans; ++index) {
+        const auto prepared = prepareBoolean<Part::Cut>(*wideDoc, ("W" + std::to_string(index)).c_str());
+        ASSERT_NE(prepared.feature, nullptr);
+        wide.push_back(prepared.feature);
+    }
+    wideDoc->recompute();
+    std::vector<PhaseSample> ownerWide;
+    std::size_t wideWidth = 0;
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        for (auto* feature : wide) {
+            feature->touch();
+        }
+        wideDoc->recompute();
+    }
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        for (auto* feature : wide) {
+            feature->touch();
+        }
+        const auto wallStart = std::chrono::steady_clock::now();
+        wideDoc->recompute();
+        const auto wallNs = elapsedNs(wallStart);
+        const auto record = wideDoc->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        wideWidth = record->dag.maxWidth;
+        ownerWide.push_back({phaseSum(*record, App::RecomputePhase::Capture),
+                             phaseSum(*record, App::RecomputePhase::Execute),
+                             0,
+                             phaseSum(*record, App::RecomputePhase::Commit),
+                             wallNs});
+    }
+    std::vector<SerialBoolean> wideSerial;
+    wideSerial.reserve(wide.size());
+    for (auto* feature : wide) {
+        wideSerial.push_back(snapshotBoolean(*feature));
+    }
+    std::vector<PhaseSample> threadWide;
+    for (int pass = 0; pass < kWarmup + kRepetitions; ++pass) {
+        std::vector<FrozenBoolean> frozen(wide.size());
+        std::vector<BooleanKernelResult> kernels(wide.size());
+        std::int64_t captureNs = 0;
+        std::int64_t executeNs = 0;
+        std::int64_t commitNs = 0;
+        const auto wallStart = std::chrono::steady_clock::now();
+        for (std::size_t index = 0; index < wide.size(); ++index) {
+            frozen[index] = freezeBoolean(*wide[index], BooleanOp::Cut);
+        }
+        captureNs = elapsedNs(wallStart);
+        std::thread worker([&] {
+            const auto started = std::chrono::steady_clock::now();
+            for (std::size_t index = 0; index < frozen.size(); ++index) {
+                kernels[index] = executeBooleanKernel(
+                    BooleanOp::Cut,
+                    frozen[index].base.shape,
+                    frozen[index].tool.shape,
+                    frozen[index].base.label,
+                    frozen[index].tool.label);
+                completeBooleanComputation(kernels[index], frozen[index]);
+            }
+            executeNs = elapsedNs(started);
+        });
+        worker.join();
+        const auto commitStart = std::chrono::steady_clock::now();
+        for (std::size_t index = 0; index < kernels.size(); ++index) {
+            if (kernels[index].succeeded && !kernels[index].validationRejected
+                && !kernels[index].named.isNull()) {
+                commitShape(*wide[index], kernels[index].named);
+            }
+        }
+        commitNs = elapsedNs(commitStart);
+        const auto wallNs = elapsedNs(wallStart);
+        if (pass >= kWarmup) {
+            ASSERT_EQ(kernels.size(), wideSerial.size());
+            for (std::size_t index = 0; index < kernels.size(); ++index) {
+                ASSERT_TRUE(kernels[index].succeeded) << kernels[index].diagnostic;
+                ASSERT_FALSE(kernels[index].validationRejected);
+                ASSERT_FALSE(kernels[index].named.isNull());
+                ASSERT_TRUE(harnessBooleanMatches(kernels[index].named.getShape(),
+                                                  elementMapText(kernels[index].named),
+                                                  wideSerial[index]))
+                    << index;
+                ASSERT_TRUE(publishedBooleanMatches(*wide[index], wideSerial[index])) << index;
+            }
+            threadWide.push_back({captureNs, executeNs, 0, commitNs, wallNs});
+        }
+    }
+
+    auto* chainDoc = makeControl("QualBoolChain");
+    ASSERT_NE(chainDoc, nullptr);
+    auto* root = addBox(*chainDoc, "ChainRoot", 80, 30, 20);
+    ASSERT_NE(root, nullptr);
+    std::vector<Part::Box*> chainTools;
+    std::vector<Part::Cut*> chain;
+    Part::Feature* previous = root;
+    for (int index = 0; index < kChainSteps; ++index) {
+        auto* tool = addBox(*chainDoc, ("ChainTool" + std::to_string(index)).c_str(), 6, 6, 40);
+        ASSERT_NE(tool, nullptr);
+        tool->Placement.setValue(
+            Base::Placement(Base::Vector3d(8.0 * index, 8, -5), Base::Rotation()));
+        auto* cut = addBoolean<Part::Cut>(*chainDoc, ("ChainCut" + std::to_string(index)).c_str());
+        ASSERT_NE(cut, nullptr);
+        cut->Base.setValue(previous);
+        cut->Tool.setValue(tool);
+        cut->Refine.setValue(false);
+        chainTools.push_back(tool);
+        chain.push_back(cut);
+        previous = cut;
+    }
+    chainDoc->recompute();
+    ASSERT_FALSE(chain.back()->isError()) << chain.back()->getStatusString();
+    std::vector<PhaseSample> ownerChain;
+    std::size_t chainPath = 0;
+    std::size_t chainWidth = 0;
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        for (auto* cut : chain) {
+            cut->touch();
+        }
+        chainDoc->recompute();
+    }
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        for (auto* cut : chain) {
+            cut->touch();
+        }
+        const auto wallStart = std::chrono::steady_clock::now();
+        chainDoc->recompute();
+        const auto wallNs = elapsedNs(wallStart);
+        const auto record = chainDoc->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        chainPath = record->dag.longestPath;
+        chainWidth = record->dag.maxWidth;
+        ownerChain.push_back({phaseSum(*record, App::RecomputePhase::Capture),
+                              phaseSum(*record, App::RecomputePhase::Execute),
+                              0,
+                              phaseSum(*record, App::RecomputePhase::Commit),
+                              wallNs});
+    }
+    std::vector<SerialBoolean> chainSerial;
+    chainSerial.reserve(chain.size());
+    for (auto* cut : chain) {
+        chainSerial.push_back(snapshotBoolean(*cut));
+    }
+    std::vector<PhaseSample> threadChain;
+    const bool chainCheckModel = booleanPreferences()->GetBool("CheckModel", true);
+    const double chainFuzzy = Part::FuzzyHelper::getBooleanFuzzy();
+    const double chainConfusion = Precision::Confusion();
+    const auto chainOptions = Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform;
+    for (int pass = 0; pass < kWarmup + kRepetitions; ++pass) {
+        Part::TopoShape currentNamed;
+        std::vector<Part::TopoShape> tools;
+        std::vector<BooleanKernelResult> kernels(chain.size());
+        std::int64_t captureNs = 0;
+        std::int64_t executeNs = 0;
+        std::int64_t commitNs = 0;
+        const auto wallStart = std::chrono::steady_clock::now();
+        currentNamed = namedCopy(Part::Feature::getTopoShape(root, chainOptions));
+        for (auto* tool : chainTools) {
+            tools.push_back(namedCopy(Part::Feature::getTopoShape(tool, chainOptions)));
+        }
+        captureNs = elapsedNs(wallStart);
+        // The serial chain reads each previous Cut through getTopoShape after
+        // Shape.setValue. That publication hashes the child map. Feeding the raw
+        // kernel into the next step drops one element postfix, so the result
+        // would not match serial. Publish on the owner between steps, and run
+        // each kernel on its own std::thread from that published input.
+        std::vector<std::vector<std::string>> kernelMaps(chain.size());
+        for (std::size_t index = 0; index < tools.size(); ++index) {
+            FrozenBoolean step;
+            step.kind = BooleanOp::Cut;
+            step.checkModel = chainCheckModel;
+            step.fuzzy = chainFuzzy;
+            step.confusion = chainConfusion;
+            step.base.named = currentNamed;
+            step.base.shape = currentNamed.getShape();
+            step.base.label = "base";
+            step.tool.named = tools[index];
+            step.tool.shape = tools[index].getShape();
+            step.tool.label = "tool";
+            BooleanKernelResult kernel;
+            std::int64_t stepExecuteNs = 0;
+            std::thread worker([&] {
+                const auto started = std::chrono::steady_clock::now();
+                kernel = executeBooleanKernel(
+                    BooleanOp::Cut, step.base.shape, step.tool.shape, step.base.label, step.tool.label);
+                completeBooleanComputation(kernel, step);
+                stepExecuteNs = elapsedNs(started);
+            });
+            worker.join();
+            executeNs += stepExecuteNs;
+            if (kernel.succeeded && !kernel.named.isNull()) {
+                kernelMaps[index] = elementMapText(kernel.named);
+            }
+            kernels[index] = std::move(kernel);
+            const auto commitStart = std::chrono::steady_clock::now();
+            if (kernels[index].succeeded && !kernels[index].validationRejected
+                && !kernels[index].named.isNull()) {
+                commitShape(*chain[index], kernels[index].named);
+                currentNamed = namedCopy(Part::Feature::getTopoShape(chain[index], chainOptions));
+            }
+            commitNs += elapsedNs(commitStart);
+        }
+        const auto wallNs = elapsedNs(wallStart);
+        if (pass >= kWarmup) {
+            ASSERT_EQ(kernels.size(), chainSerial.size());
+            for (std::size_t index = 0; index < kernels.size(); ++index) {
+                ASSERT_TRUE(kernels[index].succeeded) << kernels[index].diagnostic;
+                ASSERT_FALSE(kernels[index].validationRejected);
+                ASSERT_FALSE(kernels[index].named.isNull());
+                ASSERT_TRUE(harnessBooleanMatches(kernels[index].named.getShape(),
+                                                  kernelMaps[index],
+                                                  chainSerial[index]))
+                    << index;
+                ASSERT_TRUE(publishedBooleanMatches(*chain[index], chainSerial[index])) << index;
+            }
+            threadChain.push_back({captureNs, executeNs, 0, commitNs, wallNs});
+        }
+    }
+
+    auto* heavyDoc = makeControl("QualBoolHeavy");
+    ASSERT_NE(heavyDoc, nullptr);
+    auto* heavyBase = heavyDoc->addObject<Part::Feature>("HeavyBase");
+    auto* heavyTool = heavyDoc->addObject<Part::Feature>("HeavyTool");
+    auto* heavyCut = addBoolean<Part::Cut>(*heavyDoc, "HeavyCut");
+    ASSERT_NE(heavyBase, nullptr);
+    ASSERT_NE(heavyTool, nullptr);
+    ASSERT_NE(heavyCut, nullptr);
+    heavyBase->Shape.setValue(prismSolid(kHeavySides, 20, 15, 0));
+    heavyTool->Shape.setValue(prismSolid(kHeavySides, 20, 15, 6));
+    heavyCut->Base.setValue(heavyBase);
+    heavyCut->Tool.setValue(heavyTool);
+    heavyDoc->recompute();
+    ASSERT_FALSE(heavyCut->isError()) << heavyCut->getStatusString();
+    const int heavyFaces = countShapes(heavyBase->Shape.getValue(), TopAbs_FACE);
+    appendCost("heavy_operand_faces=" + std::to_string(heavyFaces));
+    std::vector<PhaseSample> ownerHeavy;
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        heavyCut->touch();
+        heavyDoc->recompute();
+    }
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        heavyCut->touch();
+        const auto wallStart = std::chrono::steady_clock::now();
+        heavyDoc->recompute();
+        const auto wallNs = elapsedNs(wallStart);
+        const auto record = heavyDoc->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        ownerHeavy.push_back({phaseSum(*record, App::RecomputePhase::Capture),
+                              phaseSum(*record, App::RecomputePhase::Execute),
+                              0,
+                              phaseSum(*record, App::RecomputePhase::Commit),
+                              wallNs});
+    }
+    const auto heavySerial = snapshotBoolean(*heavyCut);
+    std::vector<PhaseSample> threadHeavy;
+    for (int pass = 0; pass < kWarmup + kRepetitions; ++pass) {
+        BooleanKernelResult kernel;
+        std::int64_t captureNs = 0;
+        std::int64_t executeNs = 0;
+        std::int64_t commitNs = 0;
+        const auto wallStart = std::chrono::steady_clock::now();
+        const auto frozen = freezeBoolean(*heavyCut, BooleanOp::Cut);
+        captureNs = elapsedNs(wallStart);
+        std::thread worker([&frozen, &kernel, &executeNs] {
+            const auto started = std::chrono::steady_clock::now();
+            kernel = executeBooleanKernel(
+                BooleanOp::Cut,
+                frozen.base.shape,
+                frozen.tool.shape,
+                frozen.base.label,
+                frozen.tool.label);
+            completeBooleanComputation(kernel, frozen);
+            executeNs = elapsedNs(started);
+        });
+        worker.join();
+        const auto commitStart = std::chrono::steady_clock::now();
+        if (kernel.succeeded && !kernel.validationRejected && !kernel.named.isNull()) {
+            commitShape(*heavyCut, kernel.named);
+        }
+        commitNs = elapsedNs(commitStart);
+        const auto wallNs = elapsedNs(wallStart);
+        if (pass >= kWarmup) {
+            ASSERT_TRUE(kernel.succeeded) << kernel.diagnostic;
+            ASSERT_FALSE(kernel.validationRejected);
+            ASSERT_FALSE(kernel.named.isNull());
+            ASSERT_TRUE(harnessBooleanMatches(
+                kernel.named.getShape(), elementMapText(kernel.named), heavySerial));
+            ASSERT_TRUE(publishedBooleanMatches(*heavyCut, heavySerial));
+            threadHeavy.push_back({captureNs, executeNs, 0, commitNs, wallNs});
+        }
+    }
+    std::vector<PhaseSample> processHeavy;
+    for (int warmup = 0; warmup < kWarmup; ++warmup) {
+        heavyCut->touch();
+        const auto snapshot = waitIsolated(*heavyDoc, *heavyCut);
+        ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    }
+    for (int rep = 0; rep < kRepetitions; ++rep) {
+        heavyCut->touch();
+        const auto wallStart = std::chrono::steady_clock::now();
+        const auto snapshot = waitIsolated(*heavyDoc, *heavyCut);
+        const auto wallNs = elapsedNs(wallStart);
+        ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+        const auto record = heavyDoc->lastRecomputeTrace();
+        ASSERT_NE(record, nullptr);
+        ASSERT_TRUE(processBooleanMatches(*heavyCut, snapshot, heavySerial));
+        processHeavy.push_back({phaseSum(*record, App::RecomputePhase::Capture),
+                                phaseSum(*record, App::RecomputePhase::Execute),
+                                phaseSum(*record, App::RecomputePhase::Transfer),
+                                phaseSum(*record, App::RecomputePhase::Commit),
+                                wallNs});
+    }
+    setTrace(false);
+
+    ASSERT_EQ(threadNarrow.size(), static_cast<std::size_t>(kRepetitions));
+    ASSERT_EQ(processNarrow.size(), static_cast<std::size_t>(kRepetitions));
+    ASSERT_EQ(threadWide.size(), static_cast<std::size_t>(kRepetitions));
+    ASSERT_EQ(threadChain.size(), static_cast<std::size_t>(kRepetitions));
+    ASSERT_EQ(threadHeavy.size(), static_cast<std::size_t>(kRepetitions));
+    ASSERT_EQ(processHeavy.size(), static_cast<std::size_t>(kRepetitions));
+    EXPECT_FALSE(narrow.feature->isError());
+    EXPECT_GT(PartTestHelpers::getVolume(narrow.feature->Shape.getValue()), 0.0);
+    EXPECT_EQ(narrow.feature->History.getSize(), 0);
+    EXPECT_FALSE(process.feature->isError());
+    EXPECT_EQ(wideWidth, static_cast<std::size_t>(kWideBooleans));
+    EXPECT_GE(chainPath, static_cast<std::size_t>(kChainSteps - 1));
+    EXPECT_GT(PartTestHelpers::getVolume(chain.back()->Shape.getValue()), 0.0);
+    EXPECT_LT(PartTestHelpers::getVolume(chain.back()->Shape.getValue()), 48000.0);
+    EXPECT_GT(heavyFaces, 6);
+    EXPECT_FALSE(heavyCut->isError());
+
+    const auto ownerNarrowWall = summarize("owner", "cut:1", ownerNarrow);
+    const auto threadNarrowWall = summarize("thread", "cut:1", threadNarrow);
+    const auto processNarrowWall = summarize("process", "cut:1", processNarrow);
+    const auto ownerWideWall = summarize("owner", "cut:16", ownerWide);
+    const auto threadWideWall = summarize("thread", "cut:16", threadWide);
+    const auto ownerChainWall = summarize("owner", "chain:8", ownerChain);
+    const auto threadChainWall = summarize("thread", "chain:8", threadChain);
+    const auto ownerHeavyWall = summarize("owner", "heavy:1", ownerHeavy);
+    const auto threadHeavyWall = summarize("thread", "heavy:1", threadHeavy);
+    const auto processHeavyWall = summarize("process", "heavy:1", processHeavy);
+    appendCost(std::string("dag wide_width=") + std::to_string(wideWidth)
+               + " chain_width=" + std::to_string(chainWidth)
+               + " chain_longest_path=" + std::to_string(chainPath));
+
+    ASSERT_EQ(processAccounts.size(), processNarrow.size());
+    std::vector<std::size_t> order(processNarrow.size());
+    for (std::size_t index = 0; index < order.size(); ++index) {
+        order[index] = index;
+    }
+    std::sort(order.begin(), order.end(), [&](std::size_t left, std::size_t right) {
+        return processNarrow[left].wallNs < processNarrow[right].wallNs;
+    });
+    const auto& paid = processAccounts[order[order.size() / 2]];
+    const auto persistentNs = paid.captureNs + paid.archiveNs + paid.executeNs + paid.decodeNs
+        + paid.commitNs + paid.settleNs;
+    appendCost(std::string("process-breakdown workload=cut:1")
+               + " capture_ms=" + milliseconds(paid.captureNs)
+               + " parent_fingerprint_ms=" + milliseconds(paid.parentFingerprintNs)
+               + " archive_ms=" + milliseconds(paid.archiveNs)
+               + " spawn_ms=" + milliseconds(paid.spawnNs)
+               + " worker_startup_ms=" + milliseconds(paid.workerStartupNs)
+               + " import_ms=" + milliseconds(paid.importNs)
+               + " execute_ms=" + milliseconds(paid.executeNs)
+               + " teardown_ms=" + milliseconds(paid.teardownNs)
+               + " decode_ms=" + milliseconds(paid.decodeNs)
+               + " commit_ms=" + milliseconds(paid.commitNs)
+               + " settle_ms=" + milliseconds(paid.settleNs)
+               + " exit_to_published_ms=" + milliseconds(paid.republishNs)
+               + " published_to_return_ms=" + milliseconds(paid.afterPublishNs)
+               + " settle_cause=unresolved"
+               + " wall_ms=" + milliseconds(paid.wallNs)
+               + " persistent_cached_fingerprint_ms=" + milliseconds(persistentNs));
+    appendCost(std::string("crossover thread_vs_owner_cut1=")
+               + (threadNarrowWall < ownerNarrowWall ? "thread" : "owner")
+               + " thread_vs_owner_cut16=" + (threadWideWall < ownerWideWall ? "thread" : "owner")
+               + " thread_vs_owner_chain8=" + (threadChainWall < ownerChainWall ? "thread" : "owner")
+               + " thread_vs_owner_heavy1=" + (threadHeavyWall < ownerHeavyWall ? "thread" : "owner")
+               + " process_cut1_ms=" + milliseconds(processNarrowWall)
+               + " process_heavy1_ms=" + milliseconds(processHeavyWall)
+               + " persistent_cut1_ms=" + milliseconds(persistentNs));
+    // M0.2a box:1 fixed costs a warm worker would not repeat: parent fingerprint,
+    // worker startup, Part import/restore, teardown, and the per-job spawn.
+    constexpr double kM02aAmortizedMs = 598.573 + 662.540 + 161.763 + 60.468 + 65.339;
+    appendCost(std::string("m0.2a_amortized_fixed_ms=") + std::to_string(kM02aAmortizedMs));
 #endif
 }

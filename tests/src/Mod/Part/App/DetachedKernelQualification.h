@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -189,6 +190,184 @@ inline const KernelQualificationTemplate& narrowBoxQualification()
     return value;
 }
 
+inline constexpr QualificationField kNarrowBooleanReads[] = {
+    {"operation kind",
+     EffectClass::Safe,
+     "Owner freezes Cut, Fuse or Common from the exact type. The worker does not read the live object."},
+    {"Base resolved shape, placement and element map",
+     EffectClass::NeedsSerialization,
+     "Owner capture. Direct same-document Part features only. Freeze the resolved shape, placement and input names."},
+    {"Tool resolved shape, placement and element map",
+     EffectClass::NeedsSerialization,
+     "Same capture as Base, including the operand owner and its element names."},
+    {"operand owner and label",
+     EffectClass::NeedsSerialization,
+     "Failure text reads Label and the shape type. Freeze both on the owner."},
+    {"Refine",
+     EffectClass::Safe,
+     "Owner freezes the property. Refine=true is refused. RefineModel is a construction preference, not an execute read."},
+    {"Boolean fuzzy factor",
+     EffectClass::Safe,
+     "Owner freezes FuzzyHelper::getBooleanFuzzy. The worker must not write it or call withBooleanFuzzy."},
+    {"CheckModel",
+     EffectClass::Safe,
+     "Owner freezes the preference. The worker must not reread App::GetApplication parameters."},
+    {"Precision::Confusion",
+     EffectClass::Safe,
+     "Owner freezes the tolerance in the fuzzy bounding-box formula."},
+    {"Base, target and default ShapeMaterial",
+     EffectClass::NeedsSerialization,
+     "Read the target's current ShapeMaterial, Base's ShapeMaterial and the default material UUID. "
+     "Copy Base only when the target still has the default and Base differs. A custom target material "
+     "is preserved. A change to the target material between capture and commit invalidates that frozen decision."},
+    {"old Shape map and tag",
+     EffectClass::NeedsSerialization,
+     "Owner-only publication input. Do not send the document hasher or a shared TopoShape."},
+    {"exact type, schema, extensions",
+     EffectClass::NeedsSerialization,
+     "Exact Part::Cut, Part::Fuse or Part::Common and no extensions. Any extension refuses."},
+    {"_ElementMapVersion and incoming element references",
+     EffectClass::NeedsSerialization,
+     "The stored version must be non-empty and equal to the current geometry version. "
+     "A nonempty incoming element-reference set is not admitted."},
+    {"mutating observers",
+     EffectClass::NeedsSerialization,
+     "Object signalChanged and signalBeforeChange slots refuse. Document-level callback write sets stay pending."},
+    {"capture and commit invalidation",
+     EffectClass::NeedsSerialization,
+     "Point-in-time identity is checked. The capture-versus-commit fence, including operands, is pending."},
+    {"identity, document epoch, touch and restore flags",
+     EffectClass::NeedsSerialization,
+     "Owner admission. Partial restore, Restoring, RecomputeOnRestore and Shape User1 refuse."},
+    {"History",
+     EffectClass::NeedsSerialization,
+     "Binary execute does not assign History. A non-empty History refuses. Do not invent a History output."},
+};
+
+inline constexpr QualificationField kNarrowBooleanOutputs[] = {
+    {"Shape",
+     EffectClass::NeedsSerialization,
+     "Owner publication only. Early failure does not call the Shape setter."},
+    {"element map and history-derived names",
+     EffectClass::NeedsSerialization,
+     "Owner publication. A raw BRep has no map. History-derived names are applied on the owner."},
+    {"recompute status and diagnostics",
+     EffectClass::NeedsSerialization,
+     "Owner bookkeeping. The worker returns a diagnostic string and writes no document status."},
+    {"ShapeMaterial",
+     EffectClass::NeedsSerialization,
+     "Owner write. Copy Base when the target's current material is still the default. Preserve a custom target material."},
+    {"History",
+     EffectClass::NeedsSerialization,
+     "Not an output of binary execute. The property stays unchanged."},
+    {"Placement",
+     EffectClass::NeedsSerialization,
+     "Not an output. The captured Placement stays unchanged."},
+};
+
+inline constexpr QualificationField kNarrowBooleanForbidden[] = {
+    {"live Document, DocumentObject or property access",
+     EffectClass::NeedsSerialization,
+     "Worker kernel sees frozen shapes and policy values only."},
+    {"Python interpreter, GIL or proxy during operand resolution",
+     EffectClass::NeedsSerialization,
+     "getTopoShape can take the GIL and call proxies. Resolution stays on the owner."},
+    {"rereading CheckModel or any application preference",
+     EffectClass::NeedsSerialization,
+     "The frozen CheckModel bool is the worker's policy. No GetApplication read."},
+    {"process signal policy",
+     EffectClass::NeedsSerialization,
+     "Base::SignalException and Part::SignalException stay unqualified for a worker."},
+    {"global Boolean fuzzy writes",
+     EffectClass::NeedsSerialization,
+     "Freeze the factor. withBooleanFuzzy and setBooleanFuzzy are forbidden on the worker."},
+    {"OCC parallel-mode and progress globals",
+     EffectClass::NeedsSerialization,
+     "Do not call BOPAlgo_Options::SetParallelMode, OSD_Parallel::SetUseOcctThreads, or the global sequencer."},
+    {"shared TShape, TopoShape cache and StringHasher",
+     EffectClass::NeedsSerialization,
+     "Deep-copy operand geometry. Do not share TShapes, _Part_ShapeCache or the document hasher."},
+    {"creating an App document or object",
+     EffectClass::NeedsSerialization,
+     "A temporary object would reintroduce ShapeMaterial and signals."},
+    {"element-reference registry updates",
+     EffectClass::NeedsSerialization,
+     "GeoFeature::onChanged updates stay on the owner."},
+    {"dynamic properties, including _Part_ShapeCache",
+     EffectClass::NeedsSerialization,
+     "Operand resolution must not create _Part_ShapeCache on the worker."},
+    {"expression evaluation",
+     EffectClass::NeedsSerialization,
+     "Bindings stay a serial owner phase."},
+    {"attachment reposition or support links",
+     EffectClass::NeedsSerialization,
+     "No extensions are admitted on the Boolean. Active attachment is not."},
+    {"operand Link, group, external document or non-unit scale",
+     EffectClass::NeedsSerialization,
+     "Direct native same-document Part features only. Refuse a non-feature, an unknown extension, "
+     "active attachment, and a source closure that is not itself that native set. Own Placement is a frozen input."},
+    {"Refine=true",
+     EffectClass::NeedsSerialization,
+     "Refine stays excluded until its static classifiers are audited."},
+};
+
+inline constexpr const char* kNarrowBooleanPending[] = {
+    "doc/parallel-recompute-m0.md §2 lines 145 and 199-206: capture/commit invalidation, "
+    "including operand-closure revisions and a target ShapeMaterial change before commit, is not compared yet",
+    "doc/parallel-recompute-m0.md §2 line 174: document-level callback write sets are not enumerated",
+    "doc/parallel-recompute-m0.md §2 line 177: Base::SignalException and Part::SignalException "
+    "remain unqualified for a worker",
+    "doc/parallel-recompute-m0.md §2 line 179: OCC kernel TShape and cache independence stays U",
+    "doc/parallel-recompute-m0.md §2 line 180: StringHasher allocation stays owner-only",
+    "doc/parallel-recompute-m0.md §2 line 183: material-manager mutation stays owner-only",
+    "doc/parallel-recompute-m0.md §2 line 147: failure after the Shape or material setter is not compared",
+    "doc/parallel-recompute-m0.md §2 line 141: BRepCheck internals stay U",
+    "doc/parallel-recompute-m0.md §2 line 185: Refine stays excluded",
+    "doc/parallel-recompute-m0.md §2 line 178: FCBRepAlgoAPI still reads BooleanFuzzy during Build; "
+    "the harness only proves that read does not change the value",
+    "doc/parallel-recompute-m0.md M0.2b Boolean venues: PropertyPartShape::Save omits element "
+    "maps while isExporting, so a process venue requires owner-side re-naming. That M1 "
+    "requirement stays pending",
+};
+
+inline constexpr char kNarrowBooleanFailureSemantics[] =
+    "Missing operands, null shapes, a Boolean that is not done, a null result and a "
+    "CheckModel-invalid result return before the Shape setter. History is not assigned. "
+    "ShapeMaterial is not written on those paths. A failure after the Shape or material "
+    "setter is pending and is not treated as write-free.";
+
+inline const KernelQualificationTemplate& narrowBooleanQualification(std::string_view exactType)
+{
+    const auto make = [](const char* type) {
+        return KernelQualificationTemplate {
+            type,
+            EffectClass::NeedsSerialization,
+            EffectClass::Unknown,
+            kNarrowBooleanReads,
+            sizeof(kNarrowBooleanReads) / sizeof(kNarrowBooleanReads[0]),
+            kNarrowBooleanOutputs,
+            sizeof(kNarrowBooleanOutputs) / sizeof(kNarrowBooleanOutputs[0]),
+            kNarrowBooleanForbidden,
+            sizeof(kNarrowBooleanForbidden) / sizeof(kNarrowBooleanForbidden[0]),
+            kNarrowBooleanFailureSemantics,
+            kPreferenceReadingExecuteTypes,
+            0,
+            kNarrowBooleanPending,
+            sizeof(kNarrowBooleanPending) / sizeof(kNarrowBooleanPending[0]),
+        };
+    };
+    static const KernelQualificationTemplate cut = make("Part::Cut");
+    static const KernelQualificationTemplate fuse = make("Part::Fuse");
+    static const KernelQualificationTemplate common = make("Part::Common");
+    if (exactType == "Part::Fuse") {
+        return fuse;
+    }
+    if (exactType == "Part::Common") {
+        return common;
+    }
+    return cut;
+}
+
 enum class AdmissionRefusal
 {
     NotExactType,
@@ -209,11 +388,31 @@ enum class AdmissionRefusal
     UnsettledElementMapVersion,
     MutatingObserver,
     FreezeOrSkip,
+    OperandMissing,
+    OperandLink,
+    OperandGroup,
+    OperandExternal,
+    OperandScaledTransform,
+    OperandPython,
+    OperandShapeCache,
+    RefineEnabled,
+    HistoryWritten,
+    OperandNotFeature,
+    OperandExtension,
+    OperandAttachment,
+    OperandSourceClosure,
+};
+
+/** Test-only. suppress skips exactly one guard so a negative fixture can prove it. */
+struct QualificationProbe
+{
+    bool suppress {false};
+    AdmissionRefusal guard {AdmissionRefusal::NotExactType};
 };
 
 struct AdmissionDecision
 {
-    /** True only for a settled exact Part::Box that hits none of the refusals. */
+    /** True when no refusal fired. Pending rows still force detached false. */
     bool admitted {false};
     /** This check never selects a worker. Production scheduling is unchanged. */
     bool detached {false};
@@ -229,7 +428,10 @@ struct AdmissionDecision
 
 [[nodiscard]] const char* admissionCitation(AdmissionRefusal reason);
 
-/** Owner-side admission check. Does not recompute, touch, or launch a worker. */
-[[nodiscard]] AdmissionDecision qualifyForDetachedExecution(const App::DocumentObject& object);
+/** Owner-side admission check. Does not recompute, touch, or launch a worker.
+ *  probe is test-only. The default runs every guard. */
+[[nodiscard]] AdmissionDecision qualifyForDetachedExecution(
+    const App::DocumentObject& object,
+    QualificationProbe probe = {});
 
 }  // namespace PartQualification

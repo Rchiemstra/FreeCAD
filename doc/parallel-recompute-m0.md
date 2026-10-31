@@ -33,8 +33,8 @@ scope excludes. A specification is not an implemented or passing test.
 | Enumerate M0 work, qualification template and negative admission cases | Static | **Done:** this table and sections 2–4. |
 | Candidate input/output/invalidation inventory: exact Box, Cut, Fuse, Common; naming, caches, callbacks and OCC settings | Static audit; runtime closure needed | **Done (static):** section 2. Complete *qualified* contracts still **need build**, dependency instrumentation and kernel coverage. |
 | Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
-| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. Boolean harness remains M0.2b. |
-| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs, thread qualification and the venue decision remain open. |
+| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. The M0.2b subsection records the same test-only harness for Cut, Fuse and Common. Those kernels stay not detached. |
+| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs are in the M0.2b subsection. That text is input to the owner, not a venue decision. Thread qualification stays open. |
 | Working instrumented race checks, including cold/error/cancel cases | Static gate design | **Done (design); needs build** plus instrumented OCC and a compatible runner. No race pass claimed. |
 | Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
 | Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
@@ -620,7 +620,7 @@ and the rotated placement applied to the thread kernel's raw shape. That
 published result matches the owner recompute. The same step applied to the
 process shape matches it as well. The isolated archive stores the OCC brep,
 so the process result's own element map is empty. This is not production
-publication. Boolean and sibling publication remain M0.2b.
+publication. Boolean venue costs are in the next subsection. Sibling publication remains later.
 
 | Venue | Workload | Capture ms | Execute ms | Transfer ms | Commit ms | Wall ms | Paid ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -701,8 +701,157 @@ interpreter startup plus the same fingerprint; Part import and restore are
 about 162 ms; teardown is about 60 ms; Box execute is 0.134 ms. The thread
 kernel is the same geometry as the owner kernel and was not run concurrently
 with other OCC work. It stays **U**. These numbers do not justify an M1
-speedup claim. Boolean kernels, TShape and cache sharing, OCC global settings
-beyond this Box, callback order and TSan remain M0.2b.
+speedup claim. Boolean kernels, TShape and cache sharing, OCC globals and the
+owner callbacks that fire today are in the M0.2b subsection. The kernel stays
+**U**. Callback order across features and TSan remain later.
+
+### M0.2b Boolean venues
+
+Measured locally on 2026-10-31 from this branch's RelWithDebInfo build, during
+`Part_tests_run`. One warmup, median of three. Paid wall starts before capture
+and stops after the owner publication of the named shape and the conditional
+material copy. The owner wall is `Document::recompute`. The thread execute
+clock, inside the `std::thread`, is the raw `FCBRepAlgoAPI_*` constructor,
+`BRepCheck`, and `makeElementShape`. The thread wall adds the operand freeze
+before that thread and the test-only owner publication after join. Each chain
+step runs in its own `std::thread`. The next step's base is the owner-published
+shape (`Shape.setValue`, then `getTopoShape`), the same read the serial chain
+uses. The raw kernel map is not that read. The process wall is
+`waitIsolated`. Wide process (`cut:16`) was not spawned. Production scheduling
+is unchanged. `cut:16` width was 16. `chain:8` width was 1 and its longest
+path was 7. The heavy solid is a 48-side prism, 50 faces. Phase columns are
+sums of M0.1 spans, not a partition of wall. Execute share is execute divided
+by wall.
+
+| Venue | Workload | Capture ms | Execute ms | Transfer ms | Commit ms | Wall ms | Execute share |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| owner | cut:1 | 0.018 | 5.512 | 0 | 5.604 | 5.960 | 0.925 |
+| thread | cut:1 | 0.324 | 5.388 | 0 | 0.213 | 6.044 | 0.891 |
+| process | cut:1 | 3.004 | 7.604 | 1.432 | 0.407 | 4720.549 | 0.002 |
+| owner | cut:16 | 0.259 | 96.561 | 0 | 98.666 | 132.571 | 0.728 |
+| thread | cut:16 | 4.553 | 86.648 | 0 | 1.645 | 93.183 | 0.930 |
+| owner | chain:8 | 0.148 | 185.108 | 0 | 186.792 | 202.891 | 0.912 |
+| thread | chain:8 | 1.315 | 178.798 | 0 | 24.550 | 207.240 | 0.863 |
+| owner | heavy:1 | 0.033 | 81.738 | 0 | 82.137 | 84.782 | 0.964 |
+| thread | heavy:1 | 4.597 | 55.092 | 0 | 0.573 | 59.377 | 0.928 |
+| process | heavy:1 | 8.043 | 76.724 | 2.898 | 0.716 | 4798.369 | 0.016 |
+
+On `cut:1` the owner paid wall is lower (5.960 ms versus 6.044 ms). The thread
+paid wall is lower on `cut:16` and `heavy:1`. On `chain:8` the owner paid wall
+is lower (202.891 ms versus 207.240 ms). The thread execute, 178.798 ms, is
+close to the owner's 185.108 ms, and the paid wall includes the publication
+between steps (commit 24.550 ms). That is the crossover in this set. A per-call
+process does not win.
+
+The `cut:1` process partition is the repetition whose wall is the median.
+A persistent worker was not built. The M0.2a costs a cached fingerprint and a
+warm Part process would not repeat are the parent fingerprint, worker
+startup, Part import, teardown and the per-job spawn. On this run those sum
+to 1558.874 ms (the M0.2a box sum of the same categories was 1548.683 ms).
+Subtracting them leaves 3161.675 ms.
+
+| Process cut:1 component | ms |
+| --- | ---: |
+| Owner capture | 2.829 |
+| Parent binary fingerprint | 604.220 |
+| Request archive write | 0.000 |
+| Spawn, until the worker pid exists | 64.190 |
+| Worker startup, pid until first heartbeat | 676.618 |
+| Part import, archive restore, result write | 162.387 |
+| Worker execute | 7.228 |
+| Process teardown, result file until exit | 51.459 |
+| Result decode | 1.551 |
+| Commit | 0.447 |
+| Settle after pid exit, decode and commit | 3149.620 |
+| Sum / wall | 4720.549 |
+
+The same repetition records the published `result-*` file 1.930 ms after
+process exit (`exit_to_published_ms=1.930`). Time from that file until
+`waitIsolated` returns is 3149.688 ms. The settle after subtracting decode and
+commit is 3149.620 ms and stays `settle_cause=unresolved`. This run does not
+time `GeometryProcessBackend.cpp` lines 812–838 as that residual. A Box settle
+on the same definition was 1.395 ms. If a persistent worker still paid the
+unresolved interval, it would not beat the thread or the owner. If a warm
+worker did not pay it, the remainder is capture + execute + decode + commit,
+12.055 ms, which is still above both the owner's 5.960 ms and the thread's
+6.044 ms on `cut:1`.
+
+The harness deep-copies operands with `BRepBuilderAPI_Copy`. A shallow
+`TopoDS_Shape` copy is a partner of the live shape; the deep copy is not,
+including subshapes. After the thread joins, the live operands are still
+`IsSame`, their `TShape` id lists, element-map text and serialized BREP
+(`BRepTools::Write`, no triangles or normals, format version 1) are unchanged,
+and the result is not a partner of either live operand. `SetNonDestructive`
+may share `TShape`s with the copies the algorithm received.
+
+The worker snapshots `BOPAlgo_Options::GetParallelMode`,
+`OSD_Parallel::ToUseOcctThreads`, `FuzzyHelper::getBooleanFuzzy`,
+`Precision::Confusion`, the CheckModel preference,
+`OSD_ThreadPool::DefaultPool` `NbThreads` / `NbDefaultThreadsToLaunch` /
+`IsInUse`, and the full `sigaction` (handler, flags and mask membership) of
+`SIGFPE`, `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGILL`, `SIGBUS`, `SIGSYS` and
+`SIGSEGV` (`SignalException.cpp:173–174`) immediately before and after the
+raw Boolean, `BRepCheck` and `makeElementShape`. In `Part_tests_run` that
+window changed none of them. The pool was 16 threads, default launch 16, and
+not in use. In a process whose first Boolean `Build` is this worker, `SIGSEGV`
+changes and the other seven do not; later builds in that process change none.
+`FCBRepAlgoAPI_BooleanOperation.cpp:43–44` and `:64–65` set per-operation
+`myRunParallel` and non-destructive mode, not `BOPAlgo_Options::SetParallelMode`.
+`Build` reads `BooleanFuzzy` (`FuzzyHelper.cpp:31`, wrapper lines 83–85) and
+does not write it. `Precision::Confusion` is constexpr `1e-7` in this OCC 7.9
+(`Precision.hxx:165`). `TopoShape.cpp:1677–1678` and
+`TopoShapeExpansion.cpp:6307–6323` are not on binary `Boolean::execute`.
+`Part::SignalException` (`FCBRepAlgoAPI_BooleanOperation.cpp:107`,
+`SignalException.cpp:214–233`) unsets its mode and then calls
+`installSegfaultHandler`, which does not put the previous `SIGSEGV` handler
+back. Owner execute also installs `Base::SignalException`
+(`FeaturePartBoolean.cpp:123–124`, `Base/Exception.cpp:733–747`), which saves
+and restores its handler on that path.
+
+During owner `Document::recompute` of a settled Cut, the test observer
+recorded `signalBeforeRecompute`, `signalRecomputed`, `signalRecomputedObject`,
+`signalChangedObject`, `signalBeforeChangeObject`, `feature.signalChanged` and
+`feature.signalBeforeChange`. `signalBeforeChange` and the operand boxes'
+`signalChanged` were connected and did not fire, because those boxes were not
+touched. The detached kernel fired none of them. The test-only owner `Shape`
+apply fired object and document change signals again.
+
+Clean Cut, Fuse and Common with `Refine=false` and direct native same-document
+`Part::Feature` operands are admitted and not detached. A non-feature, an
+unknown extension, active attachment, or a source closure outside that native
+set is refused. Pending rows still include capture/commit invalidation
+(including a target `ShapeMaterial` change before commit), callback write sets,
+both signal wrappers, OCC `TShape` internals, `StringHasher`, the material
+manager, failure after the Shape setter, `BRepCheck`, Refine, the
+`BooleanFuzzy` read during `Build`, and owner-side re-naming for a process
+venue. Those rows still force detached false.
+An edge tool fails with "Boolean operation failed" and keeps the previous
+shape, map, History size 0 and Placement. A CheckModel-invalid result fails
+with "Resulting shape is invalid" before `Shape.setValue`. History stays
+empty. Publication starts from a distinct stale solid. The material-copy
+branch copies a library Base material when the target is still the default.
+The preserve branch keeps a different library material already set on the
+Boolean. Owner naming (`makeElementShape`) applied to frozen operand inputs
+reproduces the seeded `Qual` names. `PropertyPartShape::Save`
+(`src/Mod/Part/App/PropertyTopoShape.cpp:408-411`) omits element maps while
+`isExporting()`, so the child does not receive those seeds. The restored
+process shape carries a map the child built during its own execute. That map
+is not empty, and it does not contain `Qual`. Seeded-name equivalence is not
+shown on the process result. A process venue therefore requires owner-side
+re-naming. That is a requirement for M1 and stays pending.
+
+Each measured cost repetition is kept only when that venue's result succeeded,
+passed validation, and matched the serial result with the harness comparator
+(topology, and, for an in-process result, the canonical element map). A failed
+or invalid thread result does not enter the table or the crossover.
+
+**Input to the owner, not a decision.** On `cut:16` and `heavy:1` the thread
+paid wall is lower. On `cut:1` and `chain:8` the owner paid wall is lower. The
+kernel stays **U**. This slice does not schedule Boolean execute off the
+owner. A per-call process does not win. A persistent worker plus a cached
+fingerprint is not shown to beat either in-process venue while the 3149.620 ms
+after pid exit remains unresolved, and the 12.055 ms that would remain without
+that interval still does not beat `cut:1`. No M1 speedup is claimed.
 
 ### Compatibility and failure matrix to run with builds
 
