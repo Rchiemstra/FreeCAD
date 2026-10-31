@@ -204,6 +204,7 @@ SET(Document_CPP_SRCS
     DocumentObjectGroupPyImp.cpp
     GeoFeaturePyImp.cpp
     DocumentObjectPyImp.cpp
+    DocumentObjectExpressionPyImp.cpp
     DocumentObserver.cpp
     DocumentObserverPython.cpp
     DocumentPyImp.cpp

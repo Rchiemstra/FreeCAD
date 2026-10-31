@@ -90,6 +90,7 @@ SbColor DrawingParameters::FullyConstraintConstructionElementColor(0.56f, 0.66f,
 SbColor DrawingParameters::ConstrDimColor(1.0f, 0.149f, 0.0f);  // #FF2600 -> (255, 38,  0)
 SbColor DrawingParameters::ConstrIcoColor(1.0f, 0.149f, 0.0f);  // #FF2600 -> (255, 38,  0)
 SbColor DrawingParameters::NonDrivingConstrDimColor(0.0f, 0.149f, 1.0f);  // #0026FF -> (  0, 38,255)
+SbColor DrawingParameters::BrokenExpressionConstrDimColor(208.0f / 255.0f, 32.0f / 255.0f, 208.0f / 255.0f);
 SbColor DrawingParameters::ExprBasedConstrDimColor(1.0f, 0.5f, 0.149f);  // #FF7F26 -> (255, 127,38)
 SbColor DrawingParameters::DeactivatedConstrDimColor(0.5f, 0.5f, 0.5f);  // ##7f7f7f -> (127,127,127)
 SbColor DrawingParameters::CursorTextColor(0.0f, 0.0f, 1.0f);            // #0000FF -> (0,0,255)

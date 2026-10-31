@@ -31142,6 +31142,30 @@
       "evidence": "\"setTextAndFont(%i, '%s', '%s', %s, %s)\","
     },
     {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "for (auto* document : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "occurrence": 1,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/SketchExpressionDiagnostics.cpp",
+      "occurrence": 1,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(app.signalDeletedObject.connect("
+    },
+    {
       "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
       "occurrence": 1,
       "category": "live-app-dereference",

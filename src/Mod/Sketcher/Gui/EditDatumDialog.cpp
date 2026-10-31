@@ -314,8 +314,6 @@ void EditDatumDialog::accepted()
                 );
             }
 
-            Gui::Command::commitCommand(transactionID);
-
             // THIS IS A WORK-AROUND NOT TO DELAY 0.19 RELEASE
             //
             // depsAreTouched is not returning true in this case:
@@ -333,11 +331,15 @@ void EditDatumDialog::accepted()
             sketch->solve();
             //}
 
+            Gui::Command::commitCommand(transactionID);
             tryAutoRecompute(sketch);
             success = true;
         }
         catch (const Base::Exception& e) {
-            Gui::NotifyUserError(sketch, QT_TRANSLATE_NOOP("Notifications", "Value Error"), e.what());
+            Gui::TranslatedUserError(
+                sketch, QCoreApplication::translate("Notifications", "Value Error"),
+                SketchExpressionDiagnostics::editFailure(
+                    sketch, QCoreApplication::translate("Notifications", e.what())));
 
             Gui::Command::abortCommand(transactionID);
 

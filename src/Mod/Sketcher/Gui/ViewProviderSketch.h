@@ -53,6 +53,7 @@
 #include "AutoConstraint.h"
 
 #include "ShortcutListener.h"
+#include "SketchExpressionDiagnostics.h"
 #include "Utils.h"
 #include "SketchEditState.h"
 
@@ -538,6 +539,13 @@ public:
     /** @name Properties */
     //@{
     App::PropertyBool Autoconstraints;
+    SketchExpressionDiagnostics& getExpressionDiagnostics()
+    {
+        return expressionDiagnostics;
+    }
+    const SketchExpressionDiagnostics& getExpressionDiagnostics() const
+    { return expressionDiagnostics; }
+
     App::PropertyBool AvoidRedundant;
     App::PropertyPythonObject TempoVis;
     App::PropertyBool HideDependent;
@@ -771,6 +779,7 @@ public:
     //@{
     friend class ViewProviderSketchDrawSketchHandlerAttorney;
     friend class ViewProviderSketchCoinAttorney;
+    friend class SketchExpressionDiagnostics;
     friend class ViewProviderSketchSnapAttorney;
     friend class ViewProviderSketchCommandConstraintsAttorney;
     //@}
@@ -1098,6 +1107,7 @@ private:
 
     std::unique_ptr<ShortcutListener> listener;
 
+    SketchExpressionDiagnostics expressionDiagnostics;
     std::shared_ptr<EditModeCoinManager> editCoinManager;
 
     // Even, globally unique edit id; low bit marks a queued redraw. Zero means no edit.

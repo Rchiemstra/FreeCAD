@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <QAbstractTableModel>
 #include <QDebug>
+#include <QImage>
+#include <QPainter>
 #include <QLineEdit>
 #include <QtTest/QTest>
 
 #include <App/Application.h>
+#include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <Base/Quantity.h>
 
 #include "Gui/QuantitySpinBox.h"
 #include "Gui/propertyeditor/PropertyItem.h"
+#include "Gui/propertyeditor/PropertyItemDelegate.h"
 #include <src/App/InitApplication.h>
 #include <src/LocaleTestHelpers.h>
 
@@ -49,6 +55,43 @@ public:
     TestPropertyUnitItem()
         : PropertyUnitItem()
     {}
+};
+
+// Count real ObjectIdentifier resolution, including healthy-expression painting.
+class DiagnosticReadProbe: public App::DocumentObject
+{
+public:
+    App::Property* getPropertyByName(const char* name) const override
+    {
+        ++reads;
+        return App::DocumentObject::getPropertyByName(name);
+    }
+    mutable int reads = 0;
+};
+
+// Supply plain display/edit values so the paint assertion measures diagnostic
+// presentation reads rather than the editor's unrelated live value conversion.
+class DiagnosticPaintModel: public QAbstractTableModel
+{
+public:
+    explicit DiagnosticPaintModel(Gui::PropertyEditor::PropertyItem& item)
+        : item(item)
+    {}
+    int rowCount(const QModelIndex& = {}) const override { return 1; }
+    int columnCount(const QModelIndex& = {}) const override { return 2; }
+    QModelIndex index(int row, int column, const QModelIndex& = {}) const override
+    {
+        return createIndex(row, column, &item);
+    }
+    QVariant data(const QModelIndex& index, int role) const override
+    {
+        if (role == Qt::ForegroundRole || role == Qt::ToolTipRole) {
+            return item.data(index.column(), role);
+        }
+        return role == Qt::DisplayRole ? QVariant(QStringLiteral("42")) : QVariant();
+    }
+private:
+    Gui::PropertyEditor::PropertyItem& item;
 };
 
 class testPropertyItem: public QObject
@@ -110,6 +153,39 @@ private Q_SLOTS:
     {
         item->setPropertyName(QLatin1String("Box_Length"));
         QCOMPARE(item->propertyName(), QLatin1String("Box_Length"));
+    }
+
+    void test_diagnosticRolesDoNotResolveDocumentPaths()  // NOLINT
+    {
+        App::DocumentInitFlags flags;
+        flags.createView = false;
+        auto& app = App::GetApplication();
+        auto* doc = app.newDocument("DiagnosticPaintReads", "testUser", flags);
+        auto* object = new DiagnosticReadProbe;
+        doc->addObject(object, "Values");
+        auto* prop = object->addDynamicProperty("App::PropertyFloat", "Value");
+        {
+            std::unique_ptr<Gui::PropertyEditor::PropertyItem> row(
+                static_cast<Gui::PropertyEditor::PropertyItem*>(
+                    Gui::PropertyEditor::PropertyFloatItem::create()));
+            row->setPropertyName(QStringLiteral("Value"));
+            row->setPropertyData({prop});
+            DiagnosticPaintModel model(*row);
+            Gui::PropertyEditor::PropertyItemDelegate delegate(nullptr);
+            QImage image(180, 32, QImage::Format_ARGB32);
+            QPainter painter(&image);
+            QStyleOptionViewItem option;
+            option.rect = QRect(0, 0, 180, 32);
+            object->reads = 0;
+            for (int i = 0; i < 100; ++i) {
+                delegate.paint(&painter, option, model.index(0, 1));
+                row->data(1, Qt::ForegroundRole);
+                row->data(1, Qt::ToolTipRole);
+                row->data(0, Qt::ToolTipRole);
+            }
+            QCOMPARE(object->reads, 0);
+        }
+        app.closeDocument(doc->getName());
     }
 
     void test_quantityEditorUsesItsWidgetLocale()  // NOLINT
