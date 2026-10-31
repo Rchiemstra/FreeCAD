@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include <gtest/gtest.h>
 #include <QApplication>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
+#include <QDialog>
+#include <QFile>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QTemporaryDir>
 #include <QTimer>
-#include <QThread>
+#include <QtTest/QTest>
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -28,7 +28,6 @@ protected:
     static void SetUpTestSuite()
     {
         qputenv("QT_QPA_PLATFORM", "offscreen");
-        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         if (!QApplication::instance()) {
             static int argc = 1;
             static char name[] = "TreeDocumentRename";
@@ -55,6 +54,8 @@ protected:
         doc = App::GetApplication().newDocument(name.c_str(), "testUser", flags);
         otherName = App::GetApplication().getUniqueDocumentName("F2Other");
         other = App::GetApplication().newDocument(otherName.c_str(), "testUser", flags);
+        tree->resize(640, 480);
+        tree->show();
     }
 
     void TearDown() override
@@ -64,23 +65,49 @@ protected:
         tree.reset();
     }
 
-    void pressF2(Gui::TreeWidget& tree, const std::function<void(QFileDialog*)>& choose)
+    QLineEdit* pressF2()
     {
-        auto* item = tree.getDocumentItem(Gui::Application::Instance->getDocument(doc));
-        ASSERT_NE(item, nullptr);
-        tree.setCurrentItem(item);
+        auto* item = tree->getDocumentItem(Gui::Application::Instance->getDocument(doc));
+        if (!item) {
+            return nullptr;
+        }
+        tree->clearSelection();
+        tree->setCurrentItem(item, 0);
         item->setSelected(true);
-        bool opened = false;
-        QTimer::singleShot(0, &tree, [&] {
-            auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
-            opened = dialog != nullptr;
-            if (dialog) {
-                choose(dialog);
+        tree->scrollToItem(item);
+        tree->setFocus();
+        // A regression to Save As must fail this test without leaving a modal
+        // file dialog blocking the test process.
+        bool unexpectedDialog = false;
+        QTimer dialogGuard;
+        dialogGuard.setSingleShot(true);
+        QObject::connect(&dialogGuard, &QTimer::timeout, [&] {
+            if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+                unexpectedDialog = true;
+                dialog->reject();
             }
         });
+        dialogGuard.start(0);
         QKeyEvent key(QEvent::KeyPress, Qt::Key_F2, Qt::NoModifier);
-        QApplication::sendEvent(&tree, &key);
-        EXPECT_TRUE(opened);
+        QApplication::sendEvent(tree.get(), &key);
+        dialogGuard.stop();
+        QApplication::processEvents();
+        EXPECT_FALSE(unexpectedDialog);
+        EXPECT_EQ(QApplication::activeModalWidget(), nullptr);
+        for (auto* editor : tree->viewport()->findChildren<QLineEdit*>()) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    }
+
+    bool waitForLabel(const QString& label)
+    {
+        return QTest::qWaitFor([&] {
+            return !Gui::documentExecutionLaneBusy(*doc)
+                && QString::fromUtf8(doc->Label.getValue()) == label;
+        }, 30000);
     }
 
     App::Document* doc = nullptr;
@@ -89,41 +116,63 @@ protected:
     std::string name, otherName;
 };
 
-TEST_F(TreeDocumentRenameTest, cancelLeavesUnsavedDocumentIdentityIntact)
+TEST_F(TreeDocumentRenameTest, escapeCancelsInlineRename)
 {
     const auto label = doc->Label.getStrValue();
-    pressF2(*tree, [](QFileDialog* dialog) { dialog->reject(); });
+    auto* editor = pressF2();
+    ASSERT_NE(editor, nullptr);
+    EXPECT_EQ(editor->selectedText(), QString::fromStdString(label));
+    editor->setText(QStringLiteral("Discarded rename"));
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
     EXPECT_EQ(doc->Label.getStrValue(), label);
+    EXPECT_EQ(tree->getDocumentItem(Gui::Application::Instance->getDocument(doc))->text(0),
+              QString::fromStdString(label));
     EXPECT_TRUE(doc->FileName.getStrValue().empty());
     EXPECT_TRUE(other->FileName.getStrValue().empty());
 }
 
-TEST_F(TreeDocumentRenameTest, selectedDocumentGetsNewDiskFilenameAndLabel)
+TEST_F(TreeDocumentRenameTest, enterRenamesUnsavedDocumentInline)
+{
+    const auto otherLabel = other->Label.getStrValue();
+    auto* editor = pressF2();
+    ASSERT_NE(editor, nullptr);
+    const QString label = QStringLiteral("Renamed winch");
+    editor->setText(label);
+    QTest::keyClick(editor, Qt::Key_Return);
+    ASSERT_TRUE(waitForLabel(label));
+    EXPECT_EQ(tree->getDocumentItem(Gui::Application::Instance->getDocument(doc))->text(0), label);
+    EXPECT_TRUE(doc->FileName.getStrValue().empty());
+    EXPECT_EQ(other->Label.getStrValue(), otherLabel);
+    EXPECT_TRUE(other->FileName.getStrValue().empty());
+}
+
+TEST_F(TreeDocumentRenameTest, savedDocumentInlineRenamePreservesFile)
 {
     QTemporaryDir folder;
     ASSERT_TRUE(folder.isValid());
     const auto oldPath = folder.filePath("original.FCStd").toStdString();
-    const auto newPath = folder.filePath("renamed.FCStd");
     const auto saved = Gui::Test::runOnDocumentOwnerWhilePumpingGui(*doc, [&] {
         return doc->saveAsWithOutcome(oldPath.c_str(), false);
     });
     ASSERT_TRUE(saved.succeeded());
-    pressF2(*tree, [&](QFileDialog* dialog) {
-        dialog->selectFile(newPath);
-        QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
-    });
-    QElapsedTimer timer;
-    timer.start();
-    while (Gui::documentExecutionLaneBusy(*doc) && timer.elapsed() < 30000) {
-        QApplication::processEvents();
-        QThread::msleep(1);
-    }
-    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*doc));
-    EXPECT_TRUE(QFileInfo::exists(newPath));
-    // The native Save As workflow retains the previous file as a recoverable copy.
-    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(oldPath)));
-    EXPECT_EQ(doc->FileName.getStrValue(), newPath.toStdString());
-    EXPECT_EQ(doc->Label.getStrValue(), "renamed");
+    QFile file(QString::fromStdString(oldPath));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    const auto originalBytes = file.readAll();
+    file.close();
+
+    const auto otherLabel = other->Label.getStrValue();
+    auto* editor = pressF2();
+    ASSERT_NE(editor, nullptr);
+    const QString label = QStringLiteral("Renamed \"winch\" \u03a9");
+    editor->setText(label);
+    QTest::keyClick(editor, Qt::Key_Return);
+    ASSERT_TRUE(waitForLabel(label));
+    EXPECT_EQ(doc->FileName.getStrValue(), oldPath);
+    EXPECT_EQ(tree->getDocumentItem(Gui::Application::Instance->getDocument(doc))->text(0), label);
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    EXPECT_EQ(file.readAll(), originalBytes);
+    EXPECT_EQ(other->Label.getStrValue(), otherLabel);
     EXPECT_TRUE(other->FileName.getStrValue().empty());
 }
 } // namespace
