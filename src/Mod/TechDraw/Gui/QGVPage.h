@@ -59,6 +59,11 @@ class DrawRichAnno;
 class DrawWeldSymbol;
 }// namespace TechDraw
 
+namespace Gui
+{
+class OpenGLViewportResizeGuard;
+}
+
 namespace TechDrawGui
 {
 class MDIViewPage;
@@ -135,6 +140,7 @@ public Q_SLOTS:
     void setHighQualityAntialiasing(bool highQualityAntialiasing);
 
 protected:
+    bool viewportEvent(QEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
@@ -191,6 +197,9 @@ private:
 
     class Private;
     std::unique_ptr<Private> d;
+    // Same QOpenGLWidget viewport path as Quarter. No effect while the
+    // renderer is Native (the viewport is a plain QWidget).
+    Gui::OpenGLViewportResizeGuard* m_glResizeGuard {nullptr};
 
     QCursor panCursor;
     QCursor zoomCursor;

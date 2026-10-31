@@ -72,6 +72,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
+        import CommandIsolate
         import CommandComponentPattern
         import CommandReviewNote
         import AssemblyPreferences as Preferences
@@ -94,6 +95,8 @@ class AssemblyWorkbench(Workbench):
             "Assembly_CreateSnapshot",
             "Assembly_CreateSimulation",
             "Assembly_CreateBom",
+            "Assembly_IsolateSelection",
+            "Assembly_ExitIsolation",
         ]
 
         cmdListMenuOnly = [
@@ -158,6 +161,9 @@ class AssemblyWorkbench(Workbench):
                 "",
                 ["Assembly_EditReviewNote", "Assembly_ToggleResolveReviewNote"],
             )
+
+        if recipient == "View" and UtilsAssembly.activeAssembly() is not None:
+            self.appendContextMenu("", ["Assembly_IsolateSelection", "Assembly_ExitIsolation"])
 
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
@@ -383,5 +389,7 @@ class AssemblyWorkbench(Workbench):
 
 Gui.addWorkbench(AssemblyWorkbench())
 
+# Registered separately for the GUI CI runner, which selects units containing Gui.
+FreeCAD.__unit_test__ += ["AssemblyTests.TestIsolateSelectionGui"]
 # Registered separately so the GUI test runner executes the joint editor tests.
 FreeCAD.__unit_test__ += ["TestAssemblyGui"]

@@ -139,6 +139,8 @@ EXTRA_GUI_DIRS: tuple[str, ...] = (
 #: beside App-layer modules in the shared top-level package, so they cannot be
 #: selected by directory; each is listed explicitly and reviewed as GUI-only.
 EXTRA_GUI_FILES: tuple[str, ...] = (
+    # Model diff GUI presentation and asynchronous headless comparison ingress.
+    "src/Mod/ModelDiff/modeldiff.py",
     # Draft's main GUI controller (toolbar, task panel dispatch).
     "src/Mod/Draft/DraftGui.py",
     # Draft GUI command definitions (GuiCommand classes).
@@ -182,6 +184,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
     "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandIsolate.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     # Joint task and view-provider handlers imported by Assembly commands.
     "src/Mod/Assembly/JointObject.py",
@@ -355,6 +358,8 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     # OpenSCAD's provider module is loaded by OpenSCADCommands.

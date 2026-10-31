@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <BRep_Builder.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <Geom_Plane.hxx>
@@ -23,6 +27,7 @@
 #include <Mod/Part/Gui/SoBrepPointSet.h>
 #include <Mod/Part/Gui/SoFCShapeObject.h>
 #include <Mod/Part/Gui/ViewProviderExt.h>
+#include <Mod/Part/Gui/ShapeGeometry.h>
 
 #include <string>
 #include <thread>
@@ -198,6 +203,54 @@ TEST_F(PartFaceRenderingTest, LineFallbackKeepsFiniteAndHalfInfiniteRanges)
     }
 }
 
+TEST_F(PartFaceRenderingTest, CapturePlainGeometryMatchesAllCoinFields)
+{
+    const auto box = BRepPrimAPI_MakeBox(2, 3, 4).Shape();
+    const auto fused = BRepAlgoAPI_Fuse(box, BRepPrimAPI_MakeCylinder(1, 5).Shape()).Shape();
+    const auto edge = BRepBuilderAPI_MakeEdge(gp_Pnt(1, 2, 3), gp_Pnt(4, 6, 9)).Shape();
+    for (const auto& shape : {box, fused, edge, TopoDS_Shape()}) {
+        for (bool fromUV : {false, true}) {
+            PartGui::ShapeGeometry geometry;
+            bool tessellated = false;
+            std::thread owner([&] {
+                tessellated = PartGui::tessellateShape(
+                    shape.IsNull() ? shape : BRepBuilderAPI_Copy(shape).Shape(),
+                    geometry, 0.2, 28.65, fromUV);
+            });
+            owner.join();
+            ASSERT_TRUE(tessellated);
+            PartGui::ViewProviderPartExt::setupCoinGeometry(
+                shape, node, 0.2, 28.65, fromUV);
+            const auto expectVectors = [](const auto& plain, const auto& field) {
+                ASSERT_EQ(plain.size(), static_cast<std::size_t>(field.getNum()));
+                for (std::size_t i = 0; i < plain.size(); ++i) {
+                    for (int c = 0; c < 3; ++c) {
+                        EXPECT_EQ(plain[i][c], field[static_cast<int>(i)][c]);
+                    }
+                }
+            };
+            const auto expectIndices = [](const auto& plain, const auto& field) {
+                ASSERT_EQ(plain.size(), static_cast<std::size_t>(field.getNum()));
+                for (std::size_t i = 0; i < plain.size(); ++i) {
+                    EXPECT_EQ(plain[i], field[static_cast<int>(i)]);
+                }
+            };
+            expectVectors(geometry.vertices, node->coords->point);
+            expectVectors(geometry.normals, node->norm->vector);
+            expectIndices(geometry.faceIndices, node->faceset->coordIndex);
+            expectIndices(geometry.faceParts, node->faceset->partIndex);
+            expectIndices(geometry.edgeIndices, node->lineset->coordIndex);
+            EXPECT_EQ(geometry.pointStartIndex, node->nodeset->startIndex.getValue());
+            for (std::size_t i = 0; i < geometry.lineToEdge.size(); ++i) {
+                EXPECT_EQ(geometry.lineToEdge[i],
+                          node->lineset->edgeIndexFromLine(static_cast<int>(i)));
+            }
+            EXPECT_EQ(node->lineset->edgeIndexFromLine(
+                          static_cast<int>(geometry.lineToEdge.size())), 0);
+        }
+    }
+}
+
 TEST_F(PartFaceRenderingTest, NullFaceClearsPreviousGeometrySilently)
 {
     render(validFace());
@@ -218,15 +271,18 @@ TEST_F(PartFaceRenderingTest, OccMeshingFailureClearsGeometryAndRecovers)
     EXPECT_EQ(errors.count, 1) << errors.errors;
 }
 
-TEST_F(PartFaceRenderingTest, InvalidFaceOnOwnerThreadLogsOnceAndClearsGeometry)
+TEST_F(PartFaceRenderingTest, InvalidFaceOnOwnerThreadCapturePublishesNothing)
 {
     render(validFace());
     TopoDS_Face invalid;
     BRep_Builder().MakeFace(invalid);  // A face with no supporting surface.
+    PartGui::ShapeGeometry geometry;
+    ASSERT_TRUE(PartGui::tessellateShape(validFace(), geometry, 0.2, 28.65));
+    bool tessellated = true;
     std::string escapedException;
     std::thread owner([&] {
         try {
-            render(invalid);
+            tessellated = PartGui::tessellateShape(invalid, geometry, 0.2, 28.65);
         }
         catch (...) {
             escapedException = "Tessellation exception escaped on the owner thread";
@@ -234,7 +290,16 @@ TEST_F(PartFaceRenderingTest, InvalidFaceOnOwnerThreadLogsOnceAndClearsGeometry)
     });
     owner.join();
     EXPECT_TRUE(escapedException.empty()) << escapedException;
-    expectEmpty();
+    EXPECT_FALSE(tessellated);
+    EXPECT_TRUE(geometry.vertices.empty());
+    EXPECT_TRUE(geometry.normals.empty());
+    EXPECT_TRUE(geometry.faceIndices.empty());
+    EXPECT_TRUE(geometry.faceParts.empty());
+    EXPECT_TRUE(geometry.edgeIndices.empty());
+    EXPECT_TRUE(geometry.lineToEdge.empty());
+    EXPECT_EQ(geometry.pointStartIndex, 0);
+    // The failed worker never touches the existing GUI geometry.
+    EXPECT_GT(node->coords->point.getNum(), 0);
     EXPECT_EQ(errors.count, 1) << errors.errors;
     EXPECT_NE(errors.errors.find("Cannot compute Inventor representation"), std::string::npos);
     render(validFace());
