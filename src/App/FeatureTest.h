@@ -93,6 +93,8 @@ public:
     App::PropertyString ExecResult;
     App::PropertyInteger ExceptionType;
     App::PropertyInteger ExecCount;
+    /** Test-only. Milliseconds that execute() sleeps. Default 0. */
+    App::PropertyInteger ExecuteDelay;
 
     App::PropertyInteger TypeHidden;
     App::PropertyInteger TypeReadOnly;

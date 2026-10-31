@@ -210,6 +210,7 @@ SET(Document_CPP_SRCS
     DocumentSettings.cpp
     DocumentSettingsPyImp.cpp
     RecomputeHandle.cpp
+    RecomputePhaseTrace.cpp
     RecomputeHandlePyImp.cpp
     DocumentCommandHandlePyImp.cpp
     Expression.cpp
@@ -294,6 +295,7 @@ SET(Document_HPP_SRCS
     DocumentObserverPython.h
     DocumentSettings.h
     RecomputeHandle.h
+    RecomputePhaseTrace.h
     Expression.h
     ExpressionParser.h
     QuantityInput.h

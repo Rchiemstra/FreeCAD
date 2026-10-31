@@ -13,6 +13,7 @@
 #include "DocumentWouldBlock.h"
 #include "Property.h"
 #include "RecomputeHandle.h"
+#include "RecomputePhaseTrace.h"
 
 #include <Base/Exception.h>
 #include <Base/Persistence.h>
@@ -824,6 +825,28 @@ void DocumentExecutionLane::executeActiveCommand()
 
 void DocumentExecutionLane::executeActiveRecompute()
 {
+    const bool traceDeferred = RecomputePhaseTrace::pushDefer(_document);
+    struct TraceDefer
+    {
+        Document* document {nullptr};
+        bool armed {false};
+        ~TraceDefer()
+        {
+            if (armed && document) {
+                RecomputePhaseTrace::popDefer(*document);
+            }
+        }
+    } traceDefer {&_document, traceDeferred};
+    // Hides DocumentExecutionLane::completeActiveCommand for this command so
+    // every terminal outcome, including the catch paths below, closes the trace.
+    const auto completeActiveCommand =
+        [this](DocumentCommandState state, std::string diagnostic) {
+            if (_active && _active->recomputeSubmitted && _active->recomputeId) {
+                RecomputePhaseTrace::onOwnerTerminal(_document, *_active->recomputeId);
+            }
+            this->completeActiveCommand(state, std::move(diagnostic));
+        };
+
     while (true) {
         drainDispatchQueue();
 

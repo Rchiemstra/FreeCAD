@@ -16,6 +16,7 @@ SET(Test_SRCS
     StringHasher.py
     Menu.py
     Recompute.py
+    ParallelRecomputeBaseline.py
     GuiRecompute.py
     TestApp.py
     TestLinkArrayTransactions.py
@@ -153,4 +154,40 @@ INSTALL(
         ${TestData_SRCS}
     DESTINATION
         Mod/Test/TestData
+)
+
+# Serial recompute baselines live under data/tests and are copied next to the
+# Test module, the same way TestData is copied for in-tree and installed runs.
+set(ParallelRecomputeFixture_SRCS
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/featuretest-abz-clean.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/featuretest-abz-dirty.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/part-siblings.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/part-chain.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/part-abz.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/part-invalid-box.FCStd
+    ${CMAKE_SOURCE_DIR}/data/tests/parallel-recompute/part-dirty-box.FCStd
+)
+set(_parallel_recompute_fixture_outdir
+    "${CMAKE_BINARY_DIR}/Mod/Test/TestData/parallel-recompute")
+set(_parallel_recompute_fixture_outputs)
+foreach(_fixture ${ParallelRecomputeFixture_SRCS})
+    get_filename_component(_fixture_name "${_fixture}" NAME)
+    set(_fixture_out "${_parallel_recompute_fixture_outdir}/${_fixture_name}")
+    add_custom_command(
+        OUTPUT "${_fixture_out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_parallel_recompute_fixture_outdir}"
+        COMMAND "${CMAKE_COMMAND}" -E copy "${_fixture}" "${_fixture_out}"
+        DEPENDS "${_fixture}"
+        COMMENT "Copying ${_fixture_name} to TestData/parallel-recompute"
+    )
+    list(APPEND _parallel_recompute_fixture_outputs "${_fixture_out}")
+endforeach()
+add_custom_target(ParallelRecomputeFixtures ALL DEPENDS ${_parallel_recompute_fixture_outputs})
+add_dependencies(Test ParallelRecomputeFixtures)
+
+INSTALL(
+    FILES
+        ${ParallelRecomputeFixture_SRCS}
+    DESTINATION
+        Mod/Test/TestData/parallel-recompute
 )

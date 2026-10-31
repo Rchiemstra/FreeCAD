@@ -553,7 +553,7 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     second_schema = execute.find("validateDetachedSchema(*detached,manifests)", first_schema + 1)
     failure_branch = execute.find("if(result!=0){", second_schema)
     failure_publication = execute.find(
-        '{"recompute.outputs",encodeFailure(targetName,failureDiagnostic)}',
+        '{"recompute.outputs",encodeFailure(targetName,failureDiagnostic,recordedTiming)}',
         failure_branch,
     )
     side_effect = execute.find('"genericrecomputeproducedanundeclaredpropertysideeffect:')
@@ -604,9 +604,14 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         "count>expectedOutputs.size()",
         "expected==expectedOutputs.end()||expected->second!=type",
         "!seen.insert(name).second",
-        "reader.finish()",
+        "takeExecuteTiming(reader)",
     ):
         assert fragment in decoder, f"result decoder is not fail closed: {fragment}"
+    timing = _compact(
+        _suppress_cpp(_body(source, "takeExecuteTiming", raw=True), literals=False)
+    )
+    assert "reader.finish()" in timing
+    assert "leftover!=sizeof(std::int64_t)*2" in timing
 
     effects_decoder = _compact(
         _suppress_cpp(
@@ -876,7 +881,7 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
 
     # And the worker really does publish only the target's own outputs.
     generic = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
-    assert "encodeOutputs(targetName,*target,*targetManifest,baseline)" in generic
+    assert "encodeOutputs(targetName,*target,*targetManifest,baseline,recordedTiming)" in generic
 
 
 def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:

@@ -1072,6 +1072,7 @@ private:
     friend class AutoTransaction;
     friend class Document;
     friend class DocumentCollaborationService;
+    friend class RecomputePhaseTrace;
     friend class Internal::DocumentCollaborationServiceTestAccess;
 
     using CloseTestHook = void (*)();

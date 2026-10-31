@@ -437,12 +437,51 @@ TEST_F(PartPresentationCaptureTest, UnchangedDatumExtentsPreserveRevisionFence)
         const auto wildcard = App::DocumentRevisionKey::unknownModelMutation();
         const auto before = document->collaborationRevisions().current(wildcard);
         // Replay the same callback used by updateView during GUI catch-up.
+        // PR #114: this refresh used to rewrite Length and Width on every
+        // Placement update. Record the App signals that rewrite emits.
+        std::vector<std::string> extentSignals;
+        const auto recordExtent = [&](const char* kind,
+                                      const App::DocumentObject& signalObject,
+                                      const App::Property& property) {
+            if (&signalObject != datum) {
+                return;
+            }
+            const std::string propertyName = property.getName();
+            if (propertyName != "Length" && propertyName != "Width") {
+                return;
+            }
+            extentSignals.push_back(std::string(kind) + ":" + propertyName);
+        };
+        auto beforeConnection = document->signalBeforeChangeObject.connect(
+            [&](const App::DocumentObject& signalObject, const App::Property& property) {
+                recordExtent("before", signalObject, property);
+            });
+        auto changedConnection = document->signalChangedObject.connect(
+            [&](const App::DocumentObject& signalObject, const App::Property& property) {
+                recordExtent("changed", signalObject, property);
+            });
         {
             App::LivePresentationRefreshScope refresh;
             ASSERT_TRUE(refresh.acquired());
             view->updateData(placement);
         }
+        beforeConnection.disconnect();
+        changedConnection.disconnect();
         const bool changed = difference > Precision::Confusion();
+        if (changed) {
+            EXPECT_EQ(
+                extentSignals,
+                (std::vector<std::string> {
+                    "before:Length", "changed:Length", "before:Width", "changed:Width"}));
+        }
+        else {
+            std::string unexpected;
+            for (const auto& signal : extentSignals) {
+                unexpected += signal;
+                unexpected += "\n";
+            }
+            EXPECT_TRUE(extentSignals.empty()) << unexpected;
+        }
         EXPECT_EQ(document->collaborationRevisions().current(wildcard), before + (changed ? 2 : 0));
         const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
             return service.commitEdit(session.sessionId(), prepared);

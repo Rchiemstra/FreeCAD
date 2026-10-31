@@ -34,6 +34,7 @@ FreeCAD.__unit_test__ += [
     "TestIntPairList",
     "Metadata",
     "Recompute",
+    "ParallelRecomputeBaseline",
     "StringHasher",
     "UnicodeTests",
     "TestPythonSyntax",

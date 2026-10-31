@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <vector>
 #include <utility>
 #include <list>
@@ -206,6 +207,8 @@ class DocumentRecomputeCoordinator;
 class DocumentExecutionLane;
 class DocumentHandle;
 class RecomputeHandle;
+class RecomputePhaseTrace;
+struct RecomputePhaseTraceRecord;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
@@ -1200,6 +1203,12 @@ public:
                   bool force = false,
                   bool* hasError = nullptr,
                   int options = 0);
+
+    /** Latest opt-in recompute phase trace, or null when tracing is off. */
+    [[nodiscard]] std::shared_ptr<const RecomputePhaseTraceRecord> lastRecomputeTrace() const noexcept;
+
+    /** True while an opt-in phase-trace session is still open. */
+    [[nodiscard]] bool recomputePhaseTraceActive() const noexcept;
 
     /** Submit the same detached recompute used by recompute() and return immediately. */
     [[nodiscard]] std::unique_ptr<RecomputeHandle> recomputeAsync(

@@ -4,11 +4,13 @@
 
 #include "DocumentCollaborationService.h"
 #include "GeometryJobManager.h"
+#include "RecomputePhaseTrace.h"
 
 #include <Base/Exception.h>
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -222,6 +224,10 @@ struct DocumentRecomputeCoordinator::Job
     bool cancelRequested {false};
     bool sessionFinalized {false};
     bool presentationFinalized {false};
+    /** Set until admission has recorded the trace, so poll cannot run the job first. */
+    bool traceGate {false};
+    /** Keeps the trace session alive until it seals, then this pointer is cleared. */
+    std::shared_ptr<void> traceSession;
     std::string diagnostic;
 };
 
@@ -284,6 +290,8 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
     DocumentRecomputeRequest request,
     const DocumentRecomputeId admissionId)
 {
+    const bool trace = recomputePhaseTraceEnabled() || RecomputePhaseTrace::hasLiveState();
+    std::optional<DocumentRecomputeRequest> tracedRequest;
     DocumentRecomputeId admittedId {0};
     bool scheduleAfterRelease = false;
     {
@@ -334,6 +342,10 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
             admittedId = _nextId++;
         }
 
+        if (trace) {
+            tracedRequest = request;
+        }
+
         std::string sessionId;
         if (!request.features.empty()) {
             sessionId = _service.beginEditSession("document-recompute").sessionId();
@@ -360,14 +372,56 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
         else {
             scheduleAfterRelease = true;
         }
+        job->traceGate = tracedRequest.has_value();
         {
             std::lock_guard stateLock(_stateMutex);
             _jobs.emplace(admittedId, std::move(job));
         }
     }
 
-    if (scheduleAfterRelease) {
+    if (tracedRequest) {
+        // Admission reads the request, not live objects, so it does not hop to
+        // the owner. The gate stays up until the pass is recorded.
+        try {
+            RecomputePhaseTraceActivation activation;
+            auto traceSession = RecomputePhaseTrace::noteAdmitted(
+                _service.document(), admittedId, *tracedRequest);
+            bool alreadyTerminal = false;
+            {
+                std::lock_guard stateLock(_stateMutex);
+                const auto foundJob = _jobs.find(admittedId);
+                if (foundJob != _jobs.end()) {
+                    foundJob->second->traceSession = std::move(traceSession);
+                    foundJob->second->traceGate = false;
+                    alreadyTerminal = jobTerminal(foundJob->second->state);
+                }
+            }
+            RecomputePhaseTrace::bindCurrent(_service.document());
+            if (alreadyTerminal) {
+                RecomputePhaseTrace::onOwnerTerminal(_service.document(), admittedId);
+            }
+            else if (scheduleAfterRelease) {
+                scheduleReady(admittedId);
+            }
+        }
+        catch (...) {
+            {
+                std::lock_guard stateLock(_stateMutex);
+                const auto foundJob = _jobs.find(admittedId);
+                if (foundJob != _jobs.end()) {
+                    foundJob->second->traceGate = false;
+                }
+            }
+            RecomputePhaseTrace::onOwnerTerminal(_service.document(), admittedId);
+            RecomputePhaseTrace::publishIfIdle(_service.document());
+            throw;
+        }
+    }
+    else if (scheduleAfterRelease) {
         scheduleReady(admittedId);
+    }
+    if (trace) {
+        RecomputePhaseTrace::publishIfIdle(_service.document());
     }
     return admittedId;
 }
@@ -381,7 +435,8 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
         {
             std::lock_guard stateLock(_stateMutex);
             const auto foundJob = _jobs.find(id);
-            if (foundJob == _jobs.end() || jobTerminal(foundJob->second->state)) {
+            if (foundJob == _jobs.end() || foundJob->second->traceGate
+                || jobTerminal(foundJob->second->state)) {
                 return;
             }
             auto& job = *foundJob->second;
@@ -537,36 +592,48 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 {
     // Owner-thread hop goes through DocumentCollaborationService so this
     // translation unit never includes Document.h / DocumentExecutionLane.h.
-    return _service.runOnOwnerThread([this, id] {
+    const bool changed = _service.runOnOwnerThread([this, id] {
+    RecomputePhaseTraceActivation activation;
+    RecomputePhaseTrace::bindCurrent(_service.document());
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, std::optional<PreparedEditExecutionId>>> active;
     std::vector<PreparedEditExecutionId> forwardedCancels;
+    bool alreadyTerminal = false;
     {
         std::lock_guard stateLock(_stateMutex);
         const auto foundJob = _jobs.find(id);
-        if (foundJob == _jobs.end() || jobTerminal(foundJob->second->state)) {
+        if (foundJob == _jobs.end() || foundJob->second->traceGate) {
             return false;
         }
-        const bool cancelRequested = foundJob->second->cancelRequested;
-        for (auto& [featureId, node] : foundJob->second->nodes) {
-            // N7: cancel() off the owner thread only records the request.
-            // Forward it to running preparations here, on the owner thread.
-            if (cancelRequested && node.executionId
-                && node.state == DocumentRecomputeFeatureState::Preparing) {
-                node.state = DocumentRecomputeFeatureState::Cancelling;
-                forwardedCancels.push_back(*node.executionId);
-            }
-            if (node.pendingPreparedEdit
-                && node.state == DocumentRecomputeFeatureState::Committing) {
-                active.emplace_back(featureId, std::nullopt);
-            }
-            else if (node.executionId
-                && (node.state == DocumentRecomputeFeatureState::Preparing
-                    || node.state == DocumentRecomputeFeatureState::Cancelling)) {
-                active.emplace_back(featureId, *node.executionId);
+        if (jobTerminal(foundJob->second->state)) {
+            alreadyTerminal = true;
+        }
+        else {
+            const bool cancelRequested = foundJob->second->cancelRequested;
+            for (auto& [featureId, node] : foundJob->second->nodes) {
+                // N7: cancel() off the owner thread only records the request.
+                // Forward it to running preparations here, on the owner thread.
+                if (cancelRequested && node.executionId
+                    && node.state == DocumentRecomputeFeatureState::Preparing) {
+                    node.state = DocumentRecomputeFeatureState::Cancelling;
+                    forwardedCancels.push_back(*node.executionId);
+                }
+                if (node.pendingPreparedEdit
+                    && node.state == DocumentRecomputeFeatureState::Committing) {
+                    active.emplace_back(featureId, std::nullopt);
+                }
+                else if (node.executionId
+                    && (node.state == DocumentRecomputeFeatureState::Preparing
+                        || node.state == DocumentRecomputeFeatureState::Cancelling)) {
+                    active.emplace_back(featureId, *node.executionId);
+                }
             }
         }
+    }
+    if (alreadyTerminal) {
+        RecomputePhaseTrace::onOwnerTerminal(_service.document(), id);
+        return false;
     }
     for (const auto executionId : forwardedCancels) {
         try {
@@ -824,6 +891,8 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
     finalizeIfTerminal(id);
     return changed;
     });
+    RecomputePhaseTrace::publishIfIdle(_service.document());
+    return changed;
 }
 
 bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::string reason)
@@ -881,17 +950,32 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
     if (!onOwner) {
         return true;
     }
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
-    for (const auto executionId : executions) {
-        try {
-            static_cast<void>(_service.cancelPreparedEdit(executionId));
+    {
+        std::lock_guard operationLock(_operationMutex);
+        OperationAdmission operationAdmission(_operationActive);
+        for (const auto executionId : executions) {
+            try {
+                static_cast<void>(_service.cancelPreparedEdit(executionId));
+            }
+            catch (...) {
+            }
         }
-        catch (...) {
+        finalizeIfTerminal(id);
+    }
+    RecomputePhaseTrace::publishIfIdle(_service.document());
+    return true;
+}
+
+void DocumentRecomputeCoordinator::releaseSealedTraceSessions() noexcept
+{
+    try {
+        std::lock_guard stateLock(_stateMutex);
+        for (auto& entry : _jobs) {
+            RecomputePhaseTrace::releaseSealedJobSession(entry.second->traceSession);
         }
     }
-    finalizeIfTerminal(id);
-    return true;
+    catch (...) {
+    }
 }
 
 void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId id)
@@ -945,6 +1029,7 @@ void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId 
         catch (...) {
         }
     }
+    RecomputePhaseTrace::onOwnerTerminal(_service.document(), id);
 }
 
 std::optional<DocumentRecomputeSnapshot> DocumentRecomputeCoordinator::statusLocked(

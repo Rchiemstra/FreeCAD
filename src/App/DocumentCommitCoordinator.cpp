@@ -6,6 +6,7 @@
 
 #include "CollaborativeOperation.h"
 #include "Document.h"
+#include "RecomputePhaseTrace.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
@@ -519,6 +520,9 @@ DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
 
 DocumentCommitResult DocumentCommitCoordinator::commitRecompute(const PreparedEdit& edit)
 {
+    const DocumentObject* tracedObject =
+        RecomputePhaseTrace::objectForOperation(_document, edit.operationId());
+    RecomputePhaseSpan commitSpan(RecomputePhase::Commit, tracedObject);
     if (_document.collaborationDerivedRecomputeGranted()) {
         return commitDerivedRecomputeInActiveTransaction(edit);
     }
@@ -953,6 +957,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "collaboration commit was not dispatched to the document owner thread"
         );
     }
+    const bool tracePresentation = RecomputePhaseTrace::recording();
+    const DocumentObject* presentationObject =
+        tracePresentation ? recomputePhaseCommittingObject() : nullptr;
     std::lock_guard<std::recursive_mutex> serialized(_document.collaborationCommitMutex());
 
     if (auto rejected = rejectCommitPrerequisites(
@@ -1013,6 +1020,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                   std::move(conflicts));
     }
     try {
+        std::optional<RecomputePhaseSpan> presentationSpan;
+        if (tracePresentation) {
+            presentationSpan.emplace(RecomputePhase::Presentation, presentationObject);
+        }
         if (!mutationTarget) {
             mutationTarget = acquireCompatibilityMutationTarget();
         }

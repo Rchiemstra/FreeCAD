@@ -24,9 +24,11 @@
 
 
 #include <boost/core/ignore_unused.hpp>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -129,6 +131,11 @@ FeatureTest::FeatureTest()
                       Prop_None,
                       "The type of exception the execution method throws");
     ADD_PROPERTY_TYPE(ExecCount, (0), group, Prop_Output, "Number of executions");
+    ADD_PROPERTY_TYPE(ExecuteDelay,
+                      (0),
+                      group,
+                      Prop_None,
+                      "Test-only: milliseconds execute() sleeps. Default 0.");
 
     // properties with types
     ADD_PROPERTY_TYPE(TypeHidden,
@@ -178,6 +185,9 @@ short FeatureTest::mustExecute() const
 
 DocumentObjectExecReturn* FeatureTest::execute()
 {
+    if (const long delayMs = ExecuteDelay.getValue(); delayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    }
     // Enum handling
     Enumeration enumObj1 = Enum.getEnum();
     enumObj1.setValue(7, false);

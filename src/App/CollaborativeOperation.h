@@ -3,6 +3,7 @@
 
 #include <FCGlobal.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -10,6 +11,13 @@ namespace App
 {
 
 class Document;
+
+/** `std::chrono::steady_clock` timestamps from an isolated worker, in nanoseconds. */
+struct AppExport IsolatedExecuteTiming
+{
+    std::int64_t startMonotonicNs {0};
+    std::int64_t endMonotonicNs {0};
+};
 
 /** Result of checking a prepared operation's postcondition. */
 struct AppExport CollaborativePostconditionResult
@@ -65,6 +73,12 @@ public:
     [[nodiscard]] virtual std::string_view transactionLabel() const noexcept
     {
         return {};
+    }
+
+    /** Worker steady_clock execute interval, when the result carried one. */
+    [[nodiscard]] virtual const IsolatedExecuteTiming* isolatedExecuteTiming() const noexcept
+    {
+        return nullptr;
     }
 
 protected:
