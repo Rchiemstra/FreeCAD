@@ -130,6 +130,7 @@
 #include "SpaceballEvent.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
+#include "ViewDropDocking.h"
 #include "Dialogs/DlgObjectSelection.h"
 
 #include <Base/Color.h>
@@ -461,6 +462,18 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
 #endif
     d->mdiArea->setBackground(QBrush(QColor(160, 160, 160)));
     setCentralWidget(d->mdiArea);
+
+    new ViewDropDocking(
+        d->mdiArea,
+        [](QWidget* widget) {
+            auto* view = qobject_cast<View3DInventor*>(widget);
+            return view && !view->isDeleting() && view->currentViewMode() == MDIView::TopLevel;
+        },
+        [](QWidget* widget) {
+            MDIView::changeViewMode(qobject_cast<MDIView*>(widget), MDIView::Child);
+        },
+        this
+    );
 
     statusBar()->setObjectName(QStringLiteral("statusBar"));
     connect(statusBar(), &QStatusBar::messageChanged, this, &MainWindow::statusMessageChanged);
