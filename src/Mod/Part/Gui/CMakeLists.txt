@@ -191,6 +191,8 @@ SET(PartGui_SRCS
     ViewProviderExt.h
     ViewProviderPresentationAdapter.cpp
     ViewProviderPresentationAdapter.h
+    ShapeGeometry.cpp
+    ShapeGeometry.h
     DocumentPresentationCapture.cpp
     DocumentPresentationCapture.h
     ViewProviderReference.cpp
