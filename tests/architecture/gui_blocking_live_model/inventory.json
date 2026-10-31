@@ -104,6 +104,7 @@
     "src/Mod/Assembly/CommandInsertLink.py",
     "src/Mod/Assembly/CommandInsertNewPart.py",
     "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandIsolate.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     "src/Mod/Assembly/JointObject.py",
     "src/Mod/Assembly/SoSwitchMarker.py",
@@ -4193,6 +4194,14 @@
       "subsystem": "Assembly",
       "disposition": "migrate",
       "evidence": "m_deletedObjectConn = App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "occurrence": 1,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "m_viewChangedConn = Gui::Application::Instance->signalChangedObject.connect("
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
