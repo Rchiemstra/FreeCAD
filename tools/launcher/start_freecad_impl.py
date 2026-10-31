@@ -11,6 +11,7 @@ Examples:
 
   python start_freecad.py
   python start_freecad.py --build
+  python start_freecad.py --codex
   python start_freecad.py model.FCStd
   python start_freecad.py --freecad FreeCAD/build/release/bin/FreeCAD.exe
   python start_freecad.py --no-wait-for-mcp
@@ -20,15 +21,19 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -38,6 +43,7 @@ MCP_ADDON_DIRNAME = "FreeCADMCP"
 PIXI_EXTERNAL_MODS = ("freecad.robotcad",)
 WSLG_RUNTIME_DIR = Path("/mnt/wslg/runtime-dir")
 DEFAULT_CURSOR_SIZE = "24"
+LOCAL_LAUNCHER_SETTINGS = ".freecad-launcher.json"
 
 
 def _is_freecad_repo(path: Path) -> bool:
@@ -303,6 +309,7 @@ def _launch_env(freecad_exe: Path) -> dict[str, str]:
         env.update(_qt_plugin_env(pixi))
 
     env.update(_wslg_display_env(env))
+    env.update(_wslg_graphics_env(env))
     return env
 
 
@@ -350,6 +357,179 @@ def _wslg_display_env(
         updates["XCURSOR_SIZE"] = DEFAULT_CURSOR_SIZE
 
     return updates
+
+
+def _wslg_graphics_env(
+    env: dict[str, str],
+    settings_path: Path | None = None,
+    wslg_runtime_dir: Path = WSLG_RUNTIME_DIR,
+) -> dict[str, str]:
+    """Apply an optional, repository-local WSLg Mesa policy to the child only.
+
+    Mesa's software winsys can choose llvmpipe before trying D3D12. Explicit
+    D3D12 selection belongs in this shared launch environment, not FreeCAD's
+    Qt software-OpenGL preference. Hardware names belong in the ignored local
+    settings file, and explicit caller driver selections take precedence.
+    """
+    if not sys.platform.startswith("linux") or not wslg_runtime_dir.is_dir():
+        return {}
+
+    path = (
+        settings_path
+        if settings_path is not None
+        else _repo_root() / LOCAL_LAUNCHER_SETTINGS
+    )
+    if not path.exists():
+        return {}
+
+    def invalid(reason: str) -> None:
+        raise SystemExit(f"ERROR: invalid WSLg graphics settings in {path}: {reason}")
+
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        invalid(str(exc))
+    if not isinstance(settings, dict):
+        invalid("the top level must be a JSON object")
+    graphics = settings.get("wslg", {})
+    if not isinstance(graphics, dict):
+        invalid("wslg must be a JSON object")
+    unknown = graphics.keys() - {"renderer", "adapter"}
+    if unknown:
+        invalid(f"unknown wslg setting: {', '.join(sorted(unknown))}")
+    renderer = graphics.get("renderer", "auto")
+    if renderer not in ("auto", "d3d12", "software"):
+        invalid("wslg.renderer must be auto, d3d12, or software")
+    adapter = graphics.get("adapter")
+    if "adapter" in graphics and (not isinstance(adapter, str) or not adapter.strip()):
+        invalid("wslg.adapter must be a nonempty adapter-name string")
+
+    if renderer == "auto":
+        return {}
+    if "GALLIUM_DRIVER" in env or "MESA_LOADER_DRIVER_OVERRIDE" in env:
+        return {}
+
+    # LIBGL_ALWAYS_SOFTWARE alone does not override an explicitly selected
+    # D3D12 driver in this Mesa software-winsys path. Select llvmpipe instead.
+    software_requested = env.get("LIBGL_ALWAYS_SOFTWARE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if renderer == "software" or software_requested:
+        return {"GALLIUM_DRIVER": "llvmpipe"}
+
+    updates = {"GALLIUM_DRIVER": "d3d12"}
+    if adapter is not None and "MESA_D3D12_DEFAULT_ADAPTER_NAME" not in env:
+        updates["MESA_D3D12_DEFAULT_ADAPTER_NAME"] = adapter.strip()
+    return updates
+
+
+def _appearance_parameters(root: ET.Element) -> dict[tuple[str, ...], ET.Element]:
+    """Select appearance values without copying documents, layout, or MCP settings."""
+    result: dict[tuple[str, ...], ET.Element] = {}
+
+    def visit(group: ET.Element, path: tuple[str, ...] = ()) -> None:
+        if group.tag == "FCParamGroup":
+            path = (*path, group.get("Name", ""))
+        for child in group:
+            if child.tag == "FCParamGroup":
+                visit(child, path)
+                continue
+            if path[:3] != ("Root", "BaseApp", "Preferences"):
+                continue
+            name = child.get("Name", "")
+            section = path[3:]
+            if (
+                section[:1] in (("Themes",), ("StyleParameters",))
+                or (section[:1] == ("Editor",) and child.tag == "FCUInt")
+                or "color" in name.lower()
+                or "font" in name.lower()
+                or (section == ("MainWindow",) and name in {
+                    "Theme", "StyleSheet", "OverlayActiveStyleSheet", "QtStyle", "IconSize",
+                })
+                or (section == ("View",) and name in {
+                    "Gradient", "RadialGradient", "Simple", "UseBackgroundColorMid",
+                })
+            ):
+                result[(*path, name)] = child
+
+    visit(root)
+    return result
+
+
+def _sync_appearance_config(source: Path, destination: Path) -> bool:
+    """Refresh only visual preferences in a stopped isolated profile, atomically."""
+    if not source.is_file() or source.resolve() == destination.resolve():
+        return False
+    try:
+        source_root = ET.parse(source).getroot()
+        target_root = (
+            ET.parse(destination).getroot() if destination.is_file()
+            else ET.Element("FCParameters")
+        )
+    except (ET.ParseError, OSError) as exc:
+        raise SystemExit(f"Cannot read FreeCAD appearance preferences: {exc}") from exc
+    if source_root.tag != "FCParameters" or target_root.tag != "FCParameters":
+        raise SystemExit("Appearance settings must be FreeCAD parameter files.")
+    source_values = _appearance_parameters(source_root)
+    target_values = _appearance_parameters(target_root)
+    if source_values.keys() == target_values.keys() and all(
+        source_values[key].tag == target_values[key].tag
+        and source_values[key].attrib == target_values[key].attrib
+        and (source_values[key].text or "") == (target_values[key].text or "")
+        for key in source_values
+    ):
+        return False
+
+    for key in source_values.keys() | target_values.keys():
+        group = target_root
+        for name in key[:-1]:
+            child_group = next((
+                child for child in group
+                if child.tag == "FCParamGroup" and child.get("Name") == name
+            ), None)
+            if child_group is None:
+                child_group = ET.SubElement(group, "FCParamGroup", Name=name)
+            group = child_group
+        for child in list(group):
+            if child.tag != "FCParamGroup" and child.get("Name") == key[-1]:
+                group.remove(child)
+        if key in source_values:
+            group.append(copy.deepcopy(source_values[key]))
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".appearance-", delete=False) as handle:
+            temporary = Path(handle.name)
+            ET.indent(target_root)
+            ET.ElementTree(target_root).write(handle, encoding="utf-8", xml_declaration=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if destination.exists():
+            os.chmod(temporary, destination.stat().st_mode & 0o777)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return True
+
+
+def _sync_appearance_preferences(freecad: Path, profile: Path) -> None:
+    # --get-config exits during argument processing, before any GUI is started.
+    # Query the executable's own path resolution, including versioned profiles.
+    command = freecad.with_name("FreeCADCmd.exe" if freecad.suffix.lower() == ".exe" else "FreeCADCmd")
+    if not command.is_file():
+        command = freecad
+    result = subprocess.run(
+        [str(command), "--get-config", "UserConfigPath"],
+        env=_launch_env(freecad), capture_output=True, text=True, timeout=15,
+    )
+    config_path = result.stdout.strip()
+    if result.returncode or not config_path:
+        raise SystemExit("Cannot resolve the normal FreeCAD profile for appearance settings.")
+    source = Path(config_path) / "user.cfg"
+    if _sync_appearance_config(source, profile / "user.cfg"):
+        print(f"Using the normal FreeCAD appearance from: {source}", flush=True)
 
 
 def _pixi_for_freecad(freecad_exe: Path) -> str | None:
@@ -817,6 +997,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Seconds to wait for the MCP RPC server (default: 120)",
     )
     parser.add_argument(
+        "--codex",
+        action="store_true",
+        help=(
+            "Sync the locked MCP environment, launch authenticated FreeCAD, "
+            "and register the freecad MCP server with Codex"
+        ),
+    )
+    parser.add_argument(
         "--authenticated-isolated",
         action="store_true",
         help=(
@@ -854,10 +1042,119 @@ def _start_freecad(
     return process
 
 
+def _codex_executable() -> str | None:
+    command = shutil.which("codex")
+    if command is not None:
+        return command
+
+    system = {"linux": "linux", "darwin": "darwin", "win32": "windows"}.get(sys.platform)
+    architecture = {
+        "x86_64": "x86_64", "amd64": "x86_64",
+        "aarch64": "aarch64", "arm64": "aarch64",
+    }.get(platform.machine().lower())
+    if system is None or architecture is None:
+        return None
+    executable = "codex.exe" if system == "windows" else "codex"
+    target = f"{system}-{architecture}"
+    candidates: list[tuple[tuple[int, ...], Path]] = []
+    for directory in (
+        ".vscode-server/extensions", ".vscode-server-insiders/extensions",
+        ".vscode/extensions", ".vscode-insiders/extensions",
+    ):
+        for candidate in (Path.home() / directory).glob(
+            f"openai.chatgpt-*/bin/{target}/{executable}"
+        ):
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            version = candidate.parents[2].name.removeprefix("openai.chatgpt-").split("-")[0]
+            try:
+                version_key = tuple(int(part) for part in version.split("."))
+            except ValueError:
+                continue
+            candidates.append((version_key, candidate))
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda item: item[0])[1])
+
+
+def _start_authenticated_isolated(args: argparse.Namespace) -> int:
+    mcp_root = _freecad_mcp_dir()
+    scripts = mcp_root / "scripts"
+    environment = os.environ.copy()
+    environment.update(_wslg_display_env(environment))
+    python = sys.executable
+    codex = None
+
+    if args.codex:
+        codex = _codex_executable()
+        uv = shutil.which("uv")
+        if codex is None:
+            print(
+                "ERROR: Codex CLI not found on PATH or in an installed Codex VS Code "
+                "extension. Install the CLI or add its directory to PATH.",
+                file=sys.stderr,
+            )
+            return 1
+        if uv is None:
+            print("ERROR: --codex requires uv on PATH.", file=sys.stderr)
+            return 1
+        freecad = args.freecad or _default_freecad()
+        if not freecad or not Path(freecad).is_file():
+            print("ERROR: could not find FreeCAD; pass --freecad PATH.", file=sys.stderr)
+            return 1
+        environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(freecad).resolve())
+        print(f"Using Codex CLI: {codex}", flush=True)
+        print("Syncing the FreeCAD MCP environment from uv.lock.", flush=True)
+        result = subprocess.run(
+            [uv, "sync", "--locked", "--inexact", "--directory", str(mcp_root)]
+        )
+        if result.returncode:
+            return result.returncode
+        python = str(
+            mcp_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        )
+        if not Path(python).is_file():
+            print(f"ERROR: MCP Python environment not found: {python}", file=sys.stderr)
+            return 1
+    elif args.freecad:
+        environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
+
+    print("Starting manifest-bound authenticated isolated MCP profile.", flush=True)
+    setup_result = subprocess.run(
+        [python, str(scripts / "setup_isolated_profile.py")], env=environment
+    )
+    if setup_result.returncode:
+        return setup_result.returncode
+    launch_result = subprocess.run(
+        [python, str(scripts / "start_freecad_isolated.py"), *args.args], env=environment
+    )
+    if launch_result.returncode or codex is None:
+        return launch_result.returncode
+
+    profile = Path(
+        environment.get("FREECAD_MCP_PROFILE_DIR") or _repo_root() / ".freecad-mcp-isolated"
+    ).resolve()
+    result = subprocess.run(
+        [
+            codex, "mcp", "add", "freecad",
+            "--env", "FREECAD_MCP_CLIENT=codex",
+            "--", python, "-m", "freecad_mcp.server",
+            "--instance-manifest", str(profile / "instance-manifest.json"),
+        ]
+    )
+    if result.returncode == 0:
+        print(
+            "FreeCAD MCP is registered with Codex. Reload the Codex IDE extension "
+            "or start a new Codex CLI session to load its tools.",
+            flush=True,
+        )
+    return result.returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
-    if args.authenticated_isolated:
+    if args.authenticated_isolated or args.codex:
         incompatible = [
             flag
             for flag, enabled in (
@@ -869,7 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if incompatible or args.mcp_timeout != 120.0:
             print(
-                "ERROR: --authenticated-isolated owns its readiness and lifecycle; "
+                "ERROR: authenticated launch owns its readiness and lifecycle; "
                 "do not combine it with legacy launcher wait, force, or timeout options.",
                 file=sys.stderr,
             )
@@ -880,21 +1177,8 @@ def main(argv: list[str] | None = None) -> int:
         if build_result:
             return build_result
 
-    if args.authenticated_isolated:
-        scripts = _freecad_mcp_dir() / "scripts"
-        setup = scripts / "setup_isolated_profile.py"
-        isolated_launcher = scripts / "start_freecad_isolated.py"
-        environment = os.environ.copy()
-        environment.update(_wslg_display_env(environment))
-        if args.freecad:
-            environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
-        print("Starting manifest-bound authenticated isolated MCP profile.")
-        setup_result = subprocess.run([sys.executable, str(setup)], env=environment)
-        if setup_result.returncode:
-            return setup_result.returncode
-        return subprocess.run(
-            [sys.executable, str(isolated_launcher), *args.args], env=environment
-        ).returncode
+    if args.authenticated_isolated or args.codex:
+        return _start_authenticated_isolated(args)
 
     # Resolve the default after the optional build so a newly created binary
     # can be selected and launched in the same invocation.
