@@ -33,8 +33,8 @@ scope excludes. A specification is not an implemented or passing test.
 | Enumerate M0 work, qualification template and negative admission cases | Static | **Done:** this table and sections 2–4. |
 | Candidate input/output/invalidation inventory: exact Box, Cut, Fuse, Common; naming, caches, callbacks and OCC settings | Static audit; runtime closure needed | **Done (static):** section 2. Complete *qualified* contracts still **need build**, dependency instrumentation and kernel coverage. |
 | Opt-in phase timing, reproducible fixture capture, build/DAG/resource identity | Local serial probe; native instrumentation needed | **Done (local serial):** validated probe, restored synthetic fixtures, local build manifest, coarse DAG and process RSS (section 7). Native phase spans, production property graph, concurrency and aggregate memory traces still need implementation/build. |
-| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Done (design); needs build** and native test-only kernels; no detached harness exists in this change. |
-| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Done (serial baseline):** section 7 measures wide/narrow, edit/noop and cold-after-restore controls. Thread/process comparison and venue/crossover decision still need the detached harness. |
+| Detached Box/Boolean geometry harness and negative contract tests, with unchanged production scheduling | Static harness/test specification | **Partial (Box test-only):** qualification template, negative admission tests, and a test-only owner publication of one seeded Box in `tests/src/Mod/Part/App/DetachedKernelQualification.*`. That step compares the thread kernel with the owner recompute and with the same step applied to the process shape. It is not production publication. Production `Document::recompute` scheduling is unchanged. Boolean harness remains M0.2b. |
+| Compare serial/thread/process costs, wide/narrow and incremental workloads, two narrow controls | Local serial measurements; detached harness needed | **Partial (Box venues):** section 7 is the serial baseline. The M0.2a subsection records owner, worker-thread and isolated-process Box costs. Paid time on every venue is that venue's end-to-end wall, from before capture through commit. The process wall is partitioned in the subsection, and there is no persistent worker to amortise it. The section 4 wide and narrow figures are the earlier owner-thread serial traces, not this venue method. Boolean costs, thread qualification and the venue decision remain open. |
 | Working instrumented race checks, including cold/error/cancel cases | Static gate design | **Done (design); needs build** plus instrumented OCC and a compatible runner. No race pass claimed. |
 | Pinned upstream and ordinary/macro/add-on compatibility baseline fixtures | Local headless baseline; pinned upstream still needed | **Done (local baseline):** all nine source fixtures restore/recompute in all/noop (section 7), with genuine non-null proxies and no missing add-on dependencies reported. BIM SVG/text output remains GUI-only. Bidirectional compatibility/naming/macro runs still need the pinned upstream build; final large user corpus/add-on version selection remains **blocked** on owner input. |
 | Existing native App/Part/Gui baseline suites | Local supplied binaries | **Done:** 42 App + 8 Part + 1 Gui tests pass, zero failures/errors/skips, exact expected names present (section 7). These do not implement the new detached/race/publication qualification tests. |
@@ -535,10 +535,10 @@ QT_QPA_PLATFORM=xcb xvfb-run -a "$M0_TESTS/Gui_tests_run" \
 ```
 
 Require exit 0, present expected testcase names, no errors/skips and complete
-reports, including exact new test manifest once implemented. New recorder,
-detached kernel and publication tests **do not yet exist**; no invented gtest
-filter/worker-count CLI in this document is runnable today. Likewise the current
-probe has no `parallel=true` switch.
+reports. The M0.1 phase recorder exists. The M0.2a Box qualification tests are
+`DetachedKernelQualification*` in `Part_tests_run`. Publication, Boolean and
+race tests do not yet exist. No invented worker-count CLI in this document is
+runnable. The current probe has no `parallel=true` switch.
 
 ### Measurements needing the future native harness
 
@@ -578,6 +578,131 @@ cost model, not demonstrate M1's real speedup. Measure that after M1 overlap and
 commit integration exists. Proposed >=1.20x median benefit and <=5% narrow/small
 regression thresholds remain owner-confirmed *after* noise/capture data; no
 threshold has passed here.
+
+### M0.2a Box venue costs
+
+Measured locally on 2026-10-31 from this branch's RelWithDebInfo build, after
+the FreeCAD-start merge. This is not the 5-warmup / 30-repetition protocol
+above. Every venue uses one warmup and the median of the same three kept
+repetitions. Paid is the end-to-end wall on every venue. It starts before
+capture and stops after commit. The owner wall is `Document::recompute`.
+The process wall is the isolated job through `waitIsolated`. The thread wall
+is the freeze, the worker thread, and the test-only owner Shape apply.
+Kernel results stay alive until after the timed region; volume checks run
+after the loops. Inputs are frozen from live document boxes with a
+rotated placement, not fabricated identity placements.
+
+Owner and process phase columns are sums of per-object M0.1 spans. They are
+not a partition of wall time. The thread venue has no phase recorder: capture
+is the freeze, execute is the raw MakeBox kernel, and commit is the test-only
+owner `Shape` apply. Those three clocks sit inside the same thread wall.
+The Transfer column is only the isolated-process decode
+span. The thread row is 0 there because that span does not exist on the
+thread venue; it is not a measured decode.
+
+Paid is that end-to-end wall for the owner, the thread, and the process.
+`GeometryProcessBackend.cpp` `runChecked` starts one
+`FreeCADCmd` per job and returns only after that process has exited;
+`dispatch` does not keep it. `Document.h` records the same fact for
+`RecomputeVenue::Isolated`. There is no persistent worker, so startup cannot
+be amortised and is not a separate column.
+
+The harness freezes Length, Width, Height, `Precision::Confusion` and
+Placement, then runs the MakeBox kernel on one `std::thread`. It does not
+call `Part::Box::execute`. The process venue is the existing isolated worker:
+`RecomputeVenue::Isolated` through `GenericIsolatedRecompute` and
+`GeometryProcessBackend`, which spawns the sibling `FreeCADCmd`. That worker
+runs `Part::Box::execute` on an archived object. There is no Box-only
+process. Production scheduling is unchanged.
+
+Publication covered here is the test-only owner step: a seeded element map
+and the rotated placement applied to the thread kernel's raw shape. That
+published result matches the owner recompute. The same step applied to the
+process shape matches it as well. The isolated archive stores the OCC brep,
+so the process result's own element map is empty. This is not production
+publication. Boolean and sibling publication remain M0.2b.
+
+| Venue | Workload | Capture ms | Execute ms | Transfer ms | Commit ms | Wall ms | Paid ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| owner | box:1 | 0.006 | 0.076 | 0 | 0.103 | 2.356 | 2.356 |
+| thread | box:1 | 0.000 | 0.045 | 0 | 0.012 | 0.119 | 0.119 |
+| process | box:1 | 0.746 | 0.134 | 0.364 | 0.105 | 1551.825 | 1551.825 |
+| owner | box:32 | 0.438 | 4.493 | 0 | 7.769 | 81.786 | 81.786 |
+| thread | box:32 | 0.001 | 0.778 | 0 | 0.170 | 1.185 | 1.185 |
+
+The thread rows are a later same-day sample, after that wall was widened to include capture and the owner Shape apply. Owner and process rows, and the partition below, are the earlier sample.
+
+The process wall below is the repetition whose wall is the median, not the
+median of each column. Its pieces are taken from the phase trace and from
+1 ms observations of the job directory and the worker pid. They sum to the
+wall.
+
+| Process box:1 component | ms |
+| --- | ---: |
+| Owner capture | 0.787 |
+| Parent binary fingerprint | 598.573 |
+| Request archive write | 0.000 |
+| Spawn, until the worker pid exists | 65.339 |
+| Worker startup, pid until first heartbeat | 662.540 |
+| Part import, archive restore, result write | 161.763 |
+| Worker execute | 0.134 |
+| Process teardown, result file until exit | 60.468 |
+| Result decode | 0.335 |
+| Commit | 0.105 |
+| Settle after commit | 1.782 |
+| Sum | 1551.825 |
+
+The parent fingerprint is `geometryWorkerBuildFingerprint` of `FreeCADCmd`
+and `libFreeCADApp.so`, from the end of capture until the job directory
+exists. A direct call of that function took 592.6 ms. The worker runs it
+again after `Application::init` and before its first heartbeat
+(`GeometryWorkerMain.cpp`). Pid-to-heartbeat is 662.5 ms. The worker's
+`/proc/<pid>/io` `rchar` passes 32 MB 259 ms after the pid appears and 80 MB
+at 549 ms, with the heartbeat at 662 ms, so that interval is the hash plus
+interpreter startup. Empty `FreeCADCmd -c "import FreeCAD"` is 96.1 ms and
+`-c "import Part"` is 171.4 ms. Those whole-process probes are not added into
+the wall. `Part.so` is mapped 1.8 ms after the heartbeat. Heartbeat to
+`result.fcg` is 161.9 ms, of which the execute span is 0.134 ms and the
+remaining 161.763 ms is the import, the archived document restore, and the
+result write. Teardown is `result.fcg` until the
+pid disappears. Decode is the Transfer span. The request file appears in the
+same 1 ms sample as the workspace, so the archive write is below that sample.
+
+`box:32` is the in-test wide sample (independent 10×20×30 boxes, translated
+and rotated, X=60i). Its owner DAG width was 32 and its longest path was 0.
+The section 4 workloads below are the earlier owner-thread serial traces.
+They were not remeasured with this venue method. A per-feature process was
+not repeated for them.
+
+| Workload | Objects | Width | Longest path | Capture ms | Execute ms | Commit ms | Wall ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| box:2 | 2 | 2 | 0 | 0.018 | 0.171 | 0.246 | 2.72 |
+| box:512 | 512 | 512 | 0 | 9.60 | 72.5 | 360 | 1905 |
+| chain:50 | 59 | 8 | 50 | 1.16 | 813 | 826 | 964 |
+| chain:200 | 209 | 8 | 200 | 6.59 | 8835 | 8950 | 9566 |
+| PartDesignExample.FCStd | 28 | 7 | 21 | 0.627 | 305 | 310 | 375 |
+
+Owner, process and the test-only publication matched on topology (1 solid,
+6 faces, 12 edges, 8 vertices, volume 6000), located and unlocated vertices,
+rotated placement, status and ShapeMaterial. The owner recompute and the
+test-only publication matched on the seeded element map. The process result's
+own element map was empty. An early Length failure preserved the old volume,
+the seeded map on the owner, and the diagnostic "Length of box too small" on
+both the owner and the isolated process. The raw kernel map was empty until
+the test-only owner step.
+
+Interpretation: a wide Box graph is owner overhead, not OCC. `box:512` in the
+earlier serial probe spends about 72 ms in execute spans and about 1.9 s of
+wall. A narrow PartDesign chain is the opposite: `chain:200` execute spans
+are about 8.8 s of a 9.6 s wall, with longest path 200. One isolated Box call
+has a 1551.825 ms wall, and that is the per-feature process cost. About
+599 ms is the parent fingerprint and about 663 ms is worker startup, which is
+interpreter startup plus the same fingerprint; Part import and restore are
+about 162 ms; teardown is about 60 ms; Box execute is 0.134 ms. The thread
+kernel is the same geometry as the owner kernel and was not run concurrently
+with other OCC work. It stays **U**. These numbers do not justify an M1
+speedup claim. Boolean kernels, TShape and cache sharing, OCC global settings
+beyond this Box, callback order and TSan remain M0.2b.
 
 ### Compatibility and failure matrix to run with builds
 

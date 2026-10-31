@@ -7,6 +7,8 @@ add_executable(Part_tests_run
         CollaborativeBooleanOperation.cpp
         CollaborativeBooleanPreparation.cpp
         CollaborativeSweepFilletOperations.cpp
+        DetachedKernelQualification.cpp
+        DetachedKernelQualificationTest.cpp
         FaceMakerBullseye.cpp
         FaceMakerUnified.cpp
         FeatureChamfer.cpp
