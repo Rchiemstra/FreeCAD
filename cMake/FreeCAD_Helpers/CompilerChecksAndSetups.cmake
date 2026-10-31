@@ -7,6 +7,18 @@ macro(CompilerChecksAndSetups)
         set(CMAKE_COMPILER_IS_CLANGXX TRUE)
     endif (${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_COMPILER_IS_CLANGXX))
+        get_filename_component(_freecad_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        get_filename_component(_freecad_compiler_prefix "${_freecad_compiler_bin}" DIRECTORY)
+        if(IS_DIRECTORY "${_freecad_compiler_prefix}/conda-meta"
+           AND EXISTS "${_freecad_compiler_prefix}/lib/libstdc++.so")
+            # Conda dependencies can require a newer runtime than the compiler's
+            # private GCC copy. Search the environment runtime before that copy.
+            add_link_options("-L${_freecad_compiler_prefix}/lib")
+        endif()
+    endif()
+
     # ================================================================================
 
     # Use a heuristic of 1 GiB of RAM needed per compiler job and limit to

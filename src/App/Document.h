@@ -1755,8 +1755,10 @@ protected:
      *
      * @param[in] documentName The name of the document.  The default value is
      * the empty string.
+     * @param[in] documentLabel The initial label, installed before the document
+     * is published to observers.  The default value is "Unnamed".
      */
-    explicit Document(const char* documentName = "");
+    explicit Document(const char* documentName = "", const char* documentLabel = "Unnamed");
 
     /**
      *@brief Remove an object from the document.

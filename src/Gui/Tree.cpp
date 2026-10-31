@@ -543,6 +543,9 @@ QWidget* TreeWidgetItemDelegate::createEditor(
 ) const
 {
     auto ti = static_cast<QTreeWidgetItem*>(index.internalPointer());
+    if (ti->type() == TreeWidget::DocumentType) {
+        return index.column() == 0 ? new ExpLineEdit(parent) : nullptr;
+    }
     if (ti->type() != TreeWidget::ObjectType || index.column() > 1) {
         return nullptr;
     }
@@ -1230,6 +1233,7 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
         // App::GetApplication().setActiveDocument(doc);
 
         showHiddenAction->setChecked(docitem->showHidden());
+        contextMenu.addAction(this->relabelObjectAction);
         contextMenu.addAction(this->showHiddenAction);
         contextMenu.addAction(this->openFileLocationAction);
         contextMenu.addAction(this->searchObjectsAction);
@@ -1460,7 +1464,7 @@ void TreeWidget::onRelabelObject()
 {
     QTreeWidgetItem* item = currentItem();
     if (item) {
-        editItem(item);
+        editItem(item, 0);
     }
 }
 
@@ -1963,6 +1967,12 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
     if (event->matches(QKeySequence::Find)) {
         event->accept();
         onSearchObjects();
+        return;
+    }
+    else if (event->key() == Qt::Key_F2 && event->modifiers() == Qt::NoModifier
+             && currentItem() && currentItem()->type() == DocumentType) {
+        event->accept();
+        onRelabelObject();
         return;
     }
     else if (event->modifiers() == Qt::AltModifier) {
@@ -4497,7 +4507,7 @@ DocumentItem::DocumentItem(const Gui::Document* doc, QTreeWidgetItem* parent)
     );
     // NOLINTEND
 
-    setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable /*|Qt::ItemIsEditable*/);
+    setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
 
     treeName = getTree()->getTreeName();
 }
@@ -5563,9 +5573,27 @@ void DocumentItem::testStatus()
 
 void DocumentItem::setData(int column, int role, const QVariant& value)
 {
-    if (role == Qt::EditRole) {
-        QString label = value.toString();
-        pDocument->getDocument()->Label.setValue((const char*)label.toUtf8());
+    if (role == Qt::EditRole && column == 0) {
+        const QString label = value.toString();
+        if (label == text(0)) {
+            return;
+        }
+        App::PropertyString copiedLabel;
+        copiedLabel.setValue(label.toUtf8().constData());
+        std::ostringstream stream(std::ios::out | std::ios::binary);
+        copiedLabel.dumpToStream(stream, 1);
+
+        // An empty object identity addresses the document's own property.
+        App::DocumentCommandPropertyValue propertyValue;
+        propertyValue.propertyName = "Label";
+        propertyValue.copiedValue = stream.str();
+        auto* document = pDocument->getDocument();
+        const auto outcome = submitDocumentPropertyEdit(*document, {std::move(propertyValue)});
+        if (!outcome.accepted()) {
+            reportDocumentCommandSubmitBlocked(*document, outcome);
+        }
+        // The committed document relabel notification updates the tree text.
+        return;
     }
 
     QTreeWidgetItem::setData(column, role, value);
