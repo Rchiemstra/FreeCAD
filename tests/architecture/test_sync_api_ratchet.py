@@ -44,6 +44,14 @@ REPOSITORY_ROOT = Path(os.environ.get("FREECAD_SOURCE_ROOT", _ARCH_DIR.parents[1
 # ---------------------------------------------------------------------------
 
 SYNC_API_SITES: dict[str, tuple[int, str]] = {
+    "src/Mod/ModelDiff/modeldiff.py||App.closeDocument(name)": (
+        1,
+        "headless snapshot cleanup only; compare_files rejects GuiUp before constructing snapshots, while GUI comparison runs in a separate FreeCADCmd process",
+    ),
+    "src/Mod/ModelDiff/modeldiff.py||App.closeDocument(doc.Name)": (
+        1,
+        "headless presentation error cleanup only; the GuiUp branch submits doc.closeAsync() instead",
+    ),
     "src/Mod/Assembly/Assembly/api.py||doc.recompute()": (
         1,
         "existing opt-in synchronous Assembly App constructor, newly included in the transitive GUI inventory",
