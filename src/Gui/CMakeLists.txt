@@ -1179,6 +1179,7 @@ SET(Widget_HPP_SRCS
     Widgets.h
     Window.h
     WindowLayout.h
+    ViewDropDocking.h
     WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
