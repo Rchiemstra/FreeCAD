@@ -72,6 +72,11 @@ set(Import_PmiFixtures
     TestData/StepPmi/absolute-range.step
     TestData/StepPmi/conflicting-signs.step
     TestData/StepPmi/unmatched-signs.step
+    TestData/StepPmi/generic-metre.step
+    TestData/StepPmi/generic-negative-deviations.step
+    TestData/StepPmi/generic-conflicting-signs.step
+    TestData/StepPmi/generic-other-unit.step
+    TestData/StepPmi/unmatched-magnitudes.step
     TestData/StepPmi/placed-instances.step
     TestData/StepPmi/shared-compartment.step
     TestData/StepPmi/generate.tcl

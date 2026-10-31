@@ -5,11 +5,15 @@
 #include <Precision.hxx>
 #include <STEPConstruct_UnitContext.hxx>
 #include <StepBasic_LengthMeasureWithUnit.hxx>
+#include <StepBasic_MeasureValueMember.hxx>
 #include <StepBasic_NamedUnit.hxx>
 #include <StepBasic_PlaneAngleMeasureWithUnit.hxx>
+#include <StepBasic_SiUnitAndLengthUnit.hxx>
 #include <StepData_StepModel.hxx>
 #if OCC_VERSION_HEX >= 0x080000
 #include <StepData_Factors.hxx>
+#else
+#include <StepData_GlobalFactors.hxx>
 #endif
 #include <StepRepr_ReprItemAndMeasureWithUnit.hxx>
 #include <StepShape_PlusMinusTolerance.hxx>
@@ -44,7 +48,13 @@ bool signedMeasure(const Handle(Standard_Transient)& source, double& value, std:
     }
     value = measure->ValueComponent();
     if (context.LengthDone() && !context.PlaneAngleDone()) {
-        value *= context.LengthFactor();
+        // UnitContext divides by the transfer unit; undo that to obtain mm.
+#if OCC_VERSION_HEX >= 0x080000
+        value *= context.LengthFactor() * localFactors.CascadeUnit();
+#else
+        value *= context.LengthFactor()
+            * StepData_GlobalFactors::Intance().CascadeUnit(); // codespell:ignore intance
+#endif
         unit = "mm";
     }
     else if (context.PlaneAngleDone() && !context.LengthDone()) {
@@ -60,6 +70,30 @@ bool signedMeasure(const Handle(Standard_Transient)& source, double& value, std:
     }
     return std::isfinite(value);
 }
+
+// Only replace generic length bounds, leaving shared source measures untouched.
+// Both readers scale typed length measures, but 7.6 leaves generic ones unscaled.
+Handle(Standard_Transient) lengthBound(const Handle(Standard_Transient)& source,
+                                      double value, const std::string& unit)
+{
+    auto measure = Handle(StepBasic_MeasureWithUnit)::DownCast(source);
+    const auto item = Handle(StepRepr_ReprItemAndMeasureWithUnit)::DownCast(source);
+    if (!item.IsNull()) { measure = item->GetMeasureWithUnit(); }
+    if (unit != "mm" || measure.IsNull()
+        || measure->DynamicType() != STANDARD_TYPE(StepBasic_MeasureWithUnit)) {
+        return source;
+    }
+    Handle(StepBasic_SiUnitAndLengthUnit) mm = new StepBasic_SiUnitAndLengthUnit;
+    mm->Init(true, StepBasic_spMilli, StepBasic_sunMetre);
+    StepBasic_Unit mmUnit;
+    mmUnit.SetValue(mm);
+    Handle(StepBasic_MeasureValueMember) member = new StepBasic_MeasureValueMember;
+    member->SetName("LENGTH_MEASURE");
+    member->SetReal(value);
+    Handle(StepBasic_LengthMeasureWithUnit) length = new StepBasic_LengthMeasureWithUnit;
+    length->Init(member, mmUnit);
+    return length;
+}
 }  // namespace
 
 void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
@@ -71,6 +105,10 @@ void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
     StepData_Factors localFactors;
     localFactors.SetCascadeUnit(model->LocalLengthUnit());
 #endif
+    // Capture every original signature before replacing any bounds. Shared
+    // tolerance values must not make subsequent candidates see rewritten units.
+    std::vector<std::tuple<Handle(StepShape_ToleranceValue),
+                          Handle(Standard_Transient), Handle(Standard_Transient)>> normalised;
     for (int i = 1; i <= model->NbEntities(); ++i) {
         const auto tolerance = Handle(StepShape_PlusMinusTolerance)::DownCast(model->Value(i));
         if (tolerance.IsNull()) {
@@ -83,12 +121,16 @@ void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
         double lower = 0, upper = 0;
         std::string lowerUnit, upperUnit;
 #if OCC_VERSION_HEX >= 0x080000
-        if (!signedMeasure(bounds->LowerBound(), lower, lowerUnit, localFactors)
-            || !signedMeasure(bounds->UpperBound(), upper, upperUnit, localFactors) || lowerUnit != upperUnit) {
+        const bool hasLower = signedMeasure(bounds->LowerBound(), lower, lowerUnit, localFactors);
+        const bool hasUpper = signedMeasure(bounds->UpperBound(), upper, upperUnit, localFactors);
 #else
-        if (!signedMeasure(bounds->LowerBound(), lower, lowerUnit)
-            || !signedMeasure(bounds->UpperBound(), upper, upperUnit) || lowerUnit != upperUnit) {
+        const bool hasLower = signedMeasure(bounds->LowerBound(), lower, lowerUnit);
+        const bool hasUpper = signedMeasure(bounds->UpperBound(), upper, upperUnit);
 #endif
+        normalised.emplace_back(bounds,
+            hasLower ? lengthBound(bounds->LowerBound(), lower, lowerUnit) : bounds->LowerBound(),
+            hasUpper ? lengthBound(bounds->UpperBound(), upper, upperUnit) : bounds->UpperBound());
+        if (!hasLower || !hasUpper || lowerUnit != upperUnit) {
             continue;
         }
         // A magnitude match is exact, in normalised units. If more than one source
@@ -101,32 +143,15 @@ void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
             lostUpperBounds.emplace(lowerUnit, std::abs(lower));
         }
         const BoundsKey key {lowerUnit, std::abs(lower), std::abs(upper)};
-#if OCC_VERSION_HEX >= 0x080000
-        // OCCT 8 also scales generic length MEASURE_WITH_UNIT bounds. In 7.6
-        // only typed length bounds were scaled. Preserve that reader contract
-        // without changing the STEP model or matching a source by name/order.
-        const auto legacyValue = [](const Handle(Standard_Transient)& source,
-                                    double normalised, const std::string& unit) {
-            auto measure = Handle(StepBasic_MeasureWithUnit)::DownCast(source);
-            auto combined = Handle(StepRepr_ReprItemAndMeasureWithUnit)::DownCast(source);
-            if (!combined.IsNull()) { measure = combined->GetMeasureWithUnit(); }
-            return unit == "mm" && !measure.IsNull()
-                    && measure->DynamicType() == STANDARD_TYPE(StepBasic_MeasureWithUnit)
-                ? measure->ValueComponent() : normalised;
-        };
-        const double legacyLower = legacyValue(bounds->LowerBound(), lower, lowerUnit);
-        const double legacyUpper = legacyValue(bounds->UpperBound(), upper, upperUnit);
-        auto legacy = legacyBounds.emplace(key, SignedBounds {legacyLower, legacyUpper, false});
-        if (!legacy.second) {
-            auto& previous = legacy.first->second;
-            previous.conflicting |= previous.lower != legacyLower || previous.upper != legacyUpper;
-        }
-#endif
         auto inserted = signedBounds.emplace(key, SignedBounds {lower, upper, false});
         if (!inserted.second) {
             auto& previous = inserted.first->second;
             previous.conflicting |= previous.lower != lower || previous.upper != upper;
         }
+    }
+    for (const auto& [bounds, lower, upper] : normalised) {
+        bounds->SetLowerBound(lower);
+        bounds->SetUpperBound(upper);
     }
 }
 }  // namespace Import

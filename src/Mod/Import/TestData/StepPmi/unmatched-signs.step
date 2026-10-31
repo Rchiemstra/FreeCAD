@@ -70,7 +70,7 @@ DATA;
 #84=(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.));
 #85=(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT());
 #86=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);
-/* Opposite x faces: generic inch measures exercise failed normalised matching. */
+/* Opposite x faces: generic inch length bounds must be normalised to millimetres. */
 #100=SHAPE_ASPECT('left','',#8,.T.);
 #101=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#100,#10,#44);
 #102=SHAPE_ASPECT('right','',#8,.T.);

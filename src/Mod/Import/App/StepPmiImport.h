@@ -121,11 +121,6 @@ private:
     };
     using BoundsKey = std::tuple<std::string, double, double>;
     std::map<BoundsKey, SignedBounds> signedBounds;
-#if OCC_VERSION_HEX >= 0x080000
-    // Exact normalised signatures -> the magnitudes exposed by the 7.6 reader.
-    // Conflicting source pairs never establish a conversion.
-    std::map<BoundsKey, SignedBounds> legacyBounds;
-#endif
     std::set<std::pair<std::string, double>> lostUpperBounds;
     void captureSignedBounds(const Handle(StepData_StepModel)& model);
     bool failed = false;

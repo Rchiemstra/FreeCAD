@@ -201,16 +201,21 @@ class StepPmiExtendedTests:
                     self.assertFalse(dim.Warnings)
 
     def test_conflicting_source_signs_are_unknown(self):
-        for links in (False, True):
-            doc = self.load_fixture("conflicting-signs", links)
-            dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
-            self.assertFalse(dim.HasDeviations)
-            self.assertFalse(hasattr(dim, "LowerDeviation"))
-            self.assertAlmostEqual(dim.LowerDeviationMagnitude, 0.254)
-            self.assertAlmostEqual(dim.UpperDeviationMagnitude, 0.508)
-            self.assertEqual(dim.DeviationStatus, "magnitudes only; signs unknown")
-            self.assertIn("deviation magnitudes 0.254/0.508 mm (signs unknown)", dim.Summary)
-            self.assertTrue(dim.Warnings)
+        for name in ("conflicting-signs", "generic-conflicting-signs"):
+            for links in (False, True):
+                with self.subTest(name=name, links=links):
+                    doc = self.load_fixture(name, links)
+                    dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
+                    self.assertFalse(dim.HasDeviations)
+                    self.assertFalse(hasattr(dim, "LowerDeviation"))
+                    self.assertAlmostEqual(dim.LowerDeviationMagnitude, 0.254)
+                    self.assertAlmostEqual(dim.UpperDeviationMagnitude, 0.508)
+                    self.assertEqual(dim.DeviationStatus, "magnitudes only; signs unknown")
+                    self.assertIn("deviation magnitudes 0.254/0.508 mm (signs unknown)", dim.Summary)
+                    self.assertEqual(len(dim.Values), 3)
+                    for actual, expected in zip(dim.Values, [25.4, 0.254, 0.508]):
+                        self.assertAlmostEqual(actual, expected)
+                    self.assertTrue(dim.Warnings)
 
     def test_absolute_range_bounds(self):
         for links in (False, True):
@@ -292,32 +297,92 @@ class StepPmiExtendedTests:
         self.assertEqual(sum("STEP PMI:" in line for line in messages), 1, messages)
         self.assertIn(FIXTURE, failures[0])
 
-    def test_nonmatching_source_magnitudes_are_unknown(self):
-        # OCCT 7.6 does not scale generic MEASURE_WITH_UNIT bounds, whereas the
-        # source units require inches -> mm. Never accept a fuzzy/source-order match.
+    def test_generic_inch_bounds_are_normalised(self):
+        # The historical unmatched-signs fixture actually has matching bounds:
+        # -0.01/+0.02 inch is -0.254/+0.508 mm on every supported OCCT version.
         for links in (False, True):
-            doc = self.load_fixture("unmatched-signs", links)
-            dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
-            self.assertFalse(dim.HasDeviations)
-            self.assertEqual(dim.DeviationStatus, "magnitudes only; signs unknown")
-            self.assertAlmostEqual(dim.LowerDeviationMagnitude, 0.01)
-            self.assertAlmostEqual(dim.UpperDeviationMagnitude, 0.02)
-            self.assertIn("signs unknown", dim.Summary)
-            self.assertTrue(dim.Warnings)
+            with self.subTest(links=links):
+                doc = self.load_fixture("unmatched-signs", links)
+                dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
+                self.assertTrue(dim.HasDeviations)
+                self.assertAlmostEqual(dim.LowerDeviation, -0.254)
+                self.assertAlmostEqual(dim.UpperDeviation, 0.508)
+                self.assertEqual(dim.DeviationStatus, "signed source values (exact magnitude match)")
+                self.assertEqual(len(dim.Values), 3)
+                for actual, expected in zip(dim.Values, [25.4, 0.254, 0.508]):
+                    self.assertAlmostEqual(actual, expected)
+                self.assertIn("-0.254/+0.508 mm", dim.Summary)
+                self.assertFalse(dim.Warnings)
+                self.assertFalse(doc.StepPMI.Warnings)
+
+    def test_generic_metre_bounds_are_normalised(self):
+        # The nominal dimension remains one inch; only the bounds use metres.
+        for links in (False, True):
+            with self.subTest(links=links):
+                doc = self.load_fixture("generic-metre", links)
+                dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
+                self.assertEqual(dim.Units, "mm")
+                self.assertTrue(dim.HasDeviations)
+                self.assertAlmostEqual(dim.LowerDeviation, -10)
+                self.assertAlmostEqual(dim.UpperDeviation, 20)
+                self.assertEqual(list(dim.Values), [25.4, 10, 20])
+                self.assertEqual(dim.DeviationStatus, "signed source values (exact magnitude match)")
+                self.assertIn("-10/+20 mm", dim.Summary)
+                self.assertFalse(dim.Warnings)
+                self.assertFalse(doc.StepPMI.Warnings)
+
+    def test_generic_bounds_do_not_take_signs_from_other_units(self):
+        # The second tolerance has the same raw magnitudes in mm and positive
+        # signs. It cannot donate signs to the negative lower inch deviation.
+        for links in (False, True):
+            with self.subTest(links=links):
+                doc = self.load_fixture("generic-other-unit", links)
+                dims = sorted((obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance"),
+                              key=lambda obj: obj.Values[1], reverse=True)
+                self.assertEqual(len(dims), 2)
+                for dim, (lower, upper) in zip(dims, [(-0.254, 0.508), (0.01, 0.02)]):
+                    self.assertTrue(dim.HasDeviations)
+                    self.assertEqual(dim.Units, "mm")
+                    self.assertAlmostEqual(dim.LowerDeviation, lower)
+                    self.assertAlmostEqual(dim.UpperDeviation, upper)
+                    self.assertEqual(dim.DeviationStatus, "signed source values (exact magnitude match)")
+                    self.assertEqual(len(dim.Values), 3)
+                    for actual, expected in zip(dim.Values, [25.4, abs(lower), abs(upper)]):
+                        self.assertAlmostEqual(actual, expected)
+                    self.assertFalse(dim.Warnings)
+
+    def test_nonmatching_source_magnitudes_are_unknown(self):
+        # An additional representation changes one retained magnitude to
+        # 0.03 inch. No source pair matches the resulting 0.762/0.508 mm.
+        for links in (False, True):
+            with self.subTest(links=links):
+                doc = self.load_fixture("unmatched-magnitudes", links)
+                dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
+                self.assertFalse(dim.HasDeviations)
+                self.assertEqual(dim.DeviationStatus, "magnitudes only; signs unknown")
+                self.assertAlmostEqual(dim.LowerDeviationMagnitude, 0.762)
+                self.assertAlmostEqual(dim.UpperDeviationMagnitude, 0.508)
+                self.assertEqual(len(dim.Values), 3)
+                for actual, expected in zip(dim.Values, [25.4, 0.762, 0.508]):
+                    self.assertAlmostEqual(actual, expected)
+                self.assertIn("signs unknown", dim.Summary)
+                self.assertTrue(dim.Warnings)
 
     def test_negative_upper_deviation_loss_is_reported(self):
-        for links in (False, True):
-            doc = self.load_fixture("negative-deviations", links)
-            dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
-            self.assertFalse(dim.HasDeviations)
-            self.assertFalse(dim.HasBounds)
-            self.assertFalse(dim.HasValue)
-            self.assertEqual(dim.DeviationStatus,
-                             "uninterpreted magnitudes; source semantics unavailable")
-            self.assertEqual(len(dim.UninterpretedMagnitudes), 2)
-            self.assertAlmostEqual(dim.UninterpretedMagnitudes[0], 25.4)
-            self.assertAlmostEqual(dim.UninterpretedMagnitudes[1], 0.508)
-            self.assertIn("uninterpreted magnitudes 25.4/0.508", dim.Summary)
-            self.assertNotIn("bounds", dim.Summary)
-            self.assertNotIn("LowerDeviation", dim.PropertiesList)
-            self.assertTrue(any("negative upper" in warning for warning in dim.Warnings))
+        for name in ("negative-deviations", "generic-negative-deviations"):
+            for links in (False, True):
+                with self.subTest(name=name, links=links):
+                    doc = self.load_fixture(name, links)
+                    dim = next(obj for obj in doc.StepPMI.Group if obj.Kind == "linear distance")
+                    self.assertFalse(dim.HasDeviations)
+                    self.assertFalse(dim.HasBounds)
+                    self.assertFalse(dim.HasValue)
+                    self.assertEqual(dim.DeviationStatus,
+                                     "uninterpreted magnitudes; source semantics unavailable")
+                    self.assertEqual(len(dim.UninterpretedMagnitudes), 2)
+                    self.assertAlmostEqual(dim.UninterpretedMagnitudes[0], 25.4)
+                    self.assertAlmostEqual(dim.UninterpretedMagnitudes[1], 0.508)
+                    self.assertIn("uninterpreted magnitudes 25.4/0.508", dim.Summary)
+                    self.assertNotIn("bounds", dim.Summary)
+                    self.assertNotIn("LowerDeviation", dim.PropertiesList)
+                    self.assertTrue(any("negative upper" in warning for warning in dim.Warnings))

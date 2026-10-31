@@ -84,15 +84,40 @@ Rework regression fixtures are hand-authored variants of independent-inch.step:
 * absolute-range.step: lower/upper absolute bounds 0.9/1.1 inch;
 * conflicting-signs.step: two pairs with identical normalised magnitudes but
   different lower signs; recovery must fail closed, not select by entity order;
-* unmatched-signs.step: generic inch measures that OCCT 7.6 leaves unscaled;
-  the normalised source magnitudes differ, so recovery must be refused;
+* unmatched-signs.step: generic inch length measures, historically considered
+  unmatched because OCCT 7.6 left them unscaled. FreeCAD now converts them to
+  typed mm measures before transfer on both versions: -0.01/+0.02 inch becomes
+  -0.254/+0.508 mm, with Values [25.4, 0.254, 0.508], exact signed recovery
+  and no warnings;
+* generic-metre.step: the same nominal one-inch dimension with generic bounds
+  -0.01/+0.02 metre -> -10/+20 mm and Values [25.4, 10, 20];
+* generic-negative-deviations.step: generic -0.02/-0.01 inch bounds; both
+  versions retain only [25.4, 0.508] mm, reported as uninterpreted magnitudes
+  with a warning rather than signed deviations, nominal value or bounds;
+* generic-conflicting-signs.step: generic inch pairs with identical physical
+  magnitudes and conflicting lower signs; retain [25.4, 0.254, 0.508] mm,
+  unknown signs and a warning;
+* generic-other-unit.step: the generic inch pair plus an unrelated positive
+  +0.01/+0.02 mm pair with the same raw magnitudes. Its different normalised
+  magnitudes must not donate signs to the inch tolerance;
+* unmatched-magnitudes.step: an extra upper-limit representation item
+  overwrites the reader's lower magnitude with 0.03 inch (0.762 mm), yielding
+  [25.4, 0.762, 0.508] mm. The sole signed source pair has 0.254/0.508 mm
+  magnitudes and genuinely cannot match: retain unsigned magnitudes,
+  unknown status and a warning;
 * placed-instances.step: one shared block definition, three assembly occurrences
   translated by 0/4/8 inches; definition-level PMI cannot select an occurrence;
 * shared-compartment.step: both datums are elements of the first compartment,
   so their positions must both remain 1.
 The signed source bounds are copied from OCCT's STEP model while the reader is
-alive and normalised with STEPConstruct_UnitContext. Recovery requires exact
-unit/lower-magnitude/upper-magnitude equality, with all matching source pairs
+alive and normalised with STEPConstruct_UnitContext. Generic length bounds
+are replaced only on each TOLERANCE_VALUE, not on shared measures; their
+normalised signed signatures are captured before any replacements. The
+replacement and capture logic is the same on OCCT 7.6 and 8; only the unit
+factor API differs. These variants are hand-authored, so generate.tcl remains
+solely the DRAW generator for semantic.step.
+Recovery requires exact unit/lower-magnitude/upper-magnitude equality,
+with all matching source pairs
 agreeing on signs. This is a conservative correspondence check, not label-order
 matching. Missing, conflicting or non-exact matches retain unsigned magnitudes
 with DeviationStatus, a record warning and a summary explicitly saying signs
