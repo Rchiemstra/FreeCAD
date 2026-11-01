@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "CollaborativeBooleanOperation.h"
+#include "BooleanParallel.h"
 
 #include "FuzzyHelper.h"
 #include "PartFeature.h"
@@ -1030,7 +1031,7 @@ Part::TopoShape runRawBoolean(
     }
     operation->SetArguments(argumentShapes);
     operation->SetTools(toolShapes);
-    operation->SetRunParallel(Standard_True);
+    operation->SetRunParallel(Part::booleanRunParallel());
     operation->SetNonDestructive(Standard_True);
     operation->SetFuzzyValue(fuzzyTolerance);
 
