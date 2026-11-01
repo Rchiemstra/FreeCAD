@@ -268,5 +268,8 @@ class Document(Persistence):
     Modified: bool = False
     """Returns True if the document is marked as modified, and False otherwise."""
 
+    SkipSaveOnClose: bool = False
+    """Discard this disposable GUI document on close without prompting; explicit Save As remains available."""
+
     TreeRootObjects: Final[List[Any]] = []
     """The list of tree root objects."""

@@ -273,6 +273,207 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
+    def _commit_on_worker(self, document, callback, **kwargs):
+        from Test.GuiRecompute import _pump_gui_until
+
+        done = {}
+
+        def worker():
+            try:
+                done["result"] = document.commitCompatibilityMutation(callback, **kwargs)
+            except BaseException as exc:  # pragma: no cover - asserted by the caller
+                done["error"] = exc
+
+        thread = threading.Thread(target=worker, name="compat-commit")
+        thread.start()
+        _pump_gui_until(lambda: not thread.is_alive(), 30)
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        return done
+
+    @staticmethod
+    def _coin_address(node):
+        # SoNode::getNodeId() is a touch stamp and changes when the node is
+        # edited. The SWIG pointer is the C++ address and stays with the node.
+        return int(node.this)
+
+    def _selection_root_ids(self, view):
+        # Importing pivy loads the Coin SWIG wrappers getSceneGraph() requires.
+        from pivy import coin  # noqa: F401
+
+        found = []
+        seen = set()
+
+        def visit(node):
+            if node is None:
+                return
+            try:
+                key = self._coin_address(node)
+            except Exception:
+                key = id(node)
+            if key in seen:
+                return
+            seen.add(key)
+            try:
+                name = str(node.getTypeId().getName())
+            except Exception:
+                name = ""
+            if name == "SoFCSelectionRoot":
+                found.append(key)
+            try:
+                count = int(node.getNumChildren())
+            except Exception:
+                return
+            for index in range(count):
+                visit(node.getChild(index))
+
+        if view is not None and hasattr(view, "getSceneGraph"):
+            visit(view.getSceneGraph())
+        return found
+
+    def _active_view(self, document):
+        gui = FreeCADGui.getDocument(document.Name)
+        self.assertIsNotNone(gui)
+        FreeCADGui.setActiveDocument(document.Name)
+        view = gui.ActiveView
+        self.assertIsNotNone(view)
+        return view
+
+    def _provider_root_id(self, document, name):
+        provider = FreeCADGui.getDocument(document.Name).getObject(name)
+        self.assertIsNotNone(provider)
+        return provider, self._coin_address(provider.RootNode)
+
+    def testNonStructuralCompatibilityUndoKeepsViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until, undo_document
+
+        box = self.doc.addObject("Part::Box", "PropertyBox")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("PropertyBox") is not None,
+            10,
+        )
+        view = self._active_view(self.doc)
+        before_ids = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "PropertyBox")
+        self.assertIn(root_id, before_ids)
+
+        original_length = float(box.Length)
+
+        def edit():
+            box.Length = original_length + 5
+
+        done = self._commit_on_worker(self.doc, edit, structural=False, recompute=False)
+        self.assertNotIn("error", done)
+        self.assertTrue(done["result"]["committed"], done["result"])
+        undo_document(self.doc)
+        restored, restored_root = self._provider_root_id(self.doc, "PropertyBox")
+        self.assertIs(restored, provider)
+        self.assertEqual(restored_root, root_id)
+        self.assertIn(restored_root, self._selection_root_ids(self._active_view(self.doc)))
+        self.assertEqual(len(self._selection_root_ids(self._active_view(self.doc))), len(before_ids))
+        self.assertAlmostEqual(float(box.Length), original_length)
+
+    def testStructuralCompatibilityRemovalUndoKeepsOneViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until, redo_document, undo_document, close_document
+
+        box = self.doc.addObject("Part::Box", "Box")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("Box") is not None, 10
+        )
+        view = self._active_view(self.doc)
+        with_box = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "Box")
+        self.assertIn(root_id, with_box)
+
+        def remove_box():
+            self.doc.removeObject("Box")
+
+        done = self._commit_on_worker(self.doc, remove_box, structural=True, recompute=False)
+        self.assertNotIn("error", done, getattr(done.get("error"), "args", None))
+        self.assertTrue(done["result"]["committed"], done["result"])
+        _pump_gui_until(lambda: self.doc.getObject("Box") is None, 10)
+        without_box = self._selection_root_ids(self._active_view(self.doc))
+        self.assertLess(len(without_box), len(with_box))
+
+        undo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is not None, 10)
+        restored, restored_root = self._provider_root_id(self.doc, "Box")
+        scene_after_undo = self._selection_root_ids(self._active_view(self.doc))
+        # The deferred removal signal used to append the provider after the
+        # document object. Undo then created a second provider, left the first
+        # root out of the scene, and leaked a SoFCSelectionRoot.
+        self.assertIs(restored, provider)
+        self.assertEqual(restored_root, root_id)
+        self.assertIn(restored_root, scene_after_undo)
+        self.assertEqual(len(scene_after_undo), len(with_box))
+
+        redo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is None, 10)
+        self.assertEqual(
+            len(self._selection_root_ids(self._active_view(self.doc))), len(without_box)
+        )
+
+        undo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is not None, 10)
+        restored_again, restored_again_root = self._provider_root_id(self.doc, "Box")
+        scene_after_second_undo = self._selection_root_ids(self._active_view(self.doc))
+        self.assertIs(restored_again, provider)
+        self.assertEqual(restored_again_root, root_id)
+        self.assertIn(restored_again_root, scene_after_second_undo)
+        self.assertEqual(len(scene_after_second_undo), len(with_box))
+
+        other = FreeCAD.newDocument("VpUndoNext")
+        try:
+            FreeCADGui.setActiveDocument(other.Name)
+            _pump_gui_until(lambda: FreeCADGui.getDocument(other.Name) is not None, 10)
+            other.addObject("Part::Box", "Marker")
+            _pump_gui_until(
+                lambda: FreeCADGui.getDocument(other.Name).getObject("Marker") is not None, 10
+            )
+            marker, marker_root = self._provider_root_id(other, "Marker")
+            self.assertIs(
+                FreeCADGui.getDocument(other.Name).getObject("Marker"), marker
+            )
+            self.assertIn(marker_root, self._selection_root_ids(self._active_view(other)))
+            FreeCADGui.setActiveDocument(self.doc.Name)
+            back, back_root = self._provider_root_id(self.doc, "Box")
+            self.assertIs(back, provider)
+            self.assertEqual(back_root, root_id)
+            self.assertIn(back_root, self._selection_root_ids(self._active_view(self.doc)))
+        finally:
+            close_document(other)
+
+    def testFailedStructuralCompatibilityRemovalKeepsViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until
+
+        box = self.doc.addObject("Part::Box", "RollbackBox")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("RollbackBox") is not None,
+            10,
+        )
+        view = self._active_view(self.doc)
+        before_ids = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "RollbackBox")
+
+        def remove_and_fail():
+            self.doc.removeObject("RollbackBox")
+            raise ValueError("rollback view provider")
+
+        done = self._commit_on_worker(
+            self.doc, remove_and_fail, structural=True, recompute=False
+        )
+        self.assertIn("error", done)
+        self.assertIsInstance(done["error"], ValueError)
+        _pump_gui_until(lambda: self.doc.getObject("RollbackBox") is not None, 10)
+        restored, restored_root = self._provider_root_id(self.doc, "RollbackBox")
+        self.assertIs(restored, provider)
+        self.assertIs(self.doc.getObject("RollbackBox"), box)
+        self.assertEqual(restored_root, root_id)
+        current_ids = self._selection_root_ids(self._active_view(self.doc))
+        self.assertEqual(len(current_ids), len(before_ids))
+        # The original root must still be in the scene now, not just have been there before.
+        self.assertIn(restored_root, current_ids)
+
     def _queuedPresentationWhileBusy(self, *, failing=False, from_owner=False):
         from Test.GuiRecompute import _pump_gui_until
         from draftutils import gui_utils
@@ -692,6 +893,183 @@ class TestGuiDocument(unittest.TestCase):
 
             # close the editor while its file still exists
             closeEditor()
+
+    def testPartialLaneFailurePublishesRecomputedSignal(self):
+        """A partially failed Std_Refresh must tell the GUI the recompute finished.
+
+        Std_Refresh admits a lane command and does not wait on RecomputeHandle,
+        so only the lane's terminal finalization emits signalRecomputed.
+        Gui::Document::slotRecomputed queues the tree refresh that updateGui drains.
+        """
+        kept = self.doc.addObject("App::FeatureTest", "Keep")
+        bad = self.doc.addObject("App::FeatureTest", "Bad")
+        self.assertIsNotNone(kept)
+        self.assertIsNotNone(bad)
+        FreeCAD.setActiveDocument(self.doc.Name)
+        recompute_document(self.doc, timeout_seconds=30.0)
+        FreeCADGui.updateGui()
+        kept_count = kept.ExecCount
+
+        bad.ExceptionType = 1
+        touch_on_owner_thread(self.doc, kept)
+        touch_on_owner_thread(self.doc, bad)
+        self.assertTrue(self.doc.mustExecute(), self.doc.getMutationReadiness())
+
+        def icon_state(item):
+            icon = item.icon(0)
+            key = None if icon.isNull() else icon.cacheKey()
+            return (key, item.text(0), item.text(2))
+
+        def error_overlay_pixels(item):
+            """Count red pixels in the top-right error badge.
+
+            TreeWidget paints overlay_error there when the object is in error
+            (State contains Invalid). The touched badge is blue, so a cache-key
+            change alone is not the error presentation.
+            """
+            icon = item.icon(0)
+            if icon.isNull():
+                return 0
+            sizes = icon.availableSizes()
+            pixmap = icon.pixmap(sizes[-1] if sizes else QtCore.QSize(32, 32))
+            image = pixmap.toImage()
+            if image.isNull() or image.width() == 0 or image.height() == 0:
+                return 0
+            span = max(6, int(round(12 * (pixmap.devicePixelRatio() or 1.0))))
+            width = image.width()
+            height = image.height()
+            red = 0
+            for y in range(min(height, span)):
+                for x in range(max(0, width - span), width):
+                    color = image.pixelColor(x, y)
+                    if color.alpha() < 40:
+                        continue
+                    if (
+                        color.red() >= 140
+                        and color.red() > color.green() + 50
+                        and color.red() > color.blue() + 50
+                    ):
+                        red += 1
+            return red
+
+        def document_object_samples(internal_name):
+            """Icon samples for this document's rows. Read before the next refresh.
+
+            updateGui rebuilds tree items, so a wrapper kept across pumps is deleted.
+            Column 2 is the internal name.
+            """
+            label = self.doc.Label
+            samples = []
+            window = FreeCADGui.getMainWindow()
+            for widget in window.findChildren(QtWidgets.QTreeWidget):
+                root = widget.invisibleRootItem()
+                for index in range(root.childCount()):
+                    doc_item = root.child(index)
+                    if doc_item.type() != 1000 or doc_item.text(0) != label:
+                        continue
+
+                    def walk(item):
+                        for child_index in range(item.childCount()):
+                            child = item.child(child_index)
+                            if child.type() == 1001 and child.text(2) == internal_name:
+                                samples.append((icon_state(child), error_overlay_pixels(child)))
+                            walk(child)
+
+                    walk(doc_item)
+            return samples
+
+        def pump_until_stable(internal_name, deadline, quiet_seconds):
+            """Pump updateGui until the row stops changing, or the deadline hits.
+
+            Tree status refresh is a timer (StatusTimeout, default 100 ms). The
+            quiet window is longer than that timer, so a refresh that is still
+            pending changes the icon and the wait starts over.
+            """
+            previous = None
+            stable_since = None
+            samples = []
+            while time.monotonic() < deadline:
+                FreeCADGui.updateGui()
+                samples = document_object_samples(internal_name)
+                signature = tuple(state for state, _count in samples) if samples else None
+                now = time.monotonic()
+                if signature is not None and signature == previous:
+                    if stable_since is None:
+                        stable_since = now
+                    elif now - stable_since >= quiet_seconds:
+                        return samples
+                else:
+                    stable_since = None
+                    previous = signature
+                time.sleep(0.02)
+            self.fail(
+                f"{self.doc.Name} tree row {internal_name} did not settle "
+                f"({len(samples)} row(s))"
+            )
+
+        bad_before = pump_until_stable("Bad", time.monotonic() + 5.0, 0.3)
+        before_overlay = [count for _state, count in bad_before]
+        self.assertTrue(bad_before)
+        self.assertTrue(
+            all(count < 4 for count in before_overlay),
+            f"error overlay already present before Std_Refresh: {before_overlay}",
+        )
+
+        seen = []
+
+        class Observer:
+            def slotRecomputedObject(self, obj):
+                seen.append(("object", obj.Name))
+
+            def slotRecomputedDocument(self, doc):
+                seen.append(("document", doc.Name))
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            FreeCADGui.runCommand("Std_Refresh", 0)
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                FreeCADGui.updateGui()
+                if ("document", self.doc.Name) in seen:
+                    break
+                time.sleep(0.02)
+            FreeCADGui.updateGui()
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+
+        overlay_deadline = time.monotonic() + 30.0
+        bad_overlay = []
+        keep_overlay = []
+        while time.monotonic() < overlay_deadline:
+            FreeCADGui.updateGui()
+            if ("document", self.doc.Name) not in seen:
+                time.sleep(0.02)
+                continue
+            bad_overlay = [count for _state, count in document_object_samples("Bad")]
+            keep_overlay = [count for _state, count in document_object_samples("Keep")]
+            if (
+                bad_overlay
+                and keep_overlay
+                and all(count >= 4 for count in bad_overlay)
+                and all(count < 4 for count in keep_overlay)
+            ):
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(seen.count(("document", self.doc.Name)), 1)
+        self.assertEqual(seen.count(("object", "Keep")), 1)
+        self.assertEqual(seen.count(("object", "Bad")), 0)
+        self.assertIn("Invalid", bad.State)
+        self.assertGreater(kept.ExecCount, kept_count)
+        self.assertTrue(
+            bad_overlay and all(count >= 4 for count in bad_overlay),
+            f"{self.doc.Name} Bad tree row is missing the error overlay: {bad_overlay}",
+        )
+        self.assertTrue(
+            keep_overlay and all(count < 4 for count in keep_overlay),
+            f"{self.doc.Name} Keep tree row shows the error overlay: {keep_overlay}",
+        )
 
 
 class TestImagePlaneLoading(unittest.TestCase):

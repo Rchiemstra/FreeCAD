@@ -178,6 +178,17 @@ public:
     void addObjectNew(TransactionalObject* Obj);
 
     /**
+     * @brief Record Obj as removed, immediately before an object already removed.
+     *
+     * Undo restores removed objects in sequence order. A view provider has to
+     * be restored before its document object. A deferred removal signal runs
+     * after that object is already recorded, so appending the provider would
+     * restore the object first and leak a second provider. When @p before is
+     * not a removal record, this appends like addObjectNew().
+     */
+    void addObjectNewBefore(TransactionalObject* Obj, const TransactionalObject* before);
+
+    /**
      * @brief Record removing an object from the transaction.
      *
      * @param[in] Obj The object to remove.

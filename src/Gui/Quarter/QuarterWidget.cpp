@@ -87,6 +87,7 @@
 
 #include "QuarterWidget.h"
 #include "InteractionMode.h"
+#include "OpenGLViewportResize.h"
 #include "QuarterP.h"
 #include "QuarterWidgetP.h"
 #include "eventhandlers/EventFilter.h"
@@ -265,6 +266,7 @@ QuarterWidget::constructor(const QSurfaceFormat & format, const QOpenGLWidget * 
   setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     
   PRIVATE(this) = new QuarterWidgetP(this, sharewidget);
+  PRIVATE(this)->glResizeGuard = new Gui::OpenGLViewportResizeGuard(this);
 
   PRIVATE(this)->sorendermanager = new SoRenderManager;
   PRIVATE(this)->initialsorendermanager = true;
@@ -930,6 +932,13 @@ void QuarterWidget::paintEvent(QPaintEvent* event)
 
 bool QuarterWidget::viewportEvent(QEvent* event)
 {
+    // Deliver every resize to QGraphicsView, but not while this flush already
+    // holds the viewport texture. The guard replays the viewport's current size
+    // afterwards. A resize delivered outside the flush cancels a pending replay.
+    if (event->type() == QEvent::Resize && PRIVATE(this)->glResizeGuard
+        && PRIVATE(this)->glResizeGuard->interceptResize(static_cast<QResizeEvent*>(event))) {
+        return true;
+    }
 
     // If no item is selected still let the graphics scene handle it but
     // additionally handle it by this viewer. This is e.g. needed when

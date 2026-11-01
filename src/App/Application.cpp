@@ -181,6 +181,7 @@
 // scriptings (scripts are built-in but can be overridden by command line option)
 #include <App/InitScript.h>
 #include <App/TestScript.h>
+#include <App/DiffScript.h>
 #include <App/CMakeScript.h>
 
 #include "SafeMode.h"
@@ -549,7 +550,9 @@ Document* Application::newDocument(const char * proposedName, const char * propo
         }
     }
     // create the FreeCAD document
-    auto doc = new Document(name.c_str());
+    // Observers may schedule owner-thread work as soon as the document is published.
+    // Install the bootstrap label as constructor state before exposing the document.
+    auto doc = new Document(name.c_str(), label.c_str());
     doc->setStatus(Document::TempDoc, CreateFlags.temporary);
 
     // add the document to the internal list
@@ -602,14 +605,6 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     }
     else {
         signalNewDocument(*doc, CreateFlags.createView);
-    }
-
-    {
-        // The application-assigned bootstrap label is part of a new
-        // document's root state.  Suppress only this write: mutations made by
-        // signalNewDocument observers above remain authoritative.
-        Document::FileChangeTrackingScope fileStateScope(*doc);
-        doc->Label.setValue(label);
     }
 
     // set the old document active again if the new is temporary
@@ -2706,6 +2701,7 @@ void parseProgramOptions(int ac, char ** av, const std::string& exe, boost::prog
     ("get-config", boost::program_options::value<std::string>(), "Prints the value of the requested configuration key")
     ("set-config", boost::program_options::value< std::vector<std::string> >()->multitoken(), "Sets the value of a configuration key")
     ("keep-deprecated-paths", "If set then config files are kept on the old location")
+    ("diff,d", "Run a diff between two files")
     ;
 
     // Declare a group of options that will be
@@ -3013,6 +3009,20 @@ void processProgramOptions(const boost::program_options::variables_map& vm, std:
             }
         }
     }
+
+    if (vm.contains("diff")) {
+        if (mConfig["OpenFileCount"] != "2") {
+            throw Base::UnknownProgramOption("Exactly two files must be specified for --diff\n");
+        }
+        if (vm.contains("run-test") || vm.contains("run-open")) {
+            throw Base::UnknownProgramOption("--diff cannot be combined with test options\n");
+        }
+        mConfig["RunMode"] = "Internal";
+        mConfig["ScriptFileName"] = "FreeCADDiff";
+        // A difftool must own its window and lifetime, even with a persisted
+        // SingleInstance setting or an explicit --single-instance option.
+        mConfig.erase("SingleInstance");
+    }
 }
 
 }
@@ -3312,6 +3322,7 @@ void Application::initApplication()
     new Base::ScriptProducer( "CMakeVariables", CMakeVariables );
     new Base::ScriptProducer( "FreeCADInit",    FreeCADInit    );
     new Base::ScriptProducer( "FreeCADTest",    FreeCADTest    );
+    new Base::ScriptProducer( "FreeCADDiff",    FreeCADDiff    );
 
     // creating the application
     if (mConfig["Verbose"] != "Strict")
@@ -3485,8 +3496,10 @@ void Application::processCmdLineFiles()
 
 void Application::runApplication()
 {
-    // process all files given through command line interface
-    processCmdLineFiles();
+    // The diff API reads isolated snapshots, without opening the inputs in the UI.
+    if (mConfig["ScriptFileName"] != "FreeCADDiff") {
+        processCmdLineFiles();
+    }
 
     if (mConfig["RunMode"] == "Cmd") {
         // Run the commandline interface
