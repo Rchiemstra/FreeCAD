@@ -128,9 +128,11 @@ def extractWithDialog(assembly, component):
     try:
         # Report all unsupported references before entering the operation.
         # Model work inside extract() runs on each document owner. This method
-        # only does GUI work: dialogs, the warning, and selection. The same
-        # cross-document window as Insert Link / Insert New Part / tree
-        # copy-move remains; see ExtractComponent.preflight.
+        # only does GUI work: dialogs, the warning, and selection. The full
+        # other-document check runs again on the GUI thread just before the
+        # source commit. A native link gained after that is caught on the owner
+        # just before deletion. Opaque Python references gained after the
+        # second GUI check are not covered.
         preflight(assembly, component, path)
         result = extract(assembly, component, path)
     except Exception as exc:

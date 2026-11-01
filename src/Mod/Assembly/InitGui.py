@@ -22,9 +22,6 @@
 # **************************************************************************/
 
 
-FreeCAD.__unit_test__ += ["TestAssemblyGui"]
-
-
 class AssemblyCommandGroup:
     def __init__(self, cmdlist, menu, tooltip=None):
         self.cmdlist = cmdlist

@@ -4,6 +4,8 @@
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -28,7 +30,6 @@ class TestExtractComponent(unittest.TestCase):
         self.path = os.path.join(self.directory.name, "Component.FCStd")
         self.source_path = os.path.join(self.directory.name, "Assembly.FCStd")
         self.doc = App.newDocument("ExtractionTest")
-        self.doc.UndoMode = 1
         self.assembly = Assembly.createAssembly(self.doc)
         self.part = self.assembly.newObject("App::Part", "LocalPart")
         self.part.Label = "Component label"
@@ -568,6 +569,72 @@ class TestExtractComponent(unittest.TestCase):
         self.assertEqual(undos, self.doc.UndoCount)
         return raised.exception
 
+    def assertKeptCommit(self, message, undos_before, detail):
+        self.assertIn(self.path, message)
+        self.assertIn("did not finish updating", message)
+        self.assertIn("Undo restores the assembly", message)
+        self.assertIn("extracted file stays on disk", message)
+        self.assertIn(detail, message)
+        self.assertEqual(
+            list(self.doc.UndoNames),
+            ["Extract component to file", *undos_before],
+        )
+        self.assertEqual(list(self.doc.RedoNames), [])
+        self.assertIsNone(self.doc.getObject("LocalPart"))
+        link = self.doc.getObject("LocalPartLink")
+        self.assertIsNotNone(link)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(
+            os.path.realpath(link.LinkedObject.Document.FileName),
+            os.path.realpath(self.path),
+        )
+        self.assertIn(link.LinkedObject.Document.Name, App.listDocuments())
+        return link
+
+    def assertKeptUnverified(self, error, detail):
+        message = str(error)
+        self.assertTrue(os.path.isfile(self.path), message)
+        self.assertIn(self.path, message)
+        self.assertIn("could not be verified", message)
+        self.assertIn("were kept", message)
+        self.assertIn(detail, message)
+        kept = [
+            doc
+            for doc in App.listDocuments().values()
+            if os.path.realpath(doc.FileName or "") == os.path.realpath(self.path)
+        ]
+        self.assertEqual(len(kept), 1)
+        self.assertIn(kept[0].Name, App.listDocuments())
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        return message
+
+    def patchSourceCommit(self, status, mutate=None):
+        """Replace the source commit with a result dict's status, running no callback."""
+        import ExtractComponent
+
+        real = ExtractComponent._commit_on_owner
+
+        def commit(document, callback, pump=None, **kwargs):
+            if getattr(document, "Name", None) == self.doc.Name:
+                if mutate is not None:
+                    mutate()
+                error = ExtractionError(f"commit status {status}")
+                error.commit_status = status
+                raise error
+            return real(document, callback, pump=pump, **kwargs)
+
+        return patch("ExtractComponent._commit_on_owner", side_effect=commit)
+
+    def _destination_saved_here(self):
+        path = os.path.realpath(self.path)
+        matches = [
+            doc
+            for doc in App.listDocuments().values()
+            if doc.FileName and os.path.realpath(doc.FileName) == path
+        ]
+        self.assertEqual(len(matches), 1, [getattr(doc, "Name", None) for doc in matches])
+        return matches[0]
+
     def test_refuse_unsaved(self):
         self.doc.FileName = ""
         self.assertRefused()
@@ -738,6 +805,53 @@ class TestExtractComponent(unittest.TestCase):
         error = self.assertRefused()
         self.assertIn((reader.Name, "Payload"), error.leftover)
 
+    def test_iterator_slots_are_inspected(self):
+        import ExtractComponent
+
+        owned = self.part
+
+        class State:
+            __slots__ = iter(("hidden",))
+
+            def __init__(self, hidden):
+                self.hidden = hidden
+
+            def dumps(self):
+                return {}
+
+        value = State(owned)
+        self.assertTrue(ExtractComponent._containsOwned(value, [owned]))
+        other = App.newDocument("SlotIterator")
+        reader = other.addObject("App::FeaturePython", "Reader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = value
+        error = self.assertRefused()
+        self.assertIn((reader.FullName, "Payload"), error.leftover)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_slots_iterable_is_not_called(self):
+        import ExtractComponent
+
+        calls = []
+
+        class Slots:
+            def __iter__(self):
+                calls.append(True)
+                yield "hidden"
+
+        class State:
+            __slots__ = Slots()
+
+            def dumps(self):
+                return {}
+
+        calls.clear()
+        value = State()
+        value.hidden = 1
+        self.assertFalse(ExtractComponent._containsOwned(value, [self.part]))
+        self.assertFalse(ExtractComponent._python_state_blocks(value, [self.part]))
+        self.assertEqual(calls, [])
+
     def test_refuse_frozenset_python_reference(self):
         class Holder:
             def __init__(self, refs):
@@ -831,7 +945,7 @@ class TestExtractComponent(unittest.TestCase):
             if os.path.isdir(locked):
                 os.chmod(locked, 0o755)
 
-    def test_failed_extraction_keeps_redo_history_and_undo_mode(self):
+    def test_failed_extraction_keeps_redo_history(self):
         import AssemblyApp
 
         self.doc.openTransaction("Rename component")
@@ -843,8 +957,6 @@ class TestExtractComponent(unittest.TestCase):
         redos = list(self.doc.RedoNames)
         undos = list(self.doc.UndoNames)
         undo_count = self.doc.UndoCount
-        self.doc.UndoMode = 0
-        mode = self.doc.UndoMode
         original = AssemblyApp._extractionReferences
 
         def fail(owners, pairs, apply=False):
@@ -854,15 +966,17 @@ class TestExtractComponent(unittest.TestCase):
             return report
 
         with patch.object(AssemblyApp, "_extractionReferences", side_effect=fail):
-            with self.assertRaisesRegex(RuntimeError, "replacement rejected"):
+            # The binding re-raises the callback error and drops ApplyFailed, so
+            # the rollback status is not visible and the file stays.
+            with self.assertRaises(ExtractionError) as raised:
                 self.runExtract()
+        self.assertKeptUnverified(raised.exception, "replacement rejected")
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
         self.assertEqual(list(self.doc.RedoNames), redos)
         self.assertEqual(list(self.doc.UndoNames), undos)
         self.assertEqual(self.doc.UndoCount, undo_count)
-        self.assertEqual(self.doc.UndoMode, mode)
         self.assertEqual(self.part.Label, "Component label")
         self.assertIsNotNone(self.doc.getObject("LocalPart"))
-        self.assertFalse(os.path.exists(self.path))
 
     def test_refuse_missing_external_component_file(self):
         definition = App.newDocument("ExternalDefinition")
@@ -911,7 +1025,7 @@ class TestExtractComponent(unittest.TestCase):
             self.assertEqual(stream.read(), b"concurrent writer")
         self.assertEqual(set(App.listDocuments()) - self.before, {self.doc.Name})
 
-    def test_replacement_failure_rolls_back_and_removes_file(self):
+    def test_replacement_failure_rolls_back_and_keeps_unverified_file(self):
         import AssemblyApp
         from ExtractComponent import _owned
 
@@ -956,8 +1070,10 @@ class TestExtractComponent(unittest.TestCase):
             return report
 
         with patch.object(AssemblyApp, "_extractionReferences", side_effect=fail):
-            with self.assertRaisesRegex(RuntimeError, "replacement rejected"):
+            with self.assertRaises(ExtractionError) as raised:
                 self.runExtract()
+        self.assertKeptUnverified(raised.exception, "replacement rejected")
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
         self.assertEqual(mutated, [True])
         self.assertEqual(set(names), {obj.Name for obj in self.doc.Objects})
         self.assertEqual(other_link.LinkedObject, self.doc.LocalPart)
@@ -977,14 +1093,929 @@ class TestExtractComponent(unittest.TestCase):
         self.assertEqual(self.doc.getBookedTransactionID(), 0)
         self.assertEqual(self.doc.RedoCount, 0)
         self.assertEqual(self.doc.getFileChangeState(), file_state)
-        self.assertEqual(
-            files,
-            {path.name: path.read_bytes() for path in Path(self.directory.name).iterdir()},
-        )
-        self.assertFalse(os.path.exists(self.path))
+        after = {
+            path.name: path.read_bytes() for path in Path(self.directory.name).iterdir()
+        }
+        self.assertEqual(set(after) - set(files), {os.path.basename(self.path)})
+        for name, data in files.items():
+            self.assertEqual(after[name], data)
+        self.assertTrue(os.path.isfile(self.path))
         self.assertEqual(self.doc.UndoCount, 0)
-        self.assertEqual(set(App.listDocuments()) - self.before, {self.doc.Name})
+        extra = set(App.listDocuments()) - self.before - {self.doc.Name}
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(
+            os.path.realpath(App.getDocument(extra.pop()).FileName),
+            os.path.realpath(self.path),
+        )
         self.assertEqual(App.ActiveDocument, self.doc)
+
+    def test_settled_check_rejects_later_invalid_object(self):
+        import ExtractComponent
+
+        real = ExtractComponent._settled_observation
+
+        def observe(obj):
+            name, status, state, valid = real(obj)
+            if name == "LocalPartLink":
+                return name, "Invalid", set(state) | {"Invalid"}, False
+            return name, status, state, valid
+
+        with patch("ExtractComponent._settled_observation", side_effect=observe):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertIn("LocalPartLink", str(raised.exception))
+        self.assertIn("recompute", str(raised.exception).lower())
+
+    def test_post_commit_recompute_failure_keeps_file_and_undo(self):
+        import ExtractComponent
+
+        self.doc.openTransaction("Rename component")
+        self.part.Label = "Before extract"
+        self.doc.commitTransaction()
+        undos_before = list(self.doc.UndoNames)
+        self.assertEqual(undos_before, ["Rename component"])
+        self.assertEqual(list(self.doc.RedoNames), [])
+        real = ExtractComponent._require_settled
+
+        def fail_source(document, objects, message):
+            if getattr(document, "Name", None) == self.doc.Name:
+                raise ExtractionError("forced post-commit recompute failure")
+            return real(document, objects, message)
+
+        with patch("ExtractComponent._require_settled", side_effect=fail_source):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        message = str(raised.exception)
+        link = self.assertKeptCommit(
+            message, undos_before, "forced post-commit recompute failure"
+        )
+        self.assertEqual(link.Label, "Before extract")
+
+    def test_post_commit_visibility_failure_keeps_file_and_undo(self):
+        import ExtractComponent
+
+        self.doc.openTransaction("Rename component")
+        self.part.Label = "Before extract"
+        self.doc.commitTransaction()
+        undos_before = list(self.doc.UndoNames)
+        self.assertEqual(undos_before, ["Rename component"])
+        self.assertEqual(list(self.doc.RedoNames), [])
+
+        def fail_visibility(link, visible):
+            raise ExtractionError("forced visibility restore failure")
+
+        with patch(
+            "ExtractComponent._restore_link_visibility", side_effect=fail_visibility
+        ):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        message = str(raised.exception)
+        link = self.assertKeptCommit(
+            message, undos_before, "forced visibility restore failure"
+        )
+        self.assertEqual(link.Label, "Before extract")
+
+    def test_unverified_rollback_keeps_destination_and_file(self):
+        import ExtractComponent
+
+        real_save = ExtractComponent._save_destination
+        names = [obj.Name for obj in self.doc.Objects]
+        undos = list(self.doc.UndoNames)
+        redos = list(self.doc.RedoNames)
+
+        def save(destination, path):
+            outcome = real_save(destination, path)
+            self.assertTrue(outcome["success"])
+            raise ExtractionError(
+                "forced pre-commit failure",
+                [("Reader", "Payload")],
+            )
+
+        with patch("ExtractComponent._save_destination", side_effect=save), patch(
+            "ExtractComponent._source_restored", return_value=False
+        ):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        error = raised.exception
+        message = str(error)
+        self.assertIn(self.path, message)
+        self.assertNotIn("rolled back", message)
+        self.assertIn("could not be verified", message)
+        self.assertIn("were kept", message)
+        self.assertIn("forced pre-commit failure", message)
+        self.assertIsInstance(error.__cause__, ExtractionError)
+        self.assertEqual(str(error.__cause__), "forced pre-commit failure")
+        self.assertEqual(error.__cause__.leftover, (("Reader", "Payload"),))
+        self.assertEqual(error.leftover, (("Reader", "Payload"),))
+        self.assertEqual(names, [obj.Name for obj in self.doc.Objects])
+        self.assertEqual(list(self.doc.UndoNames), undos)
+        self.assertEqual(list(self.doc.RedoNames), redos)
+        self.assertTrue(os.path.isfile(self.path))
+        kept = [
+            doc
+            for doc in App.listDocuments().values()
+            if os.path.realpath(doc.FileName or "") == os.path.realpath(self.path)
+        ]
+        self.assertEqual(len(kept), 1)
+        self.assertIn(kept[0].Name, App.listDocuments())
+
+    def test_rollback_failed_keeps_destination_and_file(self):
+        import ExtractComponent
+
+        class FakeDocument:
+            Name = "FakeSource"
+
+            def commitCompatibilityMutationAsync(self, callback, **kwargs):
+                return {
+                    "wait": lambda: {
+                        "status": "RollbackFailed",
+                        "message": "native rollback failed",
+                    }
+                }
+
+        with self.assertRaises(ExtractionError) as direct:
+            ExtractComponent._commit_on_owner(
+                FakeDocument(), lambda: None, pump=self.doc
+            )
+        self.assertEqual(direct.exception.commit_status, "RollbackFailed")
+        self.assertIn("native rollback failed", str(direct.exception))
+
+        # Running nothing of the callback: names and links look restored.
+        with self.patchSourceCommit("RollbackFailed"):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        message = self.assertKeptUnverified(raised.exception, "RollbackFailed")
+        self.assertNotIn("rolled back", message)
+        self.assertEqual(raised.exception.__cause__.commit_status, "RollbackFailed")
+
+    def test_clean_rollback_with_placement_expression_keeps_file(self):
+        reader = self.doc.addObject("App::FeaturePython", "ExprReader")
+        reader.addProperty("App::PropertyPlacement", "Placement")
+        self.doc.recompute()
+
+        def plant():
+            destination = next(
+                doc
+                for doc in App.listDocuments().values()
+                if doc.Name != self.doc.Name and doc.Name not in self.before
+            )
+            reader.setExpression("Placement", f"{destination.Name}#Pad.Placement")
+
+        with self.patchSourceCommit("ApplyFailed", plant):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertKeptUnverified(raised.exception, "ApplyFailed")
+        self.assertIn("#", reader.ExpressionEngine[0][1])
+        self.assertIn("Pad.Placement", reader.ExpressionEngine[0][1])
+
+    def test_clean_rollback_with_hidden_xlink_keeps_file(self):
+        reader = self.doc.addObject("App::FeaturePython", "HiddenReader")
+        reader.addProperty("App::PropertyXLinkSubHidden", "Reference")
+        self.assertEqual(
+            reader.getTypeIdOfProperty("Reference"), "App::PropertyXLinkSubHidden"
+        )
+        self.doc.recompute()
+        planted = {}
+
+        def plant():
+            destination = self._destination_saved_here()
+            target = destination.getObject("Pad")
+            self.assertIsNotNone(target)
+            names = [obj.Name for obj in self.doc.Objects]
+            reader.Reference = (target, [""])
+            planted["target"] = target
+            planted["dest_name"] = destination.Name
+            planted["names_same"] = [obj.Name for obj in self.doc.Objects] == names
+            planted["out_docs"] = []
+            for item in reader.OutList:
+                planted["out_docs"].append(getattr(item.Document, "Name", None))
+            planted["engine"] = [
+                entry[1] if isinstance(entry, (tuple, list)) and len(entry) > 1 else entry
+                for entry in (reader.ExpressionEngine or ())
+            ]
+
+        with self.patchSourceCommit("ApplyFailed", plant):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertTrue(planted["names_same"])
+        self.assertNotIn(planted["dest_name"], planted["out_docs"])
+        self.assertFalse(
+            any(
+                isinstance(text, str) and f"{planted['dest_name']}#" in text
+                for text in planted["engine"]
+            )
+        )
+        self.assertKeptUnverified(raised.exception, "ApplyFailed")
+        target = planted["target"]
+        linked = reader.Reference[0]
+        self.assertEqual(linked.Name, target.Name)
+        self.assertEqual(linked.Document.Name, target.Document.Name)
+        self.assertEqual(
+            os.path.realpath(linked.Document.FileName), os.path.realpath(self.path)
+        )
+
+    def test_clean_rollback_with_sheet_hiddenref_keeps_file(self):
+        import ExtractComponent
+
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "HiddenSheet")
+        self.doc.recompute()
+        planted = {}
+
+        def plant():
+            destination = self._destination_saved_here()
+            target = destination.getObject("Pad")
+            self.assertIsNotNone(target)
+            names = [obj.Name for obj in self.doc.Objects]
+            sheet.set("A1", f"=hiddenref({destination.Name}#{target.Name}.Length)")
+            text = sheet.getContents("A1")
+            planted["text"] = text
+            planted["names_doc"] = ExtractComponent._expression_names_document(
+                text, destination
+            )
+            planted["names_same"] = [obj.Name for obj in self.doc.Objects] == names
+            planted["out_docs"] = []
+            for item in sheet.OutList:
+                planted["out_docs"].append(getattr(item.Document, "Name", None))
+            planted["engine"] = [
+                entry[1] if isinstance(entry, (tuple, list)) and len(entry) > 1 else entry
+                for entry in (sheet.ExpressionEngine or ())
+            ]
+            planted["dest_name"] = destination.Name
+
+        with self.patchSourceCommit("ApplyFailed", plant):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertTrue(planted["names_doc"], planted["text"])
+        self.assertTrue(planted["names_same"])
+        self.assertNotIn(planted["dest_name"], planted["out_docs"])
+        self.assertFalse(
+            any(
+                isinstance(text, str) and f"{planted['dest_name']}#" in text
+                for text in planted["engine"]
+            )
+        )
+        self.assertIn("hiddenref", planted["text"])
+        self.assertIn(f"{planted['dest_name']}#", planted["text"])
+        self.assertKeptUnverified(raised.exception, "ApplyFailed")
+
+    def test_clean_rollback_with_escaped_document_label_keeps_file(self):
+        import ExtractComponent
+
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "EscapedSheet")
+        self.doc.recompute()
+        planted = {}
+
+        def plant():
+            destination = self._destination_saved_here()
+            target = destination.getObject("Pad")
+            self.assertIsNotNone(target)
+            names = [obj.Name for obj in self.doc.Objects]
+            # App::unquote drops "\>", so set() of the escaped token does not
+            # round-trip. Relabel a real label reference; getContents is then
+            # the spelling App::quote writes (ObjectIdentifier.cpp:54).
+            destination.Label = "ExtPart"
+            sheet.set("A1", f"=hiddenref(<<ExtPart>>#{target.Name}.Length)")
+            destination.Label = "Ext>Part"
+            text = sheet.getContents("A1")
+            planted["text"] = text
+            planted["label"] = destination.Label
+            planted["prop"] = f"{target.Name}.Length"
+            planted["names_same"] = [obj.Name for obj in self.doc.Objects] == names
+            planted["out_docs"] = []
+            for item in sheet.OutList:
+                planted["out_docs"].append(getattr(item.Document, "Name", None))
+            planted["engine"] = [
+                entry[1] if isinstance(entry, (tuple, list)) and len(entry) > 1 else entry
+                for entry in (sheet.ExpressionEngine or ())
+            ]
+            planted["dest_name"] = destination.Name
+
+        with self.patchSourceCommit("ApplyFailed", plant):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertTrue(planted["names_same"])
+        self.assertEqual(planted["label"], "Ext>Part")
+        text = planted["text"]
+        self.assertIn(f"=hiddenref(<<Ext\\>Part>>#{planted['prop']})", text)
+        self.assertNotIn(f"{planted['dest_name']}#", text)
+        self.assertNotIn(planted["dest_name"], planted["out_docs"])
+        self.assertFalse(
+            any(
+                isinstance(item, str) and f"{planted['dest_name']}#" in item
+                for item in planted["engine"]
+            )
+        )
+        self.assertKeptUnverified(raised.exception, "ApplyFailed")
+        kept = [
+            doc
+            for doc in App.listDocuments().values()
+            if os.path.realpath(doc.FileName or "") == os.path.realpath(self.path)
+        ]
+        self.assertEqual(kept[0].Label, "Ext>Part")
+        self.assertTrue(ExtractComponent._expression_names_document(text, kept[0]), text)
+
+    def test_clean_rollback_with_literal_sheet_text_discards_file(self):
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "LiteralSheet")
+        self.doc.recompute()
+        planted = {}
+
+        def plant():
+            destination = self._destination_saved_here()
+            names = [obj.Name for obj in self.doc.Objects]
+            literal = f"{destination.Name}#Pad.Length"
+            sheet.set("A1", literal)
+            planted["text"] = sheet.getContents("A1")
+            planted["literal"] = literal
+            planted["names_same"] = [obj.Name for obj in self.doc.Objects] == names
+            planted["dest_name"] = destination.Name
+            planted["out_docs"] = []
+            for item in sheet.OutList:
+                planted["out_docs"].append(getattr(item.Document, "Name", None))
+            planted["engine"] = [
+                entry[1] if isinstance(entry, (tuple, list)) and len(entry) > 1 else entry
+                for entry in (sheet.ExpressionEngine or ())
+            ]
+
+        with self.patchSourceCommit("ApplyFailed", plant):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        self.assertTrue(planted["names_same"])
+        text = planted["text"]
+        self.assertTrue(text.startswith("'"), text)
+        self.assertFalse(text.startswith("="))
+        self.assertIn(planted["literal"], text)
+        self.assertIn(f"{planted['dest_name']}#", text)
+        self.assertNotIn(planted["dest_name"], planted["out_docs"])
+        self.assertFalse(
+            any(
+                isinstance(item, str) and f"{planted['dest_name']}#" in item
+                for item in planted["engine"]
+            )
+        )
+        message = str(raised.exception)
+        self.assertFalse(os.path.isfile(self.path), message)
+        self.assertNotIn("could not be verified", message)
+        self.assertIsNotNone(self.doc.getObject("LocalPart"))
+        kept = [
+            doc
+            for doc in App.listDocuments().values()
+            if os.path.realpath(doc.FileName or "") == os.path.realpath(self.path)
+        ]
+        self.assertEqual(kept, [])
+
+    def test_existing_extraction_group_allows_cleanup(self):
+        import ExtractComponent
+
+        other = self.doc.addObject("App::Link", "OtherLink")
+        other.LinkedObject = self.pad
+        self.doc.recompute()
+        self.runExtract()
+        self.assertIsNotNone(self.doc.getObject("ExtractionReferences"))
+        second = self.assembly.newObject("Part::Box", "SecondBox")
+        self.doc.recompute()
+        second_path = os.path.join(self.directory.name, "Second.FCStd")
+        real = ExtractComponent._foreign_inbound_leftovers
+        calls = {"n": 0}
+
+        def inbound(source, owned, component):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise ExtractionError("forced second failure")
+            return real(source, owned, component)
+
+        with patch(
+            "ExtractComponent._foreign_inbound_leftovers", side_effect=inbound
+        ):
+            with self.assertRaises(ExtractionError) as raised:
+                extract(self.assembly, second, second_path)
+        self.assertEqual(str(raised.exception), "forced second failure")
+        self.assertGreaterEqual(calls["n"], 2)
+        self.assertFalse(os.path.exists(second_path))
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertIsNotNone(self.doc.getObject("ExtractionReferences"))
+        self.assertIsNotNone(self.doc.getObject("SecondBox"))
+        kept = [
+            doc
+            for doc in App.listDocuments().values()
+            if os.path.realpath(doc.FileName or "") == os.path.realpath(second_path)
+        ]
+        self.assertEqual(kept, [])
+
+    def test_refuse_class_masquerade_hiding_owned_object(self):
+        class Masquerade:
+            def __init__(self, hidden):
+                self.hidden = hidden
+
+            @property
+            def __class__(self):
+                return App.DocumentObject
+
+            def dumps(self):
+                return {}
+
+        reader = self.doc.addObject("App::FeaturePython", "MasqueradeReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = Masquerade(self.part)
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertIs(reader.Payload.hidden, self.part)
+
+    def test_refuse_dumps_descriptor_without_calling_it(self):
+        calls = []
+
+        class State:
+            @property
+            def dumps(self):
+                calls.append(True)
+                return {}
+
+        reader = self.doc.addObject("App::FeaturePython", "DescriptorReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = State()
+        calls.clear()
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_refuse_instance_dumps_shadowing_getstate(self):
+        import ExtractComponent
+
+        class State:
+            def __getstate__(self):
+                return {}
+
+        hidden = State()
+        # Save calls this instance dumps via hasAttr/getAttr. It is not a class
+        # function, so a clean __getstate__ must not be trusted in its place.
+        hidden.dumps = {"untrusted": True}
+        reader = self.doc.addObject("App::FeaturePython", "InstanceDumps")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = hidden
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertFalse(os.path.exists(self.path))
+
+        calls = []
+
+        def dumps():
+            calls.append(True)
+            return {"component": self.part}
+
+        exposed = State()
+        exposed.dumps = dumps
+        self.assertIs(
+            ExtractComponent._dumps_function(exposed),
+            ExtractComponent._UNSAFE_SERIALIZER,
+        )
+        self.assertEqual(calls, [])
+
+    def test_refuse_getattr_dumps(self):
+        owned = self.part
+        calls = []
+
+        class State:
+            def __getattr__(self, name):
+                calls.append(name)
+                if name == "dumps":
+                    def dumps():
+                        return {"component": owned}
+
+                    return dumps
+                raise AttributeError(name)
+
+            def __getstate__(self):
+                return {}
+
+        reader = self.doc.addObject("App::FeaturePython", "GetattrDumps")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = State()
+        calls.clear()
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertNotIn("dumps", calls)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_refuse_getattribute_dumps(self):
+        owned = self.part
+        calls = []
+
+        class State:
+            def __getattribute__(self, name):
+                if name == "dumps":
+                    calls.append(name)
+
+                    def dumps():
+                        return {"component": owned}
+
+                    return dumps
+                return object.__getattribute__(self, name)
+
+            def __getstate__(self):
+                return {}
+
+        reader = self.doc.addObject("App::FeaturePython", "GetattributeDumps")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = State()
+        calls.clear()
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertNotIn("dumps", calls)
+        self.assertFalse(os.path.exists(self.path))
+
+    def _assert_other_document_serializer_refused(
+        self, document_name, payload, lookups, dump_calls
+    ):
+        import ExtractComponent
+
+        other = App.newDocument(document_name)
+        reader = other.addObject("App::FeaturePython", "Reader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = payload
+        lookups.clear()
+        dump_calls.clear()
+        stored = reader.Payload
+        with self.subTest("serializer"):
+            self.assertIs(
+                ExtractComponent._dumps_function(stored),
+                ExtractComponent._UNSAFE_SERIALIZER,
+            )
+            self.assertEqual(dump_calls, [])
+            self.assertNotIn("dumps", lookups)
+        with self.subTest("extract"):
+            lookups.clear()
+            dump_calls.clear()
+            documents = set(App.listDocuments())
+            error = self.assertRefused()
+            self.assertIn((reader.FullName, "Payload"), error.leftover)
+            self.assertEqual(dump_calls, [])
+            self.assertNotIn("dumps", lookups)
+            self.assertFalse(os.path.exists(self.path))
+            self.assertEqual(documents, set(App.listDocuments()))
+
+    def test_refuse_callable_instance_getattribute_dumps(self):
+        owned = self.part
+        lookups = []
+        dump_calls = []
+
+        class Answer:
+            def __call__(self, name):
+                lookups.append(name)
+                if name == "dumps":
+
+                    def dumps():
+                        dump_calls.append(True)
+                        return {"component": owned}
+
+                    return dumps
+                if name == "__dict__":
+                    return {}
+                raise AttributeError(name)
+
+        class State:
+            # Live storage stays empty. Native save calls this as f(name) and
+            # would serialize the owned object; plain lookup would not see it.
+            __getattribute__ = Answer()
+
+        self._assert_other_document_serializer_refused(
+            "CallableGetattribute", State(), lookups, dump_calls
+        )
+
+    def test_refuse_staticmethod_getattribute_dumps(self):
+        owned = self.part
+        lookups = []
+        dump_calls = []
+
+        class State:
+            @staticmethod
+            def __getattribute__(name):
+                lookups.append(name)
+                if name == "dumps":
+
+                    def dumps():
+                        dump_calls.append(True)
+                        return {"component": owned}
+
+                    return dumps
+                if name == "__dict__":
+                    return {}
+                raise AttributeError(name)
+
+        self._assert_other_document_serializer_refused(
+            "StaticGetattribute", State(), lookups, dump_calls
+        )
+
+    def test_plain_python_values_are_not_unsafe_serializers(self):
+        import ExtractComponent
+
+        for sample in (None, "text", 1, 1.5, [1, "a"], {"n": 1, "s": "a"}, (1, "a")):
+            self.assertIsNone(
+                ExtractComponent._dumps_function(sample),
+                repr(sample),
+            )
+
+        class Proxy:
+            def __init__(self):
+                self.label = "plain"
+
+        self.assertIsNone(ExtractComponent._dumps_function(Proxy()))
+
+        other = App.newDocument("PlainPythonState")
+        reader = other.addObject("App::FeaturePython", "PlainReader")
+        reader.addProperty("App::PropertyPythonObject", "AsDict")
+        reader.addProperty("App::PropertyPythonObject", "AsList")
+        reader.AsDict = {"count": 2, "label": "kept"}
+        reader.AsList = [1, 2, "a", "b"]
+        self.runExtract()
+        self.assertEqual(reader.AsDict, {"count": 2, "label": "kept"})
+        self.assertEqual(reader.AsList, [1, 2, "a", "b"])
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertIsNone(self.doc.getObject("LocalPart"))
+
+    def test_property_getstate_blocks_without_calling(self):
+        import ExtractComponent
+
+        calls = []
+        owned = self.part
+
+        class State:
+            @property
+            def __getstate__(self):
+                calls.append(len(calls))
+                if len(calls) < 3:
+                    return {"n": 1}
+                return {"component": owned}
+
+        value = State()
+        value.n = 1
+        calls.clear()
+        self.assertTrue(ExtractComponent._python_state_blocks(value, [owned]))
+        self.assertEqual(calls, [])
+
+    def test_function_getstate_follows_its_return_value(self):
+        import ExtractComponent
+
+        owned = self.part
+
+        class OwnedState:
+            def __getstate__(self):
+                return {"component": owned}
+
+        class PlainState:
+            def __getstate__(self):
+                return {"n": 1, "label": "plain"}
+
+        self.assertTrue(ExtractComponent._python_state_blocks(OwnedState(), [owned]))
+        self.assertFalse(ExtractComponent._python_state_blocks(PlainState(), [owned]))
+
+    def test_values_without_getstate_do_not_block(self):
+        import ExtractComponent
+
+        class Proxy:
+            def __init__(self):
+                self.n = 1
+                self.label = "plain"
+
+        for value in ({"n": 1, "label": "a"}, [1, "a"], Proxy()):
+            self.assertFalse(
+                ExtractComponent._python_state_blocks(value, [self.part]),
+                repr(value),
+            )
+
+    def test_object_getattribute_assignment_is_not_c_storage(self):
+        import ExtractComponent
+
+        class Proxy:
+            __getattribute__ = object.__getattribute__
+
+            def __init__(self):
+                self.n = 1
+                self.label = "plain"
+
+        value = Proxy()
+        self.assertFalse(ExtractComponent._containsOwned(value, [self.part]))
+        self.assertIsNone(ExtractComponent._dumps_function(value))
+
+    def test_metaclass_dumps_is_invisible_to_instance_lookup(self):
+        import ExtractComponent
+
+        calls = []
+        owned = self.part
+
+        class Meta(type):
+            # Instance lookup never sees a metaclass method. The raw function
+            # is what a class-dict walk would call as dumps(value).
+            def dumps(value):
+                calls.append(value)
+                return {"component": owned}
+
+        class State(metaclass=Meta):
+            def __init__(self):
+                self.text = "plain"
+                self.count = 3
+
+        value = State()
+        with self.subTest("function"):
+            self.assertIsNone(ExtractComponent._dumps_function(value))
+        with self.subTest("blocks"):
+            self.assertFalse(ExtractComponent._python_state_blocks(value, [owned]))
+        with self.subTest("calls"):
+            self.assertEqual(calls, [])
+
+    def test_metaclass_dict_property_cannot_hide_owned_object(self):
+        import ExtractComponent
+
+        class Meta(type):
+            __dict__ = property(lambda cls: {"__slots__": ()})
+
+        class State(metaclass=Meta):
+            pass
+
+        value = State()
+        value.hidden = self.part
+        self.assertTrue(ExtractComponent._containsOwned(value, [self.part]))
+
+    def test_dict_subclass_instance_dumps_is_unsafe(self):
+        import ExtractComponent
+
+        called = []
+
+        class LyingDict(dict):
+            def __contains__(self, key):
+                return False
+
+        class State:
+            def dumps(self):
+                return {"text": "class"}
+
+        def evil():
+            called.append(True)
+            return {"hidden": True}
+
+        value = State()
+        value.__dict__ = LyingDict({"dumps": evil, "text": "shadow"})
+        self.assertIs(
+            ExtractComponent._dumps_function(value),
+            ExtractComponent._UNSAFE_SERIALIZER,
+        )
+        self.assertEqual(called, [])
+
+    def test_plain_class_dumps_allows_extraction(self):
+        class Note:
+            def __init__(self):
+                self.text = "kept"
+
+            def dumps(self):
+                return {"text": self.text}
+
+        reader = self.doc.addObject("App::FeaturePython", "NoteReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = Note()
+        self.runExtract()
+        self.assertEqual(reader.Payload.dumps(), {"text": "kept"})
+        self.assertTrue(os.path.isfile(self.path))
+
+    def test_refuse_over_budget_python_state(self):
+        from ExtractComponent import _MAX_PYTHON_STATE_NODES
+
+        reader = self.doc.addObject("App::FeaturePython", "WideReader")
+        reader.addProperty("App::PropertyPythonObject", "Payload")
+        reader.Payload = list(range(_MAX_PYTHON_STATE_NODES + 1))
+        error = self.assertRefused()
+        self.assertIn((reader.Name, "Payload"), error.leftover)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_refuse_inbound_link_gained_after_preflight(self):
+        import ExtractComponent
+
+        other = App.newDocument("OtherDocument")
+        other.saveAs(os.path.join(self.directory.name, "Other.FCStd"))
+        part = self.part
+        added = {}
+        real_save = ExtractComponent._save_destination
+
+        def save(destination, path):
+            link = other.addObject("App::Link", "LateLink")
+            link.LinkedObject = part
+            added["link"] = link
+            return real_save(destination, path)
+
+        names = [obj.Name for obj in self.doc.Objects]
+        with patch("ExtractComponent._save_destination", side_effect=save):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        link = added["link"]
+        self.assertEqual(link.LinkedObject, self.doc.LocalPart)
+        self.assertTrue(
+            any(
+                "LateLink" in owner and prop == "LinkedObject"
+                for owner, prop in raised.exception.leftover
+            )
+        )
+        self.assertEqual(names, [obj.Name for obj in self.doc.Objects])
+        self.assertIsNone(self.doc.getObject("LocalPartLink"))
+        self.assertIsNone(self.doc.getObject("ExtractionReferences"))
+        self.assertIn(self.doc.LocalPart, self.assembly.Group)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(self.doc.RedoCount, 0)
+
+    def test_list_documents_calls_are_on_the_gui_thread(self):
+        import AssemblyApp
+        import ExtractComponent
+        import traceback
+
+        caller = threading.get_ident()
+        # With GUI hooks this is true only on the GUI thread. Without them it
+        # is false on every thread, so the caller identity is what still
+        # rejects an owner-thread App.listDocuments.
+        caller_gui = bool(AssemblyApp._isGuiThread())
+        recorded = []
+        real = ExtractComponent.App.listDocuments
+
+        def wrapped(*args, **kwargs):
+            recorded.append(
+                (
+                    threading.get_ident(),
+                    bool(AssemblyApp._isGuiThread()),
+                    "".join(traceback.format_stack(limit=12)),
+                )
+            )
+            return real(*args, **kwargs)
+
+        with patch.object(ExtractComponent.App, "listDocuments", side_effect=wrapped):
+            self.runExtract()
+        self.assertTrue(recorded)
+        off_thread = [
+            stack
+            for ident, gui, stack in recorded
+            if ident != caller or gui != caller_gui
+        ]
+        self.assertEqual(off_thread, [])
+        if caller_gui:
+            self.assertTrue(all(gui for _, gui, _ in recorded))
+
+    def test_owner_refuses_inbound_link_after_gui_recheck(self):
+        import ExtractComponent
+
+        other = App.newDocument("AfterRecheckDocument")
+        other.saveAs(os.path.join(self.directory.name, "AfterRecheck.FCStd"))
+        part = self.part
+        added = {}
+        calls = {"n": 0}
+        caller = threading.get_ident()
+        real = ExtractComponent._foreign_inbound_leftovers
+        names = [obj.Name for obj in self.doc.Objects]
+        undos = list(self.doc.UndoNames)
+        redos = list(self.doc.RedoNames)
+
+        def wrapped(source, owned, component):
+            calls["n"] += 1
+            found = real(source, owned, component)
+            if (
+                calls["n"] == 2
+                and threading.get_ident() == caller
+                and not found
+                and "link" not in added
+            ):
+                link = other.addObject("App::Link", "AfterRecheckLink")
+                link.LinkedObject = part
+                added["link"] = link
+            return found
+
+        with patch("ExtractComponent._foreign_inbound_leftovers", side_effect=wrapped):
+            with self.assertRaises(ExtractionError) as raised:
+                self.runExtract()
+        link = added["link"]
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(link.LinkedObject, self.doc.LocalPart)
+        self.assertTrue(
+            any("AfterRecheckLink" in str(entry) for entry in raised.exception.leftover)
+        )
+        self.assertIn("AfterRecheckLink", str(raised.exception))
+        self.assertEqual(names, [obj.Name for obj in self.doc.Objects])
+        self.assertEqual(list(self.doc.UndoNames), undos)
+        self.assertEqual(list(self.doc.RedoNames), redos)
+        self.assertIsNone(self.doc.getObject("LocalPartLink"))
+        self.assertIsNone(self.doc.getObject("ExtractionReferences"))
+        self.assertIn(self.doc.LocalPart, self.assembly.Group)
+        # The refusal is raised from inside the source callback. The binding
+        # re-raises that exception and drops the ApplyFailed status, so the
+        # rolled-back destination cannot be told from a failed rollback.
+        message = str(raised.exception)
+        self.assertTrue(os.path.isfile(self.path), message)
+        self.assertIn(self.path, message)
+        self.assertIn("could not be verified", message)
+        self.assertIn("were kept", message)
+        kept = [
+            document
+            for document in App.listDocuments().values()
+            if os.path.realpath(getattr(document, "FileName", "") or "")
+            == os.path.realpath(self.path)
+        ]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(self.doc.UndoCount, len(undos))
+        self.assertEqual(self.doc.RedoCount, len(redos))
 
     def test_read_only_preflight(self):
         names = [obj.Name for obj in self.doc.Objects]
@@ -1454,3 +2485,89 @@ class TestExtractComponentGui(TestExtractComponent):
                 dialog.assert_not_called()
         finally:
             pref.SetBool("DetachStdPart", old)
+
+    def test_waits_for_delayed_commit(self):
+        import ExtractComponent
+
+        self.assertTrue(ExtractComponent._gui_thread())
+        state = {"callback_done": False, "slept": False}
+        events = []
+        real_commit = ExtractComponent._commit_on_owner
+        real_close = ExtractComponent.App.closeDocument
+        real_unlink = ExtractComponent.os.unlink
+        target = os.path.realpath(self.path)
+        started = time.monotonic()
+
+        def commit(document, callback, pump=None, **kwargs):
+            if getattr(document, "Name", None) == self.doc.Name:
+                # Bind the original callback now. Assigning the wrapper to the
+                # same local would make the wrapper call itself.
+                def delayed(inner=callback):
+                    state["slept"] = True
+                    time.sleep(0.8)
+                    inner()
+                    state["callback_done"] = True
+
+                callback = delayed
+            return real_commit(document, callback, pump=pump, **kwargs)
+
+        def close(name):
+            events.append(("close", state["callback_done"], name))
+            return real_close(name)
+
+        def unlink(path, *args, **kwargs):
+            if os.path.realpath(path) == target:
+                events.append(("unlink", state["callback_done"], path))
+            return real_unlink(path, *args, **kwargs)
+
+        class JumpingClock:
+            """ExtractComponent's clock only. Other threads keep the real time module."""
+
+            def __init__(self):
+                self.now = 0.0
+
+            def monotonic(self):
+                self.now += 1000.0
+                return self.now
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        try:
+            with patch.object(
+                ExtractComponent, "time", JumpingClock()
+            ), patch(
+                "ExtractComponent._commit_on_owner", side_effect=commit
+            ), patch("ExtractComponent.App.closeDocument", side_effect=close), patch(
+                "ExtractComponent.os.unlink", side_effect=unlink
+            ):
+                try:
+                    result = self.runExtract()
+                except ExtractionError as exc:
+                    self.fail(f"extraction abandoned the commit: {exc}; cleanup={events}")
+        finally:
+            # Keep draining owner tasks so a commit that is still running can
+            # reach a terminal state before tear-down.
+            deadline = time.monotonic() + 8
+            while not state["callback_done"] and time.monotonic() < deadline:
+                for document in list(App.listDocuments().values()):
+                    ExtractComponent._service_owner(document)
+                time.sleep(0.02)
+        self.assertEqual(events, [])
+        self.assertTrue(state["slept"])
+        self.assertTrue(state["callback_done"])
+        self.assertGreater(time.monotonic() - started, 0.8)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertIsNone(self.doc.getObject("LocalPart"))
+        link = self.doc.getObject("LocalPartLink")
+        self.assertIsNotNone(link)
+        self.assertEqual(result.link, link)
+        self.assertEqual(
+            os.path.realpath(link.LinkedObject.Document.FileName),
+            target,
+        )
+
+    def test_gui_suite_registered_once(self):
+        # TestApp.All() loads every FreeCAD.__unit_test__ entry with no dedupe,
+        # and run_gui_tests.discover_gui_suites keeps that list in order.
+        self.assertEqual(list(App.__unit_test__).count("TestAssemblyGui"), 1)
