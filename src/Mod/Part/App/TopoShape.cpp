@@ -44,6 +44,7 @@
 #include <Mod/Part/App/FCBRepAlgoAPI_Cut.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Fuse.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Section.h>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_FaceError.hxx>
@@ -1674,9 +1675,10 @@ bool TopoShape::analyze(bool runBopCheck, std::ostream& str) const
             BOPCheck.SmallEdgeMode() = true;
             BOPCheck.RebuildFaceMode() = true;
             BOPCheck.ContinuityMode() = true;
-            BOPCheck.SetParallelMode(true);  // this doesn't help for speed right now(occt 6.9.1).
-            BOPCheck.SetRunParallel(true);   // performance boost, use all available cores
-            BOPCheck.TangentMode() = true;   // these 4 new tests add about 5% processing time.
+            Part::setBooleanParallelMode(true);  // this doesn't help for speed right now(occt 6.9.1).
+            // performance boost, use all available cores
+            BOPCheck.SetRunParallel(Part::booleanRunParallel());
+            BOPCheck.TangentMode() = true;  // these 4 new tests add about 5% processing time.
             BOPCheck.MergeVertexMode() = true;
             BOPCheck.CurveOnSurfaceMode() = true;
             BOPCheck.MergeEdgeMode() = true;
@@ -1774,7 +1776,7 @@ TopoDS_Shape TopoShape::cut(const std::vector<TopoDS_Shape>& shapes, Standard_Re
         return this->_Shape;
     }
     FCBRepAlgoAPI_Cut mkCut;
-    mkCut.SetRunParallel(true);
+    mkCut.SetRunParallel(Part::booleanRunParallel());
     TopTools_ListOfShape shapeArguments, shapeTools;
     shapeArguments.Append(this->_Shape);
     for (const auto& shape : shapes) {
@@ -1823,7 +1825,7 @@ TopoDS_Shape TopoShape::common(const std::vector<TopoDS_Shape>& shapes, Standard
         return this->_Shape;
     }
     FCBRepAlgoAPI_Common mkCommon;
-    mkCommon.SetRunParallel(true);
+    mkCommon.SetRunParallel(Part::booleanRunParallel());
     TopTools_ListOfShape shapeArguments, shapeTools;
     shapeArguments.Append(this->_Shape);
     for (const auto& shape : shapes) {
@@ -1873,7 +1875,7 @@ TopoDS_Shape TopoShape::fuse(const std::vector<TopoDS_Shape>& shapes, Standard_R
     }
 
     FCBRepAlgoAPI_Fuse mkFuse;
-    mkFuse.SetRunParallel(true);
+    mkFuse.SetRunParallel(Part::booleanRunParallel());
     TopTools_ListOfShape shapeArguments, shapeTools;
     shapeArguments.Append(this->_Shape);
     for (const auto& shape : shapes) {
@@ -1938,7 +1940,7 @@ TopoDS_Shape TopoShape::section(
     }
 
     FCBRepAlgoAPI_Section mkSection;
-    mkSection.SetRunParallel(true);
+    mkSection.SetRunParallel(Part::booleanRunParallel());
     mkSection.Approximation(approximate);
     TopTools_ListOfShape shapeArguments, shapeTools;
     shapeArguments.Append(this->_Shape);
@@ -2012,7 +2014,7 @@ TopoDS_Shape TopoShape::generalFuse(
     }
 
     BRepAlgoAPI_BuilderAlgo mkGFA;
-    mkGFA.SetRunParallel(true);
+    mkGFA.SetRunParallel(Part::booleanRunParallel());
     TopTools_ListOfShape GFAArguments;
     GFAArguments.Append(this->_Shape);
     for (const TopoDS_Shape& it : sOthers) {
