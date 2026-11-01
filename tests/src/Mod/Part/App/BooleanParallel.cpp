@@ -36,12 +36,21 @@ protected:
         tests::initApplication();
     }
 
+    void SetUp() override
+    {
+        savedParallelMode = BOPAlgo_Options::GetParallelMode();
+    }
+
     void TearDown() override
     {
-        // OCCT's default is serial. Put the process-wide flag back so later
-        // tests in this process are not left with analyze()'s old setting.
-        Part::setBooleanParallelMode(false);
+        // setBooleanParallelMode() writes booleanRunParallel(requested), not
+        // the observed flag. On OCCT >= 8 that result is always false, so the
+        // helper cannot put back a true this process already had. Restore the
+        // GetParallelMode() value from SetUp with SetParallelMode directly.
+        BOPAlgo_Options::SetParallelMode(savedParallelMode);
     }
+
+    bool savedParallelMode = false;
 };
 
 TopoDS_Shape boxAt(double x, double y, double z)
@@ -87,6 +96,7 @@ TEST_F(BooleanParallelTest, constructorsReportPolicy)
 
 TEST_F(BooleanParallelTest, analyzeLeavesGlobalModeAtPolicy)
 {
+    // Baseline for this case only. TearDown restores the mode from SetUp.
     Part::setBooleanParallelMode(false);
     Part::TopoShape shape(boxAt(0.0, 0.0, 0.0));
     std::ostringstream report;
