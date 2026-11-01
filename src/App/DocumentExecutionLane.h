@@ -370,6 +370,9 @@ public:
 
 private:
     friend struct DocumentHandle::State;
+    friend class RecomputeHandle;
+
+    [[nodiscard]] std::optional<bool> recomputeTerminalForWait(DocumentRecomputeId id) const;
 
     /** True when the active command must finish before a dispatch may run. Holds _mutex. */
     [[nodiscard]] bool commandBlocksDispatchLocked(const bool allowWhileCommandActive) const

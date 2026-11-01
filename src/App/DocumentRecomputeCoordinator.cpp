@@ -4,6 +4,7 @@
 
 #include "DocumentCollaborationService.h"
 #include "GeometryJobManager.h"
+#include "private/RecomputeScheduling.h"
 
 #include <Base/Exception.h>
 
@@ -210,7 +211,23 @@ struct DocumentRecomputeCoordinator::Job
         std::unique_ptr<PreparedEdit> pendingPreparedEdit;
         std::string diagnostic;
         bool executed {true};
+
+        // Only populated for the opt-in scheduler; map nodes have stable addresses.
+        Job* scheduler {nullptr};
+        std::size_t index {0};
+        std::size_t unmet {0};
+        std::vector<Node*> dependencies {};
+        std::vector<Node*> dependents {};
+        void setState(DocumentRecomputeFeatureState next);
     };
+
+    bool optimized {false};
+    std::vector<Node*> ordered;
+    std::set<std::size_t> ready;
+    std::set<std::size_t> active;
+    std::size_t terminalCount {0};
+    std::size_t pendingCount {0};
+    std::set<std::size_t> failureCandidates;
 
     DocumentRecomputeId id {0};
     DocumentRecomputeState state {DocumentRecomputeState::Running};
@@ -224,6 +241,51 @@ struct DocumentRecomputeCoordinator::Job
     bool presentationFinalized {false};
     std::string diagnostic;
 };
+
+void DocumentRecomputeCoordinator::Job::Node::setState(
+    const DocumentRecomputeFeatureState next)
+{
+    if (!scheduler || state == next) {
+        state = next;
+        return;
+    }
+    auto& job = *scheduler;
+    const auto activeState = [](const auto value) {
+        return value == DocumentRecomputeFeatureState::Preparing
+            || value == DocumentRecomputeFeatureState::Committing
+            || value == DocumentRecomputeFeatureState::Cancelling;
+    };
+    if (state == DocumentRecomputeFeatureState::Waiting) {
+        job.ready.erase(index);
+    }
+    if (activeState(state) && !activeState(next)) {
+        job.active.erase(index);
+    }
+    if (!activeState(state) && activeState(next)) {
+        job.active.insert(index);
+    }
+    job.terminalCount -= featureTerminal(state);
+    job.terminalCount += featureTerminal(next);
+    state = next;
+    if (next == DocumentRecomputeFeatureState::Waiting && unmet == 0) {
+        job.ready.insert(index);
+    }
+    if (next == DocumentRecomputeFeatureState::Committed) {
+        for (auto* dependent : dependents) {
+            if (--dependent->unmet == 0
+                && dependent->state == DocumentRecomputeFeatureState::Waiting) {
+                job.ready.insert(dependent->index);
+            }
+        }
+    }
+    if (featureFailed(next) || next == DocumentRecomputeFeatureState::Cancelled) {
+        for (auto* dependent : dependents) {
+            if (dependent->state == DocumentRecomputeFeatureState::Waiting) {
+                job.failureCandidates.insert(dependent->index);
+            }
+        }
+    }
+}
 
 DocumentRecomputeCoordinator::DocumentRecomputeCoordinator(
     DocumentCollaborationService& service)
@@ -340,6 +402,7 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
         }
 
         auto job = std::make_unique<Job>();
+        job->optimized = Internal::useOptimizedRecomputeScheduling();
         job->id = admittedId;
         job->coalescingKey = std::move(request.coalescingKey);
         job->signature = signature;
@@ -353,6 +416,22 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
                                           .executionId = std::nullopt,
                                           .pendingPreparedEdit = nullptr,
                                           .diagnostic = {}});
+        }
+        if (job->optimized) {
+            for (auto& [featureId, node] : job->nodes) {
+                node.scheduler = job.get();
+                node.index = job->ordered.size();
+                job->ordered.push_back(&node);
+                node.unmet = node.request.dependencies.size();
+                if (node.unmet == 0) {
+                    job->ready.insert(node.index);
+                }
+                for (const auto& dependency : node.request.dependencies) {
+                    auto& upstream = job->nodes.at(dependency);
+                    upstream.dependents.push_back(&node);
+                    node.dependencies.push_back(&upstream);
+                }
+            }
         }
         if (job->nodes.empty()) {
             job->state = DocumentRecomputeState::Completed;
@@ -386,65 +465,122 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             }
             auto& job = *foundJob->second;
             bool changed = false;
-            for (auto& [featureId, node] : job.nodes) {
-                if (node.state != DocumentRecomputeFeatureState::Waiting) {
-                    continue;
+            if (!job.optimized) {
+                for (auto& [featureId, node] : job.nodes) {
+                    if (node.state != DocumentRecomputeFeatureState::Waiting) {
+                        continue;
+                    }
+                    if (job.cancelRequested) {
+                        node.setState(DocumentRecomputeFeatureState::Cancelled);
+                        node.diagnostic = "recompute cancelled before preparation";
+                        changed = true;
+                        continue;
+                    }
+                    const auto failedDependency = std::ranges::find_if(
+                        node.request.dependencies,
+                        [&job](const std::string& dependency) {
+                            return featureFailed(job.nodes.at(dependency).state)
+                                || job.nodes.at(dependency).state
+                                    == DocumentRecomputeFeatureState::Cancelled;
+                        });
+                    if (failedDependency != node.request.dependencies.end()) {
+                        node.setState(DocumentRecomputeFeatureState::Blocked);
+                        node.diagnostic = "dependency did not commit: " + *failedDependency;
+                        changed = true;
+                    }
                 }
-                if (job.cancelRequested) {
-                    node.state = DocumentRecomputeFeatureState::Cancelled;
-                    node.diagnostic = "recompute cancelled before preparation";
-                    changed = true;
-                    continue;
+            }
+            else if (job.cancelRequested) {
+                for (auto* node : job.ordered) {
+                    if (node->state == DocumentRecomputeFeatureState::Waiting) {
+                        node->setState(DocumentRecomputeFeatureState::Cancelled);
+                        node->diagnostic = "recompute cancelled before preparation";
+                        changed = true;
+                    }
                 }
-                const auto failedDependency = std::ranges::find_if(
-                    node.request.dependencies,
-                    [&job](const std::string& dependency) {
-                        return featureFailed(job.nodes.at(dependency).state)
-                            || job.nodes.at(dependency).state
-                                == DocumentRecomputeFeatureState::Cancelled;
-                    });
-                if (failedDependency != node.request.dependencies.end()) {
-                    node.state = DocumentRecomputeFeatureState::Blocked;
-                    node.diagnostic = "dependency did not commit: " + *failedDependency;
-                    changed = true;
+            }
+            else {
+                // Reproduce one legacy map-order failure pass. A newly blocked
+                // later node propagates in this pass; an earlier one waits for
+                // the next pass, including across presentation backpressure.
+                std::set<std::size_t> candidates;
+                candidates.swap(job.failureCandidates);
+                while (!candidates.empty()) {
+                    const auto index = candidates.extract(candidates.begin()).value();
+                    auto& node = *job.ordered[index];
+                    if (node.state != DocumentRecomputeFeatureState::Waiting) {
+                        continue;
+                    }
+                    const auto failed = std::ranges::find_if(
+                        node.dependencies, [](const auto* dep) {
+                            return featureFailed(dep->state)
+                                || dep->state == DocumentRecomputeFeatureState::Cancelled;
+                        });
+                    if (failed != node.dependencies.end()) {
+                        node.setState(DocumentRecomputeFeatureState::Blocked);
+                        node.diagnostic = "dependency did not commit: " + (*failed)->request.featureId;
+                        changed = true;
+                        auto later = job.failureCandidates.upper_bound(index);
+                        while (later != job.failureCandidates.end()) {
+                            candidates.insert(job.failureCandidates.extract(later++));
+                        }
+                    }
                 }
             }
 
             // Keep detached preparation capacity as the backpressure boundary
             // while refresh prevents commits; collected payloads must not make
             // room for an ever-growing queue of independent prepared results.
-            if (std::ranges::any_of(job.nodes, [](const auto& entry) {
-                    return bool(entry.second.pendingPreparedEdit);
-                })) {
+            const bool pending = job.optimized
+                ? job.pendingCount != 0
+                : std::ranges::any_of(job.nodes, [](const auto& entry) {
+                      return bool(entry.second.pendingPreparedEdit);
+                  });
+            if (pending) {
                 break;
             }
             if (job.refreshRevisionFenceAfterEachCommit
-                && std::ranges::any_of(job.nodes, [](const auto& entry) {
-                       const auto state = entry.second.state;
-                       return state == DocumentRecomputeFeatureState::Preparing
-                           || state == DocumentRecomputeFeatureState::Committing
-                           || state == DocumentRecomputeFeatureState::Cancelling;
-                   })) {
+                && (job.optimized ? !job.active.empty()
+                                  : std::ranges::any_of(job.nodes, [](const auto& entry) {
+                                        const auto state = entry.second.state;
+                                        return state == DocumentRecomputeFeatureState::Preparing
+                                            || state == DocumentRecomputeFeatureState::Committing
+                                            || state == DocumentRecomputeFeatureState::Cancelling;
+                                    }))) {
                 break;
             }
 
-            const auto ready = std::ranges::find_if(job.nodes, [&job](const auto& entry) {
-                const auto& node = entry.second;
-                return node.state == DocumentRecomputeFeatureState::Waiting
-                    && std::ranges::all_of(node.request.dependencies,
-                                           [&job](const std::string& dependency) {
-                                               return job.nodes.at(dependency).state
-                                                   == DocumentRecomputeFeatureState::Committed;
-                                           });
-            });
-            if (ready != job.nodes.end()) {
-                ready->second.state = DocumentRecomputeFeatureState::Preparing;
-                selectedFeature = ready->first;
-                request = ready->second.request;
-                sessionId = job.sessionId;
+            if (job.optimized) {
+                if (!job.ready.empty()) {
+                    auto& node = *job.ordered[*job.ready.begin()];
+                    node.setState(DocumentRecomputeFeatureState::Preparing);
+                    selectedFeature = node.request.featureId;
+                    request = node.request;
+                    sessionId = job.sessionId;
+                }
+                else if (!changed) {
+                    break;
+                }
             }
-            else if (!changed) {
-                break;
+            else {
+                const auto ready = std::ranges::find_if(job.nodes, [&job](const auto& entry) {
+                    const auto& node = entry.second;
+                    return node.state == DocumentRecomputeFeatureState::Waiting
+                        && std::ranges::all_of(node.request.dependencies,
+                                               [&job](const std::string& dependency) {
+                                                   return job.nodes.at(dependency).state
+                                                       == DocumentRecomputeFeatureState::Committed;
+                                               });
+                });
+                if (ready != job.nodes.end()) {
+                    ready->second.setState(DocumentRecomputeFeatureState::Preparing);
+                    selectedFeature = ready->first;
+                    request = ready->second.request;
+                    sessionId = job.sessionId;
+                }
+                else if (!changed) {
+                    break;
+                }
             }
         }
 
@@ -465,7 +601,7 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             }
             auto& node = foundJob->second->nodes.at(selectedFeature);
             if (foundJob->second->cancelRequested) {
-                node.state = DocumentRecomputeFeatureState::Cancelling;
+                node.setState(DocumentRecomputeFeatureState::Cancelling);
                 node.executionId = executionId;
                 static_cast<void>(_service.cancelPreparedEdit(executionId));
             }
@@ -481,9 +617,9 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.state = foundJob->second->cancelRequested
+                node.setState(foundJob->second->cancelRequested
                     ? DocumentRecomputeFeatureState::Cancelled
-                    : DocumentRecomputeFeatureState::Waiting;
+                    : DocumentRecomputeFeatureState::Waiting);
                 if (foundJob->second->cancelRequested) {
                     node.diagnostic =
                         "recompute cancelled while awaiting preparation capacity";
@@ -496,7 +632,7 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("detached preparation submission failed: ")
                     + error.what();
                 if (foundJob->second->diagnostic.empty()) {
@@ -509,7 +645,7 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("detached preparation submission failed: ")
                     + error.what();
                 if (foundJob->second->diagnostic.empty()) {
@@ -522,7 +658,7 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = "detached preparation submission failed with unknown exception";
                 if (foundJob->second->diagnostic.empty()) {
                     foundJob->second->diagnostic = node.diagnostic;
@@ -549,12 +685,13 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             return false;
         }
         const bool cancelRequested = foundJob->second->cancelRequested;
-        for (auto& [featureId, node] : foundJob->second->nodes) {
+        auto& job = *foundJob->second;
+        const auto collect = [&](const std::string& featureId, Job::Node& node) {
             // N7: cancel() off the owner thread only records the request.
             // Forward it to running preparations here, on the owner thread.
             if (cancelRequested && node.executionId
                 && node.state == DocumentRecomputeFeatureState::Preparing) {
-                node.state = DocumentRecomputeFeatureState::Cancelling;
+                node.setState(DocumentRecomputeFeatureState::Cancelling);
                 forwardedCancels.push_back(*node.executionId);
             }
             if (node.pendingPreparedEdit
@@ -566,8 +703,20 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                     || node.state == DocumentRecomputeFeatureState::Cancelling)) {
                 active.emplace_back(featureId, *node.executionId);
             }
+        };
+        if (job.optimized) {
+            for (const auto index : job.active) {
+                auto& node = *job.ordered[index];
+                collect(node.request.featureId, node);
+            }
+        }
+        else {
+            for (auto& [featureId, node] : job.nodes) {
+                collect(featureId, node);
+            }
         }
     }
+
     for (const auto executionId : forwardedCancels) {
         try {
             static_cast<void>(_service.cancelPreparedEdit(executionId));
@@ -586,6 +735,10 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             auto& node = _jobs.at(id)->nodes.at(featureId);
             terminal.emplace();
             terminal->status = PreparedEditExecutionStatus::Completed;
+            auto& job = *_jobs.at(id);
+            if (job.optimized) {
+                --job.pendingCount;
+            }
             terminal->preparedEdit = std::move(node.pendingPreparedEdit);
         }
         else {
@@ -597,7 +750,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("preparation status failed: ") + error.what();
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -609,7 +762,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("preparation status failed: ") + error.what();
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -621,7 +774,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = "preparation status failed with unknown exception";
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -634,7 +787,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Stale;
+                node.setState(DocumentRecomputeFeatureState::Stale);
                 node.diagnostic = "detached preparation is no longer available for this document lifecycle";
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -659,7 +812,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("preparation collection failed: ") + error.what();
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -671,7 +824,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = std::string("preparation collection failed: ") + error.what();
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -683,7 +836,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = "preparation collection failed with unknown exception";
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -696,7 +849,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 std::lock_guard stateLock(_stateMutex);
                 auto& job = *_jobs.at(id);
                 auto& node = job.nodes.at(featureId);
-                node.state = DocumentRecomputeFeatureState::Failed;
+                node.setState(DocumentRecomputeFeatureState::Failed);
                 node.diagnostic = "terminal detached preparation could not be collected";
                 if (job.diagnostic.empty()) {
                     job.diagnostic = node.diagnostic;
@@ -717,7 +870,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         if (cancelled || terminal->status == PreparedEditExecutionStatus::Cancelled) {
             std::lock_guard stateLock(_stateMutex);
             auto& node = _jobs.at(id)->nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Cancelled;
+            node.setState(DocumentRecomputeFeatureState::Cancelled);
             node.diagnostic = terminal->diagnostic.empty() ? "recompute preparation cancelled"
                                                            : terminal->diagnostic;
             changed = true;
@@ -728,7 +881,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
             auto& node = job.nodes.at(featureId);
-            node.state = DocumentRecomputeFeatureState::Failed;
+            node.setState(DocumentRecomputeFeatureState::Failed);
             node.diagnostic = terminal->diagnostic.empty() ? "detached preparation failed"
                                                            : terminal->diagnostic;
             if (job.diagnostic.empty()) {
@@ -742,7 +895,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         {
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
-            job.nodes.at(featureId).state = DocumentRecomputeFeatureState::Committing;
+            job.nodes.at(featureId).setState(DocumentRecomputeFeatureState::Committing);
             sessionId = job.sessionId;
         }
         DocumentCommitResult commit;
@@ -764,9 +917,13 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         if (commit.status == DocumentCommitStatus::Busy
             && commit.presentationAdmissionDeferred) {
             std::lock_guard stateLock(_stateMutex);
-            auto& node = _jobs.at(id)->nodes.at(featureId);
+            auto& job = *_jobs.at(id);
+            auto& node = job.nodes.at(featureId);
+            if (job.optimized) {
+                ++job.pendingCount;
+            }
             node.pendingPreparedEdit = std::move(terminal->preparedEdit);
-            node.state = DocumentRecomputeFeatureState::Committing;
+            node.setState(DocumentRecomputeFeatureState::Committing);
             node.diagnostic = commit.message;
             node.executed = false;
             changed = true;
@@ -792,9 +949,9 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             node.executed = recomputeExecuted;
             switch (commit.status) {
                 case DocumentCommitStatus::Committed:
-                    node.state = recomputeSucceeded
+                    node.setState(recomputeSucceeded
                         ? DocumentRecomputeFeatureState::Committed
-                        : DocumentRecomputeFeatureState::Failed;
+                        : DocumentRecomputeFeatureState::Failed);
                     if (!recomputeSucceeded) {
                         node.diagnostic = recomputeDiagnostic.empty()
                             ? "detached feature recompute failed"
@@ -803,13 +960,13 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                     break;
                 case DocumentCommitStatus::Conflict:
                 case DocumentCommitStatus::StaleDocument:
-                    node.state = DocumentRecomputeFeatureState::Stale;
+                    node.setState(DocumentRecomputeFeatureState::Stale);
                     break;
                 case DocumentCommitStatus::Cancelled:
-                    node.state = DocumentRecomputeFeatureState::Cancelled;
+                    node.setState(DocumentRecomputeFeatureState::Cancelled);
                     break;
                 default:
-                    node.state = DocumentRecomputeFeatureState::Failed;
+                    node.setState(DocumentRecomputeFeatureState::Failed);
                     break;
             }
             if (node.state != DocumentRecomputeFeatureState::Committed
@@ -867,13 +1024,16 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
             if (node.state == DocumentRecomputeFeatureState::Waiting
                 || (onOwner && node.pendingPreparedEdit
                     && node.state == DocumentRecomputeFeatureState::Committing)) {
+                if (job.optimized && node.pendingPreparedEdit) {
+                    --job.pendingCount;
+                }
                 cancelledPayloads.push_back(std::move(node.pendingPreparedEdit));
-                node.state = DocumentRecomputeFeatureState::Cancelled;
+                node.setState(DocumentRecomputeFeatureState::Cancelled);
                 node.diagnostic = reason;
             }
             else if (onOwner && node.state == DocumentRecomputeFeatureState::Preparing
                      && node.executionId) {
-                node.state = DocumentRecomputeFeatureState::Cancelling;
+                node.setState(DocumentRecomputeFeatureState::Cancelling);
                 executions.push_back(*node.executionId);
             }
         }
@@ -905,9 +1065,10 @@ void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId 
             return;
         }
         auto& job = *foundJob->second;
-        if (!std::ranges::all_of(job.nodes, [](const auto& entry) {
-                return featureTerminal(entry.second.state);
-            })) {
+        if (job.optimized ? job.terminalCount != job.nodes.size()
+                          : !std::ranges::all_of(job.nodes, [](const auto& entry) {
+                                return featureTerminal(entry.second.state);
+                            })) {
             return;
         }
         if (job.cancelRequested) {
@@ -993,6 +1154,17 @@ std::optional<DocumentRecomputeSnapshot> DocumentRecomputeCoordinator::status(
 {
     std::lock_guard stateLock(_stateMutex);
     return statusLocked(id);
+}
+
+std::optional<bool> DocumentRecomputeCoordinator::terminalForWait(
+    const DocumentRecomputeId id) const
+{
+    std::lock_guard stateLock(_stateMutex);
+    const auto found = _jobs.find(id);
+    if (found == _jobs.end()) {
+        return std::nullopt;
+    }
+    return jobTerminal(found->second->state);
 }
 
 bool DocumentRecomputeCoordinator::hasPendingWork() const
