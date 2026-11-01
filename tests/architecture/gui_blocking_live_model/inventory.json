@@ -3398,14 +3398,6 @@
       "evidence": "if (!item || !App::GetApplication().getActiveDocument()) {"
     },
     {
-      "path": "src/Gui/propertyeditor/PropertyEditor.cpp",
-      "occurrence": 1,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
-    },
-    {
       "path": "src/Mod/AddonManager/AddonManager.py",
       "occurrence": 1,
       "category": "process-events-polling",
@@ -27163,7 +27155,15 @@
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
-      "evidence": "FCMD_OBJ_CMD(feat, \"StartAtShape = False\");"
+      "evidence": "FCMD_OBJ_CMD(feat, \"RelativeToFirst = True\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FCMD_OBJ_CMD(feat, \"StartAtShape = True\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",

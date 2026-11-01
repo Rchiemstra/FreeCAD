@@ -76,6 +76,7 @@ target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
+    ${Python3_LIBRARIES}
     ${QtTest_LIBRARIES}
     FreeCADApp
     FreeCADGui
@@ -113,8 +114,11 @@ add_executable(GuiShutdown_tests_run
     MainWindowShutdown.cpp
 )
 
+# BUILD_DYNAMIC_LINK_PYTHON is OFF outside MSVC, so this process has to link
+# libpython itself. keep_python_linked() runs for every TestExecutables entry.
 target_link_libraries(GuiShutdown_tests_run PRIVATE
     GTest::gmock_main
+    ${Python3_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )
