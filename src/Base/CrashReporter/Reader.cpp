@@ -246,13 +246,27 @@ ParsedCrashReport Base::CrashReporter::parse(const std::string& pathToRawReportF
         }
 
         const auto [frames] = objectTrace.resolve();  // This call does the actual resolution
-        parsedReport.stackFrames.reserve(frames.size());
+        std::vector<ResolvedInstruction> instructions;
+        instructions.reserve(frames.size());
         for (const auto& frame : frames) {
+            instructions.push_back(ResolvedInstruction {
+                frame.raw_address,
+                frame.object_address,
+                frame.is_inline,
+            });
+        }
+        // Inline frames come back with a null address. Repair them before the module-path map is
+        // indexed, or address 0 looks up an empty path and every such frame collides.
+        attributeInlineFrames(instructions);
+        parsedReport.stackFrames.reserve(frames.size());
+        for (std::size_t index = 0; index < frames.size(); ++index) {
+            const auto& frame = frames[index];
+            const ResolvedInstruction& instruction = instructions[index];
             ParsedFrame parsedFrame;
-            parsedFrame.rawAddress = frame.raw_address;
-            parsedFrame.moduleOffset = frame.object_address;
+            parsedFrame.rawAddress = instruction.rawAddress;
+            parsedFrame.moduleOffset = instruction.objectAddress;
 
-            const std::string& objectPath = modulePathMap[frame.raw_address];
+            const std::string& objectPath = modulePathMap[instruction.rawAddress];
 
             // To avoid any PII in the backtrace, only include the filename, not the full path:
             parsedFrame.modulePath = FileInfo(objectPath).fileName();
@@ -299,6 +313,28 @@ ParsedCrashReport Base::CrashReporter::parse(const std::string& pathToRawReportF
     }
 
     return parsedReport;
+}
+
+void Base::CrashReporter::attributeInlineFrames(std::vector<ResolvedInstruction>& frames)
+{
+    // flatten_inlines emits the inline frames and then the physical frame. Several inlines in a
+    // row belong to the first following frame that carries an address.
+    for (std::size_t index = 0; index < frames.size(); ++index) {
+        if (!frames[index].isInline || frames[index].rawAddress != 0) {
+            continue;
+        }
+        std::size_t owner = index + 1;
+        while (owner < frames.size() && frames[owner].isInline && frames[owner].rawAddress == 0) {
+            ++owner;
+        }
+        if (owner == frames.size() || frames[owner].rawAddress == 0) {
+            continue;
+        }
+        frames[index].rawAddress = frames[owner].rawAddress;
+        if (frames[index].objectAddress == 0) {
+            frames[index].objectAddress = frames[owner].objectAddress;
+        }
+    }
 }
 
 std::vector<ParsedFrame> Base::CrashReporter::trimLeadingPlumbingFrames(
