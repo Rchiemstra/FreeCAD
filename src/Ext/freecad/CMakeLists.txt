@@ -21,12 +21,17 @@ configure_file(__init__.py.template ${NAMESPACE_INIT})
 
 set(EXT_FILES
     deprecation.py
+    expression_diagnostics.py
+    expression_diagnostics_gui.py
+    expression_diagnostics_text.py
+    expression_diagnostics_property_editor.py
     freecad_doc.py
     module_io.py
     part.py
     partdesign.py
     project_utility.py
     sketcher.py
+    sketcher_expression_diagnostics.py
     UiTools.py
     utils.py
     utils_zip.py

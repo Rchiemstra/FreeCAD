@@ -45,7 +45,12 @@ import pathlib
 directories = [
     {"tsname": "App", "workingdir": "./src/App", "tsdir": "Resources/translations"},
     {"tsname": "Base", "workingdir": "./src/Base", "tsdir": "Resources/translations"},
-    {"tsname": "FreeCAD", "workingdir": "./src/Gui", "tsdir": "Language"},
+    {
+        "tsname": "FreeCAD",
+        "workingdir": "./src/Gui",
+        "tsdir": "Language",
+        "extra_roots": ["../Ext/freecad"],
+    },
     {
         "tsname": "Arch",
         "workingdir": "./src/Mod/BIM/",
@@ -271,7 +276,8 @@ def update_translation(entry):
         ]
         starting_root = os.getcwd()
         with open("files_to_translate.txt", "w", encoding="utf-8") as file_list:
-            for root, dirs, files in os.walk(starting_root):
+            roots = [starting_root] + entry.get("extra_roots", [])
+            for root, dirs, files in (item for source in roots for item in os.walk(source)):
                 for f in files:
                     skip = False
                     for exclusion in excluded_files:

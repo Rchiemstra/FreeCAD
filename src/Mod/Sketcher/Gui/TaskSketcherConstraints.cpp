@@ -63,6 +63,7 @@
 #include "EditDatumDialog.h"
 #include "EditTextDialog.h"
 #include "TaskSketcherConstraints.h"
+#include "SketchConstraintPresentation.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
 #include "ui_TaskSketcherConstraints.h"
@@ -142,6 +143,7 @@ public:
         this->setFlags(this->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
         setData(Qt::UserRole, ConstNbr);
 
+        presentation.pair = deltaPositionPair();
         updateVirtualSpaceStatus();
     }
     ~ConstraintItem() override
@@ -294,7 +296,23 @@ public:
         QListWidgetItem::setData(role, value);
     }
 
+    void capturePresentation()
+    {
+        presentation.pair = deltaPositionPair();
+        presentation.boundExpression = isDriving() && hasExpression();
+        presentation.capture([this](int role) { return liveData(role); });
+    }
+
     QVariant data(int role) const override
+    {
+        if (role == Qt::EditRole && value.isValid()) {
+            return value;
+        }
+        return presentation.data(sketchView->getExpressionDiagnostics(), constraintNumbers(),
+                                 role, QListWidgetItem::data(role));
+    }
+
+    QVariant liveData(int role) const
     {
         if (ConstraintNbr < 0 || ConstraintNbr >= int(inputs->constraints.size()))
             return QVariant();
@@ -702,6 +720,7 @@ public:
     const ViewProviderSketch* sketchView;
     int ConstraintNbr;
     QVariant value;
+    SketchConstraintPresentation presentation;
     std::shared_ptr<const ConstraintRowInputs> inputs;
 };
 
@@ -739,10 +758,7 @@ protected:
         options.widget->style()->drawControl(QStyle::CE_ItemViewItem, &options, painter, option.widget);
 
         ConstraintItem* item = dynamic_cast<ConstraintItem*>(view->item(index.row()));
-        if (!item)
-            return;
-
-        if (item->isDriving() && item->hasExpression()) {
+        if (item && item->presentation.boundExpression) {
             // Paint pixmap
             int s = 2 * options.rect.height() / 4;
             int margin = s;
@@ -2134,6 +2150,11 @@ bool TaskSketcherConstraints::isConstraintFiltered(QListWidgetItem* item)
 void TaskSketcherConstraints::slotConstraintsChanged()
 {
     assert(sketchView);
+    auto admission = sketchView->getExpressionDiagnostics().readAdmission();
+    if (!admission) {
+        QTimer::singleShot(25, this, &TaskSketcherConstraints::slotConstraintsChanged);
+        return;
+    }
 
     App::LivePresentationRefreshScope refresh;
     if (!refresh.acquired() || sketchView->getDocument()->deferLivePresentationUpdates()
@@ -2178,6 +2199,7 @@ void TaskSketcherConstraints::slotConstraintsChanged()
         it->inputs = inputs;
         it->value = QVariant();
         constraintMap[it->ConstraintNbr] = it;
+        it->capturePresentation();
         it->updateVirtualSpaceStatus();
     }
     for (const auto& pair : pairs) {
@@ -2216,6 +2238,7 @@ void TaskSketcherConstraints::changeEvent(QEvent* e)
     TaskBox::changeEvent(e);
     if (e->type() == QEvent::LanguageChange) {
         ui->retranslateUi(proxy);
+        slotConstraintsChanged();
     }
 }
 

@@ -651,6 +651,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
              updateColor(drawingParameters.NonDrivingConstrDimColor, param);
          }},
+        {"BrokenExpressionConstrDimColor",
+         [this, drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateColor(drawingParameters.BrokenExpressionConstrDimColor, param);
+         }},
         {"ExprBasedConstrDimColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
              updateColor(drawingParameters.ExprBasedConstrDimColor, param);
