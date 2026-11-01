@@ -25,6 +25,7 @@
 #include <FCConfig.h>
 #if defined(__GNUC__) && defined(FC_OS_LINUX)
 # include <array>
+# include <mutex>
 # include <boost/stacktrace.hpp>
 # include <stdexcept>
 # include <iostream>
@@ -51,7 +52,6 @@
 #  define OSD_SIGNAL_THROW(Type, msg) Type::NewInstance(msg)->Jump()
 # endif
 #endif
-#include <Base/SystemHandler.h>
 
 using namespace Part;
 
@@ -141,6 +141,42 @@ static void throw_exc(const int theSignal, siginfo_t* /*theSigInfo*/, const Stan
     }
 }
 
+// Handlers are process-wide. FCBRepAlgoAPI_BooleanOperation::Build, which constructs this guard,
+// is a public Part entry point and can overlap the document execution lane's thread. Only the
+// outermost live guard switches modes. A mutex, not an atomic counter, covers that swap: the saved
+// sigaction array and the sigaction() calls have to be published together with the nest count. The
+// Boolean runs outside the lock. OCC handlers must not take the mutex; locking from a signal
+// handler is not async-signal-safe.
+constexpr static int kNbSignals = 8;
+constexpr static std::array<int, kNbSignals> kSignalTypes
+    = {SIGFPE, SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGBUS, SIGSYS, SIGSEGV};
+static std::mutex signalMutex;
+static int nestCount = 0;
+
+// Same save/restore as Base::SignalException: sigaction(sig, nullptr, &saved) on the way in,
+// sigaction(sig, &saved, nullptr) on the way out. glibc ORs SA_RESTORER into every install (its
+// return trampoline). That bit has no user-visible effect, so a round-trip may set it on a
+// disposition that did not have it. Matching the kernel record would need an rt_sigaction layout
+// per architecture, which is not worth it.
+static std::array<struct sigaction, kNbSignals> savedActions {};
+static std::array<bool, kNbSignals> savedActionValid {};
+
+static int captureAction(int signo, std::size_t index)
+{
+    const int retcode = sigaction(signo, nullptr, &savedActions[index]);
+    savedActionValid[index] = retcode == 0;
+    return retcode;
+}
+
+static int restoreAction(std::size_t index)
+{
+    const int retcode = sigaction(kSignalTypes[index], &savedActions[index], nullptr);
+    if (retcode == 0) {
+        savedActionValid[index] = false;
+    }
+    return retcode;
+}
+
 static void setSignal(OSD_SignalMode theSignalMode)
 {
     OSD_WasSetSignal = theSignalMode;
@@ -148,17 +184,34 @@ static void setSignal(OSD_SignalMode theSignalMode)
         return;  // nothing to be done with signal handlers
     }
 
+    // Caller holds signalMutex. Unset puts back the actions captured when this nest went 0 -> 1,
+    // including handler, flags (SA_SIGINFO / SA_ONSTACK) and mask. It must not install SIG_DFL or
+    // Base::SystemHandler::installSegfaultHandler(), which drops the crash reporter.
+    if (theSignalMode == OSD_SignalMode_Unset) {
+        for (std::size_t index = 0; index < kSignalTypes.size(); ++index) {
+            if (!savedActionValid[index]) {
+                continue;
+            }
+            const int retcode = restoreAction(index);
+            Standard_ASSERT(
+                retcode == 0,
+                "sigaction() failed",
+                std::cout << "OSD::SetSignal(): sigaction() failed to restore "
+                          << kSignalTypes[index] << std::endl
+            );
+        }
+        return;
+    }
+
     // Prepare signal descriptors
     struct sigaction anActSet;
-    struct sigaction anActDfl;
     struct sigaction anActOld;
     sigemptyset(&anActSet.sa_mask);
-    sigemptyset(&anActDfl.sa_mask);
     sigemptyset(&anActOld.sa_mask);
 # ifdef SA_RESTART
-    anActSet.sa_flags = anActDfl.sa_flags = anActOld.sa_flags = SA_RESTART;
+    anActSet.sa_flags = anActOld.sa_flags = SA_RESTART;
 # else
-    anActSet.sa_flags = anActDfl.sa_flags = anActOld.sa_flags = 0;
+    anActSet.sa_flags = anActOld.sa_flags = 0;
 # endif
 # ifdef SA_SIGINFO
     anActSet.sa_flags = anActSet.sa_flags | SA_SIGINFO;
@@ -166,14 +219,10 @@ static void setSignal(OSD_SignalMode theSignalMode)
 # else
     anActSet.sa_handler = throw_exc;
 # endif
-    anActDfl.sa_handler = SIG_DFL;
 
-    // Set signal handlers; NB: SIGSEGV must be the last one!
-    const int NBSIG = 8;
-    constexpr static std::array<int, NBSIG> aSignalTypes
-        = {SIGFPE, SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGBUS, SIGSYS, SIGSEGV};
-    for (int aSignalType : aSignalTypes) {
-        // SIGSEGV has special handler
+    // SIGSEGV stays last and keeps its own handler. Other signals use throw_exc.
+    for (std::size_t index = 0; index < kSignalTypes.size(); ++index) {
+        const int aSignalType = kSignalTypes[index];
         if (aSignalType == SIGSEGV) {
 # ifdef SA_SIGINFO
             anActSet.sa_sigaction = /*(void(*)(int, siginfo_t *, void*))*/ SegvHandler;
@@ -181,20 +230,35 @@ static void setSignal(OSD_SignalMode theSignalMode)
             anActSet.sa_handler = /*(SIG_PFV)*/ SegvHandler;
 # endif
         }
+        else {
+# ifdef SA_SIGINFO
+            anActSet.sa_sigaction = throw_exc;
+# else
+            anActSet.sa_handler = throw_exc;
+# endif
+        }
 
         // set handler according to specified mode and current handler
         int retcode = -1;
-        if (theSignalMode == OSD_SignalMode_Set || theSignalMode == OSD_SignalMode_SetUnhandled) {
+        if (theSignalMode == OSD_SignalMode_Set) {
+            // Capture first. captureAction does not install, so a failed install leaves the
+            // previous handler in place and the snapshot unused.
+            retcode = captureAction(aSignalType, index);
+            if (retcode == 0) {
+                struct sigaction ignoredOld {};
+                retcode = sigaction(aSignalType, &anActSet, &ignoredOld);
+                if (retcode != 0) {
+                    savedActionValid[index] = false;
+                }
+            }
+        }
+        else if (theSignalMode == OSD_SignalMode_SetUnhandled) {
             retcode = sigaction(aSignalType, &anActSet, &anActOld);
-        }
-        else if (theSignalMode == OSD_SignalMode_Unset) {
-            retcode = sigaction(aSignalType, &anActDfl, &anActOld);
-        }
-        if (theSignalMode == OSD_SignalMode_SetUnhandled && retcode == 0
-            && anActOld.sa_handler != SIG_DFL) {
-            struct sigaction anActOld2;
-            sigemptyset(&anActOld2.sa_mask);
-            retcode = sigaction(aSignalType, &anActOld, &anActOld2);
+            if (retcode == 0 && anActOld.sa_handler != SIG_DFL) {
+                struct sigaction anActOld2;
+                sigemptyset(&anActOld2.sa_mask);
+                retcode = sigaction(aSignalType, &anActOld, &anActOld2);
+            }
         }
         Standard_ASSERT(
             retcode == 0,
@@ -207,29 +271,32 @@ static void setSignal(OSD_SignalMode theSignalMode)
 
 // ----------------------------------------------------------------------------
 
-#if defined(__GNUC__) && defined(FC_OS_LINUX)
-static OSD_SignalMode currentSignalMode = OSD_SignalMode_Unset;  // NOLINT
-#endif
-
 SignalException::SignalException()
 {
 #if defined(__GNUC__) && defined(FC_OS_LINUX)
-    if (currentSignalMode == OSD_SignalMode_Unset) {
-        currentSignalMode = OSD_SignalMode_Set;
-        setSignal(currentSignalMode);
-        enabled = true;
+    const std::lock_guard<std::mutex> lock(signalMutex);
+    if (nestCount == 0) {
+        setSignal(OSD_SignalMode_Set);
     }
+    ++nestCount;
+    enabled = true;
 #endif
 }
 
 SignalException::~SignalException()
 {
 #if defined(__GNUC__) && defined(FC_OS_LINUX)
-    if (enabled && currentSignalMode == OSD_SignalMode_Set) {
-        currentSignalMode = OSD_SignalMode_Unset;
-        setSignal(currentSignalMode);
-        // this is the default handler
-        Base::SystemHandler::installSegfaultHandler();
+    if (!enabled) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(signalMutex);
+    enabled = false;
+    if (nestCount <= 0) {
+        return;
+    }
+    --nestCount;
+    if (nestCount == 0) {
+        setSignal(OSD_SignalMode_Unset);
     }
 #endif
 }

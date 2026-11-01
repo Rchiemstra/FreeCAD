@@ -49,6 +49,7 @@ add_executable(Gui_tests_run
         StyleParameters/ColorShadingTest.cpp
         InputHintTest.cpp
         MainWindow.cpp
+        TreeDocumentRename.cpp
         NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
         SoDatumLabel.cpp

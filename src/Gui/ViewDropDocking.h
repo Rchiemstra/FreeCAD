@@ -48,9 +48,13 @@ struct X11Pointer
 
     std::optional<State> query() const
     {
+        if (!qGuiApp || QGuiApplication::platformName() != QLatin1String("xcb")) {
+            return std::nullopt;
+        }
         auto* native = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-        if (native && rootWindow && queryPointer) {
-            State state {native->display(), 0, 0, 0};
+        auto* display = native ? native->display() : nullptr;
+        if (display && rootWindow && queryPointer) {
+            State state {display, 0, 0, 0};
             int rootX = 0, rootY = 0, localX = 0, localY = 0;
             if (queryPointer(state.display, rootWindow(state.display), &state.root, &state.child,
                              &rootX, &rootY, &localX, &localY, &state.mask)) {

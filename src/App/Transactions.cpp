@@ -430,6 +430,50 @@ void Transaction::applyImpl(Document& Doc, bool forward, bool propagateErrors)
     }
 }
 
+void Transaction::addObjectNewBefore(TransactionalObject* Obj, const TransactionalObject* before)
+{
+    auto& index = _Objects.get<1>();
+    const auto anchor = before ? index.find(before) : index.end();
+    const bool anchorIsRemoval = anchor != index.end() && anchor->second
+        && anchor->second->status == TransactionObject::New && before != Obj;
+    if (!anchorIsRemoval) {
+        addObjectNew(Obj);
+        return;
+    }
+
+    auto existing = index.find(Obj);
+    if (existing != index.end()) {
+        // Cancellation and status updates stay in addObjectNew(). If the
+        // provider survives that, move it to just before the document object.
+        addObjectNew(Obj);
+        existing = index.find(Obj);
+        if (existing == index.end()) {
+            return;
+        }
+        const auto anchorNow = index.find(before);
+        if (anchorNow == index.end()) {
+            return;
+        }
+        auto& sequence = _Objects.get<0>();
+        sequence.relocate(_Objects.project<0>(anchorNow), _Objects.project<0>(existing));
+        return;
+    }
+
+    auto* transactionObject = TransactionFactory::instance().createTransaction(Obj->getTypeId());
+    if (!transactionObject) {
+        return;
+    }
+    transactionObject->status = TransactionObject::New;
+    transactionObject->_NameInDocument = Obj->detachFromDocument();
+    auto& sequence = _Objects.get<0>();
+    const auto inserted = sequence.insert(
+        _Objects.project<0>(anchor),
+        Info {Obj, transactionObject});
+    if (!inserted.second) {
+        delete transactionObject;
+    }
+}
+
 void Transaction::addObjectNew(TransactionalObject* Obj)
 {
     auto& index = _Objects.get<1>();
