@@ -63,7 +63,7 @@ struct PresentationCaptureCacheStatistics
     std::uint64_t tessellations;
 };
 
-/** Thread-safe diagnostics; tessellations counts actual setupCoinGeometry calls. */
+/** Thread-safe diagnostics; tessellations counts actual tessellation calls. */
 [[nodiscard]] PartGuiExport PresentationCaptureCacheStatistics
 presentationCaptureCacheStatistics();
 

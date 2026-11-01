@@ -35,6 +35,7 @@
 #endif
 
 #include "QuarterWidgetP.h"
+#include "OpenGLViewportResize.h"
 #include "QuarterWidget.h"
 #include "eventhandlers/EventFilter.h"
 
@@ -115,6 +116,11 @@ QuarterWidgetP::~QuarterWidgetP()
   // so make sure it can no longer fire into the callback below.
   delete this->redrawtimer;
   this->redrawtimer = nullptr;
+
+  if (this->glResizeGuard) {
+    this->glResizeGuard->stop();
+    this->glResizeGuard = nullptr;
+  }
 
   QOpenGLWidget* glMaster = static_cast<QOpenGLWidget*>(this->master->viewport());
   removeFromCacheContext(this->cachecontext, glMaster);

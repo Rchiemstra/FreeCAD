@@ -1354,7 +1354,10 @@ void Document::slotTransactionRemove(const App::DocumentObject& obj, App::Transa
         // transaction being a nullptr indicates that undo/redo is off and the object
         // can be safely deleted
         if (transaction) {
-            transaction->addObjectNew(viewProvider);
+            // A compatibility commit defers this signal until the document
+            // object is already in the undo transaction. Restoring records in
+            // sequence order must put this provider back before that object.
+            transaction->addObjectNewBefore(viewProvider, &obj);
         }
         else {
             delete viewProvider;
@@ -4271,7 +4274,7 @@ bool Document::canClose(bool checkModify, bool checkLink)
         return true;
     }
 
-    if (getDocument()->testStatus(App::Document::TempDoc)) {
+    if (skipsSaveOnClose() || getDocument()->testStatus(App::Document::TempDoc)) {
         return true;
     }
 

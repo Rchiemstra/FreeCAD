@@ -41,6 +41,7 @@
     "src/Mod/Measure/InitGui.py",
     "src/Mod/Mesh/InitGui.py",
     "src/Mod/MeshPart/InitGui.py",
+    "src/Mod/ModelDiff/InitGui.py",
     "src/Mod/OpenSCAD/InitGui.py",
     "src/Mod/Part/InitGui.py",
     "src/Mod/PartDesign/InitGui.py",
@@ -73,6 +74,7 @@
     "src/Mod/TechDraw/TechDrawTools",
     "src/Mod/Points/pointscommands",
     "src/Mod/PartDesign/WizardShaft",
+    "src/Mod/ModelDiff/modeldiff.py",
     "src/Mod/Draft/DraftGui.py",
     "src/Mod/Draft/DraftTools.py",
     "src/Mod/Draft/DxfImportDialog.py",
@@ -270,6 +272,8 @@
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
@@ -24962,6 +24966,30 @@
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
     },
     {
+      "path": "src/Mod/ModelDiff/modeldiff.py",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "ModelDiff",
+      "disposition": "investigate",
+      "evidence": "self.active = App.ActiveDocument.Name if App.ActiveDocument else \"\""
+    },
+    {
+      "path": "src/Mod/ModelDiff/modeldiff.py",
+      "occurrence": 1,
+      "category": "sync-document-api",
+      "subsystem": "ModelDiff",
+      "disposition": "migrate",
+      "evidence": "App.closeDocument(doc.Name)"
+    },
+    {
+      "path": "src/Mod/ModelDiff/modeldiff.py",
+      "occurrence": 1,
+      "category": "sync-document-api",
+      "subsystem": "ModelDiff",
+      "disposition": "migrate",
+      "evidence": "App.closeDocument(name)"
+    },
+    {
       "path": "src/Mod/OpenSCAD/OpenSCAD2Dgeom.py",
       "occurrence": 1,
       "category": "live-app-dereference",
@@ -27000,6 +27028,22 @@
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "and source.Document == App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/PartDesign/AllowanceProfileGui.py",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument is None or Gui.Control.activeDialog():"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",

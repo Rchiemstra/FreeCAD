@@ -13,6 +13,7 @@ SET(Test_SRCS
     TestExpressionDiagnosticsGui.py
     Document.py
     GuiDocument.py
+    TestQuarterViewGui.py
     Metadata.py
     StringHasher.py
     Menu.py

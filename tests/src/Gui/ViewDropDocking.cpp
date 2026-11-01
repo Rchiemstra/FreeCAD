@@ -90,6 +90,20 @@ protected:
     int dockCount {0};
 };
 
+#if defined(Q_OS_LINUX) && QT_CONFIG(xcb)
+TEST_F(ViewDropDockingTest, nativeQueriesAreUnavailableOnOffscreenBackend)
+{
+    if (QGuiApplication::platformName() != QLatin1String("offscreen")) {
+        GTEST_SKIP() << "Requires the offscreen platform";
+    }
+    EXPECT_EQ(Gui::viewDragLeftButtonDown(), std::nullopt);
+    view.move(QCursor::pos() - QPoint(10, 10));
+    QApplication::processEvents();
+    ASSERT_TRUE(view.frameGeometry().contains(QCursor::pos()));
+    EXPECT_FALSE(Gui::viewDragOwnsNativeFrame(&view, QCursor::pos()));
+}
+#endif
+
 TEST_F(ViewDropDockingTest, docksExactDraggedViewOnlyAfterRelease)
 {
     startInside();

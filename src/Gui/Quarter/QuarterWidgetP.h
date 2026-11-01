@@ -40,6 +40,10 @@
 class QOpenGLWidget;
 class QTimer;
 
+namespace Gui {
+class OpenGLViewportResizeGuard;
+}
+
 class SoNode;
 class SoCamera;
 class SoRenderManager;
@@ -105,6 +109,9 @@ public:
   int maxframerate {-1};
 
   QTimer * redrawtimer {nullptr};
+  // Keeps resizeViewportFramebuffer from deleting the QRhi wrapper a
+  // top-level paintAndFlush has already copied into its texture list.
+  Gui::OpenGLViewportResizeGuard* glResizeGuard {nullptr};
   QElapsedTimer timesincelastframe;
   bool redrawdeferred {false};
 
