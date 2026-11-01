@@ -27,6 +27,7 @@
  */
 
 #include <FCBRepAlgoAPI_Section.h>
+#include <BooleanParallel.h>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -36,7 +37,7 @@
 
 FCBRepAlgoAPI_Section::FCBRepAlgoAPI_Section()
 {
-    SetRunParallel(Standard_True);
+    SetRunParallel(Part::booleanRunParallel());
     SetNonDestructive(Standard_True);
 }
 
@@ -54,7 +55,7 @@ FCBRepAlgoAPI_Section::FCBRepAlgoAPI_Section(
         throw Standard_ConstructionError("Tool shape is not valid for boolean operation");
     }
     setAutoFuzzy();
-    SetRunParallel(Standard_True);
+    SetRunParallel(Part::booleanRunParallel());
     SetNonDestructive(Standard_True);
     if (PerformNow) {
         Build();
@@ -72,7 +73,7 @@ FCBRepAlgoAPI_Section::FCBRepAlgoAPI_Section(
         throw Standard_ConstructionError("Base shape is not valid for boolean operation");
     }
     setAutoFuzzy();
-    SetRunParallel(Standard_True);
+    SetRunParallel(Part::booleanRunParallel());
     if (PerformNow) {
         Build();
     }
