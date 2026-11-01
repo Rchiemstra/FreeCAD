@@ -1029,8 +1029,12 @@ void DocumentExecutionLane::executeActiveRecompute()
         }
 
         if (recomputeSnapshot->terminal()) {
-            if (recomputeSnapshot->state == DocumentRecomputeState::Completed
-                && _document.recomputeCoordinator().claimPresentationFinalization(
+            // PartialFailure and Cancelled publish the same notifications as
+            // Completed. RecomputeHandle::finalizeIfTerminal uses this claim,
+            // so a handle wait on the same id cannot publish a second time.
+            // A rolled-back feature is not Committed in the snapshot, and
+            // finalizeDetachedRecompute only announces Committed nodes.
+            if (_document.recomputeCoordinator().claimPresentationFinalization(
                     _active->recomputeId.value())) {
                 try {
                     _document.finalizeDetachedRecompute(*recomputeSnapshot);
@@ -1229,11 +1233,26 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
 
     // commandStatus() copies command.snapshot from other threads under _mutex,
     // so update a local copy and publish it under the lock.
+    // The coordinator can already be terminal here. Publishing that as the
+    // command state would let status()/done() return before
+    // finalizeDetachedRecompute and completeActiveCommand. Keep the command
+    // Running, Cancelling, or Stalled; progress and the recompute observation
+    // still advance. completeActiveCommand is what publishes Completed,
+    // Failed, or Cancelled.
     auto snapshot = command.snapshot;
-    snapshot.state = mapRecomputeState(recomputeSnapshot->state);
     snapshot.progress = recomputeSnapshot->progress;
     snapshot.diagnostic = recomputeSnapshot->diagnostic;
     snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
+    const bool cancelRequested = command.cancelRequested.load(std::memory_order_acquire);
+    if (!recomputeSnapshot->terminal()) {
+        snapshot.state = mapRecomputeState(recomputeSnapshot->state);
+    }
+    else if (cancelRequested || snapshot.state == DocumentCommandState::Cancelling) {
+        snapshot.state = DocumentCommandState::Cancelling;
+    }
+    else if (snapshot.state != DocumentCommandState::Stalled) {
+        snapshot.state = DocumentCommandState::Running;
+    }
 
     const bool progressChanged = previousProgress != snapshot.progress
         || (snapshot.recompute && previousCompleted != snapshot.recompute->completedFeatures)
@@ -1246,7 +1265,9 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
 
     if (_telemetry) {
         DocumentExecutionProgressSnapshot progress;
-        progress.active = !recomputeSnapshot->terminal();
+        // The command is still active until completeActiveCommand. Coordinator
+        // terminal must not clear the progress flag before finalization.
+        progress.active = true;
         progress.fraction = recomputeSnapshot->progress;
         progress.phase = documentRecomputeStateName(recomputeSnapshot->state);
         progress.operationId = documentCommandKindName(command.command.kind);
