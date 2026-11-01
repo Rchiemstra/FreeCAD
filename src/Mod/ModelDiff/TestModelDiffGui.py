@@ -19,6 +19,7 @@ import TestModelDiff as Fixtures
 class ModelDiffGuiTests(unittest.TestCase):
     setUp = Fixtures.ModelDiffTests.setUp
     tearDown = Fixtures.ModelDiffTests.tearDown
+    child_environment = Fixtures.ModelDiffTests.child_environment
     box = Fixtures.ModelDiffTests.box
     save = Fixtures.ModelDiffTests.save
     changes = Fixtures.ModelDiffTests.changes
@@ -361,11 +362,9 @@ class ModelDiffGuiTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 timeout=180,
-                env={
-                    **os.environ,
-                    "QTWEBENGINE_DISABLE_SANDBOX": "1",
-                    "MODELDIFF_TEST_CLOSE": mode,
-                },
+                env=self.child_environment(
+                    QTWEBENGINE_DISABLE_SANDBOX="1", MODELDIFF_TEST_CLOSE=mode
+                ),
             )
             self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
             self.assertTrue(output.exists(), process.stdout + process.stderr)

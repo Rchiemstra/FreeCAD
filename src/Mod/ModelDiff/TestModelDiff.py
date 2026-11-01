@@ -37,6 +37,17 @@ class ModelDiffTests(unittest.TestCase):
             close_document_by_name(name)
         self.tmp.cleanup()
 
+    def child_environment(self, **variables):
+        # A FreeCAD child saves user.cfg and system.cfg into its user home on
+        # exit. Sharing the test process's home leaks that window state into
+        # every GUI test that runs after this module.
+        home = Path(self.tmp.name) / "child-home"
+        home.mkdir(exist_ok=True)
+        environment = {**os.environ, **variables, "FREECAD_USER_HOME": str(home)}
+        environment.pop("FREECAD_USER_DATA", None)
+        environment.pop("FREECAD_USER_TEMP", None)
+        return environment
+
     def save(self, remote=False):
         recompute_document(self.doc)
         save_document_as(self.doc, self.remote if remote else self.local)
@@ -601,10 +612,44 @@ class ModelDiffTests(unittest.TestCase):
                     text=True,
                     capture_output=True,
                     timeout=180,
-                    env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                    env=self.child_environment(QT_QPA_PLATFORM="offscreen"),
                 )
                 self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
                 self.assertIn(expected, process.stdout)
+
+    def test_cli_child_saves_settings_in_its_own_home(self):
+        def snapshot():
+            files = {}
+            for key in ("UserParameter", "SystemParameter"):
+                path = Path(App.ConfigGet(key))
+                files[key] = (
+                    (path.stat().st_mtime_ns, path.stat().st_size)
+                    if path.exists()
+                    else None
+                )
+            return files
+
+        self.box()
+        self.save()
+        self.save(True)
+        before = snapshot()
+        process = subprocess.run(
+            check=False,
+            args=[
+                str(Path(App.ConfigGet("BinPath")) / "FreeCADCmd"),
+                "--diff",
+                self.local,
+                self.remote,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=180,
+            env=self.child_environment(QT_QPA_PLATFORM="offscreen"),
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        # The child must really save on exit, or an untouched parent home proves nothing.
+        self.assertTrue((Path(self.tmp.name) / "child-home" / "user.cfg").is_file())
+        self.assertEqual(snapshot(), before)
 
     def test_cli_requires_two_inputs(self):
         binary = str(Path(App.ConfigGet("BinPath")) / "FreeCADCmd")
@@ -615,6 +660,7 @@ class ModelDiffTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 timeout=30,
+                env=self.child_environment(),
             )
             self.assertNotEqual(process.returncode, 0)
             self.assertIn("Exactly two files", process.stdout + process.stderr)
@@ -629,7 +675,7 @@ class ModelDiffTests(unittest.TestCase):
             text=True,
             capture_output=True,
             timeout=180,
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            env=self.child_environment(QT_QPA_PLATFORM="offscreen"),
         )
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("remote model.FCStd", process.stdout + process.stderr)
@@ -642,6 +688,7 @@ class ModelDiffTests(unittest.TestCase):
             text=True,
             capture_output=True,
             timeout=30,
+            env=self.child_environment(),
         )
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("cannot be combined", process.stdout + process.stderr)
@@ -733,7 +780,9 @@ class ModelDiffTests(unittest.TestCase):
             for path in paths:
                 with self.subTest(path=path):
                     binary = str(Path(App.ConfigGet("BinPath")) / self.cli_binary)
-                    environment = {**os.environ, "QTWEBENGINE_DISABLE_SANDBOX": "1"}
+                    environment = self.child_environment(
+                        QTWEBENGINE_DISABLE_SANDBOX="1"
+                    )
                     options = {}
                     if (
                         path == str(unreadable)
@@ -745,7 +794,9 @@ class ModelDiffTests(unittest.TestCase):
                         user_home.mkdir(mode=0o777)
                         user_home.chmod(0o777)
                         environment.update(
-                            HOME=str(user_home), QT_QPA_PLATFORM="offscreen"
+                            HOME=str(user_home),
+                            FREECAD_USER_HOME=str(user_home),
+                            QT_QPA_PLATFORM="offscreen",
                         )
                         options["user"] = 65534
                     process = subprocess.run(
