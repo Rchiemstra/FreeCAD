@@ -273,6 +273,207 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
+    def _commit_on_worker(self, document, callback, **kwargs):
+        from Test.GuiRecompute import _pump_gui_until
+
+        done = {}
+
+        def worker():
+            try:
+                done["result"] = document.commitCompatibilityMutation(callback, **kwargs)
+            except BaseException as exc:  # pragma: no cover - asserted by the caller
+                done["error"] = exc
+
+        thread = threading.Thread(target=worker, name="compat-commit")
+        thread.start()
+        _pump_gui_until(lambda: not thread.is_alive(), 30)
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        return done
+
+    @staticmethod
+    def _coin_address(node):
+        # SoNode::getNodeId() is a touch stamp and changes when the node is
+        # edited. The SWIG pointer is the C++ address and stays with the node.
+        return int(node.this)
+
+    def _selection_root_ids(self, view):
+        # Importing pivy loads the Coin SWIG wrappers getSceneGraph() requires.
+        from pivy import coin  # noqa: F401
+
+        found = []
+        seen = set()
+
+        def visit(node):
+            if node is None:
+                return
+            try:
+                key = self._coin_address(node)
+            except Exception:
+                key = id(node)
+            if key in seen:
+                return
+            seen.add(key)
+            try:
+                name = str(node.getTypeId().getName())
+            except Exception:
+                name = ""
+            if name == "SoFCSelectionRoot":
+                found.append(key)
+            try:
+                count = int(node.getNumChildren())
+            except Exception:
+                return
+            for index in range(count):
+                visit(node.getChild(index))
+
+        if view is not None and hasattr(view, "getSceneGraph"):
+            visit(view.getSceneGraph())
+        return found
+
+    def _active_view(self, document):
+        gui = FreeCADGui.getDocument(document.Name)
+        self.assertIsNotNone(gui)
+        FreeCADGui.setActiveDocument(document.Name)
+        view = gui.ActiveView
+        self.assertIsNotNone(view)
+        return view
+
+    def _provider_root_id(self, document, name):
+        provider = FreeCADGui.getDocument(document.Name).getObject(name)
+        self.assertIsNotNone(provider)
+        return provider, self._coin_address(provider.RootNode)
+
+    def testNonStructuralCompatibilityUndoKeepsViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until, undo_document
+
+        box = self.doc.addObject("Part::Box", "PropertyBox")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("PropertyBox") is not None,
+            10,
+        )
+        view = self._active_view(self.doc)
+        before_ids = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "PropertyBox")
+        self.assertIn(root_id, before_ids)
+
+        original_length = float(box.Length)
+
+        def edit():
+            box.Length = original_length + 5
+
+        done = self._commit_on_worker(self.doc, edit, structural=False, recompute=False)
+        self.assertNotIn("error", done)
+        self.assertTrue(done["result"]["committed"], done["result"])
+        undo_document(self.doc)
+        restored, restored_root = self._provider_root_id(self.doc, "PropertyBox")
+        self.assertIs(restored, provider)
+        self.assertEqual(restored_root, root_id)
+        self.assertIn(restored_root, self._selection_root_ids(self._active_view(self.doc)))
+        self.assertEqual(len(self._selection_root_ids(self._active_view(self.doc))), len(before_ids))
+        self.assertAlmostEqual(float(box.Length), original_length)
+
+    def testStructuralCompatibilityRemovalUndoKeepsOneViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until, redo_document, undo_document, close_document
+
+        box = self.doc.addObject("Part::Box", "Box")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("Box") is not None, 10
+        )
+        view = self._active_view(self.doc)
+        with_box = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "Box")
+        self.assertIn(root_id, with_box)
+
+        def remove_box():
+            self.doc.removeObject("Box")
+
+        done = self._commit_on_worker(self.doc, remove_box, structural=True, recompute=False)
+        self.assertNotIn("error", done, getattr(done.get("error"), "args", None))
+        self.assertTrue(done["result"]["committed"], done["result"])
+        _pump_gui_until(lambda: self.doc.getObject("Box") is None, 10)
+        without_box = self._selection_root_ids(self._active_view(self.doc))
+        self.assertLess(len(without_box), len(with_box))
+
+        undo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is not None, 10)
+        restored, restored_root = self._provider_root_id(self.doc, "Box")
+        scene_after_undo = self._selection_root_ids(self._active_view(self.doc))
+        # The deferred removal signal used to append the provider after the
+        # document object. Undo then created a second provider, left the first
+        # root out of the scene, and leaked a SoFCSelectionRoot.
+        self.assertIs(restored, provider)
+        self.assertEqual(restored_root, root_id)
+        self.assertIn(restored_root, scene_after_undo)
+        self.assertEqual(len(scene_after_undo), len(with_box))
+
+        redo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is None, 10)
+        self.assertEqual(
+            len(self._selection_root_ids(self._active_view(self.doc))), len(without_box)
+        )
+
+        undo_document(self.doc)
+        _pump_gui_until(lambda: self.doc.getObject("Box") is not None, 10)
+        restored_again, restored_again_root = self._provider_root_id(self.doc, "Box")
+        scene_after_second_undo = self._selection_root_ids(self._active_view(self.doc))
+        self.assertIs(restored_again, provider)
+        self.assertEqual(restored_again_root, root_id)
+        self.assertIn(restored_again_root, scene_after_second_undo)
+        self.assertEqual(len(scene_after_second_undo), len(with_box))
+
+        other = FreeCAD.newDocument("VpUndoNext")
+        try:
+            FreeCADGui.setActiveDocument(other.Name)
+            _pump_gui_until(lambda: FreeCADGui.getDocument(other.Name) is not None, 10)
+            other.addObject("Part::Box", "Marker")
+            _pump_gui_until(
+                lambda: FreeCADGui.getDocument(other.Name).getObject("Marker") is not None, 10
+            )
+            marker, marker_root = self._provider_root_id(other, "Marker")
+            self.assertIs(
+                FreeCADGui.getDocument(other.Name).getObject("Marker"), marker
+            )
+            self.assertIn(marker_root, self._selection_root_ids(self._active_view(other)))
+            FreeCADGui.setActiveDocument(self.doc.Name)
+            back, back_root = self._provider_root_id(self.doc, "Box")
+            self.assertIs(back, provider)
+            self.assertEqual(back_root, root_id)
+            self.assertIn(back_root, self._selection_root_ids(self._active_view(self.doc)))
+        finally:
+            close_document(other)
+
+    def testFailedStructuralCompatibilityRemovalKeepsViewProvider(self):
+        from Test.GuiRecompute import _pump_gui_until
+
+        box = self.doc.addObject("Part::Box", "RollbackBox")
+        _pump_gui_until(
+            lambda: FreeCADGui.getDocument(self.doc.Name).getObject("RollbackBox") is not None,
+            10,
+        )
+        view = self._active_view(self.doc)
+        before_ids = self._selection_root_ids(view)
+        provider, root_id = self._provider_root_id(self.doc, "RollbackBox")
+
+        def remove_and_fail():
+            self.doc.removeObject("RollbackBox")
+            raise ValueError("rollback view provider")
+
+        done = self._commit_on_worker(
+            self.doc, remove_and_fail, structural=True, recompute=False
+        )
+        self.assertIn("error", done)
+        self.assertIsInstance(done["error"], ValueError)
+        _pump_gui_until(lambda: self.doc.getObject("RollbackBox") is not None, 10)
+        restored, restored_root = self._provider_root_id(self.doc, "RollbackBox")
+        self.assertIs(restored, provider)
+        self.assertIs(self.doc.getObject("RollbackBox"), box)
+        self.assertEqual(restored_root, root_id)
+        current_ids = self._selection_root_ids(self._active_view(self.doc))
+        self.assertEqual(len(current_ids), len(before_ids))
+        # The original root must still be in the scene now, not just have been there before.
+        self.assertIn(restored_root, current_ids)
+
     def _queuedPresentationWhileBusy(self, *, failing=False, from_owner=False):
         from Test.GuiRecompute import _pump_gui_until
         from draftutils import gui_utils
