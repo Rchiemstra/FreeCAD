@@ -617,6 +617,40 @@ class ModelDiffTests(unittest.TestCase):
                 self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
                 self.assertIn(expected, process.stdout)
 
+    def test_cli_child_saves_settings_in_its_own_home(self):
+        def snapshot():
+            files = {}
+            for key in ("UserParameter", "SystemParameter"):
+                path = Path(App.ConfigGet(key))
+                files[key] = (
+                    (path.stat().st_mtime_ns, path.stat().st_size)
+                    if path.exists()
+                    else None
+                )
+            return files
+
+        self.box()
+        self.save()
+        self.save(True)
+        before = snapshot()
+        process = subprocess.run(
+            check=False,
+            args=[
+                str(Path(App.ConfigGet("BinPath")) / "FreeCADCmd"),
+                "--diff",
+                self.local,
+                self.remote,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=180,
+            env=self.child_environment(QT_QPA_PLATFORM="offscreen"),
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        # The child must really save on exit, or an untouched parent home proves nothing.
+        self.assertTrue((Path(self.tmp.name) / "child-home" / "user.cfg").is_file())
+        self.assertEqual(snapshot(), before)
+
     def test_cli_requires_two_inputs(self):
         binary = str(Path(App.ConfigGet("BinPath")) / "FreeCADCmd")
         for args in ([], ["one.FCStd"], ["one", "two", "three"]):
