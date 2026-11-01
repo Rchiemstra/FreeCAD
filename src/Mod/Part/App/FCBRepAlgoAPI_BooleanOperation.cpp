@@ -27,6 +27,7 @@
  */
 
 #include <FCBRepAlgoAPI_BooleanOperation.h>
+#include <BooleanParallel.h>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -40,7 +41,7 @@
 
 FCBRepAlgoAPI_BooleanOperation::FCBRepAlgoAPI_BooleanOperation()
 {
-    SetRunParallel(Standard_True);
+    SetRunParallel(Part::booleanRunParallel());
     SetNonDestructive(Standard_True);
 }
 
@@ -61,7 +62,7 @@ FCBRepAlgoAPI_BooleanOperation::FCBRepAlgoAPI_BooleanOperation(
     }
 
     setAutoFuzzy();
-    SetRunParallel(Standard_True);
+    SetRunParallel(Part::booleanRunParallel());
     SetNonDestructive(Standard_True);
 }
 

@@ -581,6 +581,8 @@ SET(Part_SRCS
     ExtrusionHelper.h
     FuzzyHelper.cpp
     FuzzyHelper.h
+    BooleanParallel.cpp
+    BooleanParallel.h
     GeometryExtension.cpp
     GeometryExtension.h
     GeometryDefaultExtension.cpp

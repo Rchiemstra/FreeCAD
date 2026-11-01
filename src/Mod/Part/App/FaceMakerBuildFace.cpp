@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include "FaceMakerBuildFace.h"
+#include "BooleanParallel.h"
 
 #include <Bnd_Box.hxx>
 #include <BOPAlgo_BuilderFace.hxx>
@@ -207,7 +208,7 @@ TopTools_ListOfShape Part::FaceMakerBuildFace::splitAtIntersections(const TopToo
         return edges;
     }
     mySplitter.SetArguments(edges);
-    mySplitter.SetRunParallel(true);
+    mySplitter.SetRunParallel(Part::booleanRunParallel());
     mySplitter.SetNonDestructive(Standard_True);
     mySplitter.Build();
     if (!mySplitter.IsDone()) {
