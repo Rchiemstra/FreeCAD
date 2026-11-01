@@ -323,6 +323,9 @@ QuarterWidget::replaceViewport()
 /*! destructor */
 QuarterWidget::~QuarterWidget()
 {
+  // Python destroyed callbacks can delete document records before later
+  // callbacks release their scene nodes. They must not use the renderer then.
+  this->setProperty("_FreeCAD_RendererUnavailable", true);
   if (PRIVATE(this)->currentStateMachine) {
     this->removeStateMachine(PRIVATE(this)->currentStateMachine);
     delete PRIVATE(this)->currentStateMachine;

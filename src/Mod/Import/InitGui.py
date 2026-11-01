@@ -39,7 +39,10 @@ FreeCAD.changeImportModule("STEP with colors (*.step *.STEP *.stp *.STP)", "Impo
 FreeCAD.changeExportModule("STEP with colors (*.step *.stp)", "Import", "ImportGui")
 FreeCAD.changeExportModule("glTF (*.gltf *.glb)", "Import", "ImportGui")
 
-App.__unit_test__ += ["TestImportGui"]
+App.__unit_test__ += ["TestImportGui", "TestStepViewsGui"]
+
+# Explicit saved-view commands; native data restore never invokes activation.
+import StepViewsGui
 
 """
 class ImportWorkbench ( Workbench ):
