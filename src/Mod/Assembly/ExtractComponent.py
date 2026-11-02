@@ -4,13 +4,22 @@
 The saved component file is an independent artifact: Undo restores the source
 model but deliberately leaves that file on disk. Redo uses the same document.
 
-Copy, property changes, deletion, and save run on each document owner.
-The destination recompute is that commit's eager native recompute. The source
-recompute runs after the rewrite commit, because an eager recompute inside it
-refuses the new cross-document link. The Assembly view-provider hook was
-removed. Base Gui::Document ordering (src/Gui/Document.cpp:1360,
-addObjectNewBefore) records the provider before the object, so Undo does not
-leak a second provider. Dialogs, selection, and messages stay on the GUI thread.
+The cross-document copy runs before either owner commit. ``copyObject`` exports
+the source, and ``Document::exportObjects`` (Document.cpp:4514) adds a hidden
+``_ObjectUUID`` on each source object when the App log level is Log or above,
+the debug default. That is a source mutation. The destination compatibility
+commit holds the process-wide atomic presentation admission for the destination
+(``DocumentCommitCoordinator::acquireCompatibilityMutationTarget``), and
+``enforceAtomicPresentationMutationTarget`` (MutationClassification.cpp:477)
+refuses a write to any other document. The copy touches both documents, so it
+cannot run inside that callback. The destination owner commit still recomputes
+and checks the settled postcondition. Replacement and deletion stay on the
+source owner. The source recompute runs after that rewrite commit, because an
+eager recompute inside it refuses the new cross-document link. The Assembly
+view-provider hook was removed. Base Gui::Document ordering
+(src/Gui/Document.cpp:1360, addObjectNewBefore) records the provider before the
+object, so Undo does not leak a second provider. Dialogs, selection, and
+messages stay on the GUI thread.
 """
 
 from dataclasses import dataclass
@@ -1099,15 +1108,17 @@ def extract(assembly, component, path):
         # Keep a private placeholder until import has resolved its relative paths.
         fd, staging = tempfile.mkstemp(suffix=".FCStd", dir=os.path.dirname(path))
         os.close(fd)
-        copied = {}
-
-        def copy_component():
-            destination.Label = component.Label
-            destination.FileName = staging
-            copies = destination.copyObject(owned, False)
-            if not isinstance(copies, (tuple, list)):
-                copies = [copies]
-            copied["objects"] = list(copies)
+        # XLink resolution reads FileName during the copy. Both assignments are
+        # destination-only. The copy itself is not: see the module comment.
+        # Doing it here, with no presentation admission held, lets the export
+        # stamp source UUIDs and the import add destination objects. A failure
+        # before the source commit still discards this document.
+        destination.Label = component.Label
+        destination.FileName = staging
+        copies = destination.copyObject(owned, False)
+        if not isinstance(copies, (tuple, list)):
+            copies = [copies]
+        copies = list(copies)
 
         def destination_settled():
             return _require_settled(
@@ -1116,15 +1127,17 @@ def extract(assembly, component, path):
                 translate("Assembly", "The extracted component could not be recomputed:"),
             )
 
+        # Recompute and the settled check stay on the destination owner, inside
+        # the commit that can roll them back. The callback must not touch the
+        # source: admission already targets this document.
         _commit_on_owner(
             destination,
-            copy_component,
+            lambda: None,
             pump=source,
-            structural=True,
+            structural=False,
             recompute=True,
             postcondition=destination_settled,
         )
-        copies = copied["objects"]
         mapping = dict(zip(owned, copies))
         copied_component = mapping[component]
         # The save API publishes exclusively and adopts the final identity and
