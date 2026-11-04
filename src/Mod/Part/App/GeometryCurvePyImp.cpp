@@ -66,6 +66,7 @@
 #include "PointPy.h"
 #include "RectangularTrimmedSurfacePy.h"
 #include "OCCError.h"
+#include "Tools.h"
 #include "TopoShape.h"
 #include "TopoShapeEdgePy.h"
 
@@ -825,6 +826,11 @@ PyObject* GeometryCurvePy::intersect2d(PyObject* args) const
         Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(
             static_cast<GeometryPy*>(p)->getGeometryPtr()->handle()
         );
+
+        if (isDegenerateConic(self) || isDegenerateConic(curv)) {
+            PyErr_SetString(PartExceptionOCCError, "Cannot intersect a circle or ellipse of zero radius");
+            return nullptr;
+        }
 
         Handle(Geom2d_Curve) curv1 = GeomAPI::To2d(self, plane->Pln());
         Handle(Geom2d_Curve) curv2 = GeomAPI::To2d(curv, plane->Pln());
