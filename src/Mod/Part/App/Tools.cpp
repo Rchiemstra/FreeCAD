@@ -33,8 +33,14 @@
 #include <BRepLProp_SLProps.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <CSLib.hxx>
+#include <Geom2d_Circle.hxx>
+#include <Geom2d_Ellipse.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_Circle.hxx>
+#include <Geom_Ellipse.hxx>
 #include <Geom_Line.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Point.hxx>
 #include <GeomAPI_IntSS.hxx>
@@ -77,6 +83,39 @@
 
 
 class TopExp_Explorer;
+
+namespace
+{
+template<typename Curve, typename TrimmedCurve, typename Circle, typename Ellipse>
+bool degenerateConic(const Handle(Curve) & curve)
+{
+    Handle(Curve) basis = curve;
+    if (!basis.IsNull() && basis->IsKind(STANDARD_TYPE(TrimmedCurve))) {
+        basis = Handle(TrimmedCurve)::DownCast(basis)->BasisCurve();
+    }
+    if (basis.IsNull()) {
+        return false;
+    }
+    if (basis->IsKind(STANDARD_TYPE(Circle))) {
+        return Handle(Circle)::DownCast(basis)->Radius() <= Precision::Confusion();
+    }
+    if (basis->IsKind(STANDARD_TYPE(Ellipse))) {
+        return Handle(Ellipse)::DownCast(basis)->MinorRadius() <= Precision::Confusion();
+    }
+    return false;
+}
+}  // namespace
+
+bool Part::isDegenerateConic(const Handle(Geom_Curve) & curve)
+{
+    return degenerateConic<Geom_Curve, Geom_TrimmedCurve, Geom_Circle, Geom_Ellipse>(curve);
+}
+
+bool Part::isDegenerateConic(const Handle(Geom2d_Curve) & curve)
+{
+    return degenerateConic<Geom2d_Curve, Geom2d_TrimmedCurve, Geom2d_Circle, Geom2d_Ellipse>(curve);
+}
+
 void Part::closestPointsOnLines(const gp_Lin& lin1, const gp_Lin& lin2, gp_Pnt& p1, gp_Pnt& p2)
 {
     // they might be the same point
