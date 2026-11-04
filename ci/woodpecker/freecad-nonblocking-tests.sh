@@ -16,11 +16,13 @@ run_arch() {
   # freecad-ci-deps:24.04 does not ship pytest; provision it the same way
   # prior collaboration Docker gates did (pip into the container).
   # CI image scheduling tests also parse the workflow YAML with PyYAML.
-  if ! python3 -c 'import pytest, yaml' 2>/dev/null; then
-    python3 -m pip install --break-system-packages -q pytest PyYAML
+  # The tests are independent pure-Python checks, so pytest-xdist runs them
+  # on every CPU the step may use (-n auto follows the CPU affinity).
+  if ! python3 -c 'import pytest, yaml, xdist' 2>/dev/null; then
+    python3 -m pip install --break-system-packages -q pytest pytest-xdist PyYAML
   fi
   export PYTHONUNBUFFERED=1
-  python3 -m pytest -vv --tb=line tests/architecture/
+  python3 -m pytest -vv --tb=line -n auto tests/architecture/
 }
 
 run_nonblocking_gtest() {

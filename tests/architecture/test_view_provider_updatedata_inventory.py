@@ -267,16 +267,18 @@ def test_presentation_classification_matches_cpp_expectations() -> None:
     assert not failures, "presentation classification drift:\n" + "\n".join(failures)
 
 
-def test_generator_reproduces_committed_inventory() -> None:
-    before = INVENTORY_PATH.read_text(encoding="utf-8")
+def test_generator_reproduces_committed_inventory(tmp_path: Path) -> None:
+    # Generate into tmp_path: other tests read the committed file, possibly in
+    # parallel, so this test must never rewrite it.
+    generated = tmp_path / INVENTORY_PATH.name
     completed = subprocess.run(
-        [sys.executable, str(GENERATOR)],
+        [sys.executable, str(GENERATOR), "--output", str(generated)],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    after = INVENTORY_PATH.read_text(encoding="utf-8")
-    INVENTORY_PATH.write_text(before, encoding="utf-8")
-    assert before == after, "committed inventory does not match generator output"
+    assert generated.read_text(encoding="utf-8") == INVENTORY_PATH.read_text(
+        encoding="utf-8"
+    ), "committed inventory does not match generator output"
