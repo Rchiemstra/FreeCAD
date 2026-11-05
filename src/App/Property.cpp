@@ -49,8 +49,19 @@ namespace
 
 thread_local const Property* suppressedTouchPublication = nullptr;
 
-void publishPropertyMutation(Property& property, bool structural)
+// Touch is the only event PropertyTouchPublicationSuppressor may skip.
+// Value (including purgeTouched) and status stay publishable for that
+// same property. Classification is unchanged: status is structural.
+enum class PropertyPublication
 {
+    Touch,
+    Value,
+    Status,
+};
+
+void publishPropertyMutation(Property& property, PropertyPublication publication)
+{
+    const bool structural = publication == PropertyPublication::Status;
     auto* container = property.getContainer();
     auto* document = documentFromPropertyContainer(container);
     if (!document) {
@@ -100,7 +111,9 @@ void publishPropertyMutation(Property& property, bool structural)
     if (structural || input.propertyFamily == CollaborationPropertyFamily::Link) {
         Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
     }
-    if (suppressedTouchPublication == &property
+    // Audit above still records the mutation. Only the synthetic touch
+    // is unpublished; document-level suppression still covers every caller.
+    if ((publication == PropertyPublication::Touch && suppressedTouchPublication == &property)
         || document->collaborationRevisionPublicationSuppressed(&property)) {
         return;
     }
@@ -401,7 +414,7 @@ void Property::touch()
         }
     }
     StatusBits.set(Touched);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Touch);
     if (father && isNotifyEnabled()) {
         father->onEarlyChange(this);
         father->onChanged(this);
@@ -419,7 +432,7 @@ void Property::purgeTouched()
         }
     }
     StatusBits.reset(Touched);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Value);
 }
 
 void Property::setReadOnly(bool readOnly)
@@ -430,7 +443,7 @@ void Property::setReadOnly(bool readOnly)
 void Property::hasSetValue()
 {
     PropertyCleaner guard(this);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Value);
     if (father) {
         if (isNotifyEnabled()) {
             father->onChanged(this);
@@ -525,7 +538,7 @@ void Property::setStatusValue(unsigned long status)
 
     if (father) {
         if (status != oldStatus && !onlyRuntimeLockerBits) {
-            publishPropertyMutation(*this, true);
+            publishPropertyMutation(*this, PropertyPublication::Status);
         }
         if (status != oldStatus) {
             father->onPropertyStatusChanged(*this, oldStatus);

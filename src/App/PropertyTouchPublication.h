@@ -9,10 +9,12 @@ namespace App
 class Property;
 
 /**
- * Skips semantic publication of one property on this thread.
+ * Skips semantic publication of one property's synthetic touch on this thread.
  *
- * Observers still run, and a write to any other property still publishes.
- * The previous property is restored on destruction so nested suppressors work.
+ * Property::touch() of that property does not publish. Observers still run.
+ * A value write, purgeTouched, or status change, including on that same
+ * property, still publishes, as does a touch of any other property. The
+ * previous property is restored on destruction so nested suppressors work.
  * The pointer is thread-local: the document owner on another thread still
  * publishes.
  *

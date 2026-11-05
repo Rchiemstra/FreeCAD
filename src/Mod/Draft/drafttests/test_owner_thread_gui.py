@@ -752,3 +752,65 @@ class DraftDeferredArrayPresentation(unittest.TestCase):
                 App.removeDocumentObserver(observer)
             close_document(doc)
             Gui.updateGui()
+
+    def test_label_touch_observer_rename_publishes(self):
+        """Renaming Label from the attach touch signal must publish Label.
+
+        ViewProviderFeaturePython touches Label after the proxy's attach. That
+        synthetic touch stays non-semantic. A DocumentObserver that assigns a
+        new Label during the signal is a real value write and has to move
+        objectProperty(Label). The object is purgeTouched afterwards only so
+        captureSemanticRevisions is allowed; that object purge publishes the
+        object model revision, not the label property revision.
+        """
+        doc = App.newDocument("LabelTouchObserverRename")
+        observer = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Box")
+            recompute_document(doc)
+
+            def label_revision():
+                found = {}
+                errors = []
+
+                def worker():
+                    try:
+                        found["label"] = _property_revision(doc, obj.Name, "Label")
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                thread = threading.Thread(target=worker)
+                thread.start()
+                _pump_gui_until(lambda: not thread.is_alive(), 30)
+                thread.join()
+                if errors:
+                    raise errors[0]
+                return found["label"]
+
+            label_before = label_revision()
+
+            class Observer:
+                def slotChangedObject(self, changed, prop):
+                    if changed == obj and prop == "Label" and changed.Label != "Renamed":
+                        changed.Label = "Renamed"
+
+            class Proxy:
+                def attach(self, vobj):
+                    return
+
+            observer = Observer()
+            App.addDocumentObserver(observer)
+            obj.ViewObject.Proxy = Proxy()
+            QtCore.QCoreApplication.processEvents()
+
+            self.assertEqual(obj.Label, "Renamed")
+            # Label is not an output property, so the write marks the object
+            # for recompute. Clear that touched state without rewriting Label.
+            obj.purgeTouched()
+            self.assertFalse(doc.mustExecute())
+            self.assertGreater(label_revision(), label_before)
+        finally:
+            if observer is not None:
+                App.removeDocumentObserver(observer)
+            close_document(doc)
+            Gui.updateGui()

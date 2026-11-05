@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
@@ -131,4 +133,81 @@ TEST_F(PropertyTouchPublicationTest, observerWriteDuringSuppressedLabelTouchPubl
     EXPECT_EQ(_object->Integer.getValue(), written);
     EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore);
     EXPECT_EQ(propertyRevision(*_doc, *_object, "Integer"), integerBefore + 1);
+}
+
+TEST_F(PropertyTouchPublicationTest, samePropertySetValuePublishesWhileTouchSuppressed)
+{
+    const auto labelBefore = propertyRevision(*_doc, *_object, "Label");
+    {
+        const PropertyTouchPublicationSuppressor suppressLabel(_object->Label);
+        _object->Label.setValue("Renamed");
+        EXPECT_STREQ(_object->Label.getValue(), "Renamed");
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore + 1);
+
+        // The synthetic touch of that same property stays unpublished.
+        _object->Label.touch();
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore + 1);
+    }
+
+    const auto labelAfterScope = propertyRevision(*_doc, *_object, "Label");
+    _object->Label.touch();
+    EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelAfterScope + 1);
+}
+
+TEST_F(PropertyTouchPublicationTest, observerRenameDuringSuppressedLabelTouchPublishes)
+{
+    const auto labelBefore = propertyRevision(*_doc, *_object, "Label");
+    static constexpr const char* renamed = "ObserverRename";
+
+    const ::fastsignals::scoped_connection observer = _doc->signalChangedObject.connect(
+        [&](const DocumentObject& object, const Property& property) {
+            if (&object == _object && &property == &_object->Label
+                && std::strcmp(_object->Label.getValue(), renamed) != 0) {
+                _object->Label.setValue(renamed);
+            }
+        });
+
+    {
+        const PropertyTouchPublicationSuppressor suppressLabel(_object->Label);
+        _object->Label.touch();
+    }
+
+    EXPECT_STREQ(_object->Label.getValue(), renamed);
+    EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore + 1);
+}
+
+TEST_F(PropertyTouchPublicationTest, purgeTouchedPublishesWhileTouchSuppressed)
+{
+    _object->Label.touch();
+    ASSERT_TRUE(_object->Label.isTouched());
+    const auto labelBefore = propertyRevision(*_doc, *_object, "Label");
+
+    {
+        const PropertyTouchPublicationSuppressor suppressLabel(_object->Label);
+        _object->Label.purgeTouched();
+        EXPECT_FALSE(_object->Label.isTouched());
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore + 1);
+
+        _object->Label.touch();
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore + 1);
+    }
+}
+
+TEST_F(PropertyTouchPublicationTest, statusChangePublishesWhileTouchSuppressed)
+{
+    const auto labelBefore = propertyRevision(*_doc, *_object, "Label");
+    const auto structureKey = DocumentRevisionKey::objectStructure(_object->getNameInDocument());
+    const auto structureBefore = _doc->collaborationRevisions().current(structureKey);
+
+    {
+        const PropertyTouchPublicationSuppressor suppressLabel(_object->Label);
+        _object->Label.setStatus(Property::Hidden, true);
+        EXPECT_TRUE(_object->Label.testStatus(Property::Hidden));
+        EXPECT_EQ(_doc->collaborationRevisions().current(structureKey), structureBefore + 1);
+        // Status publishes object structure, not the label value revision.
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore);
+
+        _object->Label.touch();
+        EXPECT_EQ(propertyRevision(*_doc, *_object, "Label"), labelBefore);
+    }
 }

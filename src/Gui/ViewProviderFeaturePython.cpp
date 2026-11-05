@@ -694,8 +694,9 @@ void ViewProviderFeaturePythonImp::attach(App::DocumentObject* pcObject)
         }
 
         // #0000415: notify observers that the proxy attached. The label text
-        // is unchanged, so only this property's publication is skipped. A
-        // model write from an observer still publishes.
+        // is unchanged, so only this synthetic touch is unpublished. A model
+        // write from an observer, including a write of Label itself, still
+        // publishes.
         const App::PropertyTouchPublicationSuppressor suppressLabelPublication(pcObject->Label);
         pcObject->Label.touch();
     }
