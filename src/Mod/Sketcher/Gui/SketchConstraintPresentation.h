@@ -24,11 +24,11 @@ struct SketchConstraintPresentation
         }
     }
 
-    QVariant data(const SketchExpressionDiagnostics& diagnostics, const std::vector<int>& indices,
-                  int role, const QVariant& fallback) const
+    QVariant data(std::shared_ptr<const SketchExpressionDiagnostics::Errors> errors,
+                  const std::vector<int>& indices, int role, const QVariant& fallback) const
     {
         if (role == Qt::ForegroundRole || role == Qt::ToolTipRole) {
-            const auto diagnostic = constraintExpressionData(diagnostics, indices, role);
+            const auto diagnostic = constraintExpressionData(std::move(errors), indices, role);
             if (diagnostic.isValid()) {
                 return diagnostic;
             }
