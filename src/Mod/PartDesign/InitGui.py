@@ -56,6 +56,11 @@ class PartDesignWorkbench(Workbench):
                     "PartDesign WizardShaft could not be imported: {err}\n".format(err=str(err))
                 )
 
+        from PartDesign.AllowanceProfileGui import CommandAllowanceProfile, AllowanceMenu
+
+        Gui.addCommand("PartDesign_AllowanceProfile", CommandAllowanceProfile())
+        Gui.addWorkbenchManipulator(AllowanceMenu())
+
         import PartDesignGui
         import PartDesign
 

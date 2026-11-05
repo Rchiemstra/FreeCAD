@@ -38,6 +38,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 
+#include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Base/Exception.h>
 #include <Base/Tools.h>
@@ -110,7 +111,8 @@ App::DocumentObjectExecReturn* FeaturePrimitive::execute(const TopoDS_Shape& pri
         }
         AddSubShape.setValue(primitiveShape);
 
-        TopoShape boolOp(0);
+        // Keep combined element histories compact, as for sketch-based extrusions.
+        TopoShape boolOp(0, getDocument()->getStringHasher());
         try {
             boolOp.makeElementBoolean(
                 getBooleanMaker(),

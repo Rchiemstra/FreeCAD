@@ -608,7 +608,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
-                                                 nestInCallerTransaction);
+                                                 nestInCallerTransaction,
+                                                 {});
     };
 
     if (_document.isCollaborationOwnerThread()) {
@@ -653,7 +654,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                         structuralCompatibility,
                         recomputePolicy,
                         retainUndoHistory,
-                        nestInCallerTransaction));
+                        nestInCallerTransaction,
+                        {}));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -692,7 +694,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithRecomp
                                              requireDetachedPreparationSupport,
                                              structuralCompatibility,
                                              recomputePolicy,
-                                             true);
+                                             true,
+                                             false,
+                                             {});
 }
 
 DocumentCommitResult

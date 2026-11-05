@@ -2175,6 +2175,28 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
         _atomicCompatibilityActive = true;
         _atomicCompatibilityOwner = std::this_thread::get_id();
     }
+    catch (const LivePresentationRefreshInProgress& exception) {
+        // Audit admission precedes callback work, but the private transaction
+        // is already open. Restore it before exposing a retryable refusal.
+        const auto rollback = _coordinator.rollbackNativeCommitTransaction(false);
+        clearAtomicState();
+        _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
+        _document.finishCollaborationCommitNotificationBarrier(false);
+        cleanupRequired = false;
+        if (!rollback.restored) {
+            _document.poisonCollaborationCommit(rollback.diagnostic.data());
+        }
+        if (_document.collaborationCommitPoisoned()) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::RollbackFailed,
+                operationId,
+                _document.collaborationCommitPoisonDiagnostic());
+        }
+        auto result = rejectedCompatibilityCommit(
+            DocumentCommitStatus::Busy, operationId, exception.what());
+        result.presentationAdmissionDeferred = exception.deferrable();
+        return preserveSerializedCallbackAdmission(std::move(result));
+    }
     catch (const Base::Exception& exception) {
         return rejectedCompatibilityCommit(
             DocumentCommitStatus::ApplyFailed,

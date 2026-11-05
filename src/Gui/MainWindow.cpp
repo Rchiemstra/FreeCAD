@@ -130,6 +130,7 @@
 #include "SpaceballEvent.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
+#include "ViewDropDocking.h"
 #include "Dialogs/DlgObjectSelection.h"
 
 #include <Base/Color.h>
@@ -461,6 +462,18 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
 #endif
     d->mdiArea->setBackground(QBrush(QColor(160, 160, 160)));
     setCentralWidget(d->mdiArea);
+
+    new ViewDropDocking(
+        d->mdiArea,
+        [](QWidget* widget) {
+            auto* view = qobject_cast<View3DInventor*>(widget);
+            return view && !view->isDeleting() && view->currentViewMode() == MDIView::TopLevel;
+        },
+        [](QWidget* widget) {
+            MDIView::changeViewMode(qobject_cast<MDIView*>(widget), MDIView::Child);
+        },
+        this
+    );
 
     statusBar()->setObjectName(QStringLiteral("statusBar"));
     connect(statusBar(), &QStatusBar::messageChanged, this, &MainWindow::statusMessageChanged);
@@ -2069,9 +2082,13 @@ void MainWindow::processMessages(const QList<QString>& msg)
 
 void MainWindow::delayedStartup()
 {
-    // automatically run unit tests in Gui
+    // Run internal startup scripts (tests or model diff).
     if (Gui::isInternalGuiTestRun()) {
         try {
+            if (App::Application::Config()["ScriptFileName"] == "FreeCADDiff") {
+                Base::Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADDiff"));
+                return;
+            }
             // Command-line GUI tests should not depend on the interactive QtUnitGui
             // dialog. In headless runs such as QT_QPA_PLATFORM=offscreen/minimal,
             // that dialog path can hang before the test body executes. Run the

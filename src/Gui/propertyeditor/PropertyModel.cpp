@@ -32,6 +32,7 @@
 #include <App/MutationClassification.h>
 #include <Base/Tools.h>
 #include <Base/Type.h>
+#include <Gui/ExpressionDiagnosticsPresentation.h>
 
 #include "DocumentExecutionIngress.h"
 #include "PropertyItem.h"
@@ -400,6 +401,7 @@ void PropertyModel::buildUp(const PropertyModel::PropertyList& props)
     // Final step, signal item removal. This is separated from the above because
     // of the possibility of moving items between groups.
     removeChildren();
+    Gui::ExpressionDiagnosticsPresentation::populate(*rootItem);
 }
 
 void PropertyModel::resetGroups()
@@ -582,6 +584,7 @@ void PropertyModel::updateProperty(const App::Property& prop)
     item->updateData();
     QModelIndex parent = this->index(item->parent()->row(), 0, QModelIndex());
     item->assignProperty(&prop);
+    Gui::ExpressionDiagnosticsPresentation::populate(*item);
     QModelIndex data = this->index(item->row(), column, parent);
     Q_EMIT dataChanged(data, data);
     updateChildren(item, column, data);

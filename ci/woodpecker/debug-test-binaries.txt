@@ -5,6 +5,7 @@ App_tests_run
 Base_tests_run
 Zipios_tests_run
 Gui_tests_run
+ViewDropDocking_tests_run
 GuiShutdown_tests_run
 Assembly_tests_run
 AssemblyGui_tests_run

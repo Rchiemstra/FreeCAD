@@ -144,6 +144,7 @@ class PropertyItemAttorney
 {
 public:
     static QString toString(PropertyItem* item, const QVariant& v);
+    static const App::ObjectIdentifier& diagnosticPath(const PropertyItem& item);
 };
 
 class GuiExport PropertyItem: public QObject, public ExpressionBinding

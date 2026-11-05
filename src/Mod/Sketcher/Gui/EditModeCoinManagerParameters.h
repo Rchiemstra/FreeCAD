@@ -126,6 +126,7 @@ struct DrawingParameters
     static SbColor ConstrIcoColor;            // Color used for constraint icons
     static SbColor NonDrivingConstrDimColor;  // Color used for non-driving (reference) dimensional
                                               // constraints
+    static SbColor BrokenExpressionConstrDimColor;
     static SbColor ExprBasedConstrDimColor;  // Color used for expression based dimensional constraints
     static SbColor DeactivatedConstrDimColor;  // Color used for deactivated dimensional constraints
     static SbColor CursorTextColor;            // Color used by the edit mode cursor

@@ -31,6 +31,7 @@
 #include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QPainter>
 #include <QScrollBar>
 #include <QWheelEvent>
@@ -39,6 +40,7 @@
 #include <App/Document.h>
 #include <Base/Parameter.h>
 #include <Gui/BitmapFactory.h>
+#include <Gui/OpenGLViewportResize.h>
 #include <Gui/Document.h>
 #include <Gui/Navigation/NavigationStyle.h>
 #include <Gui/Selection/Selection.h>
@@ -163,6 +165,7 @@ QGVPage::QGVPage(ViewProviderPage* vpPage, QGSPage* scenePage, QWidget* parent)
     setObjectName(QString::fromLocal8Bit(name));
 
     setScene(scenePage);
+    m_glResizeGuard = new Gui::OpenGLViewportResizeGuard(this);
     setMouseTracking(true);
     viewport()->setMouseTracking(true);
 
@@ -203,6 +206,9 @@ QGVPage::QGVPage(ViewProviderPage* vpPage, QGSPage* scenePage, QWidget* parent)
 
 QGVPage::~QGVPage()
 {
+    if (m_glResizeGuard) {
+        m_glResizeGuard->stop();
+    }
     delete bkgBrush;
     delete m_navStyle;
     d->detach();
@@ -329,6 +335,15 @@ void QGVPage::drawBackground(QPainter* painter, const QRectF&)
         viewport()->rect().adjusted(-2, -2, 2, 2));//just bigger than viewport to prevent artifacts
 
     painter->restore();
+}
+
+bool QGVPage::viewportEvent(QEvent* event)
+{
+    if (event->type() == QEvent::Resize && m_glResizeGuard
+        && m_glResizeGuard->interceptResize(static_cast<QResizeEvent*>(event))) {
+        return true;
+    }
+    return QGraphicsView::viewportEvent(event);
 }
 
 void QGVPage::setRenderer(RendererType type)

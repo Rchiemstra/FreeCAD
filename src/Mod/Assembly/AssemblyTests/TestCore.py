@@ -22,6 +22,7 @@
 # ***************************************************************************/
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Assembly
 import Part
 import os
@@ -88,10 +89,159 @@ class AssemblyTestBase(unittest.TestCase):
         This method is called after each test() method. Add cleanup instructions here.
         Such cleanup instructions will likely undo those in the setUp() method.
         """
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
 
 class TestCore(AssemblyTestBase):
+    def _presolve_joint(self, joint_type, fixed, moving, moving_first=False):
+        joint = self.jointgroup.newObject("App::FeaturePython", "PresolveJoint")
+        JointObject.Joint(joint, JointObject.JointTypes.index(joint_type))
+        parts = (moving, fixed) if moving_first else (fixed, moving)
+        joint.Reference1 = (parts[0], ["", ""])
+        joint.Reference2 = (parts[1], ["", ""])
+        return joint
+
+    def _presolve_parts(self):
+        self.assembly.Type = "Assembly"
+        fixed = self.assembly.newObject("Part::Box", "FixedPart")
+        moving = self.assembly.newObject("Part::Box", "MovingPart")
+        ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
+        JointObject.GroundedJoint(ground, fixed)
+        return fixed, moving
+
+    def test_presolve_keeps_free_axial_placement(self):
+        fixed, moving = self._presolve_parts()
+        for kind in ("Slider", "Cylindrical"):
+            for rotation in (App.Rotation(), App.Rotation(15, 25, 35)):
+                for distance in (-35, 35):
+                    for moving_first in (False, True):
+                        for flipped in (False, True):
+                            with self.subTest(
+                                kind=kind,
+                                rotation=rotation,
+                                distance=distance,
+                                moving_first=moving_first,
+                                flipped=flipped,
+                            ):
+                                fixed.Placement = App.Placement(App.Vector(10, 20, 30), rotation)
+                                twist = App.Rotation(
+                                    App.Vector(0, 0, 1), 37 if kind == "Cylindrical" else 0
+                                )
+                                if flipped:
+                                    twist = twist * App.Rotation(App.Vector(1, 0, 0), 180)
+                                moving.Placement = fixed.Placement * App.Placement(
+                                    App.Vector(0, 0, distance), twist
+                                )
+                                before = moving.Placement
+                                joint = self._presolve_joint(kind, fixed, moving, moving_first)
+                                try:
+                                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                                    self.assertTrue(moving.Placement.isSame(before, 1e-6))
+                                finally:
+                                    self.doc.removeObject(joint.Name)
+
+    def test_presolve_aligns_constrained_axes_with_offset_connectors(self):
+        fixed, moving = self._presolve_parts()
+        fixed.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation(15, 25, 35))
+        fixed_before = fixed.Placement
+        connector1 = App.Placement(App.Vector(2, 3, 4), App.Rotation(10, 20, 30))
+        connector2 = App.Placement(App.Vector(5, 6, 7), App.Rotation(30, 20, 10))
+        fixed_jcs = fixed.Placement * connector1
+        for kind in ("Slider", "Cylindrical"):
+            with self.subTest(kind=kind):
+                twist = App.Rotation(App.Vector(0, 0, 1), 37)
+                swing = App.Rotation(App.Vector(1, 0, 0), 25)
+                moving.Placement = (
+                    fixed_jcs
+                    * App.Placement(App.Vector(8, -9, 35), swing * twist)
+                    * connector2.inverse()
+                )
+                before = moving.Placement
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    joint.Detach1 = True
+                    joint.Detach2 = True
+                    joint.Placement1 = connector1
+                    joint.Placement2 = connector2
+                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                    relative = fixed_jcs.inverse() * (moving.Placement * connector2)
+                    self.assertTrue(relative.Base.isEqual(App.Vector(0, 0, 35), 1e-6))
+                    expected = twist if kind == "Cylindrical" else App.Rotation()
+                    self.assertTrue(relative.Rotation.isSame(expected, 1e-6))
+                    self.assertTrue(fixed.Placement.isSame(fixed_before, 1e-6))
+                    joint.Proxy.undoPreSolve(joint)
+                    self.assertTrue(moving.Placement.isSame(before, 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
+    def test_axial_presolve_on_expression_recompute(self):
+        fixed, moving = self._presolve_parts()
+        variables = self.doc.addObject("App::VarSet", "Offsets")
+        variables.addProperty("App::PropertyLength", "ConnectorOffset")
+        for kind in ("Slider", "Cylindrical"):
+            with self.subTest(kind=kind):
+                variables.ConnectorOffset = 1
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    joint.setExpression("Offset2.Base.x", "Offsets.ConnectorOffset")
+                    self.doc.recompute()
+                    twist = App.Rotation(App.Vector(0, 0, 1), 37 if kind == "Cylindrical" else 0)
+                    moving.Placement = App.Placement(App.Vector(), twist) * App.Placement(
+                        App.Vector(-1, 0, 35), App.Rotation()
+                    )
+                    variables.ConnectorOffset = 2
+                    with patch.object(
+                        joint.Proxy, "preSolve", wraps=joint.Proxy.preSolve
+                    ) as presolve:
+                        self.doc.recompute()
+                    self.assertGreater(presolve.call_count, 0)
+                    self.assertAlmostEqual(moving.Placement.Base.z, 35, places=6)
+                    self.assertTrue(moving.Placement.Rotation.isSame(twist, 1e-6))
+                    relative = fixed.Placement.inverse() * (moving.Placement * joint.Placement2)
+                    self.assertAlmostEqual(relative.Base.x, 0, places=6)
+                    self.assertAlmostEqual(relative.Base.y, 0, places=6)
+                    self.assertTrue(fixed.Placement.isSame(App.Placement(), 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
+    def test_slider_chain_expression_recompute_keeps_distinct_offsets(self):
+        fixed, moving = self._presolve_parts()
+        parts = [fixed, moving] + [self.assembly.newObject("Part::Box", "Panel") for _ in range(2)]
+        variables = self.doc.addObject("App::VarSet", "Offsets")
+        variables.addProperty("App::PropertyLength", "ConnectorOffset")
+        for previous, part in zip(parts, parts[1:]):
+            joint = self._presolve_joint("Slider", previous, part)
+            joint.setExpression("Offset2.Base.x", "Offsets.ConnectorOffset")
+        self.doc.recompute()
+        distances = (0, 35, -20, 80)
+        for part, distance in zip(parts, distances):
+            part.Placement.Base = App.Vector(0, 0, distance)
+        variables.ConnectorOffset = 2
+        self.doc.recompute()
+        for index, (part, distance) in enumerate(zip(parts, distances)):
+            self.assertTrue(part.Placement.Base.isEqual(App.Vector(-2 * index, 0, distance), 1e-6))
+        before = [part.Placement for part in parts]
+        unrelated = self.doc.addObject("App::FeaturePython", "Unrelated")
+        self.doc.removeObject(unrelated.Name)
+        self.doc.recompute()
+        for part, placement in zip(parts, before):
+            self.assertTrue(part.Placement.isSame(placement, 1e-6))
+
+    def test_fixed_and_revolute_presolve_still_match_connectors(self):
+        fixed, moving = self._presolve_parts()
+        fixed.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation(15, 25, 35))
+        for kind in ("Fixed", "Revolute"):
+            with self.subTest(kind=kind):
+                moving.Placement = fixed.Placement * App.Placement(
+                    App.Vector(8, -9, 35), App.Rotation(20, 30, 40)
+                )
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                    self.assertTrue(moving.Placement.isSame(fixed.Placement, 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
     def test_component_count_for_link_array(self):
         source = self.doc.addObject("Part::Box", "ArraySource")
         array = self.assembly.newObject("App::Link", "Array")
@@ -642,6 +792,26 @@ class TestCore(AssemblyTestBase):
         self.doc.recompute()
         self.assertFalse(self.doc.mustExecute())
         created = []
+        from PySide import QtCore
+
+        observed = []
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Inspector(QtCore.QObject):
+            inspect = QtCore.Signal(object)
+
+            def __init__(self):
+                super().__init__()
+                self.inspect.connect(self.check, QtCore.Qt.BlockingQueuedConnection)
+
+            @QtCore.Slot(object)
+            def check(self, joint):
+                # The owner is paused inside the mutation, before publication.
+                # Read the native provider on the GUI thread, where absence is
+                # meaningful, rather than guiViewObject's off-thread fallback.
+                observed.append((QtCore.QThread.currentThread() == gui_thread, joint.ViewObject))
+
+        inspector = Inspector()
 
         def create_joint():
             joint = Assembly.createJoint(
@@ -653,14 +823,23 @@ class TestCore(AssemblyTestBase):
                 presolve=False,
                 recompute=False,
             )
-            self.assertIsNone(joint.ViewObject)
+            inspector.inspect.emit(joint)
             created.append(joint)
             return True
 
-        result = self.doc.commitCompatibilityMutation(
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = self.doc.commitCompatibilityMutationAsync(
             create_joint, structural=True, recompute=False
         )
+        # Waiting off the GUI thread lets native publication replay on it.
+        with ThreadPoolExecutor(max_workers=1) as waiter:
+            completion = waiter.submit(handle["wait"], 15.0)
+            _pump_gui_until(completion.done, 20.0)
+            result = completion.result()
         self.assertTrue(result.get("committed"), result)
+        self.assertEqual(observed, [(True, None)])
         joint = created[0]
         self.assertIsNotNone(joint.ViewObject)
         self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)

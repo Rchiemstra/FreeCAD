@@ -71,6 +71,7 @@
 #include <App/PropertyStandard.h>
 #include <App/StringHasherPy.h>
 #include <Base/FileInfo.h>
+#include <Base/Interpreter.h>
 #include <Base/GeometryPyCXX.h>
 #include <Base/MatrixPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
@@ -321,7 +322,15 @@ PyObject* TopoShapePy::read(PyObject* args)
     std::string EncodedName = std::string(Name);
     PyMem_Free(Name);
 
-    getTopoShapePtr()->read(EncodedName.c_str());
+    auto* shape = getTopoShapePtr();
+    if (Base::FileInfo(EncodedName).hasExtension({"brp", "brep"})) {
+        // Detached geometry decoding must not starve GUI Python callbacks.
+        Base::PyGILStateRelease release;
+        shape->read(EncodedName.c_str());
+    }
+    else {
+        shape->read(EncodedName.c_str());
+    }
     Py_Return;
 }
 

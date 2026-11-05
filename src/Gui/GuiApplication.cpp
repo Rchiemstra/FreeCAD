@@ -53,6 +53,7 @@
 
 #include "GuiApplication.h"
 #include "Application.h"
+#include "OpenGLViewportResize.h"
 #include "MainWindow.h"
 #include "SpaceballEvent.h"
 
@@ -91,6 +92,10 @@ bool GUIApplication::notify(QObject* receiver, QEvent* event)
 #else
         "";
 #endif
+
+    // Counts the deliveries that can flush the backing store's texture list,
+    // so OpenGL viewport resizes inside them are held. See OpenGLViewportResize.h.
+    const PaintFlushEventScope paintFlushScope(receiver, event);
 
     try {
         if (event->type() == Spaceball::ButtonEvent::ButtonEventType

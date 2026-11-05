@@ -9,15 +9,9 @@ export PYTHONUNBUFFERED=1
 # Per-module wall-clock budget; timeouts fail the gate after gdb diagnostics.
 export FREECAD_GUI_TEST_MODULE_TIMEOUT="${FREECAD_GUI_TEST_MODULE_TIMEOUT:-900}"
 
-# The deps image has no gdb. The runner attaches on hangs (the child permits
-# ptrace), with a bounded gdb-parent rerun if Docker denies attach. Crashes
-# also get a gdb rerun. Install it when the step has apt (Woodpecker does).
-if ! command -v gdb >/dev/null 2>&1; then
-  if [ "$(id -u)" = 0 ]; then
-    apt-get update -qq
-    apt-get install -y -qq --no-install-recommends gdb >/dev/null
-  fi
-fi
+# The runner attaches on hangs (the child permits ptrace), with a bounded
+# gdb-parent rerun if Docker denies attach. Crashes also get a gdb rerun.
+sh ci/woodpecker/ensure-gdb.sh
 
 env QT_QPA_PLATFORM="$QT_QPA_PLATFORM" \
   xvfb-run -a -s "-screen 0 1024x768x24" \

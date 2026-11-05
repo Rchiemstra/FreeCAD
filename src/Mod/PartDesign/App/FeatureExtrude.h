@@ -47,6 +47,7 @@ public:
     App::PropertyEnumeration SideType;
     App::PropertyEnumeration Type;
     App::PropertyEnumeration Type2;
+    App::PropertyDistance FittingTolerance;
     App::PropertyLength Length;
     App::PropertyLength Length2;
     App::PropertyAngle TaperAngle;

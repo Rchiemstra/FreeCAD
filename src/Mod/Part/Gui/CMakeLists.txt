@@ -191,6 +191,8 @@ SET(PartGui_SRCS
     ViewProviderExt.h
     ViewProviderPresentationAdapter.cpp
     ViewProviderPresentationAdapter.h
+    ShapeGeometry.cpp
+    ShapeGeometry.h
     DocumentPresentationCapture.cpp
     DocumentPresentationCapture.h
     ViewProviderReference.cpp
@@ -306,6 +308,12 @@ if(FREECAD_USE_PCH)
     target_precompile_headers(PartGui PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:"${CMAKE_CURRENT_LIST_DIR}/PreCompiled.h">
     )
+    # Owner-thread presentation capture must stay free of Coin; the GUI
+    # precompiled header pulls in Inventor.
+    set_source_files_properties(
+            ShapeGeometry.cpp
+            DocumentPresentationCapture.cpp
+            PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
 endif(FREECAD_USE_PCH)
 
 target_include_directories(

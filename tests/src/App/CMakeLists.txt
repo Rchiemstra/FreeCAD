@@ -53,6 +53,7 @@ add_executable(App_tests_run
         Property.cpp
         PropertyExpressionEngine.cpp
         RecomputeHandle.cpp
+        LaneTerminalFinalize.cpp
         StringHasher.cpp
         VarSet.cpp
         VRMLObject.cpp

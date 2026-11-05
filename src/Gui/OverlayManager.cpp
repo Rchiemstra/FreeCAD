@@ -44,6 +44,7 @@
 #include <array>
 #include <unordered_map>
 
+#include "DockWidget.h"
 #include "OverlayManager.h"
 
 #include <Base/Console.h>
@@ -1158,7 +1159,7 @@ public:
 
         auto dock = qobject_cast<QDockWidget*>(srcWidget);
         if (dock && dock->isFloating()) {
-            dock->move(pos - dragOffset);
+            moveFloatingDockWidget(dock, pos - dragOffset);
         }
 
         OverlayTabWidget* src = nullptr;
@@ -1381,7 +1382,7 @@ public:
                     }
                     setFocusView();
                     dock->setFloating(true);
-                    dock->move(pos - dragOffset);
+                    moveFloatingDockWidget(dock, pos - dragOffset);
                     dock->show();
                 }
                 if (OverlayTabWidget::_DragFloating) {
@@ -1390,7 +1391,7 @@ public:
             }
             else if (!dock->isFloating()) {
                 if (!OverlayTabWidget::_DragFloating) {
-                    OverlayTabWidget::_DragFloating = new QDockWidget(getMainWindow());
+                    OverlayTabWidget::_DragFloating = new DockWidget(getMainWindow());
                     QObject::connect(OverlayTabWidget::_DragFloating, &QObject::destroyed, []() {
                         OverlayTabWidget::_DragFloating = nullptr;
                     });
@@ -1399,7 +1400,7 @@ public:
                 OverlayTabWidget::_DragFloating->resize(dock->size());
                 OverlayTabWidget::_DragFloating->setWindowTitle(dock->windowTitle());
                 OverlayTabWidget::_DragFloating->show();
-                OverlayTabWidget::_DragFloating->move(pos - dragOffset);
+                moveFloatingDockWidget(OverlayTabWidget::_DragFloating, pos - dragOffset);
             }
             if (OverlayTabWidget::_DragFrame) {
                 OverlayTabWidget::_DragFrame->hide();

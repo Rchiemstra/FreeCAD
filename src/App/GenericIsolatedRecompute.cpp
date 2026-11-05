@@ -16,6 +16,7 @@
 #include "private/CollaborativeOperationRegistryInternal.h"
 
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Base/Type.h>
 #include <Base/Writer.h>
@@ -532,8 +533,13 @@ bool isNullProxyExternalLinkHolderBookkeepingTarget(
     }
     const auto* proxy = freecad_cast<App::PropertyPythonObject*>(
         object.getPropertyByName("Proxy"));
-    if (!proxy || !proxy->getValue().isNone()) {
-        return false;
+    {
+        // getValue() returns an owning Py::Object. Both its copy and its
+        // destruction must hold the GIL, including on the document lane.
+        Base::PyGILStateLocker lock;
+        if (!proxy || !proxy->getValue().isNone()) {
+            return false;
+        }
     }
     if (std::ranges::any_of(namedProperties(object), [proxy](
             const std::pair<std::string, App::Property*>& entry) {

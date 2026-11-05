@@ -31,6 +31,7 @@ add_executable(Part_tests_run
         PreviewExtension.cpp
         PropertyTopoShape.cpp
         ShapeCacheIsolatedRecompute.cpp
+        SignalHandlerRestore.cpp
         TopoDS_Shape.cpp
         TopoShape.cpp
         TopoShapeCache.cpp

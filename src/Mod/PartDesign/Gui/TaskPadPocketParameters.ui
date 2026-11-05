@@ -15,6 +15,33 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
+    <layout class="QFormLayout" name="fittingToleranceLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="fittingToleranceLabel">
+       <property name="text">
+        <string>Fitting tolerance</string>
+       </property>
+       <property name="buddy">
+        <cstring>fittingToleranceEdit</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="Gui::PrefQuantitySpinBox" name="fittingToleranceEdit" native="true">
+       <property name="toolTip">
+        <string>Signed size correction: positive enlarges Pocket profiles and shrinks Pad profiles for clearance; negative does the reverse. Half is applied at each boundary. A 10 mm circular Pocket with +0.4 mm becomes 10.4 mm; a 10 mm circular Pad becomes 9.6 mm. Zero preserves the nominal profile.</string>
+       </property>
+       <property name="keyboardTracking" stdset="0">
+        <bool>false</bool>
+       </property>
+       <property name="unit" stdset="0">
+        <string notr="true">mm</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
     <layout class="QGridLayout" name="gridLayout">
      <item row="0" column="0">
       <widget class="QLabel" name="labelStart">

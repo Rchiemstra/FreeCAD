@@ -220,6 +220,8 @@ private:
     QWidget* proxy;
     bool inEditMode;
     bool updateListPending;
+    bool updatingConstraints = false;
+    bool constraintsUpdateQueued = false;
     std::unique_ptr<Ui_TaskSketcherConstraints> ui;
     ConstraintFilter::FilterValueBitset multiFilterStatus;  // Stores the filters to be aggregated
                                                             // to form the multifilter.

@@ -83,7 +83,17 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
      </property>
     </spacer>
    </item>
-   <item row="3" column="0">
+   <item row="3" column="0" colspan="3">
+    <widget class="QCheckBox" name="isolateTransparent">
+     <property name="text">
+      <string>Make other components transparent when isolating selection</string>
+     </property>
+     <property name="toolTip">
+      <string>Other components remain visible but cannot be picked in the 3D view</string>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="0">
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>

@@ -1619,6 +1619,67 @@ class SpreadsheetCases(unittest.TestCase):
         self.doc.recompute()
         sheet.setAlias("C3", "test")
 
+    def checkRowColumnAliasUndo(self, operation, section, before, after):
+        """Aliases and their dependents must survive structural transaction replay (#7511)."""
+        self.doc.UndoMode = 1
+        self.doc.openTransaction("Setup aliases")
+        sheet = self.doc.addObject("Spreadsheet::Sheet", "Spreadsheet")
+        sheet.set(before[0], "2600")
+        sheet.setAlias(before[0], "Ceil_Height")
+        sheet.set(before[1], "900")
+        sheet.setAlias(before[1], "Width")
+        sheet.set(before[2], "=Ceil_Height - Width")
+        box = self.doc.addObject("Part::Box", "Box")
+        box.setExpression("Height", "Spreadsheet.Ceil_Height")
+        box.setExpression("Width", "<<Spreadsheet>>.Width")
+        self.doc.commitTransaction()
+
+        def check(addresses):
+            self.doc.recompute()
+            for obj in (sheet, box):
+                self.assertNotIn("Invalid", obj.State)
+            for address, alias, value in zip(
+                addresses, ("Ceil_Height", "Width"), (2600, 900)
+            ):
+                self.assertEqual(sheet.getAlias(address), alias)
+                self.assertEqual(sheet.getCellFromAlias(alias), address)
+                self.assertEqual(getattr(sheet, alias), value)
+                self.assertEqual(sheet.get(address), value)
+            self.assertEqual(sheet.get(addresses[2]), 1700)
+            self.assertEqual(box.Height.Value, 2600)
+            self.assertEqual(box.Width.Value, 900)
+
+        check(before)
+        self.doc.openTransaction(operation)
+        getattr(sheet, operation)(section, 1)
+        self.doc.commitTransaction()
+        with self.subTest(step=operation):
+            check(after)
+        for action, addresses in (("undo", before), ("redo", after), ("undo", before)):
+            getattr(self.doc, action)()
+            with self.subTest(step=action, addresses=addresses):
+                check(addresses)
+
+    def testInsertRowsAliasUndo(self):
+        self.checkRowColumnAliasUndo(
+            "insertRows", "1", ("B1", "B2", "B6"), ("B2", "B3", "B7")
+        )
+
+    def testRemoveRowsAliasUndo(self):
+        self.checkRowColumnAliasUndo(
+            "removeRows", "1", ("B2", "B3", "B7"), ("B1", "B2", "B6")
+        )
+
+    def testInsertColumnsAliasUndo(self):
+        self.checkRowColumnAliasUndo(
+            "insertColumns", "A", ("B1", "C1", "G1"), ("C1", "D1", "H1")
+        )
+
+    def testRemoveColumnsAliasUndo(self):
+        self.checkRowColumnAliasUndo(
+            "removeColumns", "A", ("B1", "C1", "G1"), ("A1", "B1", "F1")
+        )
+
     def test_cross_link_empty_property_name(self):
         # https://forum.freecad.org/viewtopic.php?f=3&t=58603
         base = FreeCAD.newDocument("base")

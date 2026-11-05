@@ -13,14 +13,9 @@
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/App/Tools.h>
 
-#include "SoBrepEdgeSet.h"
-#include "SoBrepFaceSet.h"
-#include "SoBrepPointSet.h"
-#include "ViewProviderExt.h"
+#include "ShapeGeometry.h"
 
 #include <BRepBuilderAPI_Copy.hxx>
-#include <Inventor/nodes/SoCoordinate3.h>
-#include <Inventor/nodes/SoNormal.h>
 
 #include <iterator>
 #include <list>
@@ -35,26 +30,21 @@ namespace PartGui
 namespace
 {
 
-void appendCoinVec3Field(const SoMFVec3f& field, std::vector<float>& target)
+void appendVectors(const std::vector<ShapeGeometry::Vector>& source, std::vector<float>& target)
 {
-    const int count = field.getNum();
-    target.reserve(target.size() + static_cast<std::size_t>(count) * 3U);
-    for (int index = 0; index < count; ++index) {
-        const SbVec3f& value = field[index];
-        target.push_back(value[0]);
-        target.push_back(value[1]);
-        target.push_back(value[2]);
+    target.reserve(source.size() * 3U);
+    for (const auto& value : source) {
+        target.insert(target.end(), value.begin(), value.end());
     }
 }
 
-void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& target)
+void appendIndices(const std::vector<std::int32_t>& source, std::vector<std::uint32_t>& target)
 {
-    const int count = field.getNum();
-    target.reserve(target.size() + static_cast<std::size_t>(count));
-    for (int index = 0; index < count; ++index) {
-        // coordIndex contains Coin face delimiters; the packet uses packed triples.
-        if (field[index] >= 0) {
-            target.push_back(static_cast<std::uint32_t>(field[index]));
+    target.reserve(source.size());
+    for (const auto value : source) {
+        // Face delimiters are omitted from the packet's packed triangles.
+        if (value >= 0) {
+            target.push_back(static_cast<std::uint32_t>(value));
         }
     }
 }
@@ -165,14 +155,6 @@ CaptureCache& captureCache()
     // Lazy initialization ensures the App application exists before connecting.
     static CaptureCache cache;
     return cache;
-}
-
-template<typename Node>
-auto referencedCoinNode()
-{
-    auto* node = new Node;
-    node->ref();
-    return std::unique_ptr<Node, void (*)(Node*)>(node, [](Node* value) { value->unref(); });
 }
 
 bool capturePartFeaturePresentationRenderBuffer(const App::DocumentObject& object,
@@ -312,7 +294,7 @@ bool capturePartPresentationRenderBuffer(const App::Document& document,
         return !stableObjectIdentity.empty();
     }
 
-    // setupCoinGeometry cleans and remeshes OCC triangulations. Copy outside
+    // Tessellation cleans and remeshes OCC triangulations. Copy outside
     // the cache lock so shared TShapes and different documents can mesh safely.
     const auto meshShape = BRepBuilderAPI_Copy(shape).Shape();
 #if defined(FREECAD_TEST_PART_CAPTURE_CACHE)
@@ -320,26 +302,21 @@ bool capturePartPresentationRenderBuffer(const App::Document& document,
         meshHook(stableObjectIdentity);
     }
 #endif
-    auto coords = referencedCoinNode<SoCoordinate3>();
-    auto faces = referencedCoinNode<SoBrepFaceSet>();
-    auto normals = referencedCoinNode<SoNormal>();
-    auto lines = referencedCoinNode<SoBrepEdgeSet>();
-    auto nodes = referencedCoinNode<SoBrepPointSet>();
+    ShapeGeometry geometry;
     {
         std::lock_guard lock(cache.mutex);
         ++cache.tessellations;
     }
-    ViewProviderPartExt::setupCoinGeometry(
-        meshShape, coords.get(), faces.get(), normals.get(), lines.get(), nodes.get(),
-        deviation, angularDeflection, normalsFromUV);
+    if (!tessellateShape(meshShape, geometry, deviation, angularDeflection, normalsFromUV)) {
+        return false;
+    }
 
-    appendCoinVec3Field(coords->point, buffer.vertices);
-    appendCoinVec3Field(normals->vector, buffer.normals);
-    appendCoinInt32Field(faces->coordIndex, buffer.indices);
-    appendCoinInt32Field(faces->partIndex, buffer.topology);
+    appendVectors(geometry.vertices, buffer.vertices);
+    appendVectors(geometry.normals, buffer.normals);
+    appendIndices(geometry.faceIndices, buffer.indices);
+    appendIndices(geometry.faceParts, buffer.topology);
 
-    // setupCoinGeometry clears output on failure. Never cache that result, so a
-    // later capture can retry rather than retaining a failed tessellation.
+    // Cache only successfully tessellated, nonempty geometry.
     if (!buffer.vertices.empty() && !stableObjectIdentity.empty()) {
         auto packed = std::make_shared<const Gui::PresentationRenderBuffer>(buffer);
         const std::size_t bytes = packed->vertices.capacity() * sizeof(float)

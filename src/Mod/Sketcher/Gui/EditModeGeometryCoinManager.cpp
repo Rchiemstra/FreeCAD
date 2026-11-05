@@ -26,6 +26,8 @@
 
 #include <memory>
 
+#include <Base/Tools.h>
+
 #include <Inventor/SbVec3f.h>
 #include <Inventor/nodes/SoCoordinate3.h>
 #include <Inventor/nodes/SoDrawStyle.h>
@@ -117,6 +119,9 @@ void EditModeGeometryCoinManager::processGeometry(const GeoListFacade& geolistfa
     );
 
     gcconv.convert(geolistfacade);
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
 
     // set cross coordinates
     editModeScenegraphNodes.RootCrossHSet->numVertices.set1Value(0, 2);
@@ -135,6 +140,27 @@ void EditModeGeometryCoinManager::updateGeometryColor(
     bool issketchinvalid
 )
 {
+    // Color-only updates can follow removal of external references. Rebuild the
+    // mappings and nodes together before opening any Coin fields for editing.
+    const auto absent = [&geolistfacade](int id) {
+        return !geolistfacade.getGeometryFromGeoId(id);
+    };
+    bool stale = false;
+    for (const auto& layer : coinMapping.CurvIdToGeoId) {
+        for (const auto& curves : layer) {
+            stale = stale || std::ranges::any_of(curves, absent);
+        }
+    }
+    for (const auto& points : coinMapping.PointIdToGeoId) {
+        stale = stale || std::ranges::any_of(points, absent);
+    }
+    if (stale) {
+        processGeometry(geolistfacade);
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
+    }
+
     // Lambdas for convenience retrieval of geometry information
     auto isDefinedGeomPoint = [&geolistfacade](int GeoId, Sketcher::PointPos PosId) {
         auto geom = geolistfacade.getGeometryFacadeFromGeoId(GeoId);
@@ -207,6 +233,13 @@ void EditModeGeometryCoinManager::updateGeometryColor(
 
     SbColor* crosscolorH = editModeScenegraphNodes.RootCrossHMaterials->diffuseColor.startEditing();
     SbColor* crosscolorV = editModeScenegraphNodes.RootCrossVMaterials->diffuseColor.startEditing();
+    bool crossEditing = true;
+    const auto finishCross = Base::ScopeGuard([&]() {
+        if (crossEditing) {
+            editModeScenegraphNodes.RootCrossHMaterials->diffuseColor.finishEditing();
+            editModeScenegraphNodes.RootCrossVMaterials->diffuseColor.finishEditing();
+        }
+    });
     auto viewOrientationFactor = ViewProviderSketchCoinAttorney::getViewOrientationFactor(viewProvider);
 
     // Origin point
@@ -227,6 +260,9 @@ void EditModeGeometryCoinManager::updateGeometryColor(
         SbVec3f(0, 0, viewOrientationFactor * drawingParameters.zRootPoint)
     );
 
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
     for (auto l = 0; l < geometryLayerParameters.getCoinLayerCount(); l++) {
         float x, y, z;
         int PtNum = editModeScenegraphNodes.PointsMaterials[l]->diffuseColor.getNum();
@@ -473,12 +509,8 @@ void EditModeGeometryCoinManager::updateGeometryColor(
 
                 bool preselected = (preselectcurve == GeoId);
 
-                auto* obj = viewProvider.getSketchObject();
-                bool isGroupMember = GeoId >= 0 && obj->isInGroup(GeoId, false);
-                if (isGroupMember) {
-                    // We use the same color as group handle.
-                    GeoId = obj->getGroupHandleIfInGroup(GeoId);
-                }
+                // Geometry, overlay and colors share the captured constraint grouping.
+                GeoId = ViewProviderSketchCoinAttorney::getRenderGroupHandle(viewProvider, GeoId);
 
                 bool selected = ViewProviderSketchCoinAttorney::isCurveSelected(viewProvider, GeoId);
                 // if a grouped edge is preselected we still want it to be shown
@@ -498,6 +530,13 @@ void EditModeGeometryCoinManager::updateGeometryColor(
                 }
                 else if (isExternal) {
                     auto geom = geolistfacade.getGeometryFacadeFromGeoId(GeoId);
+                    if (!geom) {
+                        // A color-only pass may still have mappings from the previous geometry.
+                        // Advance the coordinate cursor and finish every edited Coin field below.
+                        color[i] = drawingParameters.InvalidSketchColor;
+                        j += indexes;
+                        continue;
+                    }
                     std::unique_ptr<Part::Geometry> geomCopy(geom->clone());
                     // The ExternalGeometryFacade is not the owner of the geometry
                     auto egf = ExternalGeometryFacade::getFacade(geomCopy.get());
@@ -572,6 +611,11 @@ void EditModeGeometryCoinManager::updateGeometryColor(
             editModeScenegraphNodes.CurvesMaterials[l][t]->diffuseColor.finishEditing();
             editModeScenegraphNodes.CurvesCoordinate[l][t]->point.finishEditing();
             editModeScenegraphNodes.CurveSet[l][t]->numVertices.finishEditing();
+            if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+                editModeScenegraphNodes.PointsMaterials[l]->diffuseColor.finishEditing();
+                editModeScenegraphNodes.PointsCoordinate[l]->point.finishEditing();
+                return;
+            }
         }
 
         // colors of the cross
@@ -599,11 +643,18 @@ void EditModeGeometryCoinManager::updateGeometryColor(
 
         editModeScenegraphNodes.PointsMaterials[l]->diffuseColor.finishEditing();
         editModeScenegraphNodes.PointsCoordinate[l]->point.finishEditing();
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
     }
 
+    crossEditing = false;
     editModeScenegraphNodes.RootCrossHMaterials->diffuseColor.finishEditing();
     editModeScenegraphNodes.RootCrossVMaterials->diffuseColor.finishEditing();
 
+    if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+        return;
+    }
     // set color in the hidden pass
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->diffuseColor.setValue(
         editModeScenegraphNodes.RootCrossHMaterials->diffuseColor[0]
