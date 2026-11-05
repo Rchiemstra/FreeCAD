@@ -204,7 +204,8 @@ private:
 /**
  * M6: while a GUI thread is about to take the GIL, other PyGILStateLocker
  * callers yield instead of winning the race after a probe releases it.
- * The reserving thread itself does not yield.
+ * The reserving thread itself does not yield, nor does a thread that
+ * already holds the GIL.
  */
 class BaseExport GilGuiHandoff
 {
