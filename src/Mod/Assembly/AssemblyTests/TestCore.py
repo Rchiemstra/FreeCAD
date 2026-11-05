@@ -1593,6 +1593,159 @@ class TestCore(AssemblyTestBase):
         self.assertEqual(self._solve_placement_snapshot(), before)
         self.assertEqual(UtilsAssembly.violatedJointLabels(self.assembly), violated)
 
+    def _shape_vertex(self, root, sub):
+        shape = Part.getShape(root, sub, App.Matrix(), True)
+        self.assertGreater(len(shape.Vertexes), 0, sub)
+        return shape.Vertexes[0].Point
+
+    def _assert_marker_on_vertex(self, full):
+        comp, rel = UtilsAssembly.getComponentReference(self.assembly, self.assembly, full)
+        self.assertIsNotNone(comp, full)
+        ref = (comp, [rel, rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        true = self._shape_vertex(self.assembly, full)
+        self.assertLess(
+            (marker.Base - true).Length,
+            1e-6,
+            "{} marker {} true {}".format(full, marker.Base, true),
+        )
+        return comp, rel, true
+
+    def _solve_fixed_to_target(self, target, comp, rel):
+        ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
+        JointObject.GroundedJoint(ground, target)
+        joint = self.jointgroup.newObject("App::FeaturePython", "FixedJoint")
+        JointObject.Joint(joint, 0)
+        target_comp, target_rel = UtilsAssembly.getComponentReference(
+            self.assembly, self.assembly, target.Name + ".Vertex1"
+        )
+        joint.Proxy.setJointConnectors(
+            joint,
+            [(target_comp, [target_rel, target_rel]), (comp, [rel, rel])],
+        )
+        self.doc.recompute()
+        solved = self.assembly.solve()
+        self.assertEqual(solved, 0)
+
+    def test_link_array_fixed_joint_uses_inner_source_placement_once(self):
+        """A fixed joint on a link-array element must sit on the picked vertex.
+
+        The source body lives in the arrayed sub-assembly at a non-identity
+        placement. That placement is already in the element shape.
+        """
+        operation = "Link array joint matches inner source placement"
+        _msg("  Test '{}'".format(operation))
+
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        source = sub.newObject("Part::Box", "Source")
+        source.Length = 10
+        source.Width = 20
+        source.Height = 30
+        source.Placement = App.Placement(
+            App.Vector(0, 40, 15), App.Rotation(App.Vector(0, 0, 1), 90)
+        )
+
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = sub
+        array.Occurrences = 2
+        array.Offset = 100
+        array.ShowElement = True
+
+        target = self.assembly.newObject("Part::Box", "Target")
+        target.Length = 10
+        target.Width = 20
+        target.Height = 30
+        target.Placement = App.Placement(App.Vector(0, 200, 0), App.Rotation())
+
+        plain = self.assembly.newObject("App::Link", "Plain")
+        plain.LinkedObject = sub
+        plain.Placement = App.Placement(App.Vector(0, -80, 0), App.Rotation())
+        self.doc.recompute()
+
+        element = array.ElementList[1]
+        self.assertGreater(element.Placement.Base.x, 50)
+        comp, rel, _true = self._assert_marker_on_vertex(
+            "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
+        )
+        edge_full = "{}.{}.Sub.Source.Edge1".format(array.Name, element.Name)
+        edge_comp, edge_rel = UtilsAssembly.getComponentReference(
+            self.assembly, self.assembly, edge_full
+        )
+        edge_ref = (edge_comp, [edge_rel, rel])
+        edge_marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(edge_ref), edge_ref)
+        edge_true = self._shape_vertex(
+            self.assembly, "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
+        )
+        self.assertLess((edge_marker.Base - edge_true).Length, 1e-6)
+
+        plain_comp, plain_rel = UtilsAssembly.getComponentReference(
+            self.assembly, self.assembly, "Plain.Sub.Source.Vertex1"
+        )
+        plain_ref = (plain_comp, [plain_rel, plain_rel])
+        plain_marker = UtilsAssembly.getJcsGlobalPlc(
+            UtilsAssembly.findPlacement(plain_ref), plain_ref
+        )
+        plain_true = self._shape_vertex(self.assembly, "Plain.Sub.Source.Vertex1")
+        self.assertLess((plain_marker.Base - plain_true).Length, 1e-6)
+        self.assertEqual(UtilsAssembly.getObject(plain_ref).Name, source.Name)
+
+        self._solve_fixed_to_target(target, comp, rel)
+        solved = self._shape_vertex(
+            self.assembly, "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
+        )
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((solved - target_point).Length, 1e-5, operation)
+
+    def test_link_array_fixed_joint_ignores_source_object_placement(self):
+        """LinkTransform leaves the source Placement out of the element shape.
+
+        Naming that source in the pick must not shift the joint by it.
+        """
+        operation = "Link array joint ignores source object placement"
+        _msg("  Test '{}'".format(operation))
+
+        source = self.doc.addObject("Part::Box", "Source")
+        source.Length = 10
+        source.Width = 20
+        source.Height = 30
+        source.Placement = App.Placement(App.Vector(0, 80, 15), App.Rotation())
+
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = source
+        array.Occurrences = 2
+        array.Offset = 100
+        array.ShowElement = True
+
+        target = self.assembly.newObject("Part::Box", "Target")
+        target.Length = 10
+        target.Width = 20
+        target.Height = 30
+        target.Placement = App.Placement(App.Vector(0, 200, 0), App.Rotation())
+
+        plain = self.assembly.newObject("App::Link", "Plain")
+        plain.LinkedObject = source
+        self.doc.recompute()
+
+        element = array.ElementList[1]
+        comp, rel, _true = self._assert_marker_on_vertex(
+            "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
+        )
+        # A plain link pick is the element itself. Its marker already matches the shape.
+        plain_ref = (plain, ["Vertex1", "Vertex1"])
+        plain_marker = UtilsAssembly.getJcsGlobalPlc(
+            UtilsAssembly.findPlacement(plain_ref), plain_ref
+        )
+        plain_true = self._shape_vertex(self.assembly, plain.Name + ".Vertex1")
+        self.assertLess((plain_marker.Base - plain_true).Length, 1e-6)
+
+        self._solve_fixed_to_target(target, comp, rel)
+        solved = self._shape_vertex(
+            self.assembly, "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
+        )
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((solved - target_point).Length, 1e-5, operation)
+
 
 def _shape_circle(obj, element):
     """Circle center and axis in the shape frame, which already includes Placement."""
