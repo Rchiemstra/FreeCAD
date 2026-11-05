@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <tuple>
@@ -137,6 +138,10 @@ struct DocumentP
     std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
     /** Keep committed Coin visible after apply until idle live updateData. */
     bool _preferCommittedPresentation {false};
+    bool _committedPresentationInstalled {false};
+    bool _committedPresentationHandoffQueued {false};
+    std::uint64_t _committedPresentationHandoffGeneration {0};
+    App::DocumentLifecycleEpoch _committedPresentationHandoffEpoch {0};
     bool _livePresentationCatchUpQueued {false};
     /** Providers whose show()/hide() was deferred; compared, never dereferenced. */
     std::set<const ViewProviderDocumentObject*> _deferredVisibilitySync;
@@ -1427,9 +1432,78 @@ void Document::slotBecameStable(const App::Document& doc)
         return;
     }
 
-    // Still inside the owner's blocking marshal. Defer past lock release before
-    // touching live Coin (same AutoSaver / DrawViewDraft pattern).
-    scheduleLivePresentationCatchUp();
+    // Stability alone does not mean that any live view data was deferred. In
+    // particular, an unchanged compatibility read must not replay every App
+    // property through every view provider. The actual deferred App/provider
+    // paths queue their own catch-up. Keep the committed-root handoff too: a
+    // busy lane can install that root without setting explicit preference.
+    if (d->_livePresentationCatchUpQueued || !d->_deferredVisibilitySync.empty()
+        || d->_preferCommittedPresentation) {
+        // The deferred work already owns its full provider refresh.
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+    const auto identity = doc.collaborationIdentity();
+    if (!d->_committedPresentationInstalled
+        || (d->_committedPresentationHandoffQueued
+            && d->_committedPresentationHandoffEpoch == identity.lifecycleEpoch)) {
+        return;
+    }
+
+    // A read may have displayed the immutable committed root while the lane
+    // was busy. Only swap that sibling back to live picking; updateView() on
+    // every unchanged provider is neither necessary nor cheap. Keep this
+    // wake independent of the full-refresh queue so a real deferred change
+    // arriving before delivery cannot be consumed by the lightweight handoff.
+    d->_committedPresentationHandoffQueued = true;
+    d->_committedPresentationHandoffEpoch = identity.lifecycleEpoch;
+    const auto generation = ++d->_committedPresentationHandoffGeneration;
+    const std::string docName = doc.getName();
+    Gui::scheduleGuiSingleShot(0, [docName, identity, generation]() {
+        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+        if (!appDoc || !Application::Instance) {
+            return;
+        }
+        const auto current = appDoc->collaborationIdentity();
+        if (current.instanceId != identity.instanceId) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->d->_committedPresentationHandoffGeneration != generation) {
+            return;
+        }
+        // Release only this queued wake, even if the same live document has
+        // advanced epoch. An older callback must never clear a newer wake.
+        guiDoc->d->_committedPresentationHandoffQueued = false;
+        if (guiDoc->isAboutToClose()) {
+            return;
+        }
+        if (current.lifecycleEpoch != identity.lifecycleEpoch) {
+            guiDoc->slotBecameStable(*appDoc);
+            return;
+        }
+        if (!guiDoc->d->_committedPresentationInstalled) {
+            return;
+        }
+        if (guiDoc->d->_livePresentationCatchUpQueued
+            || !guiDoc->d->_deferredVisibilitySync.empty()
+            || guiDoc->d->_preferCommittedPresentation) {
+            guiDoc->scheduleLivePresentationCatchUp();
+            return;
+        }
+        App::LivePresentationRefreshScope refresh;
+        if (!refresh.acquired() || guiDoc->deferLivePresentationUpdates()) {
+            guiDoc->slotBecameStable(*appDoc);
+            return;
+        }
+        guiDoc->syncCommittedPresentationInViewers();
+        for (auto* view : guiDoc->d->baseViews) {
+            auto* inventorView = dynamic_cast<View3DInventor*>(view);
+            if (inventorView && inventorView->getViewer()) {
+                inventorView->getViewer()->redraw();
+            }
+        }
+    });
 }
 
 bool Document::deferLivePresentationUpdates() const
@@ -1999,6 +2073,7 @@ void Document::syncCommittedPresentationInViewers()
     const bool preferCommitted = committedRoot != nullptr && hasCommittedPresentation
         && (d->_preferCommittedPresentation
             || documentExecutionLaneBusy(*d->_pcDocument));
+    bool committedInstalled = false;
     for (auto* view : d->baseViews) {
         auto* inventorView = dynamic_cast<View3DInventor*>(view);
         if (!inventorView) {
@@ -2009,8 +2084,10 @@ void Document::syncCommittedPresentationInViewers()
             // sibling so live objectGroup is the only navigable geometry.
             viewer->installCommittedPresentationRoot(
                 preferCommitted ? committedRoot : nullptr, preferCommitted);
+            committedInstalled = committedInstalled || preferCommitted;
         }
     }
+    d->_committedPresentationInstalled = committedInstalled;
 }
 
 void Document::enqueuePresentationDelta(PresentationDelta&& delta)
