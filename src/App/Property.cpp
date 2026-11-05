@@ -32,6 +32,7 @@
 #include <CXX/Objects.hxx>
 
 #include "Property.h"
+#include "PropertyTouchPublication.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
@@ -45,6 +46,8 @@ using namespace App;
 
 namespace
 {
+
+thread_local const Property* suppressedTouchPublication = nullptr;
 
 void publishPropertyMutation(Property& property, bool structural)
 {
@@ -97,11 +100,29 @@ void publishPropertyMutation(Property& property, bool structural)
     if (structural || input.propertyFamily == CollaborationPropertyFamily::Link) {
         Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
     }
-    if (document->collaborationRevisionPublicationSuppressed(&property)) {
+    if (suppressedTouchPublication == &property
+        || document->collaborationRevisionPublicationSuppressed(&property)) {
         return;
     }
     static_cast<void>(document->collaborationRevisions().publish(effects));
 }
+
+}  // namespace
+
+PropertyTouchPublicationSuppressor::PropertyTouchPublicationSuppressor(
+    const Property& property) noexcept
+    : _previous(suppressedTouchPublication)
+{
+    suppressedTouchPublication = &property;
+}
+
+PropertyTouchPublicationSuppressor::~PropertyTouchPublicationSuppressor()
+{
+    suppressedTouchPublication = _previous;
+}
+
+namespace
+{
 
 constexpr unsigned long serializedPropertyStatusMask()
 {

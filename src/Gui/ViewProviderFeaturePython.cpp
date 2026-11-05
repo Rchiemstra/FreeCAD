@@ -32,6 +32,7 @@
 
 
 #include <App/DocumentObjectPy.h>
+#include <App/PropertyTouchPublication.h>
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <CXX/Python3/Objects.hxx>
@@ -692,8 +693,10 @@ void ViewProviderFeaturePythonImp::attach(App::DocumentObject* pcObject)
             Base::pyCall(py_attach.ptr(), args.ptr());
         }
 
-        // #0000415: Now simulate a property change event to call
-        // claimChildren if implemented.
+        // #0000415: notify observers that the proxy attached. The label text
+        // is unchanged, so only this property's publication is skipped. A
+        // model write from an observer still publishes.
+        const App::PropertyTouchPublicationSuppressor suppressLabelPublication(pcObject->Label);
         pcObject->Label.touch();
     }
     catch (Py::Exception&) {
