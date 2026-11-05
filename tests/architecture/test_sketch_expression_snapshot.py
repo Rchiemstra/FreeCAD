@@ -20,6 +20,7 @@ def test_sketch_diagnostics_read_admission_and_immutable_publication():
     assert capture.index("readAdmission()") < capture.index("Base::PyGILStateLocker")
     assert "return false" in capture[:capture.index("getPyObject()")]
     assert "shared_ptr<const" in header
+    assert "struct ErrorPublication" in header
     assert "constraintErrors.clear()" not in capture
     solver = (GUI / "ViewProviderSketch.cpp").read_text().split(
         "void ViewProviderSketch::slotSolverUpdate()", 1)[1].split(
@@ -45,5 +46,12 @@ def test_constraint_diagnostic_roles_capture_owned_row_inputs():
     queries = row.split("~ConstraintItem()", 1)[1]
     assert "sketch->" not in queries
     assert "presentation.capture(" in queries
+    data = row.split("QVariant data(int role) const override", 1)[1].split(
+        "QVariant liveData", 1)[0]
+    # Paint and tooltip must read the shared error publication. A raw view
+    # provider here is use-after-free once the row outlives owner deletion.
+    assert "sketchView" not in data
+    assert "getExpressionDiagnostics" not in data
+    assert "expressionErrors" in data
     publish = source.split("void TaskSketcherConstraints::slotConstraintsChanged()", 1)[1]
     assert publish.index("it->inputs = inputs") < publish.index("it->capturePresentation()")
