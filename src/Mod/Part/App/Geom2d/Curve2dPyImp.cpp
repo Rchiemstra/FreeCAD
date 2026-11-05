@@ -65,6 +65,7 @@
 #include "Geom2d/BSplineCurve2dPy.h"
 #include "GeometrySurfacePy.h"
 #include "OCCError.h"
+#include "Tools.h"
 #include "TopoShapeFacePy.h"
 
 
@@ -904,6 +905,13 @@ PyObject* Curve2dPy::intersectCC(PyObject* args) const
             Handle(Geom2d_Curve) curve2 = Handle(Geom2d_Curve)::DownCast(
                 static_cast<Geometry2dPy*>(p)->getGeometry2dPtr()->handle()
             );
+            if (isDegenerateConic(curve1) || isDegenerateConic(curve2)) {
+                PyErr_SetString(
+                    PyExc_RuntimeError,
+                    "Cannot intersect a circle or ellipse of zero radius"
+                );
+                return nullptr;
+            }
             Py::List points;
             Geom2dAPI_InterCurveCurve intersector(curve1, curve2, prec);
             if ((intersector.NbPoints() == 0) && (intersector.NbSegments() == 0)) {
