@@ -1935,6 +1935,95 @@ class TestCore(AssemblyTestBase):
             "{} bottom {} target {} gap {}".format(operation, solved, target_point, solved_gap),
         )
 
+    def _check_pattern_array_joint(self, kind):
+        """A fixed joint on an element of any link-array pattern.
+
+        The arrayed sub-assembly holds a moved and rotated body. The marker
+        must sit on the picked vertex, before and after the body moves again.
+        """
+        operation = "Link array joint on a {} pattern".format(kind.lower())
+        _msg("  Test '{}'".format(operation))
+
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = sub.newObject("Part::Box", "InnerBox")
+        inner.Length = 10
+        inner.Width = 10
+        inner.Height = 10
+        rotation = App.Rotation(App.Vector(0, 0, 1), 90)
+        inner.Placement = App.Placement(App.Vector(0, 30, 15), rotation)
+
+        array = self.assembly.newObject("Part::LinkArray" + kind, "Array")
+        array.LinkedObject = sub
+        array.ShowElement = True
+        if kind == "Circular":
+            array.Axis = (None, ["Z_Axis"])
+            array.BinormalAxis = (None, ["Y_Axis"])
+        elif kind in ("Path", "Point"):
+            pattern = self.doc.addObject("Part::Feature", "Pattern")
+            pattern.Shape = Part.makePolygon([App.Vector(), App.Vector(120, 0, 0)])
+            if kind == "Path":
+                array.Path = (pattern, ["Edge1"])
+                array.Count = 2
+            else:
+                array.PointObject = pattern
+
+        target = self.assembly.newObject("Part::Box", "Target")
+        target.Length = 20
+        target.Width = 20
+        target.Height = 20
+        self.doc.recompute()
+
+        self.assertGreaterEqual(len(array.ElementList), 2, operation)
+        element = array.ElementList[1]
+        self.assertFalse(element.Placement.isIdentity(), operation)
+        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, element.Name)
+        comp, rel, _point = self._assert_marker_on_vertex(full)
+        self._solve_fixed_to_target(target, comp, rel)
+        solved = self._shape_vertex(self.assembly, full)
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((solved - target_point).Length, 1e-5, operation)
+
+        moved = App.Placement(App.Vector(0, 70, 15), rotation)
+        if hasattr(self.doc, "commitCompatibilityMutation"):
+
+            def move_inner():
+                inner.Placement = moved
+                return True
+
+            committed = self.doc.commitCompatibilityMutation(
+                move_inner, structural=True, recompute=True
+            )
+            self.assertTrue(committed["committed"], committed)
+        else:
+            inner.Placement = moved
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0, operation)
+
+        ref = (comp, [rel, rel])
+        joint = self.doc.getObject("FixedJoint")
+        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
+        true = self._shape_vertex(self.assembly, full)
+        self.assertLess(
+            (stored.Base - true).Length,
+            1e-6,
+            "{} stored marker {} vertex {}".format(operation, stored.Base, true),
+        )
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((true - target_point).Length, 1e-5, operation)
+
+    def test_link_array_joint_on_polar_pattern(self):
+        self._check_pattern_array_joint("Polar")
+
+    def test_link_array_joint_on_circular_pattern(self):
+        self._check_pattern_array_joint("Circular")
+
+    def test_link_array_joint_on_path_pattern(self):
+        self._check_pattern_array_joint("Path")
+
+    def test_link_array_joint_on_point_pattern(self):
+        self._check_pattern_array_joint("Point")
+
 
 def _shape_circle(obj, element):
     """Circle center and axis in the shape frame, which already includes Placement."""
