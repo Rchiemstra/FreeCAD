@@ -1924,9 +1924,7 @@ class TestCore(AssemblyTestBase):
         self.assertLess(
             marker_gap,
             1e-6,
-            "{} stored marker {} bottom {} gap {}".format(
-                operation, stored.Base, true, marker_gap
-            ),
+            "{} stored marker {} bottom {} gap {}".format(operation, stored.Base, true, marker_gap),
         )
         solved = self._face_circle_center(face_full)
         target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
