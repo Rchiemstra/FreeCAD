@@ -25,6 +25,13 @@ class SketchExpressionDiagnostics
 public:
     using Errors = std::map<int, QString>;
 
+    // Constraint rows share this object. refresh() replaces errors with a new
+    // immutable map; a row that outlives the view provider keeps the last map.
+    struct ErrorPublication
+    {
+        std::shared_ptr<const Errors> errors = std::make_shared<const Errors>();
+    };
+
     ~SketchExpressionDiagnostics();
     void start(ViewProviderSketch* view);
     void stop();
@@ -32,14 +39,21 @@ public:
     std::unique_ptr<App::LivePresentationRefreshScope> readAdmission();
     bool refresh(Sketcher::SketchObject* sketch);
     QString reason(int index) const;
-    const Errors& errors() const { return *constraintErrors; }
+    std::shared_ptr<ErrorPublication> shareErrors() const
+    {
+        return publication;
+    }
+    std::shared_ptr<const Errors> errorsSnapshot() const
+    {
+        return publication->errors;
+    }
     static QString editFailure(Sketcher::SketchObject* sketch, const QString& error);
 
 private:
     void invalidate(bool constraintsOnly = false);
     using ConstraintInput = std::tuple<std::string, std::string, double, bool, bool>;
     std::vector<ConstraintInput> constraintInputs;
-    std::shared_ptr<const Errors> constraintErrors = std::make_shared<const Errors>();
+    std::shared_ptr<ErrorPublication> publication = std::make_shared<ErrorPublication>();
     ViewProviderSketch* view = nullptr;
     QTimer timer;
     std::vector<fastsignals::connection> connections;
@@ -48,7 +62,7 @@ private:
     bool checkSolverOutputs = false;
 };
 
-QVariant constraintExpressionData(const SketchExpressionDiagnostics& diagnostics,
+QVariant constraintExpressionData(std::shared_ptr<const SketchExpressionDiagnostics::Errors> errors,
                                   const std::vector<int>& indices, int role);
 
 class SketchExpressionDiagnosticsLabel: public QLabel

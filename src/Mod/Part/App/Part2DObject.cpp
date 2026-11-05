@@ -46,6 +46,7 @@
 #include "Part2DObject.h"
 #include "Part2DObjectPy.h"
 #include "Geometry.h"
+#include "Tools.h"
 
 
 using namespace Part;
@@ -127,6 +128,9 @@ bool Part2DObject::seekTrimPoints(
         return false;
     }
     else {
+        if (isDegenerateConic(curve3d)) {
+            return false;
+        }
         primaryCurve = GeomAPI::To2d(curve3d, plane);
         periodic = primaryCurve->IsPeriodic();
         if (periodic) {
@@ -172,23 +176,25 @@ bool Part2DObject::seekTrimPoints(
                     points.emplace_back(bcurve->getEndPoint().x, bcurve->getEndPoint().y);
                 }
 
-                Intersector.Init(primaryCurve, secondaryCurve, 1.0e-12);
+                if (!isDegenerateConic(curve3d)) {
+                    Intersector.Init(primaryCurve, secondaryCurve, 1.0e-12);
 
-                for (int i = 1; i <= Intersector.NbPoints(); i++) {
-                    points.push_back(Intersector.Point(i));
-                }
+                    for (int i = 1; i <= Intersector.NbPoints(); i++) {
+                        points.push_back(Intersector.Point(i));
+                    }
 
-                if (Intersector.NbSegments() > 0) {
-                    const Geom2dInt_GInter& gInter = Intersector.Intersector();
-                    for (int i = 1; i <= gInter.NbSegments(); i++) {
-                        const IntRes2d_IntersectionSegment& segm = gInter.Segment(i);
-                        if (segm.HasFirstPoint()) {
-                            const IntRes2d_IntersectionPoint& fp = segm.FirstPoint();
-                            points.push_back(fp.Value());
-                        }
-                        if (segm.HasLastPoint()) {
-                            const IntRes2d_IntersectionPoint& fp = segm.LastPoint();
-                            points.push_back(fp.Value());
+                    if (Intersector.NbSegments() > 0) {
+                        const Geom2dInt_GInter& gInter = Intersector.Intersector();
+                        for (int i = 1; i <= gInter.NbSegments(); i++) {
+                            const IntRes2d_IntersectionSegment& segm = gInter.Segment(i);
+                            if (segm.HasFirstPoint()) {
+                                const IntRes2d_IntersectionPoint& fp = segm.FirstPoint();
+                                points.push_back(fp.Value());
+                            }
+                            if (segm.HasLastPoint()) {
+                                const IntRes2d_IntersectionPoint& fp = segm.LastPoint();
+                                points.push_back(fp.Value());
+                            }
                         }
                     }
                 }
