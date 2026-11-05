@@ -1030,6 +1030,29 @@ So here we want to find a placement that corresponds to a local coordinate syste
 """
 
 
+def _link_array_placement_beyond_element(array, sub):
+    """Placement getGlobalPlacement adds inside one element, past that element's offset."""
+
+    head, dot, _tail = sub.partition(".")
+    if not dot:
+        return App.Placement()
+
+    element = array.getPlacementOf(head + ".")
+    full = array.getPlacementOf(sub)
+    return element.inverse() * full
+
+
+def _subname_relative_to(obj, root, sub):
+    if root == obj or not sub:
+        return sub
+    names = sub.split(".")
+    try:
+        index = names.index(obj.Name)
+    except ValueError:
+        return sub
+    return ".".join(names[index + 1 :])
+
+
 def findPlacement(ref, ignoreVertex=False):
     if not isRefValid(ref, 2):
         return App.Placement()
@@ -1151,6 +1174,16 @@ def findPlacement(ref, ignoreVertex=False):
 
     # change plc to be relative to the object placement.
     plc = obj.Placement.inverse() * plc
+
+    if isLinkArray(obj):
+        # getGlobalPlacement multiplies every object placement named in the element
+        # subname. Child placements are already in the array shape, and with
+        # LinkTransform off the linked object's own Placement is not. Remove that
+        # factor here so the joint sits on the picked element.
+        nested = _link_array_placement_beyond_element(
+            obj, _subname_relative_to(obj, ref[0], ref[1][0])
+        )
+        plc = nested.inverse() * plc
 
     # post-process of plc for some special cases
     if elt_type == "Vertex":
