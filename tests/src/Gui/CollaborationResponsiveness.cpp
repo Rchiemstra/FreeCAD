@@ -10,7 +10,6 @@
 #include <Inventor/nodes/SoSwitch.h>
 
 #include <App/Application.h>
-#include <App/CollaborationRegistry.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
@@ -20,6 +19,7 @@
 #include <App/FeatureTest.h>
 #include <App/MainThreadSignal.h>
 #include <App/MutationClassification.h>
+#include <App/RecoverySnapshot.h>
 #include <Gui/DocumentExecutionIngress.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
@@ -655,7 +655,7 @@ TEST_F(CollaborationResponsivenessTest, unchangedCompatibilityReadDoesNotRefresh
     options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
     const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
         return _document->collaborationService().commitCompatibilityMutationWithOptions(
-            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}},
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
             [&] { captured = provider->getObject()->Label.getStrValue(); }, options);
     });
     ASSERT_TRUE(result.committed()) << result.message;
@@ -683,7 +683,7 @@ TEST_F(CollaborationResponsivenessTest, stableCommitKeepsDeferredPropertyRefresh
     options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
     const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
         return _document->collaborationService().commitCompatibilityMutationWithOptions(
-            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}},
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
             [&] { provider->getObject()->Label.setValue("Deferred property presented"); }, options);
     });
     ASSERT_TRUE(result.committed()) << result.message;
@@ -709,7 +709,7 @@ TEST_F(CollaborationResponsivenessTest, stableCommitKeepsDeferredVisibilityRefre
     options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
     const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
         return _document->collaborationService().commitCompatibilityMutationWithOptions(
-            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}},
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
             [&] { provider->getObject()->Visibility.setValue(!before); }, options);
     });
     ASSERT_TRUE(result.committed()) << result.message;
@@ -789,7 +789,7 @@ TEST_F(CollaborationResponsivenessTest,
         options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
         const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
             return _document->collaborationService().commitCompatibilityMutationWithOptions(
-                {App::CollaborationCompatibilityScope::UnknownModel, {}, {}},
+                {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
                 [&] { captured = provider->getObject()->Label.getStrValue(); }, options);
         });
         ASSERT_TRUE(result.committed()) << result.message;
@@ -858,21 +858,27 @@ TEST_F(CollaborationResponsivenessTest,
         int refreshCalls = 0;
         provider->refresh = [&] { ++refreshCalls; };
         const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
-        // Queue the original wake, then change the epoch without pumping Qt or
-        // doing recovery-file I/O. The Gui document and native instance remain.
-        _document->emitCollaborationBecameStable();
+        // The public signal exercises the real Gui stable observer. Queue its
+        // handoff before advancing the same live instance through App's public
+        // administrative recovery API. Its owner dispatch services marshalled
+        // native work, not Qt timers, so the old handoff stays undelivered.
+        _document->signalBecameStable(*_document);
         if (cycle < 2) {
             const auto before = _document->collaborationIdentity();
-            const auto advanced =
-                App::GetApplication().collaborationRegistry().advanceEpoch(*_document);
-            ASSERT_TRUE(advanced.has_value());
-            ASSERT_EQ(advanced->instanceId, before.instanceId);
-            ASSERT_NE(advanced->lifecycleEpoch, before.lifecycleEpoch);
-            ASSERT_EQ(advanced->state, App::DocumentLifecycleState::Live);
+            const auto timerRan = std::make_shared<std::atomic_bool>(false);
+            QTimer::singleShot(0, qApp, [timerRan] { timerRan->store(true); });
+            const App::RecoverySnapshotSaveOptions recoveryOptions;
+            const auto advanced = App::GetApplication().advanceDocumentCollaborationEpoch(
+                *_document, recoveryOptions, "queued GUI handoff epoch regression");
+            ASSERT_FALSE(timerRan->load())
+                << "epoch advancement delivered Qt timers before the stale-wake check";
+            ASSERT_EQ(advanced.instanceId, before.instanceId);
+            ASSERT_NE(advanced.lifecycleEpoch, before.lifecycleEpoch);
+            ASSERT_EQ(advanced.state, App::DocumentLifecycleState::Live);
             if (cycle == 1) {
                 // A new-epoch wake can supersede the undelivered old wake. The
                 // old callback must not clear that newer queue's ownership.
-                _document->emitCollaborationBecameStable();
+                _document->signalBecameStable(*_document);
             }
         }
         // Cycle0 must release/requeue a stale wake; cycle1 protects a newer
