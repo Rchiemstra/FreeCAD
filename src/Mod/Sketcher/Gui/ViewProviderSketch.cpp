@@ -4131,8 +4131,10 @@ void ViewProviderSketch::slotSolverUpdate()
         return;
     }
 
+    auto admission = expressionDiagnostics.readAdmission();
     App::LivePresentationRefreshScope refresh;
-    if (!refresh.acquired() || getDocument()->deferLivePresentationUpdates() || redrawInputs) {
+    if (!admission || !refresh.acquired() || getDocument()->deferLivePresentationUpdates()
+        || redrawInputs) {
         queueRedraw(false, true);
         return;
     }
@@ -4567,6 +4569,8 @@ bool ViewProviderSketch::setEdit(int ModNum)
             "setEdit: could not import Show module. Visibility automation will not work.\n");
     }
 
+    expressionDiagnostics.start(this);
+
     // start the edit dialog
     if (!sketchDlg) {
         sketchDlg = new TaskDlgEditSketch(this);
@@ -4747,6 +4751,7 @@ inline QString intListHelper(const std::vector<int>& ints)
 
 void ViewProviderSketch::UpdateSolverInformation()
 {
+    expressionDiagnostics.refresh(getSketchObject());
     // Updates Solver Information with the Last solver execution at SketchObject level
     int dofs = getSketchObject()->getLastDoF();
     bool hasConflicts = getSketchObject()->getLastHasConflicts();
@@ -4851,6 +4856,7 @@ void ViewProviderSketch::unsetEdit(int ModNum)
 
     connectUndoDocument.disconnect();
     connectRedoDocument.disconnect();
+    expressionDiagnostics.stop();
     connectSolverUpdate.disconnect();
     connectConstraintAdded.disconnect();
 

@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <QAction>
+#include <QBoxLayout>
 #include <QMenu>
 #include <QCheckBox>
 
@@ -39,7 +40,6 @@
 // clang-format off
 using namespace SketcherGui;
 using namespace Gui::TaskView;
-namespace sp = std::placeholders;
 
 TaskSketcherMessages::TaskSketcherMessages(ViewProviderSketch* sketchView)
     : TaskSolverMessages(Gui::BitmapFactory().pixmap("Sketcher_Sketch"), tr("Sketch Edit"))
@@ -47,10 +47,14 @@ TaskSketcherMessages::TaskSketcherMessages(ViewProviderSketch* sketchView)
 {
     createSettingsButtonActions();
 
-    //NOLINTBEGIN
-    connectionSetUp = sketchView->signalSetUp.connect(std::bind(
-        &SketcherGui::TaskSketcherMessages::slotSetUp, this, sp::_1, sp::_2, sp::_3, sp::_4));
-    //NOLINTEND
+    auto* diagnostics = new SketchExpressionDiagnosticsLabel(sketchView, this);
+    groupLayout()->addWidget(diagnostics);
+    connectionSetUp = sketchView->signalSetUp.connect(
+        [this, diagnostics](const QString& state, const QString& msg,
+                            const QString& link, const QString& linkText) {
+            slotSetUp(state, msg, link, linkText);
+            diagnostics->refresh();
+        });
 }
 
 TaskSketcherMessages::~TaskSketcherMessages()

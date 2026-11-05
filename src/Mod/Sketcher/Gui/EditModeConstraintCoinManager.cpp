@@ -1897,7 +1897,9 @@ void EditModeConstraintCoinManager::updateConstraintColor(
                     s->getChild(static_cast<int>(ConstraintNodePosition::DatumLabelIndex))
                 );
 
-                l->textColor = isActive
+                l->textColor = !viewProvider.getExpressionDiagnostics().reason(i).isEmpty()
+                    ? drawingParameters.BrokenExpressionConstrDimColor
+                    : isActive
                     ? ViewProviderSketchCoinAttorney::constraintHasExpression(viewProvider, i)
                         ? drawingParameters.ExprBasedConstrDimColor
                         : (constraint->isDriving
@@ -1906,7 +1908,9 @@ void EditModeConstraintCoinManager::updateConstraintColor(
                     : SketcherGui::DrawingParameters::DeactivatedConstrDimColor;
             }
             else if (hasMaterial) {
-                m->diffuseColor = isActive
+                m->diffuseColor = !viewProvider.getExpressionDiagnostics().reason(i).isEmpty()
+                    ? drawingParameters.BrokenExpressionConstrDimColor
+                    : isActive
                     ? (constraint->isDriving
                            ? SketcherGui::DrawingParameters::ConstrDimColor
                            : SketcherGui::DrawingParameters::NonDrivingConstrDimColor)
@@ -3087,6 +3091,9 @@ QColor EditModeConstraintCoinManager::constrColor(int constraintId)
     }
     if (ViewProviderSketchCoinAttorney::isConstraintSelected(viewProvider, constraintId)) {
         return toQColor(SketcherGui::DrawingParameters::SelectColor);
+    }
+    if (!viewProvider.getExpressionDiagnostics().reason(constraintId).isEmpty()) {
+        return toQColor(drawingParameters.BrokenExpressionConstrDimColor);
     }
     if (!isActive) {
         return toQColor(SketcherGui::DrawingParameters::DeactivatedConstrDimColor);

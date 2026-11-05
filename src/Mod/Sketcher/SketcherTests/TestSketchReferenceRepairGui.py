@@ -1272,7 +1272,9 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         sketch = self.make_solver_update_fixture()
         sketch.addConstraint(Sketcher.Constraint("Distance", 0, 10.0))
         sketch.renameConstraint(0, "BeforeDeletion")
-        self.flush_gui(100)
+        sketch.setExpression("Constraints.BeforeDeletion", "Missing.Value")
+        self.recompute_gui_document()
+        self.flush_gui(150)
         constraints = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetConstraints")[0]
         elements = Gui.getMainWindow().findChildren(QtGui.QListWidget, "listWidgetElements")[0]
         # Retain real published rows independently of their task panel's lifetime.
@@ -1283,6 +1285,11 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         retained.addItem(constraint_row)
         retained.addItem(element_row)
         before = constraint_row.data(QtCore.Qt.DisplayRole)
+        self.assertIn("BeforeDeletion", before)
+        broken = constraint_row.data(QtCore.Qt.ToolTipRole)
+        self.assertIn("Broken expression", broken)
+        self.assertIn("Missing", broken)
+        self.assertIsNotNone(constraint_row.data(QtCore.Qt.ForegroundRole))
         name = sketch.Name
         Gui.activeDocument().resetEdit()
         self.doc.removeObject(name)
@@ -1295,7 +1302,12 @@ class TestSketchReferenceRepairGui(SketcherGuiTestCase):
         try:
             self.assertIn("BeforeDeletion", before)
             self.assertEqual(constraint_row.data(QtCore.Qt.DisplayRole), before)
-            for role in (QtCore.Qt.EditRole, QtCore.Qt.ToolTipRole, QtCore.Qt.DecorationRole):
+            survived = constraint_row.data(QtCore.Qt.ToolTipRole)
+            self.assertIn("Broken expression", survived)
+            self.assertIn("Missing", survived)
+            self.assertNotIn("NewOwner", str(survived))
+            self.assertIsNotNone(constraint_row.data(QtCore.Qt.ForegroundRole))
+            for role in (QtCore.Qt.EditRole, QtCore.Qt.DecorationRole):
                 constraint_row.data(role)
             element_row.data(QtCore.Qt.DecorationRole)
             retained.viewport().grab()

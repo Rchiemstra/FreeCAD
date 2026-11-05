@@ -68,13 +68,19 @@ bool GilGuiHandoff::yieldRequired() noexcept
     if (!g_gilGuiHandoffReserved.load(std::memory_order_acquire)) {
         return false;
     }
-    return std::this_thread::get_id()
-        != g_gilGuiHandoffThread.load(std::memory_order_acquire);
+    return std::this_thread::get_id() != g_gilGuiHandoffThread.load(std::memory_order_acquire);
 }
 
 PyGILStateLocker::PyGILStateLocker()
 {
     using namespace std::chrono_literals;
+    // A thread that already holds the GIL keeps it while it waits here, so the
+    // GUI thread blocked in PyGILState_Ensure could never take it. Only a
+    // return to the interpreter hands it over, so nested locks never yield.
+    if (PyGILState_Check()) {
+        gstate = PyGILState_Ensure();
+        return;
+    }
     for (;;) {
         while (GilGuiHandoff::yieldRequired()) {
             std::this_thread::sleep_for(50us);
