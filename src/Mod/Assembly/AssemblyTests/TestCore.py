@@ -1593,32 +1593,32 @@ class TestCore(AssemblyTestBase):
         self.assertEqual(self._solve_placement_snapshot(), before)
         self.assertEqual(UtilsAssembly.violatedJointLabels(self.assembly), violated)
 
-    def _shape_vertex(self, root, sub):
-        shape = Part.getShape(root, sub, App.Matrix(), True)
+    def _point(self, sub):
+        shape = Part.getShape(self.assembly, sub, App.Matrix(), True)
         self.assertGreater(len(shape.Vertexes), 0, sub)
         return shape.Vertexes[0].Point
 
-    def _assert_marker_on_vertex(self, full):
+    def _component(self, full):
         comp, rel = UtilsAssembly.getComponentReference(self.assembly, self.assembly, full)
         self.assertIsNotNone(comp, full)
-        ref = (comp, [rel, rel])
-        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
-        true = self._shape_vertex(self.assembly, full)
-        self.assertLess(
-            (marker.Base - true).Length,
-            1e-6,
-            "{} marker {} true {}".format(full, marker.Base, true),
-        )
-        return comp, rel, true
+        return comp, rel
 
-    def _solve_fixed_to_target(self, target, comp, rel, vertex_rel=None):
+    def _assert_marker(self, full, vertex_rel=None):
+        comp, rel = self._component(full)
+        if vertex_rel is None:
+            vertex_rel = rel
+        ref = (comp, [rel, vertex_rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._point(full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
+        return comp, rel, ref
+
+    def _fixed_to_target(self, target, comp, rel, vertex_rel=None):
         ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
         JointObject.GroundedJoint(ground, target)
         joint = self.jointgroup.newObject("App::FeaturePython", "FixedJoint")
         JointObject.Joint(joint, 0)
-        target_comp, target_rel = UtilsAssembly.getComponentReference(
-            self.assembly, self.assembly, target.Name + ".Vertex1"
-        )
+        target_comp, target_rel = self._component(target.Name + ".Vertex1")
         if vertex_rel is None:
             vertex_rel = rel
         joint.Proxy.setJointConnectors(
@@ -1626,48 +1626,99 @@ class TestCore(AssemblyTestBase):
             [(target_comp, [target_rel, target_rel]), (comp, [rel, vertex_rel])],
         )
         self.doc.recompute()
-        solved = self.assembly.solve()
-        self.assertEqual(solved, 0)
+        self.assertEqual(self.assembly.solve(), 0)
 
-    def _face_circle_center(self, sub):
-        """Centre of face-relative Edge1. The subname must name the face."""
-        shape = Part.getShape(self.assembly, sub, App.Matrix(), True)
-        edge = shape.getElement("Edge1")
-        self.assertIsNotNone(edge, sub)
-        self.assertEqual(edge.Curve.TypeId, "Part::GeomCircle", sub)
+    def _box(self, parent, name, length, width, height, placement):
+        maker = parent.newObject if hasattr(parent, "newObject") else parent.addObject
+        box = maker("Part::Box", name)
+        box.Length = length
+        box.Width = width
+        box.Height = height
+        box.Placement = placement
+        return box
+
+    def _linear_array(self, linked, occurrences, offset, spacing=False):
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = linked
+        array.Occurrences = occurrences
+        array.Offset = offset
+        array.ShowElement = True
+        if spacing:
+            array.Mode = "Spacing"
+        return array
+
+    def _move(self, obj, placement):
+        if hasattr(self.doc, "commitCompatibilityMutation"):
+
+            def mutate():
+                obj.Placement = placement
+                return True
+
+            committed = self.doc.commitCompatibilityMutation(
+                mutate, structural=True, recompute=True
+            )
+            self.assertTrue(committed["committed"], committed)
+        else:
+            obj.Placement = placement
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0)
+
+    def _assert_stored(self, true, target, ref, limit, solved_limit=None):
+        stored = UtilsAssembly.getJcsGlobalPlc(self.doc.getObject("FixedJoint").Placement2, ref)
+        gap = (stored.Base - true).Length
+        self.assertLess(gap, limit, "stored gap {:.4f} mm".format(gap))
+        solved_limit = limit if solved_limit is None else solved_limit
+        solved = (true - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, solved_limit, "solved gap {:.4f} mm".format(solved))
+
+    def _circle(self, face_sub):
+        edge = Part.getShape(self.assembly, face_sub, App.Matrix(), True).getElement("Edge1")
+        self.assertEqual(edge.Curve.TypeId, "Part::GeomCircle", face_sub)
         return edge.Curve.Location
 
+    def _axes(self, face_full):
+        dot = face_full.rfind(".")
+        shape = Part.getShape(self.assembly, face_full[: dot + 1], App.Matrix(), True)
+        face = shape.getElement(face_full[dot + 1 :])
+        edge = face.getElement("Edge2")
+        self.assertEqual(edge.Curve.TypeId, "Part::GeomBSplineCurve", face_full)
+        axes = [
+            other.Surface
+            for other in shape.Faces
+            if other.Surface.TypeId == "Part::GeomCylinder"
+            and any(
+                item.Curve.TypeId == "Part::GeomBSplineCurve"
+                and item.CenterOfGravity == edge.CenterOfGravity
+                and item.Length == edge.Length
+                for item in other.Edges
+            )
+        ]
+        line1 = Part.Line(axes[0].Center, axes[0].Center + axes[0].Axis)
+        line2 = Part.Line(axes[1].Center, axes[1].Center + axes[1].Axis)
+        point = line1.intersect(line2, Part.Precision.confusion())[0]
+        return App.Vector(point.X, point.Y, point.Z)
+
     def test_link_array_fixed_joint_uses_inner_source_placement_once(self):
-        """A fixed joint on a link-array element must sit on the picked vertex.
-
-        The source body lives in the arrayed sub-assembly at a non-identity
-        placement. That placement is already in the element shape.
-        """
-        operation = "Link array joint matches inner source placement"
-        _msg("  Test '{}'".format(operation))
-
+        _msg("  Test 'Link array joint matches inner source placement'")
         sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
         sub.newObject("Assembly::JointGroup", "SubJoints")
-        source = sub.newObject("Part::Box", "Source")
-        source.Length = 10
-        source.Width = 20
-        source.Height = 30
-        source.Placement = App.Placement(
-            App.Vector(0, 40, 15), App.Rotation(App.Vector(0, 0, 1), 90)
+        source = self._box(
+            sub,
+            "Source",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 40, 15), App.Rotation(App.Vector(0, 0, 1), 90)),
         )
-
-        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
-        array.LinkedObject = sub
-        array.Occurrences = 2
-        array.Offset = 100
-        array.ShowElement = True
-
-        target = self.assembly.newObject("Part::Box", "Target")
-        target.Length = 10
-        target.Width = 20
-        target.Height = 30
-        target.Placement = App.Placement(App.Vector(0, 200, 0), App.Rotation())
-
+        array = self._linear_array(sub, 2, 100)
+        target = self._box(
+            self.assembly,
+            "Target",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 200, 0), App.Rotation()),
+        )
         plain = self.assembly.newObject("App::Link", "Plain")
         plain.LinkedObject = sub
         plain.Placement = App.Placement(App.Vector(0, -80, 0), App.Rotation())
@@ -1675,188 +1726,79 @@ class TestCore(AssemblyTestBase):
 
         element = array.ElementList[1]
         self.assertGreater(element.Placement.Base.x, 50)
-        comp, rel, _true = self._assert_marker_on_vertex(
-            "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
-        )
-        edge_full = "{}.{}.Sub.Source.Edge1".format(array.Name, element.Name)
-        edge_comp, edge_rel = UtilsAssembly.getComponentReference(
-            self.assembly, self.assembly, edge_full
+        full = "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
+        comp, rel, _ref = self._assert_marker(full)
+        edge_comp, edge_rel = self._component(
+            "{}.{}.Sub.Source.Edge1".format(array.Name, element.Name)
         )
         edge_ref = (edge_comp, [edge_rel, rel])
         edge_marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(edge_ref), edge_ref)
-        edge_true = self._shape_vertex(
-            self.assembly, "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
-        )
-        self.assertLess((edge_marker.Base - edge_true).Length, 1e-6)
-
-        plain_comp, plain_rel = UtilsAssembly.getComponentReference(
-            self.assembly, self.assembly, "Plain.Sub.Source.Vertex1"
-        )
-        plain_ref = (plain_comp, [plain_rel, plain_rel])
-        plain_marker = UtilsAssembly.getJcsGlobalPlc(
-            UtilsAssembly.findPlacement(plain_ref), plain_ref
-        )
-        plain_true = self._shape_vertex(self.assembly, "Plain.Sub.Source.Vertex1")
-        self.assertLess((plain_marker.Base - plain_true).Length, 1e-6)
+        edge_gap = (edge_marker.Base - self._point(full)).Length
+        self.assertLess(edge_gap, 1e-6, "marker gap {:.4f} mm".format(edge_gap))
+        plain_full = "Plain.Sub.Source.Vertex1"
+        _plain_comp, _plain_rel, plain_ref = self._assert_marker(plain_full)
         self.assertEqual(UtilsAssembly.getObject(plain_ref).Name, source.Name)
 
-        self._solve_fixed_to_target(target, comp, rel)
-        solved = self._shape_vertex(
-            self.assembly, "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
-        )
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((solved - target_point).Length, 1e-5, operation)
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
 
     def test_link_array_fixed_joint_ignores_source_object_placement(self):
-        """LinkTransform leaves the source Placement out of the element shape.
-
-        Naming that source in the pick must not shift the joint by it.
-        """
-        operation = "Link array joint ignores source object placement"
-        _msg("  Test '{}'".format(operation))
-
-        source = self.doc.addObject("Part::Box", "Source")
-        source.Length = 10
-        source.Width = 20
-        source.Height = 30
-        source.Placement = App.Placement(App.Vector(0, 80, 15), App.Rotation())
-
-        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
-        array.LinkedObject = source
-        array.Occurrences = 2
-        array.Offset = 100
-        array.ShowElement = True
-
-        target = self.assembly.newObject("Part::Box", "Target")
-        target.Length = 10
-        target.Width = 20
-        target.Height = 30
-        target.Placement = App.Placement(App.Vector(0, 200, 0), App.Rotation())
-
+        _msg("  Test 'Link array joint ignores source object placement'")
+        source = self._box(
+            self.doc, "Source", 10, 20, 30, App.Placement(App.Vector(0, 80, 15), App.Rotation())
+        )
+        array = self._linear_array(source, 2, 100)
+        target = self._box(
+            self.assembly,
+            "Target",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 200, 0), App.Rotation()),
+        )
         plain = self.assembly.newObject("App::Link", "Plain")
         plain.LinkedObject = source
         self.doc.recompute()
 
         element = array.ElementList[1]
-        comp, rel, _true = self._assert_marker_on_vertex(
-            "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
-        )
-        # A plain link pick is the element itself. Its marker already matches the shape.
-        plain_ref = (plain, ["Vertex1", "Vertex1"])
-        plain_marker = UtilsAssembly.getJcsGlobalPlc(
-            UtilsAssembly.findPlacement(plain_ref), plain_ref
-        )
-        plain_true = self._shape_vertex(self.assembly, plain.Name + ".Vertex1")
-        self.assertLess((plain_marker.Base - plain_true).Length, 1e-6)
+        full = "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
+        comp, rel, _ref = self._assert_marker(full)
+        self._assert_marker(plain.Name + ".Vertex1")
 
-        self._solve_fixed_to_target(target, comp, rel)
-        solved = self._shape_vertex(
-            self.assembly, "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
-        )
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((solved - target_point).Length, 1e-5, operation)
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
 
     def test_link_array_joint_follows_moved_inner_body(self):
-        """A fixed joint follows an inner body moved through one property edit.
-
-        The edit commits and recomputes the joint before the array rebuilds its
-        stored compound. After that commit, one document recompute and a solve,
-        the stored marker must sit on the picked vertex.
-        """
-        operation = "Link array joint follows a moved inner body"
-        _msg("  Test '{}'".format(operation))
-
+        _msg("  Test 'Link array joint follows a moved inner body'")
         sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
         sub.newObject("Assembly::JointGroup", "SubJoints")
-        inner = sub.newObject("Part::Box", "InnerBox")
-        inner.Length = 10
-        inner.Width = 10
-        inner.Height = 10
-        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
-
-        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
-        array.LinkedObject = sub
-        array.Occurrences = 3
-        array.Mode = "Spacing"
-        array.Offset = 120
-        array.ShowElement = True
-
-        target = self.assembly.newObject("Part::Box", "Target")
-        target.Length = 20
-        target.Width = 20
-        target.Height = 20
-        self.doc.recompute()
-
-        element = array.ElementList[1]
-        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, element.Name)
-        comp, rel, _point = self._assert_marker_on_vertex(full)
-        self._solve_fixed_to_target(target, comp, rel)
-        solved = self._shape_vertex(self.assembly, full)
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((solved - target_point).Length, 1e-6, operation)
-
-        moved = App.Placement(App.Vector(0, 70, 0), App.Rotation())
-        if hasattr(self.doc, "commitCompatibilityMutation"):
-            # A property edit recomputes the joint from the transaction's link
-            # closure before the array compound includes the move. A bare
-            # assignment plus doc.recompute() refreshes the compound first.
-            def move_inner():
-                inner.Placement = moved
-                return True
-
-            committed = self.doc.commitCompatibilityMutation(
-                move_inner, structural=True, recompute=True
-            )
-            self.assertTrue(committed["committed"], committed)
-        else:
-            inner.Placement = moved
-        self.doc.recompute()
-        self.assertEqual(self.assembly.solve(), 0, operation)
-
-        ref = (comp, [rel, rel])
-        joint = self.doc.getObject("FixedJoint")
-        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
-        true = self._shape_vertex(self.assembly, full)
-        self.assertLess(
-            (stored.Base - true).Length,
-            1e-6,
-            "{} stored marker {} vertex {}".format(operation, stored.Base, true),
+        inner = self._box(
+            sub, "InnerBox", 10, 10, 10, App.Placement(App.Vector(0, 30, 0), App.Rotation())
         )
-        solved = self._shape_vertex(self.assembly, full)
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((solved - target_point).Length, 1e-6, operation)
+        array = self._linear_array(sub, 3, 120, spacing=True)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
+
+        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, array.ElementList[1].Name)
+        comp, rel, ref = self._assert_marker(full)
+        self._fixed_to_target(target, comp, rel)
+        self._assert_stored(self._point(full), target, ref, 1e-6)
+
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._point(full), target, ref, 1e-6)
 
     def test_link_array_joint_follows_moved_inner_cylinder_bottom(self):
-        """A cap-circle joint stores the face's Edge1, not the object's.
-
-        The name the GUI stores for a circular edge is that edge's index on
-        the picked face. The bottom cap has one edge, so the reference is
-        the cap plus Edge1, while the cylinder's own Edge1 is the seam.
-        After the inner cylinder moves through one property edit, one
-        document recompute and a solve, the stored marker must sit on the
-        bottom circle centre.
-        """
-        operation = "Link array joint follows a moved cylinder bottom circle"
-        _msg("  Test '{}'".format(operation))
-
+        _msg("  Test 'Link array joint follows a moved cylinder bottom circle'")
         sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
         sub.newObject("Assembly::JointGroup", "SubJoints")
         inner = sub.newObject("Part::Cylinder", "InnerCyl")
         inner.Radius = 5
         inner.Height = 10
         inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
-
-        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
-        array.LinkedObject = sub
-        array.Occurrences = 3
-        array.Mode = "Spacing"
-        array.Offset = 120
-        array.ShowElement = True
-
-        target = self.assembly.newObject("Part::Box", "Target")
-        target.Length = 20
-        target.Width = 20
-        target.Height = 20
+        array = self._linear_array(sub, 3, 120, spacing=True)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
         self.doc.recompute()
 
         bottom_index = None
@@ -1867,92 +1809,61 @@ class TestCore(AssemblyTestBase):
             if bottom_face is None or face.CenterOfGravity.z < bottom_face.CenterOfGravity.z:
                 bottom_face = face
                 bottom_index = index
-        self.assertIsNotNone(bottom_face, operation)
-        self.assertEqual(len(bottom_face.Edges), 1, operation)
-        self.assertEqual(
-            bottom_face.getElement("Edge1").Curve.TypeId, "Part::GeomCircle", operation
-        )
-        _msg(
-            "  bottom Face{} object Edge1 {}".format(
-                bottom_index, inner.Shape.getElement("Edge1").Curve.TypeId
-            )
-        )
+        self.assertEqual(len(bottom_face.Edges), 1)
+        self.assertEqual(bottom_face.getElement("Edge1").Curve.TypeId, "Part::GeomCircle")
+        self.assertNotEqual(inner.Shape.getElement("Edge1").Curve.TypeId, "Part::GeomCircle")
 
         element = array.ElementList[1]
-        face_name = "Face{}".format(bottom_index)
-        face_full = "{}.{}.Sub.InnerCyl.{}".format(array.Name, element.Name, face_name)
-        edge_full = "{}.{}.Sub.InnerCyl.Edge1".format(array.Name, element.Name)
-        comp, face_rel = UtilsAssembly.getComponentReference(
-            self.assembly, self.assembly, face_full
+        face_full = "{}.{}.Sub.InnerCyl.Face{}".format(array.Name, element.Name, bottom_index)
+        comp, face_rel = self._component(face_full)
+        _edge_comp, edge_rel = self._component(
+            "{}.{}.Sub.InnerCyl.Edge1".format(array.Name, element.Name)
         )
-        edge_comp, edge_rel = UtilsAssembly.getComponentReference(
-            self.assembly, self.assembly, edge_full
-        )
-        self.assertIsNotNone(comp, face_full)
-        self.assertEqual(comp, edge_comp, operation)
-        self.assertTrue(face_rel.endswith(face_name), face_rel)
+        self.assertTrue(face_rel.endswith("Face{}".format(bottom_index)), face_rel)
         self.assertTrue(edge_rel.endswith("Edge1"), edge_rel)
-
-        self._solve_fixed_to_target(target, comp, face_rel, edge_rel)
         ref = (comp, [face_rel, edge_rel])
-        self._assert_circle_marker(operation, ref, face_full, target)
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._circle(face_full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
 
-        moved = App.Placement(App.Vector(0, 70, 0), App.Rotation())
-        if hasattr(self.doc, "commitCompatibilityMutation"):
-            # A property edit recomputes the joint from the transaction's link
-            # closure before the array compound includes the move. A bare
-            # assignment plus doc.recompute() refreshes the compound first.
-            def move_inner():
-                inner.Placement = moved
-                return True
+        self._fixed_to_target(target, comp, face_rel, edge_rel)
+        self._assert_stored(self._circle(face_full), target, ref, 1e-6)
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._circle(face_full), target, ref, 1e-6)
 
-            committed = self.doc.commitCompatibilityMutation(
-                move_inner, structural=True, recompute=True
-            )
-            self.assertTrue(committed["committed"], committed)
-        else:
-            inner.Placement = moved
-        self.doc.recompute()
-        self.assertEqual(self.assembly.solve(), 0, operation)
-        self._assert_circle_marker(operation, ref, face_full, target)
-
-    def _assert_circle_marker(self, operation, ref, face_full, target):
-        joint = self.doc.getObject("FixedJoint")
-        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
-        true = self._face_circle_center(face_full)
-        marker_gap = (stored.Base - true).Length
-        self.assertLess(
-            marker_gap,
-            1e-6,
-            "{} stored marker {} bottom {} gap {}".format(operation, stored.Base, true, marker_gap),
-        )
-        solved = self._face_circle_center(face_full)
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        solved_gap = (solved - target_point).Length
-        self.assertLess(
-            solved_gap,
-            1e-6,
-            "{} bottom {} target {} gap {}".format(operation, solved, target_point, solved_gap),
-        )
-
-    def _check_pattern_array_joint(self, kind):
-        """A fixed joint on an element of any link-array pattern.
-
-        The arrayed sub-assembly holds a moved and rotated body. The marker
-        must sit on the picked vertex, before and after the body moves again.
-        """
-        operation = "Link array joint on a {} pattern".format(kind.lower())
-        _msg("  Test '{}'".format(operation))
-
+    def test_link_array_joint_follows_moved_cylinder_intersection(self):
+        _msg("  Test 'Link array joint follows a moved cylinder intersection'")
         sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
         sub.newObject("Assembly::JointGroup", "SubJoints")
-        inner = sub.newObject("Part::Box", "InnerBox")
-        inner.Length = 10
-        inner.Width = 10
-        inner.Height = 10
-        rotation = App.Rotation(App.Vector(0, 0, 1), 90)
-        inner.Placement = App.Placement(App.Vector(0, 30, 15), rotation)
+        inner = sub.newObject("Part::Feature", "Fusion")
+        inner.Shape = Part.makeCylinder(5, 40).fuse(
+            Part.makeCylinder(8, 40, App.Vector(-20, 0, 20), App.Vector(1, 0, 0))
+        )
+        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
+        array = self._linear_array(sub, 2, 100)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
 
+        full = "{}.{}.Sub.Fusion.Face1".format(array.Name, array.ElementList[1].Name)
+        comp, rel = self._component(full)
+        _edge_comp, edge_rel = self._component(full.replace("Face1", "Edge2"))
+        ref = (comp, [rel, edge_rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._axes(full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
+        self._fixed_to_target(target, comp, rel, edge_rel)
+        self._assert_stored(self._axes(full), target, ref, 1e-6)
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._axes(full), target, ref, 1e-6)
+
+    def _check_pattern_array_joint(self, kind):
+        _msg("  Test 'Link array joint on a {} pattern'".format(kind.lower()))
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        rotation = App.Rotation(App.Vector(0, 0, 1), 90)
+        inner = self._box(
+            sub, "InnerBox", 10, 10, 10, App.Placement(App.Vector(0, 30, 15), rotation)
+        )
         array = self.assembly.newObject("Part::LinkArray" + kind, "Array")
         array.LinkedObject = sub
         array.ShowElement = True
@@ -1967,50 +1878,19 @@ class TestCore(AssemblyTestBase):
                 array.Count = 2
             else:
                 array.PointObject = pattern
-
-        target = self.assembly.newObject("Part::Box", "Target")
-        target.Length = 20
-        target.Width = 20
-        target.Height = 20
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
         self.doc.recompute()
 
-        self.assertGreaterEqual(len(array.ElementList), 2, operation)
+        self.assertGreaterEqual(len(array.ElementList), 2)
         element = array.ElementList[1]
-        self.assertFalse(element.Placement.isIdentity(), operation)
+        self.assertFalse(element.Placement.isIdentity())
         full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, element.Name)
-        comp, rel, _point = self._assert_marker_on_vertex(full)
-        self._solve_fixed_to_target(target, comp, rel)
-        solved = self._shape_vertex(self.assembly, full)
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((solved - target_point).Length, 1e-5, operation)
-
-        moved = App.Placement(App.Vector(0, 70, 15), rotation)
-        if hasattr(self.doc, "commitCompatibilityMutation"):
-
-            def move_inner():
-                inner.Placement = moved
-                return True
-
-            committed = self.doc.commitCompatibilityMutation(
-                move_inner, structural=True, recompute=True
-            )
-            self.assertTrue(committed["committed"], committed)
-        else:
-            inner.Placement = moved
-        self.doc.recompute()
-        self.assertEqual(self.assembly.solve(), 0, operation)
-
-        ref = (comp, [rel, rel])
-        joint = self.doc.getObject("FixedJoint")
-        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
-        true = self._shape_vertex(self.assembly, full)
-        self.assertLess(
-            (stored.Base - true).Length,
-            1e-6,
-            "{} stored marker {} vertex {}".format(operation, stored.Base, true),
-        )
-        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
-        self.assertLess((true - target_point).Length, 1e-5, operation)
+        comp, rel, ref = self._assert_marker(full)
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
+        self._move(inner, App.Placement(App.Vector(0, 70, 15), rotation))
+        self._assert_stored(self._point(full), target, ref, 1e-6, 1e-5)
 
     def test_link_array_joint_on_polar_pattern(self):
         self._check_pattern_array_joint("Polar")
