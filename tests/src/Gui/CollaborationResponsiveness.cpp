@@ -825,18 +825,27 @@ TEST_F(CollaborationResponsivenessTest,
     auto* lane = _document->executionLane();
     ASSERT_NE(lane, nullptr);
 
+    // The geometry does not change in this regression. Same-instance epoch
+    // advancement deliberately retains the last committed presentation, so
+    // seed it once rather than requiring redundant fallback publications.
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    _guiDocument->publishPresentationRevisionFromModel();
+    Gui::PresentationApplyPumpResult applied {};
+    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
+        applied = _guiDocument->pumpPresentationApply(50);
+    }
+    ASSERT_TRUE(applied.committedRevision);
+    auto* const committedRoot = _guiDocument->presentationCache().committedCoinRoot();
+    const auto committedSequence = _guiDocument->presentationCache().committedSequence();
+    ASSERT_NE(committedRoot, nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+
     for (int cycle = 0; cycle < 3; ++cycle) {
         SCOPED_TRACE(cycle);
-        _guiDocument->catchUpIdleLivePresentation();
-        QApplication::processEvents();
-        _guiDocument->publishPresentationRevisionFromModel();
-        Gui::PresentationApplyPumpResult applied {};
-        for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
-            applied = _guiDocument->pumpPresentationApply(50);
-        }
-        ASSERT_TRUE(applied.committedRevision);
-        _guiDocument->catchUpIdleLivePresentation();
-        QApplication::processEvents();
+        ASSERT_EQ(_guiDocument->presentationCache().committedCoinRoot(), committedRoot);
+        ASSERT_EQ(_guiDocument->presentationCache().committedSequence(), committedSequence);
 
         PreparationGate gate;
         auto work = lane->postToOwner([&] {
@@ -891,6 +900,8 @@ TEST_F(CollaborationResponsivenessTest,
         }
         EXPECT_EQ(liveSwitch->whichChild.getValue(), SO_SWITCH_ALL);
         EXPECT_EQ(refreshCalls, 0);
+        EXPECT_EQ(_guiDocument->presentationCache().committedCoinRoot(), committedRoot);
+        EXPECT_EQ(_guiDocument->presentationCache().committedSequence(), committedSequence);
     }
 }
 
