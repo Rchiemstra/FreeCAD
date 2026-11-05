@@ -138,6 +138,7 @@ public:
         , sketch(s)
         , sketchView(sketchview)
         , ConstraintNbr(ConstNbr)
+        , expressionErrors(sketchview->getExpressionDiagnostics().shareErrors())
         , inputs(std::move(inputs))
     {
         this->setFlags(this->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
@@ -308,7 +309,7 @@ public:
         if (role == Qt::EditRole && value.isValid()) {
             return value;
         }
-        return presentation.data(sketchView->getExpressionDiagnostics(), constraintNumbers(),
+        return presentation.data(expressionErrors->errors, constraintNumbers(),
                                  role, QListWidgetItem::data(role));
     }
 
@@ -721,6 +722,7 @@ public:
     int ConstraintNbr;
     QVariant value;
     SketchConstraintPresentation presentation;
+    std::shared_ptr<SketchExpressionDiagnostics::ErrorPublication> expressionErrors;
     std::shared_ptr<const ConstraintRowInputs> inputs;
 };
 
