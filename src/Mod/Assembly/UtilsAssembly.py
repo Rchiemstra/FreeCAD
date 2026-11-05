@@ -1159,16 +1159,19 @@ def _link_array_live_placement(ref, ignoreVertex):
             else:
                 plc.Base = face.CenterOfGravity
         elif vtx_type == "Edge":
-            edge_shape = _live_reference_shape(ref, 1)
-            if edge_shape is None or not edge_shape.Edges:
+            # findElementClosestVertex stores this index on the face. The
+            # object's EdgeN is a different edge: a cylinder cap's Edge1 is
+            # the cap circle, and the object's Edge1 is the seam.
+            edge = get_element(face, vtx)
+            if edge is None:
                 return None
-            curve = edge_shape.Edges[0].Curve
+            curve = edge.Curve
             if curve.TypeId == "Part::GeomCircle":
                 plc.Base = curve.Location
             else:
                 # Two cylinders meeting on a bspline still use the stored
-                # compound; that search needs every face, which the element
-                # shape does not carry.
+                # compound; that search needs every face of the solid, and
+                # this shape is only the picked face.
                 return None
         else:
             vertex = _live_reference_shape(ref, 1)

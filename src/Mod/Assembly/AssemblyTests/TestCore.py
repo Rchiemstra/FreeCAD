@@ -1611,7 +1611,7 @@ class TestCore(AssemblyTestBase):
         )
         return comp, rel, true
 
-    def _solve_fixed_to_target(self, target, comp, rel):
+    def _solve_fixed_to_target(self, target, comp, rel, vertex_rel=None):
         ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
         JointObject.GroundedJoint(ground, target)
         joint = self.jointgroup.newObject("App::FeaturePython", "FixedJoint")
@@ -1619,13 +1619,23 @@ class TestCore(AssemblyTestBase):
         target_comp, target_rel = UtilsAssembly.getComponentReference(
             self.assembly, self.assembly, target.Name + ".Vertex1"
         )
+        if vertex_rel is None:
+            vertex_rel = rel
         joint.Proxy.setJointConnectors(
             joint,
-            [(target_comp, [target_rel, target_rel]), (comp, [rel, rel])],
+            [(target_comp, [target_rel, target_rel]), (comp, [rel, vertex_rel])],
         )
         self.doc.recompute()
         solved = self.assembly.solve()
         self.assertEqual(solved, 0)
+
+    def _face_circle_center(self, sub):
+        """Centre of face-relative Edge1. The subname must name the face."""
+        shape = Part.getShape(self.assembly, sub, App.Matrix(), True)
+        edge = shape.getElement("Edge1")
+        self.assertIsNotNone(edge, sub)
+        self.assertEqual(edge.Curve.TypeId, "Part::GeomCircle", sub)
+        return edge.Curve.Location
 
     def test_link_array_fixed_joint_uses_inner_source_placement_once(self):
         """A fixed joint on a link-array element must sit on the picked vertex.
@@ -1815,6 +1825,117 @@ class TestCore(AssemblyTestBase):
         solved = self._shape_vertex(self.assembly, full)
         target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
         self.assertLess((solved - target_point).Length, 1e-6, operation)
+
+    def test_link_array_joint_follows_moved_inner_cylinder_bottom(self):
+        """A cap-circle joint stores the face's Edge1, not the object's.
+
+        The name the GUI stores for a circular edge is that edge's index on
+        the picked face. The bottom cap has one edge, so the reference is
+        the cap plus Edge1, while the cylinder's own Edge1 is the seam.
+        After the inner cylinder moves through one property edit, one
+        document recompute and a solve, the stored marker must sit on the
+        bottom circle centre.
+        """
+        operation = "Link array joint follows a moved cylinder bottom circle"
+        _msg("  Test '{}'".format(operation))
+
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = sub.newObject("Part::Cylinder", "InnerCyl")
+        inner.Radius = 5
+        inner.Height = 10
+        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
+
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = sub
+        array.Occurrences = 3
+        array.Mode = "Spacing"
+        array.Offset = 120
+        array.ShowElement = True
+
+        target = self.assembly.newObject("Part::Box", "Target")
+        target.Length = 20
+        target.Width = 20
+        target.Height = 20
+        self.doc.recompute()
+
+        bottom_index = None
+        bottom_face = None
+        for index, face in enumerate(inner.Shape.Faces, 1):
+            if face.Surface.TypeId != "Part::GeomPlane":
+                continue
+            if bottom_face is None or face.CenterOfGravity.z < bottom_face.CenterOfGravity.z:
+                bottom_face = face
+                bottom_index = index
+        self.assertIsNotNone(bottom_face, operation)
+        self.assertEqual(len(bottom_face.Edges), 1, operation)
+        self.assertEqual(
+            bottom_face.getElement("Edge1").Curve.TypeId, "Part::GeomCircle", operation
+        )
+        _msg(
+            "  bottom Face{} object Edge1 {}".format(
+                bottom_index, inner.Shape.getElement("Edge1").Curve.TypeId
+            )
+        )
+
+        element = array.ElementList[1]
+        face_name = "Face{}".format(bottom_index)
+        face_full = "{}.{}.Sub.InnerCyl.{}".format(array.Name, element.Name, face_name)
+        edge_full = "{}.{}.Sub.InnerCyl.Edge1".format(array.Name, element.Name)
+        comp, face_rel = UtilsAssembly.getComponentReference(
+            self.assembly, self.assembly, face_full
+        )
+        edge_comp, edge_rel = UtilsAssembly.getComponentReference(
+            self.assembly, self.assembly, edge_full
+        )
+        self.assertIsNotNone(comp, face_full)
+        self.assertEqual(comp, edge_comp, operation)
+        self.assertTrue(face_rel.endswith(face_name), face_rel)
+        self.assertTrue(edge_rel.endswith("Edge1"), edge_rel)
+
+        self._solve_fixed_to_target(target, comp, face_rel, edge_rel)
+        ref = (comp, [face_rel, edge_rel])
+        self._assert_circle_marker(operation, ref, face_full, target)
+
+        moved = App.Placement(App.Vector(0, 70, 0), App.Rotation())
+        if hasattr(self.doc, "commitCompatibilityMutation"):
+            # A property edit recomputes the joint from the transaction's link
+            # closure before the array compound includes the move. A bare
+            # assignment plus doc.recompute() refreshes the compound first.
+            def move_inner():
+                inner.Placement = moved
+                return True
+
+            committed = self.doc.commitCompatibilityMutation(
+                move_inner, structural=True, recompute=True
+            )
+            self.assertTrue(committed["committed"], committed)
+        else:
+            inner.Placement = moved
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0, operation)
+        self._assert_circle_marker(operation, ref, face_full, target)
+
+    def _assert_circle_marker(self, operation, ref, face_full, target):
+        joint = self.doc.getObject("FixedJoint")
+        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
+        true = self._face_circle_center(face_full)
+        marker_gap = (stored.Base - true).Length
+        self.assertLess(
+            marker_gap,
+            1e-6,
+            "{} stored marker {} bottom {} gap {}".format(
+                operation, stored.Base, true, marker_gap
+            ),
+        )
+        solved = self._face_circle_center(face_full)
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        solved_gap = (solved - target_point).Length
+        self.assertLess(
+            solved_gap,
+            1e-6,
+            "{} bottom {} target {} gap {}".format(operation, solved, target_point, solved_gap),
+        )
 
 
 def _shape_circle(obj, element):
