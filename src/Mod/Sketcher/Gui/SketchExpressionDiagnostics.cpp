@@ -177,7 +177,8 @@ bool SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
         }
         // Publish only complete, pointer-free data. Busy/failed captures keep
         // the previous immutable snapshot and remain invalidated for retry.
-        constraintErrors = std::make_shared<const Errors>(std::move(captured));
+        // Replace the map; do not mutate it. Rows hold this publication.
+        publication->errors = std::make_shared<const Errors>(std::move(captured));
         constraintInputs = std::move(inputs);
         dirty = false;
         return true;
@@ -192,8 +193,10 @@ bool SketchExpressionDiagnostics::refresh(Sketcher::SketchObject* sketch)
 
 QString SketchExpressionDiagnostics::reason(int index) const
 {
-    auto found = constraintErrors->find(index);
-    return found == constraintErrors->end() ? QString() : found->second;
+    // Hold the current map while reading it; refresh() replaces it.
+    const auto errors = publication->errors;
+    const auto found = errors->find(index);
+    return found == errors->end() ? QString() : found->second;
 }
 
 QString SketchExpressionDiagnostics::editFailure(Sketcher::SketchObject* sketch, const QString& error)
@@ -208,13 +211,13 @@ QString SketchExpressionDiagnostics::editFailure(Sketcher::SketchObject* sketch,
     if (!provider) {
         return error;
     }
-    const auto& diagnostics = provider->getExpressionDiagnostics();
-    if (diagnostics.errors().empty()) {
+    const auto errors = provider->getExpressionDiagnostics().errorsSnapshot();
+    if (errors->empty()) {
         return error;
     }
     QString message = QCoreApplication::translate(
         "SketcherExpressionDiagnostics", "Constraint edit failed. The sketch has broken expressions:");
-    for (const auto& [index, reason] : diagnostics.errors()) {
+    for (const auto& [index, reason] : *errors) {
         QString name = QCoreApplication::translate("SketcherExpressionDiagnostics", "Constraint %1")
                            .arg(index + 1);
         message += QStringLiteral("\n%1: %2").arg(name, reason);
@@ -222,14 +225,15 @@ QString SketchExpressionDiagnostics::editFailure(Sketcher::SketchObject* sketch,
     return message + QStringLiteral("\n\n") + error;
 }
 
-QVariant SketcherGui::constraintExpressionData(const SketchExpressionDiagnostics& diagnostics,
-                                               const std::vector<int>& indices, int role)
+QVariant SketcherGui::constraintExpressionData(
+    std::shared_ptr<const SketchExpressionDiagnostics::Errors> errors,
+    const std::vector<int>& indices, int role)
 {
     QStringList reasons;
     for (int index : indices) {
-        const auto reason = diagnostics.reason(index);
-        if (!reason.isEmpty()) {
-            reasons << reason;
+        const auto found = errors->find(index);
+        if (found != errors->end() && !found->second.isEmpty()) {
+            reasons << found->second;
         }
     }
     if (reasons.isEmpty()) {
@@ -253,7 +257,8 @@ SketchExpressionDiagnosticsLabel::SketchExpressionDiagnosticsLabel(
     connect(this, &QLabel::linkActivated, this, [this](const QString&) {
         Gui::Selection().clearSelection();
         auto* sketch = this->view->getSketchObject();
-        for (const auto& [index, reason] : this->view->getExpressionDiagnostics().errors()) {
+        const auto errors = this->view->getExpressionDiagnostics().errorsSnapshot();
+        for (const auto& [index, reason] : *errors) {
             const std::string sub = "Constraint" + std::to_string(index + 1);
             Gui::Selection().addSelection(sketch->getDocument()->getName(),
                                          sketch->getNameInDocument(), sub.c_str());
@@ -264,17 +269,17 @@ SketchExpressionDiagnosticsLabel::SketchExpressionDiagnosticsLabel(
 
 void SketchExpressionDiagnosticsLabel::refresh()
 {
-    const auto& errors = view->getExpressionDiagnostics().errors();
-    setVisible(!errors.empty());
+    const auto errors = view->getExpressionDiagnostics().errorsSnapshot();
+    setVisible(!errors->empty());
     setText(QStringLiteral("<a href=\"#broken-expressions\">%1</a>").arg(
-        (errors.size() == 1
+        (errors->size() == 1
              ? QCoreApplication::translate("SketcherExpressionDiagnostics",
                                            "1 constraint with a broken expression")
              : QCoreApplication::translate("SketcherExpressionDiagnostics",
                                            "%n constraints with broken expressions", nullptr,
-                                           static_cast<int>(errors.size()))).toHtmlEscaped()));
+                                           static_cast<int>(errors->size()))).toHtmlEscaped()));
     QStringList reasons;
-    for (const auto& [index, reason] : errors) {
+    for (const auto& [index, reason] : *errors) {
         reasons << QStringLiteral("%1: %2").arg(index + 1).arg(reason);
     }
     setToolTip(reasons.join(QLatin1Char('\n')));
