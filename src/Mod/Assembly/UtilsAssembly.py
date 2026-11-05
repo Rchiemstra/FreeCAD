@@ -1067,6 +1067,129 @@ def _subname_relative_to(obj, root, sub):
     return ".".join(names[index + 1 :])
 
 
+def _global_reference(ref, index):
+    """Same root and subname getGlobalPlacement resolves for ref[1][index]."""
+    root = ref[0]
+    sub = ref[1][index]
+    parents = root.Parents
+    if parents is not None and len(parents) == 1 and len(parents[0]) == 2:
+        root = parents[0][0]
+        sub = parents[0][1] + sub
+    return root, sub
+
+
+def _live_reference_shape(ref, index):
+    """Geometry of one reference subname, including placements changed since the last execute."""
+    try:
+        root, sub = _global_reference(ref, index)
+        if root is None or not sub:
+            return None
+        shape = Part.getShape(root, sub, App.Matrix(), True)
+    except Exception:
+        return None
+    if shape is None or shape.isNull():
+        return None
+    return shape
+
+
+def _link_array_live_placement(ref, ignoreVertex):
+    """Joint placement from the live element, in the getGlobalPlacement frame.
+
+    A property edit recomputes the joint before the array rebuilds its stored
+    compound. obj.Shape is still the previous element, while getPlacementOf is
+    already the new one, and subtracting the live chain from that stale vertex
+    cancels the move. The picked element itself is current, so the marker is
+    taken from there and expressed in the same frame the solver multiplies
+    back.
+    """
+    elt = getElementName(ref[1][0])
+    vtx = getElementName(ref[1][1])
+    elt_type, _elt_index = extract_type_and_number(elt)
+    vtx_type, _vtx_index = extract_type_and_number(vtx)
+    element = _live_reference_shape(ref, 0)
+    if element is None:
+        return None
+
+    plc = App.Placement()
+    is_line = False
+
+    if elt_type == "Vertex":
+        if not element.Vertexes:
+            return None
+        plc.Base = element.Vertexes[0].Point
+    elif elt_type == "Edge":
+        if not element.Edges:
+            return None
+        edge = element.Edges[0]
+        curve = edge.Curve
+        if vtx_type == "Edge" or ignoreVertex:
+            if curve.TypeId == "Part::GeomCircle":
+                plc.Base = curve.Location
+            elif curve.TypeId == "Part::GeomLine":
+                edge_points = getPointsFromVertexes(edge.Vertexes)
+                plc.Base = (edge_points[0] + edge_points[1]) * 0.5
+            else:
+                return None
+        else:
+            vertex = _live_reference_shape(ref, 1)
+            if vertex is None or not vertex.Vertexes:
+                return None
+            plc.Base = vertex.Vertexes[0].Point
+        if curve.TypeId == "Part::GeomCircle":
+            plc.Rotation = App.Rotation(curve.Rotation)
+        if curve.TypeId == "Part::GeomLine":
+            is_line = True
+            plane = Part.Plane(App.Vector(0, 0, 0), round_vector(curve.Direction))
+            plc.Rotation = App.Rotation(plane.Rotation)
+    elif elt_type == "Face":
+        if not element.Faces:
+            return None
+        face = element.Faces[0]
+        surface = face.Surface
+        if vtx_type == "Face" or ignoreVertex:
+            if surface.TypeId == "Part::GeomCylinder":
+                center_of_g = face.CenterOfGravity - surface.Center
+                center_point = surface.Center + center_of_g
+                center_point = center_point + App.Vector().projectToLine(center_of_g, surface.Axis)
+                plc.Base = center_point
+            elif surface.TypeId in ("Part::GeomTorus", "Part::GeomSphere"):
+                plc.Base = surface.Center
+            elif surface.TypeId == "Part::GeomCone":
+                plc.Base = surface.Apex
+            else:
+                plc.Base = face.CenterOfGravity
+        elif vtx_type == "Edge":
+            edge_shape = _live_reference_shape(ref, 1)
+            if edge_shape is None or not edge_shape.Edges:
+                return None
+            curve = edge_shape.Edges[0].Curve
+            if curve.TypeId == "Part::GeomCircle":
+                plc.Base = curve.Location
+            else:
+                # Two cylinders meeting on a bspline still use the stored
+                # compound; that search needs every face, which the element
+                # shape does not carry.
+                return None
+        else:
+            vertex = _live_reference_shape(ref, 1)
+            if vertex is None or not vertex.Vertexes:
+                return None
+            plc.Base = vertex.Vertexes[0].Point
+        if hasattr(surface, "Rotation") and surface.Rotation is not None:
+            plc.Rotation = App.Rotation(surface.Rotation)
+    else:
+        return None
+
+    plc = getGlobalPlacement(ref).inverse() * plc
+    if elt_type == "Vertex":
+        plc.Rotation = App.Rotation()
+    elif is_line:
+        plane_normal = round_vector(plc.Rotation.multVec(App.Vector(0, 0, 1)))
+        plane = Part.Plane(App.Vector(0, 0, 0), plane_normal)
+        plc.Rotation = App.Rotation(plane.Rotation)
+    return plc
+
+
 def findPlacement(ref, ignoreVertex=False):
     if not isRefValid(ref, 2):
         return App.Placement()
@@ -1087,6 +1210,11 @@ def findPlacement(ref, ignoreVertex=False):
             if obj.Role == "Z_Axis":
                 return App.Placement(App.Vector(), App.Rotation(-0.5, 0.5, -0.5, 0.5))
         return App.Placement()
+
+    if isLinkArray(obj):
+        live = _link_array_live_placement(ref, ignoreVertex)
+        if live is not None:
+            return live
 
     plc = App.Placement()
 

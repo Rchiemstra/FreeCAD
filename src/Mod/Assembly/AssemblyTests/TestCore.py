@@ -1746,6 +1746,76 @@ class TestCore(AssemblyTestBase):
         target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
         self.assertLess((solved - target_point).Length, 1e-5, operation)
 
+    def test_link_array_joint_follows_moved_inner_body(self):
+        """A fixed joint follows an inner body moved through one property edit.
+
+        The edit commits and recomputes the joint before the array rebuilds its
+        stored compound. After that commit, one document recompute and a solve,
+        the stored marker must sit on the picked vertex.
+        """
+        operation = "Link array joint follows a moved inner body"
+        _msg("  Test '{}'".format(operation))
+
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = sub.newObject("Part::Box", "InnerBox")
+        inner.Length = 10
+        inner.Width = 10
+        inner.Height = 10
+        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
+
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = sub
+        array.Occurrences = 3
+        array.Mode = "Spacing"
+        array.Offset = 120
+        array.ShowElement = True
+
+        target = self.assembly.newObject("Part::Box", "Target")
+        target.Length = 20
+        target.Width = 20
+        target.Height = 20
+        self.doc.recompute()
+
+        element = array.ElementList[1]
+        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, element.Name)
+        comp, rel, _point = self._assert_marker_on_vertex(full)
+        self._solve_fixed_to_target(target, comp, rel)
+        solved = self._shape_vertex(self.assembly, full)
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((solved - target_point).Length, 1e-6, operation)
+
+        moved = App.Placement(App.Vector(0, 70, 0), App.Rotation())
+        if hasattr(self.doc, "commitCompatibilityMutation"):
+            # A property edit recomputes the joint from the transaction's link
+            # closure before the array compound includes the move. A bare
+            # assignment plus doc.recompute() refreshes the compound first.
+            def move_inner():
+                inner.Placement = moved
+                return True
+
+            committed = self.doc.commitCompatibilityMutation(
+                move_inner, structural=True, recompute=True
+            )
+            self.assertTrue(committed["committed"], committed)
+        else:
+            inner.Placement = moved
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0, operation)
+
+        ref = (comp, [rel, rel])
+        joint = self.doc.getObject("FixedJoint")
+        stored = UtilsAssembly.getJcsGlobalPlc(joint.Placement2, ref)
+        true = self._shape_vertex(self.assembly, full)
+        self.assertLess(
+            (stored.Base - true).Length,
+            1e-6,
+            "{} stored marker {} vertex {}".format(operation, stored.Base, true),
+        )
+        solved = self._shape_vertex(self.assembly, full)
+        target_point = self._shape_vertex(self.assembly, target.Name + ".Vertex1")
+        self.assertLess((solved - target_point).Length, 1e-6, operation)
+
 
 def _shape_circle(obj, element):
     """Circle center and axis in the shape frame, which already includes Placement."""
