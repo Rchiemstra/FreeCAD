@@ -14,6 +14,7 @@ add_executable(Base_tests_run
         FileLock.cpp
         FileInfo.cpp
         InputSource.cpp
+        Interpreter.cpp
         Handle.cpp
         Matrix.cpp
         NumericFormatting.cpp
