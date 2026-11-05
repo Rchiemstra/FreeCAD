@@ -1134,6 +1134,10 @@ TEST_F(CollaborationResponsivenessTest, closingActiveDocumentRetiresHandlesWhenA
     auto* otherGui = gui->getDocument(other);
     ASSERT_NE(otherGui, nullptr);
     gui->setActiveDocument(otherGui);
+    // BaseView registration alone does not initialize its document. Production
+    // passive widgets bind their initial document explicitly too; do not rely
+    // on newDocument having emitted a second activation for the fixture.
+    view.setDocument(otherGui);
     ASSERT_EQ(view.getGuiDocument(), otherGui);
     {
         // Pending recovery has no atomic mutation target, so irrevocable App
