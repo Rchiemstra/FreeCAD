@@ -26,6 +26,7 @@
 # Broken-out test modules
 from SketcherTests.TestSketcherSolver import TestSketcherSolver
 from SketcherTests.TestSketchFillet import TestSketchFillet
+from SketcherTests.TestSketchTrimDegenerate import TestSketchTrimDegenerate
 from SketcherTests.TestSketchExpression import TestSketchExpression
 from SketcherTests.TestSketchExpressionDiagnostics import TestSketchExpressionDiagnostics
 from SketcherTests.TestSketchDeltaPosition import TestSketchDeltaPosition
