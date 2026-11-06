@@ -1426,6 +1426,26 @@ void Document::slotRecomputed(const App::Document& doc)
     });
 }
 
+namespace
+{
+// The queued live-presentation callbacks (the idle catch-up and the
+// committed-root handoff) capture the document name, never a pointer, because
+// the document may close before they run on the GUI thread. Both re-resolve it
+// here. A document still in the name map is still registered for
+// collaboration: Application::closeDocument() erases the map entry before it
+// drops the registry entry, so collaborationIdentity() does not throw for it.
+// Live model state is read only after App::LivePresentationRefreshScope
+// admission, in catchUpIdleLivePresentation() and in the handoff.
+App::Document* findQueuedPresentationDocument(const std::string& docName)
+{
+    if (!Gui::Application::Instance) {
+        return nullptr;
+    }
+    auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+    return appDoc;
+}
+}  // namespace
+
 void Document::slotBecameStable(const App::Document& doc)
 {
     if (d->_pcDocument != &doc) {
@@ -1460,8 +1480,8 @@ void Document::slotBecameStable(const App::Document& doc)
     const auto generation = ++d->_committedPresentationHandoffGeneration;
     const std::string docName = doc.getName();
     Gui::scheduleGuiSingleShot(0, [docName, identity, generation]() {
-        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
-        if (!appDoc || !Application::Instance) {
+        auto* appDoc = findQueuedPresentationDocument(docName);
+        if (!appDoc) {
             return;
         }
         const auto current = appDoc->collaborationIdentity();
@@ -1542,8 +1562,8 @@ void Document::scheduleLivePresentationCatchUp()
     d->_livePresentationCatchUpQueued = true;
     const std::string docName = d->_pcDocument->getName();
     Gui::scheduleGuiSingleShot(0, [docName]() {
-        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
-        if (!appDoc || !Application::Instance) {
+        auto* appDoc = findQueuedPresentationDocument(docName);
+        if (!appDoc) {
             return;
         }
         auto* guiDoc = Application::Instance->getDocument(appDoc);
