@@ -22,6 +22,20 @@ def _line(start, end):
     return Part.LineSegment(FreeCAD.Vector(*start, 0), FreeCAD.Vector(*end, 0))
 
 
+class _OffsetComputationObserver(QtCore.QObject):
+    def __init__(self):
+        super().__init__()
+        self.counts = []
+
+    def eventFilter(self, obj, event):
+        if (
+            event.type() == QtCore.QEvent.DynamicPropertyChange
+            and bytes(event.propertyName()) == b"computationCount"
+        ):
+            self.counts.append(obj.property("computationCount"))
+        return False
+
+
 class TestSketcherOffsetGui(SketcherGuiTestCase):
     def setUp(self):
         if not GUI_AVAILABLE:
@@ -384,3 +398,1063 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
             "Expected chain link to offset more than the single selected edge",
         )
         self.assert_solves_without_conflicts()
+
+    # The B-spline route uses actual Qt controls, with no Python implementation of the fit.
+    def spline_control(self, widget_type, suffix):
+        controls = FreeCADGui.getMainWindow().findChildren(widget_type, "BSplineOffset" + suffix)
+        return next((control for control in controls if control.isVisible()), None)
+
+    @staticmethod
+    def spline_signature(curve):
+        return (
+            tuple((p.x, p.y, p.z) for p in curve.getPoles()),
+            tuple(curve.getWeights()),
+            tuple(curve.getKnots()),
+            tuple(curve.getMultiplicities()),
+            curve.Degree,
+            curve.isPeriodic(),
+        )
+
+    def offset_snapshot(self):
+        return (
+            tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry),
+            tuple((str(c), c.Value) for c in self.sketch.Constraints),
+            tuple(self.sketch.getConstruction(i) for i in range(self.sketch.GeometryCount)),
+            self.doc.UndoCount,
+            self.doc.RedoCount,
+            tuple(self.doc.UndoNames),
+            tuple(self.doc.RedoNames),
+        )
+
+    def start_spline_offset(
+        self, *, reversed_source=False, rational=False, closed=False, smooth_closed=False,
+        periodic=True, self_crossing=False
+    ):
+        curve = Part.BSplineCurve()
+        if self_crossing:
+            import math
+
+            poles = []
+            for i in range(16):
+                t = i * math.pi / 8
+                poles.append(FreeCAD.Vector(
+                    10 * math.cos(t), 2.5 * math.sin(t) + 3.1 * math.sin(3 * t), 0
+                ))
+            curve.buildFromPolesMultsKnots(
+                poles, [1] * 17, list(range(17)), True, 3, [1.0] * 16
+            )
+        elif smooth_closed:
+            import math
+
+            curve.buildFromPolesMultsKnots(
+                [
+                    FreeCAD.Vector(10 * math.cos(i * math.pi / 4),
+                                   10 * math.sin(i * math.pi / 4), 0)
+                    for i in range(8)
+                ],
+                [1] * 9,
+                list(range(9)),
+                True,
+                3,
+            )
+            if not periodic:
+                curve.segment(curve.FirstParameter, curve.LastParameter)
+        elif rational:
+            curve.buildFromPolesMultsKnots(
+                [FreeCAD.Vector(10, 0, 0), FreeCAD.Vector(10, 10, 0), FreeCAD.Vector(0, 10, 0)],
+                [3, 3],
+                [0.0, 1.0],
+                False,
+                2,
+                [1.0, 2.0**-0.5, 1.0],
+            )
+        else:
+            curve.buildFromPolesMultsKnots(
+                [
+                    FreeCAD.Vector(0, 0, 0),
+                    FreeCAD.Vector(3, 4, 0),
+                    FreeCAD.Vector(7, 4, 0),
+                    FreeCAD.Vector(0 if closed else 10, 0, 0),
+                ],
+                [4, 4],
+                [0.0, 1.0],
+                False,
+                3,
+            )
+        if reversed_source:
+            curve.reverse()
+        source_id = self.sketch.addGeometry(curve, False)
+        self.recompute_gui_document()
+        self.start_editing()
+        self.select_offset_edges(["Edge" + str(source_id + 1)])
+        self.assertIsNotNone(
+            self.spline_control(QtGui.QWidget, "Panel"),
+            "A single B-spline must dispatch to the numeric handler",
+        )
+        self.assertEqual(self.spline_quantity("Tolerance"), 0.01)
+        return self.sketch.Geometry[source_id]
+
+    @staticmethod
+    def selection_signature():
+        return tuple(
+            (item.DocumentName, item.ObjectName, tuple(item.SubElementNames))
+            for item in FreeCADGui.Selection.getSelectionEx()
+        )
+
+    def spline_quantity(self, suffix, value=None):
+        control = self.spline_control(QtGui.QAbstractSpinBox, suffix)
+        if value is not None:
+            control.setProperty("rawValue", value)
+        return control.property("rawValue")
+
+    def select_offset_edges(self, edges):
+        FreeCADGui.Selection.clearSelection()
+        for edge in edges:
+            FreeCADGui.Selection.addSelection(self.doc.Name, self.sketch.Name, edge)
+        self.selection_before_offset = self.selection_signature()
+        FreeCADGui.runCommand("Sketcher_Offset")
+        self.pump(100)
+
+    def spline_button(self, suffix):
+        self.spline_control(QtGui.QPushButton, suffix).click()
+        self.pump(80)
+
+    def assert_spline_distance(self, source, distance, tolerance=0.01):
+        status = self.spline_control(QtGui.QLabel, "Status")
+        self.assertEqual(
+            self.sketch.GeometryCount, 2, status.text() if status else "Offset result missing"
+        )
+        output = self.sketch.Geometry[1]
+        self.assertIsInstance(output, Part.BSplineCurve)
+        self.assertFalse(self.sketch.getConstruction(1))
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+        self.assertEqual(
+            self.spline_signature(source), self.spline_signature(self.sketch.Geometry[0])
+        )
+        source_shape = source.toShape()
+        for i in range(201):
+            u = source.FirstParameter + (source.LastParameter - source.FirstParameter) * i / 200.0
+            normal = source.tangent(u)[0].cross(FreeCAD.Vector(0, 0, 1))
+            expected = source.value(u) + normal * distance
+            actual = output.value(u)
+            self.assertLessEqual((actual - expected).Length, tolerance)
+            physical_distance = Part.Vertex(actual).distToShape(source_shape)[0]
+            self.assertAlmostEqual(physical_distance, abs(distance), delta=tolerance)
+        self.assert_solves_without_conflicts()
+
+    def check_spline_offset(
+        self, distance=1.0, reverse=False, reversed_source=False, rational=False
+    ):
+        source = self.start_spline_offset(reversed_source=reversed_source, rational=rational)
+        before = self.offset_snapshot()
+        self.spline_quantity("Distance", distance)
+        self.spline_control(QtGui.QCheckBox, "Reverse").setChecked(reverse)
+        self.assertEqual(before, self.offset_snapshot())
+        panel = self.spline_control(QtGui.QWidget, "Panel")
+        observer = _OffsetComputationObserver()
+        panel.installEventFilter(observer)
+        self.spline_button("Update")
+        status = self.spline_control(QtGui.QLabel, "Status").text()
+        self.assertIn("Achieved maximum error:", status)
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.assertEqual(
+            before, self.offset_snapshot(), "Preview must leave the document and undo untouched"
+        )
+        self.spline_button("Update")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.spline_button("Apply")
+        self.assertEqual(observer.counts, [1], "Apply must reuse the validated preview")
+        self.assert_spline_distance(source, -distance if reverse else distance)
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 1)
+        self.assertEqual(len(self.sketch.Constraints), 0)
+        self.assertEqual(
+            self.spline_signature(source), self.spline_signature(self.sketch.Geometry[0])
+        )
+        self.redo_gui_document()
+        self.assert_spline_distance(source, -distance if reverse else distance)
+
+    def test_bspline_offset_positive_preview_apply_undo_redo(self):
+        self.check_spline_offset()
+
+    def test_bspline_offset_quantity_controls_follow_unit_schema(self):
+        schema = FreeCAD.Units.getSchema()
+        try:
+            FreeCAD.Units.setSchema(3)  # Imperial decimal
+            self.start_spline_offset()
+            for suffix in ("Distance", "Tolerance"):
+                control = self.spline_control(QtGui.QAbstractSpinBox, suffix)
+                self.assertIn("in", control.text())
+            self.assertEqual(self.spline_quantity("Distance"), 1.0)
+            self.spline_button("Update")
+            self.assertIn("in", self.spline_control(QtGui.QLabel, "Status").text())
+            self.spline_button("Cancel")
+            self.assertEqual(self.selection_before_offset, self.selection_signature())
+        finally:
+            FreeCAD.Units.setSchema(schema)
+
+    def test_bspline_offset_negative_preview_apply_undo_redo(self):
+        self.check_spline_offset(distance=-1.0)
+
+    def test_bspline_offset_reverse_side_preview_apply_undo_redo(self):
+        self.check_spline_offset(reverse=True)
+
+    def test_bspline_offset_negative_reverse_side_preview_apply_undo_redo(self):
+        self.check_spline_offset(distance=-1.0, reverse=True)
+
+    def test_bspline_offset_reversed_source_preview_apply_undo_redo(self):
+        self.check_spline_offset(reversed_source=True)
+
+    def test_bspline_offset_rational_preview_apply_undo_redo(self):
+        self.check_spline_offset(rational=True)
+
+    def test_bspline_offset_cancel_preview_preserves_document_and_history(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        viewport = FreeCADGui.ActiveDocument.ActiveView.graphicsView().viewport()
+        self.move(viewport, viewport.rect().center())
+        self.assertEqual(
+            self.spline_control(QtGui.QWidget, "Panel").property("computationCount"), 0
+        )
+        self.assertEqual(before, self.offset_snapshot())
+        retained_apply = self.spline_control(QtGui.QPushButton, "Apply")
+        self.spline_button("Update")
+        self.spline_button("Cancel")
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        # The task box keeps its hidden widget. Its old callbacks must be disconnected.
+        retained_apply.click()
+        self.pump(80)
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_invalid_options_preserve_document_and_history(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        for distance, tolerance in [(0.0, 0.01), (1.0, 0.0), (1.0, 0.6)]:
+            with self.subTest(distance=distance, tolerance=tolerance):
+                self.spline_quantity("Distance", distance)
+                self.spline_quantity("Tolerance", tolerance)
+                self.spline_button("Update")
+                message = self.spline_control(QtGui.QLabel, "Status").text()
+                self.assertIn("less than half", message)
+                self.assertNotIn("Achieved maximum error:", message)
+                self.spline_button("Apply")
+                self.assertEqual(message, self.spline_control(QtGui.QLabel, "Status").text())
+                self.assertEqual(before, self.offset_snapshot())
+                self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.spline_button("Cancel")
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_closed_curve_shows_helper_message_without_mutation(self):
+        self.start_spline_offset(closed=True)
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIn("G0-only corner", self.spline_control(QtGui.QLabel, "Status").text())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+
+    def check_closed_spline_offset(self, periodic=True, reversed_source=False):
+        source = self.start_spline_offset(
+            smooth_closed=True, periodic=periodic, reversed_source=reversed_source
+        )
+        before = self.offset_snapshot()
+        label = self.spline_control(QtGui.QLabel, "Side")
+        self.assertIsNotNone(label)
+        self.assertIn("Inside / outside", label.text())
+        self.spline_button("Update")
+        self.assertEqual(label.text(), "Side: Inside" if reversed_source else "Side: Outside")
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_control(QtGui.QCheckBox, "Reverse").setChecked(True)
+        self.assertEqual(label.text(), "Side: Outside" if reversed_source else "Side: Inside")
+        self.spline_button("Update")
+        self.assertIn("Achieved maximum error:", self.spline_control(QtGui.QLabel, "Status").text())
+        self.spline_button("Apply")
+        self.assert_spline_distance(source, -1.0)
+        self.assertTrue(self.sketch.Geometry[1].isClosed())
+        self.assertEqual(self.sketch.Geometry[1].isPeriodic(), periodic)
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 1)
+        self.assertEqual(len(self.sketch.Constraints), 0)
+        self.redo_gui_document()
+        self.assertTrue(self.sketch.Geometry[1].isClosed())
+        self.assertEqual(self.sketch.Geometry[1].isPeriodic(), periodic)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+
+    def test_bspline_offset_periodic_closed_apply_undo(self):
+        self.check_closed_spline_offset()
+
+    def test_bspline_offset_clamped_closed_apply_undo(self):
+        self.check_closed_spline_offset(periodic=False)
+
+    def test_bspline_offset_closed_reversed_orientation(self):
+        self.check_closed_spline_offset(reversed_source=True)
+
+    def test_bspline_offset_self_crossing_source_has_no_side(self):
+        self.start_spline_offset(self_crossing=True)
+        self.spline_quantity("Distance", 0.1)
+        before = self.offset_snapshot()
+        for action in ("Update", "Apply"):
+            self.spline_button(action)
+            message = self.spline_control(QtGui.QLabel, "Status").text()
+            self.assertIn("Source", message)
+            self.assertIn("crossing", message)
+            side = self.spline_control(QtGui.QLabel, "Side").text()
+            self.assertNotIn("Side: Outside", side)
+            self.assertNotIn("Side: Inside", side)
+            self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_closed_inversion_preserves_history(self):
+        self.start_spline_offset(smooth_closed=True)
+        self.spline_quantity("Distance", -20.0)
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIn("singular", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_mixed_edges_rejected_before_filtering(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.sketch.addGeometry(_line((0, -5), (10, -5)))
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        self.select_offset_edges(["Edge1", "Edge2"])
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(
+            self.offset_mode_combobox(), "Mixed edges must not start the analytic handler"
+        )
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_bspline_offset_external_edge_rejected(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        support = self.doc.addObject("Part::Feature", "Support")
+        support.Shape = self.sketch.Geometry[0].toShape()
+        self.recompute_gui_document()
+        self.sketch.addExternal(support.Name, "Edge1")
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        for edges in (["ExternalEdge1"], ["Edge1", "ExternalEdge1"]):
+            self.select_offset_edges(edges)
+            self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+            self.assertIsNone(self.offset_mode_combobox())
+            self.assertEqual(before, self.offset_snapshot())
+            self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_changed_inputs_invalidate_preview(self):
+        source = self.start_spline_offset()
+        self.spline_button("Update")
+        self.spline_quantity("Distance", -1.5)
+        self.spline_quantity("Tolerance", 0.005)
+        self.assertNotIn("Achieved", self.spline_control(QtGui.QLabel, "Status").text())
+        self.spline_button("Apply")
+        self.assert_spline_distance(source, -1.5, tolerance=0.005)
+
+    def test_bspline_offset_changed_source_cancels(self):
+        self.start_spline_offset()
+        self.spline_button("Update")
+        self.sketch.moveGeometry(0, 1, FreeCAD.Vector(-1, 0, 0), False)
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_removed_source_does_not_retarget(self):
+        self.start_spline_offset()
+        self.spline_button("Update")
+        # A second, identical spline must never become the source by reindexing.
+        self.sketch.addGeometry(self.sketch.Geometry[0], False)
+        self.sketch.delGeometry(0)
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        self.spline_button("Apply")
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_source_survives_reindexing(self):
+        self.sketch.addGeometry(_line((0, -5), (10, -5)))
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.select_offset_edges(["Edge2"])
+        self.spline_button("Update")
+        self.sketch.delGeometry(0)
+        self.recompute_gui_document()
+        source = self.sketch.Geometry[0]
+        self.spline_button("Apply")
+        self.assert_spline_distance(source, 1.0)
+
+    def test_bspline_offset_box_selection_with_control_polygon(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.sketch.exposeInternalGeometry(0)
+        self.recompute_gui_document()
+        self.assertGreater(self.sketch.GeometryCount, 1)
+        edges = [
+            "Edge" + str(i + 1)
+            for i, geometry in enumerate(self.sketch.Geometry)
+            if not isinstance(geometry, Part.Point)
+        ]
+        self.select_offset_edges(edges)
+        self.assertIsNotNone(self.spline_control(QtGui.QWidget, "Panel"))
+        before = self.offset_snapshot()
+        self.spline_button("Update")
+        self.assertIn("Achieved", self.spline_control(QtGui.QLabel, "Status").text())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_unrelated_internal_helpers_rejected(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.sketch.addGeometry(self.sketch.Geometry[0], False)
+        self.sketch.exposeInternalGeometry(1)
+        self.recompute_gui_document()
+        before = self.offset_snapshot()
+        self.select_offset_edges(["Edge1", "Edge3"])
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_bspline_offset_other_sketch_rejected(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        other = self.doc.addObject("Sketcher::SketchObject", "OtherSketch")
+        other.addGeometry(self.sketch.Geometry[0], False)
+        self.recompute_gui_document()
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.doc.Name, other.Name, "Edge1")
+        selection = self.selection_signature()
+        FreeCADGui.runCommand("Sketcher_Offset")
+        self.pump(100)
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertEqual(selection, self.selection_signature())
+
+    def test_bspline_offset_rejection_after_success_preserves_redo(self):
+        self.start_spline_offset()
+        self.spline_button("Apply")
+        self.assertEqual(self.sketch.GeometryCount, 2)
+        self.undo_gui_document()
+        self.select_offset_edges(["Edge1"])
+        before = self.offset_snapshot()
+        self.assertGreater(before[4], 0)
+        self.spline_button("Update")
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.select_offset_edges(["Edge1"])
+        self.spline_quantity("Distance", 0.0)
+        self.spline_button("Apply")
+        self.spline_button("Cancel")
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+        self.redo_gui_document()
+        self.assertEqual(self.sketch.GeometryCount, 2)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints], [("Block", 1)])
+
+    def test_bspline_offset_failed_solve_preserves_nonempty_redo(self):
+        self.start_spline_offset()
+        self.spline_button("Cancel")
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 1.0))
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 2.0))
+        self.recompute_gui_document()
+        self.assertNotEqual(self.sketch.solve(), 0)
+        self.doc.openTransaction("Redo sentinel")
+        self.doc.addObject("App::FeaturePython", "RedoSentinel")
+        self.doc.commitTransaction()
+        self.undo_gui_document()
+        self.select_offset_edges(["Edge1"])
+        before = self.offset_snapshot()
+        self.assertGreater(before[4], 0)
+        self.spline_button("Apply")
+        self.assertIn("solve", self.spline_control(QtGui.QLabel, "Status").text().lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+        self.assertEqual(before, self.offset_snapshot())
+
+    def chain_control(self, widget_type, suffix):
+        controls = FreeCADGui.getMainWindow().findChildren(widget_type, "OffsetChain" + suffix)
+        return next((control for control in controls if control.isVisible()), None)
+
+    def chain_button(self, suffix):
+        self.chain_control(QtGui.QPushButton, suffix).click()
+        self.pump(80)
+
+    def start_mixed_offset(self, *, corner=False, branch=False, closed=False):
+        import math
+
+        spline = Part.BSplineCurve()
+        spline.buildFromPolesMultsKnots(
+            [FreeCAD.Vector(10, 0, 0), FreeCAD.Vector(10, 10, 0), FreeCAD.Vector(0, 10, 0)],
+            [3, 3], [0.0, 1.0], False, 2, [1.0, 2.0**-0.5, 1.0],
+        )
+        circle = Part.Circle(FreeCAD.Vector(), FreeCAD.Vector(0, 0, 1), 10)
+        if closed:
+            # Same supported closed fixture as OffsetChainGenerator: provably
+            # forward sub-confusion gaps at non-algebraic native arc endpoints.
+            spline = Part.ArcOfCircle(circle, 0, math.pi).toBSpline()
+            spline.setPole(1, FreeCAD.Vector(10, 1e-8, 0))
+            spline.setPole(spline.NbPoles, FreeCAD.Vector(-10, 1e-8, 0))
+            geometry = [spline, Part.ArcOfCircle(circle, math.pi, 2 * math.pi)]
+        else:
+            # An exact local zero parameter gives an algebraic junction with
+            # the rational quarter-circle endpoint, matching the App fixture.
+            circle.XAxis = FreeCAD.Vector(0, 1, 0)
+            geometry = [
+                _line((5 if corner else 10, -5), (10, 0)), spline,
+                Part.ArcOfCircle(circle, 0, math.pi / 2),
+            ]
+        if branch:
+            geometry.append(_line((10, 0), (15, 0)))
+        self.sketch.addGeometry(geometry, False)
+        self.recompute_gui_document()
+        self.start_editing()
+        # Non-geometric selection order must still consume every selected edge.
+        self.select_offset_edges(["Edge" + str(i + 1) for i in reversed(range(len(geometry)))])
+        self.assertIsNotNone(self.chain_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(self.spline_control(QtGui.QWidget, "Panel"))
+        self.assertIsNone(self.offset_mode_combobox())
+        return len(geometry)
+
+    def chain_refusal(self, before, reason=None):
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        for action in ("Update", "Apply"):
+            self.chain_button(action)
+            message = self.chain_control(QtGui.QLabel, "Status").text()
+            self.assertTrue(message.startswith("Mixed-chain offset could not be certified: "))
+            self.assertTrue(message.split(": ", 1)[1])
+            if reason is not None:
+                self.assertIn(reason.lower(), message.lower())
+            self.assertEqual(before, self.offset_snapshot())
+            self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertEqual(self.selection_before_offset, self.selection_signature())
+
+    def test_mixed_offset_apply_blocks_one_undo_redo(self):
+        count = self.start_mixed_offset()
+        before = self.offset_snapshot()
+        self.chain_button("Update")
+        self.assertIn("Certified", self.chain_control(QtGui.QLabel, "Status").text())
+        self.assertEqual(before, self.offset_snapshot())
+        panel = self.chain_control(QtGui.QWidget, "Panel")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.chain_button("Apply")
+        self.assertEqual(panel.property("computationCount"), 1)
+        self.assertEqual(self.sketch.GeometryCount, count * 2)
+        self.assertEqual([(c.Type, c.First) for c in self.sketch.Constraints],
+                         [("Block", i) for i in range(count, count * 2)])
+        self.assertEqual(self.doc.UndoCount, before[3] + 1)
+        after = self.offset_snapshot()
+        self.undo_gui_document()
+        self.assertEqual(self.offset_snapshot()[:3], before[:3])
+        self.redo_gui_document()
+        self.assertEqual(self.offset_snapshot(), after)
+
+    def test_mixed_offset_corner_refuses_without_history_changes(self):
+        self.start_mixed_offset(corner=True)
+        self.chain_refusal(self.offset_snapshot())
+
+    def test_mixed_offset_branch_refuses_without_history_changes(self):
+        self.start_mixed_offset(branch=True)
+        self.chain_refusal(self.offset_snapshot(), "ambiguous")
+
+    def test_mixed_offset_source_edit_refuses_preview_and_apply(self):
+        self.start_mixed_offset()
+        self.chain_button("Update")
+        self.sketch.moveGeometry(0, 1, FreeCAD.Vector(9, -5, 0), False)
+        self.recompute_gui_document()
+        self.chain_refusal(self.offset_snapshot(), "changed")
+
+    def test_mixed_offset_failed_solve_preserves_redo(self):
+        self.start_mixed_offset()
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 10.0))
+        self.sketch.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 11.0))
+        self.recompute_gui_document()
+        self.assertNotEqual(self.sketch.solve(), 0)
+        self.doc.openTransaction("Mixed redo sentinel")
+        self.doc.addObject("App::FeaturePython", "RedoSentinel")
+        self.doc.commitTransaction()
+        self.undo_gui_document()
+        before = self.offset_snapshot()
+        self.assertGreater(before[4], 0)
+        self.chain_button("Apply")
+        message = self.chain_control(QtGui.QLabel, "Status").text()
+        self.assertIn("Mixed-chain offset could not be certified:", message)
+        self.assertIn("solve", message.lower())
+        self.assertEqual(before, self.offset_snapshot())
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+
+    def test_mixed_offset_closed_side_and_reverse(self):
+        self.start_mixed_offset(closed=True)
+        self.chain_button("Update")
+        self.assertEqual(self.chain_control(QtGui.QLabel, "Side").text(), "Side: Outside")
+        self.chain_control(QtGui.QCheckBox, "Reverse").setChecked(True)
+        self.chain_button("Update")
+        self.assertEqual(self.chain_control(QtGui.QLabel, "Side").text(), "Side: Inside")
+        self.chain_button("Apply")
+        self.assertEqual(self.sketch.GeometryCount, 4)
+
+    def test_mixed_offset_restricted_options_refuse(self):
+        self.start_mixed_offset()
+        before = self.offset_snapshot()
+        for suffix in ("Intersection", "Clearance", "Driving", "Delete"):
+            control = self.chain_control(QtGui.QCheckBox, suffix)
+            self.assertIsNotNone(control)
+            control.setChecked(True)
+            self.chain_button("Apply")
+            self.assertIn("not supported", self.chain_control(QtGui.QLabel, "Status").text())
+            self.assertEqual(before, self.offset_snapshot())
+            control.setChecked(False)
+        self.chain_button("Cancel")
+
+    def test_mixed_offset_construction_mix_refuses(self):
+        self.start_mixed_offset()
+        self.sketch.toggleConstruction(0)
+        self.recompute_gui_document()
+        self.chain_refusal(self.offset_snapshot(), "construction")
+
+    def test_mixed_offset_disconnected_selection_refuses(self):
+        self.start_mixed_offset()
+        self.chain_button("Cancel")
+        self.sketch.addGeometry(_line((30, 0), (35, 0)))
+        self.recompute_gui_document()
+        self.select_offset_edges(["Edge1", "Edge2", "Edge3", "Edge4"])
+        self.assertIsNotNone(self.chain_control(QtGui.QWidget, "Panel"))
+        self.chain_refusal(self.offset_snapshot(), "disconnected")
+
+    def test_mixed_offset_refusal_preserves_reference_values_and_redo(self):
+        self.start_mixed_offset()
+        self.chain_button("Update")
+        self.sketch.addGeometry(_line((30, 0), (31, 0)))
+        self.recompute_gui_document()
+        self.doc.openTransaction("Reference redo sentinel")
+        self.doc.addObject("App::FeaturePython", "RedoSentinel")
+        self.doc.commitTransaction()
+        self.undo_gui_document()
+        # Do not recompute: the detached solve must reject the moved unrelated
+        # line without writing the solved reference dimension back to the sketch.
+        self.sketch.addConstraint([
+            Sketcher.Constraint("DistanceX", 3, 2.0),
+            Sketcher.Constraint("DistanceX", 3, 1.0, True, False),
+        ])
+        before = self.offset_snapshot()
+        self.assertEqual(self.sketch.Constraints[1].Value, 1.0)
+        self.assertGreater(before[4], 0)
+        self.chain_button("Apply")
+        self.assertIn("solve the sketch first", self.chain_control(QtGui.QLabel, "Status").text())
+        self.assertEqual(self.sketch.Constraints[1].Value, 1.0)
+        self.assertEqual(before, self.offset_snapshot())
+        self.chain_button("Cancel")
+        self.assertEqual(before, self.offset_snapshot())
+        self.redo_gui_document()
+        self.assertIsNotNone(self.doc.getObject("RedoSentinel"))
+
+    def test_mixed_offset_late_helper_refuses_preview_and_apply(self):
+        self.start_mixed_offset()
+        for action in ("Update", "Apply"):
+            self.chain_button("Update")
+            self.assertIn("Certified", self.chain_control(QtGui.QLabel, "Status").text())
+            geometry = self.sketch.GeometryFacadeList
+            geometry[0].InternalType = "EllipseMajorDiameter"
+            self.sketch.GeometryFacadeList = geometry
+            before = self.offset_snapshot()
+            self.chain_button(action)
+            self.assertIn("helper", self.chain_control(QtGui.QLabel, "Status").text())
+            self.assertEqual(before, self.offset_snapshot())
+            geometry[0].InternalType = "None"
+            self.sketch.GeometryFacadeList = geometry
+        self.chain_button("Cancel")
+
+    def check_mixed_permutations(self, tie):
+        from itertools import permutations
+
+        if tie:
+            spline = Part.BSplineCurve()
+            spline.buildFromPolesMultsKnots(
+                [FreeCAD.Vector(x, 0, 0) for x in (2, 1.75, 1.25, 1)],
+                [4, 4], [0.0, 1.0], False, 3,
+            )
+            self.sketch.addGeometry([_line((0, 0), (1, 0)), spline])
+            self.recompute_gui_document()
+            self.start_editing()
+            count, expected = 2, (0, -1)
+        else:
+            count = self.start_mixed_offset()
+            self.chain_button("Cancel")
+            expected = (11, -5)
+        for selection in permutations(range(count)):
+            with self.subTest(selection=selection):
+                self.select_offset_edges(["Edge" + str(i + 1) for i in selection])
+                self.chain_button("Apply")
+                self.assertEqual(self.sketch.GeometryCount, count * 2)
+                point = self.sketch.Geometry[count].StartPoint
+                self.assertAlmostEqual(point.x, expected[0], places=7)
+                self.assertAlmostEqual(point.y, expected[1], places=7)
+                self.undo_gui_document()
+                self.assertEqual(self.sketch.GeometryCount, count)
+
+    def test_mixed_offset_tied_permutations_keep_geometric_side(self):
+        self.check_mixed_permutations(tie=True)
+
+    def test_mixed_offset_open_permutations_keep_geometric_side(self):
+        self.check_mixed_permutations(tie=False)
+
+    def test_mixed_offset_chain_link_refuses_partial_analytic_selection(self):
+        self.start_mixed_offset()
+        self.chain_button("Cancel")
+        self.select_offset_edges(["Edge1"])
+        before = self.offset_snapshot()
+        self.set_offset_checkbox("Chain link", True, fallback_index=2)
+        view = FreeCADGui.activeDocument().activeView()
+        viewport = view.graphicsView().viewport()
+        point = self.in_view_offset_screen_point(view, FreeCAD.Vector(11, -2, 0))
+        preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/NotificationArea")
+        previous = preferences.GetBool("NonIntrusiveNotificationsEnabled", True)
+        preferences.SetBool("NonIntrusiveNotificationsEnabled", False)
+        warnings = []
+        timer = QtCore.QTimer()
+
+        def dismiss_warning():
+            dialog = QtGui.QApplication.activeModalWidget()
+            if isinstance(dialog, QtGui.QMessageBox):
+                warnings.append(dialog.text())
+                dialog.accept()
+
+        timer.timeout.connect(dismiss_warning)
+        timer.start(10)
+        try:
+            self.move(viewport, point)
+            self.click(viewport, point)
+        finally:
+            timer.stop()
+            preferences.SetBool("NonIntrusiveNotificationsEnabled", previous)
+        self.assertEqual(before, self.offset_snapshot())
+        self.assertTrue(any("Select the whole mixed chain" in text for text in warnings), warnings)
+        self.assertTrue(self.offset_mode_combobox() is not None)
+        FreeCADGui.activeDocument().resetEdit()
+
+
+    def check_linked_creation(self, mixed):
+        count = self.start_mixed_offset() if mixed else 1
+        if not mixed:
+            self.start_spline_offset()
+        button = self.chain_button if mixed else self.spline_button
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        before = self.doc.UndoCount
+        button("Apply")
+        relations = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0]["status"], "Ok")
+        self.assertEqual(len(relations[0]["sources"]), count)
+        self.assertEqual(len(relations[0]["outputs"]), count)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.undo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.redo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), relations)
+
+    def test_linked_spline_creation_undo_redo(self):
+        self.check_linked_creation(False)
+
+    def test_linked_mixed_creation_undo_redo(self):
+        self.check_linked_creation(True)
+
+    def test_linked_spline_refusal_has_no_relation(self):
+        self.start_spline_offset()
+        before = self.offset_snapshot()
+        self.spline_quantity("Distance", 0.0)
+        self.spline_button("Apply")
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(before, self.offset_snapshot())
+        self.spline_button("Cancel")
+
+
+    def linked_fixture(self):
+        self.start_spline_offset()
+        self.spline_button("Apply")
+        return Sketcher.listLinkedOffsets(self.sketch)[0]
+
+    def translate_linked_geometry(self, index, vector):
+        geometry = self.sketch.Geometry
+        geometry[index].translate(vector)
+        self.sketch.Geometry = geometry
+
+    def linked_state(self):
+        return (self.offset_snapshot(), Sketcher.listLinkedOffsets(self.sketch),
+                self.doc.UndoCount, self.doc.RedoCount,
+                tuple((g.Content, g.Tag) for g in self.sketch.Geometry),
+                tuple(c.Content for c in self.sketch.Constraints),
+                self.doc.getFileChangeState(), self.doc.isTouched(), tuple(self.sketch.State))
+
+    def test_linked_refresh_moved_source_identity_reference_undo(self):
+        relation = self.linked_fixture()
+        output = relation["outputIndices"][0]
+        dimension = Sketcher.Constraint("DistanceX", output, 1, 1.0, True, False)
+        ref = self.sketch.addConstraint(dimension)
+        self.translate_linked_geometry(0, FreeCAD.Vector(3, 0, 0))
+        old_point = self.sketch.Geometry[output].StartPoint
+        before = self.doc.UndoCount
+        Sketcher.refreshLinkedOffsets(self.sketch, [relation["id"]])
+        refreshed, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(refreshed["outputs"][0]["uuid"], relation["outputs"][0]["uuid"])
+        self.assertEqual(refreshed["outputIndices"], relation["outputIndices"])
+        self.assertAlmostEqual(self.sketch.Geometry[output].StartPoint.x, old_point.x + 3)
+        self.assertAlmostEqual(self.sketch.Constraints[ref].Value,
+                               self.sketch.Geometry[output].StartPoint.x)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.undo_gui_document()
+        self.assertEqual(self.sketch.Geometry[output].StartPoint, old_point)
+        self.redo_gui_document()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [refreshed])
+
+    def test_linked_edit_signed_parameters_and_invalid_refusals(self):
+        relation = self.linked_fixture()
+        before = self.doc.UndoCount
+        Sketcher.editLinkedOffsets(self.sketch, [relation["id"]], -1.0, 0.02)
+        edited, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(edited["parameters"]["distance"], -1)
+        self.assertEqual(edited["parameters"]["tolerance"], 0.02)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        for distance, tolerance in ((0, .01), (float("nan"), .01), (1, -1),
+                                    (1, float("inf")), (1, .6)):
+            before = self.linked_state()
+            with self.assertRaises(ValueError):
+                Sketcher.editLinkedOffsets(self.sketch, [relation["id"]], distance, tolerance)
+            self.assertEqual(self.linked_state(), before)
+
+    def test_linked_direct_edits_require_detach(self):
+        relation = self.linked_fixture()
+        output = relation["outputIndices"][0]
+        self.translate_linked_geometry(output, FreeCAD.Vector(2, 0, 0))
+        before = self.linked_state()
+        with self.assertRaisesRegex(ValueError, "Detach"):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(self.linked_state(), before)
+        point = self.sketch.Geometry[output].StartPoint
+        before = self.doc.UndoCount
+        Sketcher.detachLinkedOffsets(self.sketch, [relation["id"]])
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(self.sketch.Geometry[output].StartPoint, point)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        self.assertEqual(self.sketch.ConstraintCount, 0)
+
+    def test_linked_refresh_all_partial_failure_is_atomic(self):
+        relation = self.linked_fixture()
+        self.sketch.addCopy([0, 1], FreeCAD.Vector(100, 0, 0))
+        self.translate_linked_geometry(0, FreeCAD.Vector(3, 0, 0))
+        self.sketch.delGeometry(2)
+        before = self.linked_state()
+        with self.assertRaises(ValueError):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(self.linked_state(), before)
+        Sketcher.refreshLinkedOffsets(self.sketch, [relation["id"]])
+        self.assertEqual(len(Sketcher.listLinkedOffsets(self.sketch)), 2)
+
+    def test_linked_real_gui_commands(self):
+        relation = self.linked_fixture()
+        for name in ("Refresh", "RefreshAll", "Edit", "Detach"):
+            self.assertIn("Sketcher_LinkedOffset" + name, FreeCADGui.listCommands())
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+        before = self.doc.UndoCount
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+        self.assertEqual(self.doc.UndoCount, before + 1)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetEdit", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        status = dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus")
+        self.assertIn("Explicit refresh", status.text())
+        distance = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffsetDistance")
+        tolerance = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffsetTolerance")
+        distance.setProperty("rawValue", -2.0)
+        tolerance.setProperty("rawValue", .02)
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetRefresh").click()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["parameters"]["distance"], -2)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefreshAll", 0)
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetDetach", 0)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+
+    def test_linked_refit_changed_poles_keeps_tag_id_and_reference(self):
+        relation = self.linked_fixture()
+        tag = self.sketch.Geometry[1].Tag
+        identity = self.sketch.GeometryFacadeList[1].Id
+        count = self.sketch.Geometry[1].NbPoles
+        dimension = Sketcher.Constraint("DistanceX", 1, 1, 1.0, True, False)
+        ref = self.sketch.addConstraint(dimension)
+        Sketcher.editLinkedOffsets(self.sketch, None, 2.0, .001)
+        self.assertNotEqual(self.sketch.Geometry[1].NbPoles, count)
+        self.assertEqual(self.sketch.Geometry[1].Tag, tag)
+        self.assertEqual(self.sketch.GeometryFacadeList[1].Id, identity)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["outputs"][0]["uuid"],
+                         relation["outputs"][0]["uuid"])
+        self.assertFalse(self.sketch.Constraints[ref].Driving)
+
+    def test_linked_invalid_fit_retains_output_and_redo(self):
+        self.linked_fixture()
+        geometry = self.sketch.Geometry
+        geometry[0].setPole(2, geometry[0].getPole(1))
+        self.sketch.Geometry = geometry
+        self.doc.openTransaction("Sentinel")
+        self.doc.addObject("App::FeaturePython", "Sentinel")
+        self.doc.commitTransaction()
+        self.doc.undo()
+        before = self.linked_state()
+        with self.assertRaises(ValueError):
+            Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertEqual(before, self.linked_state())
+        self.doc.redo()
+        self.assertIsNotNone(self.doc.getObject("Sentinel"))
+
+    def test_linked_mixed_refresh_preserves_order_reversal_and_seam(self):
+        count = self.start_mixed_offset()
+        self.chain_button("Apply")
+        relation, = Sketcher.listLinkedOffsets(self.sketch)
+        for index in range(count):
+            self.translate_linked_geometry(index, FreeCAD.Vector(3, 0, 0))
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        after, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(after["parameters"], relation["parameters"])
+        self.assertEqual([(s["uuid"], s["reversed"], s["seam"]) for s in after["sources"]],
+                         [(s["uuid"], s["reversed"], s["seam"]) for s in relation["sources"]])
+        self.assertFalse(after["stale"])
+
+    def test_linked_gui_refusal_offers_detach_and_keeps_edits(self):
+        self.linked_fixture()
+        self.translate_linked_geometry(1, FreeCAD.Vector(2, 0, 0))
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.doc.Name, self.sketch.Name, "Edge2")
+        before = self.linked_state()
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        self.assertIn("Detach", dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+        self.assertEqual(before, self.linked_state())
+        point = self.sketch.Geometry[1].StartPoint
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetDetach").click()
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(self.sketch.Geometry[1].StartPoint, point)
+
+    def test_linked_internal_helper_references_refuse_refit(self):
+        self.linked_fixture()
+        self.sketch.exposeInternalGeometry(1)
+        self.assertGreater(self.sketch.GeometryCount, 2)
+        before = self.linked_state()
+        with self.assertRaisesRegex(ValueError, "Detach"):
+            Sketcher.editLinkedOffsets(self.sketch, None, 2.0, .001)
+        self.assertEqual(before, self.linked_state())
+
+    def test_linked_closed_mixed_refresh_and_signed_edit(self):
+        count = self.start_mixed_offset(closed=True)
+        self.chain_button("Apply")
+        before, = Sketcher.listLinkedOffsets(self.sketch)
+        for index in range(count):
+            self.translate_linked_geometry(index, FreeCAD.Vector(3, 0, 0))
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        Sketcher.editLinkedOffsets(self.sketch, None, -1.0, .01)
+        after, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(after["parameters"]["orientation"], before["parameters"]["orientation"])
+        self.assertEqual(after["parameters"]["seam"], before["parameters"]["seam"])
+        self.assertEqual(after["outputIndices"], before["outputIndices"])
+        self.assertFalse(after["stale"])
+
+
+    def rework_redo_sentinel(self):
+        self.doc.openTransaction("Sentinel")
+        self.doc.addObject("App::FeaturePython", "Sentinel")
+        self.doc.commitTransaction()
+        self.doc.undo()
+
+    def check_rework_open_reversal(self, mixed):
+        if mixed:
+            count = self.start_mixed_offset()
+            self.chain_button("Apply")
+        else:
+            self.linked_fixture()
+            count = 1
+        geometry = self.sketch.Geometry
+        index = 1 if mixed else 0
+        interval = (geometry[index].FirstParameter, geometry[index].LastParameter)
+        geometry[index].reverse()
+        self.sketch.Geometry = geometry
+        self.assertEqual(interval, (self.sketch.Geometry[index].FirstParameter,
+                                    self.sketch.Geometry[index].LastParameter))
+        self.rework_redo_sentinel()
+        before = self.linked_state()
+        for operation in (lambda: Sketcher.refreshLinkedOffsets(self.sketch),
+                          lambda: Sketcher.editLinkedOffsets(self.sketch, None, -2, .01)):
+            with self.assertRaisesRegex(ValueError, "direction|orientation|TopologyChanged"):
+                operation()
+            self.assertEqual(self.linked_state(), before)
+        self.doc.redo()
+        self.assertIsNotNone(self.doc.getObject("Sentinel"))
+
+    def test_rework_open_spline_reversal_same_interval(self):
+        self.check_rework_open_reversal(False)
+
+    def test_rework_open_mixed_reversal_same_interval(self):
+        self.check_rework_open_reversal(True)
+
+    def test_rework_open_source_refit_supported(self):
+        self.linked_fixture()
+        geometry = self.sketch.Geometry
+        geometry[0].setPole(2, geometry[0].getPole(2) + FreeCAD.Vector(0, .1, 0))
+        self.sketch.Geometry = geometry
+        Sketcher.refreshLinkedOffsets(self.sketch)
+        self.assertFalse(Sketcher.listLinkedOffsets(self.sketch)[0]["stale"])
+
+    def rework_edit_dialog(self):
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+        FreeCADGui.runCommand("Sketcher_LinkedOffsetEdit", 0)
+        dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertIsNotNone(dialog)
+        return dialog
+
+    def test_rework_edit_signed_unit_entry(self):
+        self.linked_fixture()
+        dialog = self.rework_edit_dialog()
+        for name, text in (("Distance", "-0.2 cm"), ("Tolerance", "0.002 cm")):
+            control = dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffset" + name)
+            control.lineEdit().setText(text)
+            control.lineEdit().textEdited.emit(text)
+        dialog.findChild(QtGui.QPushButton, "LinkedOffsetRefresh").click()
+        relation, = Sketcher.listLinkedOffsets(self.sketch)
+        self.assertEqual(relation["parameters"]["distance"], -2)
+        self.assertEqual(relation["parameters"]["tolerance"], .02)
+
+    def check_rework_deleted_edit_target(self, close_document):
+        self.linked_fixture()
+        dialog = self.rework_edit_dialog()
+        FreeCADGui.activeDocument().resetEdit()
+        if close_document:
+            name = self.doc.Name
+            FreeCAD.closeDocument(name)
+            self.doc = None
+        else:
+            self.doc.removeObject(self.sketch.Name)
+        for name in ("Refresh", "Detach"):
+            dialog.findChild(QtGui.QPushButton, "LinkedOffset" + name).click()
+            self.assertIn("deleted", dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+        dialog.reject()
+
+    def test_rework_edit_sketch_deleted(self):
+        self.check_rework_deleted_edit_target(False)
+
+    def test_rework_edit_document_closed(self):
+        self.check_rework_deleted_edit_target(True)

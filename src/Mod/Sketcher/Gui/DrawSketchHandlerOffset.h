@@ -612,6 +612,20 @@ private:
 
     TopoDS_Shape makeOffsetShape(bool allowOpenResult = false)
     {
+        if (chainLink) {
+            auto* sketch = sketchgui->getSketchObject();
+            for (int id = 0; id <= sketch->getHighestCurveIndex(); ++id) {
+                const auto* geo = sketch->getGeometry(id);
+                if (geo && isBSplineCurve(*geo) && !GeometryFacade::isInternalAligned(geo)) {
+                    for (int source : listOfGeoIds) {
+                        if (areCoincident(id, source)) {
+                            throw Base::ValueError(QT_TRANSLATE_NOOP("Notifications",
+                                "Chain link reaches a B-spline. Select the whole mixed chain."));
+                        }
+                    }
+                }
+            }
+        }
         if (sourceWires.empty()) {
             return {};
         }
