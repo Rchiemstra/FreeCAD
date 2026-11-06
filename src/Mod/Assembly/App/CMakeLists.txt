@@ -3,6 +3,7 @@
 set(Assembly_LIBS
     Part
     PartDesign
+    Sketcher
     Spreadsheet
     FreeCADApp
     OndselSolver
@@ -52,6 +53,14 @@ SET(Module_SRCS
 SOURCE_GROUP("Module" FILES ${Module_SRCS})
 
 SET(Assembly_SRCS
+    ExtractXLinkReferences.cpp
+    ExtractXLinkReferences.h
+    ExtractExpressionReferences.cpp
+    ExtractExpressionReferences.h
+    ExtractSketchReferences.cpp
+    ExtractSketchReferences.h
+    ExtractReferences.cpp
+    ExtractReferences.h
     AssemblyObject.cpp
     AssemblyObject.h
     AssemblyLink.cpp

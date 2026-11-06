@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import AssemblyApp
+from ExtractComponent import extract, ExtractionError, ExtractionResult
 
 from .api import (
     JointCreationError,
@@ -13,6 +14,9 @@ from .api import (
 
 __all__ = [
     "AssemblyApp",
+    "extract",
+    "ExtractionError",
+    "ExtractionResult",
     "JointCreationError",
     "createAssembly",
     "createGroundedJoint",

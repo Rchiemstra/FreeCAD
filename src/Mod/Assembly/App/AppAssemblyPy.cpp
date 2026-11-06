@@ -24,6 +24,7 @@
 
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
+#include "ExtractReferences.h"
 
 
 namespace Assembly
@@ -34,7 +35,37 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyApp")
     {
+        add_varargs_method("_extractionReferences", &Module::references,
+                           "Internal property reference preflight and replacement.");
+        add_varargs_method("_serviceDocumentOwner", &Module::serviceOwner,
+                           "Drain marshalled GUI tasks via an empty owner hop.");
+        add_varargs_method("_isGuiThread", &Module::guiThread,
+                           "True when this thread is the GUI thread.");
         initialize("This module is the Assembly module.");  // register with Python
+    }
+    Py::Object references(const Py::Tuple& args)
+    {
+        auto result = extractionReferences(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
+    }
+    Py::Object serviceOwner(const Py::Tuple& args)
+    {
+        auto result = serviceDocumentOwner(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
+    }
+    Py::Object guiThread(const Py::Tuple& args)
+    {
+        auto result = isGuiThread(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
     }
 };
 
