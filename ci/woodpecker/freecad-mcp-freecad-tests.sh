@@ -1,14 +1,16 @@
 #!/bin/sh
 set -e
 
-# Sketch/part/rest use when.status: [success, failure] so a sibling e2e failure
-# does not skip them. That same flag also starts them when ci-images-ready or
-# debug-build never produced FreeCADCmd. Skip cleanly in that case (exit 0).
-# Do not skip when the binary exists -- real test failures must still go red.
+# The core shards and e2e use when.status: [success, failure] so a failure in
+# a step they do not depend on does not skip them. That same flag also starts
+# them when ci-images-ready or debug-build never produced FreeCADCmd. Skip
+# cleanly in that case (exit 0). Do not skip when the binary exists -- real
+# test failures must still go red. freecad-mcp-load-preflight and live-gui have
+# no such skip, so a green build without the binary still fails the pipeline.
 FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
-if [ -n "${CORE_SHARD:-}" ] && [ ! -x "$FC" ]; then
-	echo "[freecad-mcp-freecad-tests] CORE_SHARD=$CORE_SHARD: FreeCADCmd not found at $FC" >&2
-	echo "[freecad-mcp-freecad-tests] images-ready/debug-build did not run; skipping this shard (not a test failure)" >&2
+if [ ! -x "$FC" ]; then
+	echo "[freecad-mcp-freecad-tests] MARKER=$MARKER CORE_SHARD=${CORE_SHARD:-}: FreeCADCmd not found at $FC" >&2
+	echo "[freecad-mcp-freecad-tests] images-ready/debug-build did not run; skipping this step (not a test failure)" >&2
 	exit 0
 fi
 

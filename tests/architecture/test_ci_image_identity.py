@@ -147,15 +147,38 @@ class KeyTests(ShellFixture):
             if "freecad-ci-" not in step["image"]:
                 continue
             self.assertIn("ci-images-ready", ancestors(name))
+        continue_on_failure = [
+            {"event": ["tag", "manual"], "status": ["success", "failure"]},
+            {"event": "pull_request", "status": ["success", "failure"]}]
         for shard, previous in (("sketch", "collab"), ("part", "sketch"),
                                 ("rest", "part")):
             step = steps[f"freecad-mcp-core-{shard}"]
             self.assertEqual(step["depends_on"], [f"freecad-mcp-core-{previous}"])
-            self.assertEqual(step["when"], [
-                {"event": ["tag", "manual"], "status": ["success", "failure"]},
-                {"event": "pull_request", "status": ["success", "failure"]}])
+            self.assertEqual(step["when"], continue_on_failure)
+        # One level after the FreeCAD test steps and live-gui; a failure there
+        # must not skip them.
+        for name in ("freecad-mcp-core-collab", "freecad-mcp-e2e"):
+            self.assertEqual(steps[name]["when"], continue_on_failure, name)
         self.assertTrue(all(dep in steps for step in steps.values()
                             for dep in step.get("depends_on", [])))
+
+    def test_freecad_tests_fan_out_from_debug_build(self):
+        # Woodpecker starts a level only after the whole level before it has
+        # finished, so chained test steps add their times.
+        steps = {step["name"]: step for step in
+                 yaml.safe_load((ROOT / ".woodpecker/ci.yml").read_text())["steps"]}
+        tests = ["freecad-unit-tests", "freecad-integration-tests", "freecad-e2e"]
+        for name in tests:
+            self.assertEqual(steps[name]["depends_on"], ["freecad-debug-build"], name)
+        self.assertEqual(sorted(steps["freecad-release-linux"]["depends_on"]), sorted(tests))
+
+    def test_mcp_freecad_tests_skip_without_build(self):
+        for env in ({"MARKER": "e2e"}, {"MARKER": "core", "CORE_SHARD": "collab"}):
+            result = subprocess.run(["sh", "ci/woodpecker/freecad-mcp-freecad-tests.sh"],
+                                    cwd=self.root, capture_output=True, text=True,
+                                    env={**os.environ, "CI_WORKSPACE": str(self.root), **env})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("skipping this step", result.stderr)
 
     def test_arch_entry_provisions_yaml_parser(self):
         bindir = self.root / "bin"
