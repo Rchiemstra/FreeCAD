@@ -3,6 +3,7 @@
 
 import builtins
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,23 @@ import Part
 from PySide import QtCore
 from Test.GuiRecompute import close_document, recompute_document, _pump_gui_until
 from draftutils import gui_utils, params
+
+
+def _property_revision(doc, subject, property_name):
+    """Return the live ObjectProperty revision for one model property."""
+    snapshot = doc.captureSemanticRevisions(
+        [
+            {
+                "kind": "ObjectProperty",
+                "subject": subject,
+                "property_name": property_name,
+            }
+        ]
+    )
+    revisions = snapshot["revisions"]
+    if len(revisions) != 1:
+        raise AssertionError(snapshot)
+    return int(revisions[0]["revision"])
 
 
 class DraftOwnerThreadFactories(unittest.TestCase):
@@ -561,3 +579,238 @@ class DraftDeferredArrayPresentation(unittest.TestCase):
                     recompute_document(doc)
                     close_document(doc)
                     Gui.updateGui()
+
+    def test_link_view_attach_during_prepared_recompute(self):
+        """A deferred link view proxy must not stale the array's prepared recompute.
+
+        The proxy install touches Label so the tree can claim children. That
+        notification has to stay non-semantic: it runs in the gap after the
+        owner has captured the array's revisions and before the commit.
+        """
+        import Draft
+
+        doc = App.newDocument("DraftLinkAttachDuringRecompute")
+        pending = []
+        errors = []
+        created = []
+        try:
+
+            def create():
+                self.assertFalse(gui_utils.on_gui_thread())
+                base = doc.addObject("Part::Feature", "Base")
+                base.Shape = Part.makeBox(2, 3, 4)
+                array = Draft.make_rect_array(base, use_link=True)
+                created.append((base, array))
+
+            def worker():
+                try:
+                    result = doc.commitCompatibilityMutation(
+                        create, structural=True, recompute=False
+                    )
+                    self.assertTrue(result["committed"], result)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with patch.object(
+                gui_utils,
+                "run_gui_setup",
+                side_effect=lambda _obj, callback: pending.append(callback),
+            ):
+                thread = threading.Thread(target=worker)
+                thread.start()
+                _pump_gui_until(lambda: not thread.is_alive(), 60)
+                thread.join()
+            if errors:
+                raise errors[0]
+            self.assertEqual(len(pending), 1)
+            base, array = created[0]
+            self.assertIsNone(array.ViewObject.Proxy)
+            base_handle = doc.recomputeAsync([base])
+            _pump_gui_until(lambda: base_handle.done(), 30)
+            self.assertEqual(base_handle.status()["state"], "completed", base_handle.status())
+            self.assertNotIn("Invalid", base.State)
+            self.assertIsNone(array.ViewObject.Proxy)
+            self.assertIn("Touched", array.State)
+
+            phase = {"holding": False, "handle": None, "done": False, "error": None}
+
+            def install_proxy():
+                try:
+                    phase["holding"] = True
+                    deadline = time.monotonic() + 20
+                    while phase["handle"] is None and time.monotonic() < deadline:
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.01)
+                    handle = phase["handle"]
+                    if handle is None:
+                        raise AssertionError("recompute was not submitted")
+                    while time.monotonic() < deadline:
+                        features = handle.status().get("features") or []
+                        if any(
+                            item.get("feature") == "Array" and item.get("state") == "committing"
+                            for item in features
+                        ):
+                            break
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError(
+                            "array recompute never reached the commit gap: %s" % handle.status()
+                        )
+                    pending[0]()
+                    if type(array.ViewObject.Proxy).__name__ != "ViewProviderDraftLink":
+                        raise AssertionError(type(array.ViewObject.Proxy).__name__)
+                except BaseException as exc:
+                    phase["error"] = exc
+                finally:
+                    phase["done"] = True
+
+            def starter():
+                while not phase["holding"]:
+                    time.sleep(0.005)
+                phase["handle"] = doc.recomputeAsync([array])
+                while not phase["done"]:
+                    time.sleep(0.02)
+
+            threading.Thread(target=starter, daemon=True).start()
+            admitted = Gui.tryRunPresentationCallback(install_proxy, doc)
+            self.assertTrue(admitted)
+            self.assertIsNone(phase["error"], phase["error"])
+            _pump_gui_until(lambda: phase["handle"] is not None and phase["handle"].done(), 30)
+            status = phase["handle"].status()
+            self.assertEqual(status["state"], "completed", status)
+            self.assertNotIn("Invalid", array.State, array.getStatusString())
+            self.assertEqual(array.getStatusString(), "Valid")
+            self.assertEqual(array.Count, 4)
+        finally:
+            recompute_document(doc)
+            close_document(doc)
+            Gui.updateGui()
+
+    def test_label_touch_observer_write_publishes(self):
+        """A model write from a Label observer during proxy attach must publish.
+
+        ViewProviderFeaturePython touches Label after the proxy's attach so the
+        tree can refresh. That touch is not a label change, but a
+        DocumentObserver that writes another property from the signal is a real
+        model edit and has to move that property's revision.
+        """
+        doc = App.newDocument("LabelTouchObserverPublish")
+        observer = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Box")
+            # Output so the observer write publishes a revision without marking
+            # the document for recompute. captureSemanticRevisions refuses a
+            # document that must execute.
+            obj.addProperty("App::PropertyInteger", "Mark", "", "", App.PropertyType.Prop_Output)
+            obj.Mark = 1
+            recompute_document(doc)
+
+            def revision_pair():
+                # The GUI thread cannot call captureSemanticRevisions. The
+                # document owner reads the index the GUI-side publish updates.
+                found = {}
+                errors = []
+
+                def worker():
+                    try:
+                        found["label"] = _property_revision(doc, obj.Name, "Label")
+                        found["mark"] = _property_revision(doc, obj.Name, "Mark")
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                thread = threading.Thread(target=worker)
+                thread.start()
+                _pump_gui_until(lambda: not thread.is_alive(), 30)
+                thread.join()
+                if errors:
+                    raise errors[0]
+                return found["label"], found["mark"]
+
+            label_before, mark_before = revision_pair()
+
+            class Observer:
+                def slotChangedObject(self, changed, prop):
+                    if changed == obj and prop == "Label" and changed.Mark != 2:
+                        changed.Mark = 2
+
+            class Proxy:
+                def attach(self, vobj):
+                    return
+
+            observer = Observer()
+            App.addDocumentObserver(observer)
+            obj.ViewObject.Proxy = Proxy()
+            QtCore.QCoreApplication.processEvents()
+
+            self.assertEqual(obj.Mark, 2)
+            label_after, mark_after = revision_pair()
+            self.assertEqual(label_after, label_before)
+            self.assertGreater(mark_after, mark_before)
+        finally:
+            if observer is not None:
+                App.removeDocumentObserver(observer)
+            close_document(doc)
+            Gui.updateGui()
+
+    def test_label_touch_observer_rename_publishes(self):
+        """Renaming Label from the attach touch signal must publish Label.
+
+        ViewProviderFeaturePython touches Label after the proxy's attach. That
+        synthetic touch stays non-semantic. A DocumentObserver that assigns a
+        new Label during the signal is a real value write and has to move
+        objectProperty(Label). The object is purgeTouched afterwards only so
+        captureSemanticRevisions is allowed; that object purge publishes the
+        object model revision, not the label property revision.
+        """
+        doc = App.newDocument("LabelTouchObserverRename")
+        observer = None
+        try:
+            obj = doc.addObject("App::FeaturePython", "Box")
+            recompute_document(doc)
+
+            def label_revision():
+                found = {}
+                errors = []
+
+                def worker():
+                    try:
+                        found["label"] = _property_revision(doc, obj.Name, "Label")
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                thread = threading.Thread(target=worker)
+                thread.start()
+                _pump_gui_until(lambda: not thread.is_alive(), 30)
+                thread.join()
+                if errors:
+                    raise errors[0]
+                return found["label"]
+
+            label_before = label_revision()
+
+            class Observer:
+                def slotChangedObject(self, changed, prop):
+                    if changed == obj and prop == "Label" and changed.Label != "Renamed":
+                        changed.Label = "Renamed"
+
+            class Proxy:
+                def attach(self, vobj):
+                    return
+
+            observer = Observer()
+            App.addDocumentObserver(observer)
+            obj.ViewObject.Proxy = Proxy()
+            QtCore.QCoreApplication.processEvents()
+
+            self.assertEqual(obj.Label, "Renamed")
+            # Label is not an output property, so the write marks the object
+            # for recompute. Clear that touched state without rewriting Label.
+            obj.purgeTouched()
+            self.assertFalse(doc.mustExecute())
+            self.assertGreater(label_revision(), label_before)
+        finally:
+            if observer is not None:
+                App.removeDocumentObserver(observer)
+            close_document(doc)
+            Gui.updateGui()
