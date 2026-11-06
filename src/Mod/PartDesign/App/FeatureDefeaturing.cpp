@@ -26,6 +26,7 @@
 #include <TopTools_ListOfShape.hxx>
 
 #include <Base/Exception.h>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <Mod/Part/App/TopoShape.h>
 
 #include "FeatureDefeaturing.h"
@@ -120,7 +121,7 @@ void Defeaturing::updatePreviewShape()
     try {
         // Removed volume: material in base but not in result (e.g. defeature a fillet)
         BRepAlgoAPI_Cut removedCut;
-        removedCut.SetRunParallel(true);
+        removedCut.SetRunParallel(Part::booleanRunParallel());
         TopTools_ListOfShape args1, tools1;
         args1.Append(baseShape.getShape());
         tools1.Append(resultShape.getShape());
@@ -130,7 +131,7 @@ void Defeaturing::updatePreviewShape()
 
         // Added volume: material in result but not in base (e.g. defeature a hole)
         BRepAlgoAPI_Cut addedCut;
-        addedCut.SetRunParallel(true);
+        addedCut.SetRunParallel(Part::booleanRunParallel());
         TopTools_ListOfShape args2, tools2;
         args2.Append(resultShape.getShape());
         tools2.Append(baseShape.getShape());
@@ -149,7 +150,7 @@ void Defeaturing::updatePreviewShape()
         TopoDS_Shape previewShape;
         if (hasRemoved && hasAdded) {
             BRepAlgoAPI_Fuse fuse;
-            fuse.SetRunParallel(true);
+            fuse.SetRunParallel(Part::booleanRunParallel());
             TopTools_ListOfShape fuseArgs, fuseTools;
             fuseArgs.Append(removedCut.Shape());
             fuseTools.Append(addedCut.Shape());

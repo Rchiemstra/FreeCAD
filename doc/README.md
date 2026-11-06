@@ -12,6 +12,10 @@
 - [interference_detection_plan.md](interference_detection_plan.md) — Assembly interference and clearance design, with historical validation context.
 - [nonblocking_document_execution_and_gui_presentation_plan.md](nonblocking_document_execution_and_gui_presentation_plan.md) — Document execution lanes and committed GUI presentation contracts.
 
+## Runtime
+
+- [occt-boolean-serial.md](occt-boolean-serial.md) — OCCT 8 Boolean operations run serially until an upstream race fix is verified.
+
 ## Operations
 
 - [hetzner-freecad-cheatsheet.md](hetzner-freecad-cheatsheet.md) — Hetzner host, container, build, and operator commands.
