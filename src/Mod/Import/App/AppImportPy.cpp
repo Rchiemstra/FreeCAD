@@ -49,6 +49,7 @@
 #endif
 
 #include <chrono>
+#include <set>
 #include "dxf/ImpExpDxf.h"
 #include "SketchExportHelper.h"
 #include <App/Application.h>
@@ -68,9 +69,11 @@
 #include "ReaderGltf.h"
 #include "ReaderIges.h"
 #include "ReaderStep.h"
+#include "StepMetadataImport.h"
 #include "WriterGltf.h"
 #include "WriterIges.h"
 #include "WriterStep.h"
+#include "StepAttributesExport.h"
 
 namespace Import
 {
@@ -84,17 +87,20 @@ public:
         add_keyword_method(
             "open",
             &Module::importer,
-            "open(string) -- Open the file and create a new document."
+            "open(string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Open a file; semanticPMI overrides "
+            "the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
             "insert",
             &Module::importer,
-            "insert(string,string) -- Insert the file into the given document."
+            "insert(string,string, ..., semanticPMI=bool, savedViews=bool, userAttributes=bool) -- Insert into a document; "
+            "semanticPMI overrides the default-off ImportSemanticPMI preference."
         );
         add_keyword_method(
             "export",
             &Module::exporter,
-            "export(list,string) -- Export a list of objects into a single file."
+            "export(list,string,...,semanticPMI=bool,userAttributes=bool) -- Export shapes; opt-in AP242 PMI "
+            "returns per-object status/reason records (ExportSemanticPMI and ExportUserAttributes default off)."
         );
         add_varargs_method(
             "readDXF",
@@ -127,13 +133,17 @@ private:
         PyObject* importHidden = Py_None;
         PyObject* merge = Py_None;
         PyObject* useLinkGroup = Py_None;
+        PyObject* semanticPMI = Py_None;
+        PyObject* savedViews = Py_None;
+        PyObject* userAttributes = Py_None;
         int mode = -1;
-        static const std::array<const char*, 7>
-            kwd_list {"name", "docName", "importHidden", "merge", "useLinkGroup", "mode", nullptr};
+        static const std::array<const char*, 10>
+            kwd_list {"name", "docName", "importHidden", "merge", "useLinkGroup", "mode",
+                      "semanticPMI", "savedViews", "userAttributes", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "et|sO!O!O!i",
+                "et|sO!O!O!iO!O!O!",
                 kwd_list,
                 "utf-8",
                 &Name,
@@ -144,7 +154,13 @@ private:
                 &merge,
                 &PyBool_Type,
                 &useLinkGroup,
-                &mode
+                &mode,
+                &PyBool_Type,
+                &semanticPMI,
+                &PyBool_Type,
+                &savedViews,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -154,6 +170,10 @@ private:
 
         try {
             Base::FileInfo file(Utf8Name.c_str());
+            StepMetadataImport metadata(file,
+                semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI),
+                savedViews == Py_None ? -1 : Base::asBoolean(savedViews),
+                userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
 
             App::Document* pcDoc = nullptr;
             if (DocName) {
@@ -170,6 +190,11 @@ private:
             if (file.hasExtension({"stp", "step"})) {
                 try {
                     Import::ReaderStep reader(file);
+                    if (metadata.pmiReader()) {
+                        reader.setReadSemanticPmi(true, metadata.pmiReader());
+                    }
+                    reader.setViewsImport(metadata.viewsReader());
+                    reader.setAttributesImport(metadata.attributesReader());
                     reader.read(hDoc);
                 }
                 catch (OSD_Exception& e) {
@@ -215,7 +240,21 @@ private:
             if (mode >= 0) {
                 ocaf.setMode(mode);
             }
+            metadata.attach(ocaf);
             ocaf.loadShapes();
+            // Merging removes intermediate features. Drop their color results
+            // before metadata allocations can reuse an old object's address.
+            if (!ocaf.partColors.empty()) {
+                std::set<const App::DocumentObject*> live;
+                for (auto document : App::GetApplication().getDocuments()) {
+                    for (auto object : document->getObjects()) { live.insert(object); }
+                }
+                std::erase_if(ocaf.partColors, [&live](const auto& color) {
+                    return !live.contains(color.first);
+                });
+            }
+            metadata.finish(file, hDoc, pcDoc, ocaf.supportsPmiAssociation(),
+                            ocaf.supportsAttributeAssociation());
 
             hApp->Close(hDoc);
 
@@ -252,12 +291,15 @@ private:
         PyObject* pyexportHidden = Py_None;
         PyObject* pylegacy = Py_None;
         PyObject* pykeepPlacement = Py_None;
-        static const std::array<const char*, 6>
-            kwd_list {"obj", "name", "exportHidden", "legacy", "keepPlacement", nullptr};
+        PyObject* semanticPMI = Py_None;
+        PyObject* userAttributes = Py_None;
+        static const std::array<const char*, 8>
+            kwd_list {"obj", "name", "exportHidden", "legacy", "keepPlacement",
+                      "semanticPMI", "userAttributes", nullptr};
         if (!Base::Wrapped_ParseTupleAndKeywords(
                 args.ptr(),
                 kwds.ptr(),
-                "Oet|O!O!O!",
+                "Oet|O!O!O!O!O!",
                 kwd_list,
                 &object,
                 "utf-8",
@@ -267,7 +309,11 @@ private:
                 &PyBool_Type,
                 &pylegacy,
                 &PyBool_Type,
-                &pykeepPlacement
+                &pykeepPlacement,
+                &PyBool_Type,
+                &semanticPMI,
+                &PyBool_Type,
+                &userAttributes
             )) {
             throw Py::Exception();
         }
@@ -287,6 +333,9 @@ private:
                                                          : Base::asBoolean(pykeepPlacement));
         // clang-format on
 
+        StepPmiExport pmi(semanticPMI == Py_None ? -1 : Base::asBoolean(semanticPMI));
+        StepAttributesExport attributes(userAttributes == Py_None ? -1 : Base::asBoolean(userAttributes));
+        Py::Object pmiReport = Py::None();
         try {
             Py::Sequence list(object);
             std::vector<App::DocumentObject*> objs;
@@ -332,6 +381,8 @@ private:
             };
 
             Import::ExportOCAF2 ocaf(hDoc, getShapeColors);
+            ocaf.setShapeObserver(pmi.observer());
+            ocaf.setAttributeObserver(attributes.observer());
             if (!legacyExport || !ocaf.canFallback(objs)) {
                 ocaf.setExportOptions(ExportOCAF2::customExportOptions());
                 ocaf.setExportHiddenObject(exportHidden);
@@ -342,6 +393,8 @@ private:
             else {
                 bool keepExplicitPlacement = true;
                 ExportOCAFCmd ocaf(hDoc, keepExplicitPlacement);
+                ocaf.setShapeObserver(pmi.observer());
+                ocaf.setAttributeObserver(attributes.observer());
                 ocaf.setPartColorsMap(partColor);
                 ocaf.exportObjects(objs);
             }
@@ -349,7 +402,7 @@ private:
             Base::FileInfo file(Utf8Name.c_str());
             if (file.hasExtension({"stp", "step"})) {
                 Import::WriterStep writer(file);
-                writer.write(hDoc);
+                pmiReport = pmi.write(file, hDoc, objs, &attributes);
             }
             else if (file.hasExtension({"igs", "iges"})) {
                 Import::WriterIges writer(file);
@@ -370,7 +423,7 @@ private:
             throw Py::Exception();
         }
 
-        return Py::None();
+        return pmiReport;
     }
 
     // This readDXF method is an almost exact duplicate of the one in ImportGui::Module.

@@ -24,6 +24,60 @@
      </property>
      <layout class="QVBoxLayout" name="verticalLayout">
       <item>
+       <widget class="Gui::PrefCheckBox" name="checkBoxUserAttributes">
+        <property name="text">
+         <string>Import user attributes</string>
+        </property>
+        <property name="toolTip">
+         <string>Import descriptive strings and explicitly unit-bearing length and angle properties as editable records.</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+        <property name="prefEntry" stdset="0">
+         <cstring>ImportUserAttributes</cstring>
+        </property>
+        <property name="prefPath" stdset="0">
+         <cstring>Mod/Import</cstring>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="Gui::PrefCheckBox" name="checkBoxSavedViews">
+        <property name="text">
+         <string>Import saved views and clipping data</string>
+        </property>
+        <property name="toolTip">
+         <string>Store named camera and clipping records without activating a view.</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+        <property name="prefEntry" stdset="0">
+         <cstring>ImportSavedViews</cstring>
+        </property>
+        <property name="prefPath" stdset="0">
+         <cstring>Mod/Import</cstring>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="Gui::PrefCheckBox" name="checkBoxSemanticPMI">
+        <property name="text">
+         <string>Import semantic PMI (dimensions, tolerances, datums)</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+        <property name="prefEntry" stdset="0">
+         <cstring>ImportSemanticPMI</cstring>
+        </property>
+        <property name="prefPath" stdset="0">
+         <cstring>Mod/Import</cstring>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="Gui::PrefCheckBox" name="checkBoxMergeCompound">
         <property name="toolTip">
          <string>Merges all shapes into a single compound during import, resolving part instances and applying transforms. Increases import time but does not affect geometry accuracy or rendering quality.</string>
@@ -241,6 +295,7 @@
   </customwidget>
  </customwidgets>
  <tabstops>
+  <tabstop>checkBoxSemanticPMI</tabstop>
   <tabstop>checkBoxMergeCompound</tabstop>
   <tabstop>checkBoxUseLinkGroup</tabstop>
   <tabstop>checkBoxImportHiddenObj</tabstop>

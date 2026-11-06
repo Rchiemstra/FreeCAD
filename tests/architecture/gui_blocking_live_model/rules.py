@@ -139,6 +139,8 @@ EXTRA_GUI_DIRS: tuple[str, ...] = (
 #: beside App-layer modules in the shared top-level package, so they cannot be
 #: selected by directory; each is listed explicitly and reviewed as GUI-only.
 EXTRA_GUI_FILES: tuple[str, ...] = (
+    # Import's explicit saved-view commands and transient per-view presentation.
+    "src/Mod/Import/StepViewsGui.py",
     # Model diff GUI presentation and asynchronous headless comparison ingress.
     "src/Mod/ModelDiff/modeldiff.py",
     # Draft's main GUI controller (toolbar, task panel dispatch).
