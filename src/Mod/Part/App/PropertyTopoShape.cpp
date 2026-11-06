@@ -38,6 +38,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DynamicProperty.h>
 #include <App/ObjectIdentifier.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -1152,9 +1153,12 @@ PropertyShapeCache* PropertyShapeCache::get(const App::DocumentObject* obj, bool
         return 0;
     }
 
-    // The cache is an optimization. The document may refuse new properties,
-    // e.g. while a collaboration commit is publishing: then do not cache.
+    // The cache is a local optimization, not model intent. Skip publication
+    // of this one add. A real dynamic property, including one added by an
+    // observer of this signal, still publishes.
     try {
+        const App::DynamicPropertySchemaPublicationSuppressor suppressSchemaPublication(
+            *obj, SHAPE_CACHE_NAME);
         prop = static_cast<PropertyShapeCache*>(const_cast<App::DocumentObject*>(obj)->addDynamicProperty(
             "Part::PropertyShapeCache",
             SHAPE_CACHE_NAME,
