@@ -3,6 +3,7 @@
 
 import builtins
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -561,3 +562,122 @@ class DraftDeferredArrayPresentation(unittest.TestCase):
                     recompute_document(doc)
                     close_document(doc)
                     Gui.updateGui()
+
+    def test_shape_cache_install_during_prepared_recompute(self):
+        """A GUI shape read during the commit gap must not invalidate the array.
+
+        Part.getShape installs the non-persistent _Part_ShapeCache. That add
+        runs after the prepared recompute has captured revisions and before
+        the commit validates them.
+        """
+        import Draft
+
+        doc = App.newDocument("DraftShapeCacheDuringRecompute")
+
+        def invalid():
+            details = []
+            for item in doc.Objects:
+                if "Invalid" in item.State:
+                    count = getattr(item, "Count", None)
+                    details.append(
+                        "name=%s state=%s status=%s count=%s"
+                        % (item.Name, list(item.State), item.getStatusString(), count)
+                    )
+            return details
+
+        pending = []
+        errors = []
+        created = []
+        try:
+
+            def create():
+                self.assertFalse(gui_utils.on_gui_thread())
+                base = doc.addObject("Part::Feature", "Base")
+                base.Shape = Part.makeBox(2, 3, 4)
+                array = Draft.make_rect_array(base, use_link=True)
+                created.append((base, array))
+
+            def worker():
+                try:
+                    result = doc.commitCompatibilityMutation(
+                        create, structural=True, recompute=False
+                    )
+                    self.assertTrue(result["committed"], result)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with patch.object(
+                gui_utils,
+                "run_gui_setup",
+                side_effect=lambda _obj, callback: pending.append(callback),
+            ):
+                thread = threading.Thread(target=worker)
+                thread.start()
+                _pump_gui_until(lambda: not thread.is_alive(), 60)
+                thread.join()
+            if errors:
+                raise errors[0]
+            self.assertEqual(len(pending), 1)
+            base, array = created[0]
+            base_handle = doc.recomputeAsync([base])
+            _pump_gui_until(lambda: base_handle.done(), 30)
+            self.assertEqual(base_handle.status()["state"], "completed", base_handle.status())
+            self.assertNotIn("Invalid", base.State)
+            self.assertIn("Touched", array.State)
+
+            phase = {"holding": False, "handle": None, "done": False, "error": None}
+
+            def read_shape():
+                try:
+                    phase["holding"] = True
+                    deadline = time.monotonic() + 20
+                    while phase["handle"] is None and time.monotonic() < deadline:
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.01)
+                    handle = phase["handle"]
+                    if handle is None:
+                        raise AssertionError("recompute was not submitted")
+                    while time.monotonic() < deadline:
+                        features = handle.status().get("features") or []
+                        if any(
+                            item.get("feature") == "Array" and item.get("state") == "committing"
+                            for item in features
+                        ):
+                            break
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError(
+                            "array recompute never reached the commit gap: %s" % handle.status()
+                        )
+                    Part.getShape(array, retType=2, transform=False)
+                    if "_Part_ShapeCache" not in array.PropertiesList:
+                        raise AssertionError("shape cache was not installed in the commit gap")
+                except BaseException as exc:
+                    phase["error"] = exc
+                finally:
+                    phase["done"] = True
+
+            def starter():
+                deadline = time.monotonic() + 20
+                while not phase["holding"]:
+                    if time.monotonic() > deadline:
+                        return
+                    time.sleep(0.005)
+                phase["handle"] = doc.recomputeAsync([array])
+                while not phase["done"]:
+                    time.sleep(0.02)
+
+            threading.Thread(target=starter, daemon=True).start()
+            admitted = Gui.tryRunPresentationCallback(read_shape, doc)
+            self.assertTrue(admitted)
+            self.assertIsNone(phase["error"], phase["error"])
+            _pump_gui_until(lambda: phase["handle"] is not None and phase["handle"].done(), 30)
+            status = phase["handle"].status()
+            self.assertFalse(invalid(), status.get("diagnostic"))
+            self.assertGreater(array.Count, 0, status)
+            self.assertEqual(status["state"], "completed", status)
+        finally:
+            recompute_document(doc)
+            close_document(doc)
+            Gui.updateGui()
