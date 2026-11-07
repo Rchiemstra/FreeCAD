@@ -20,6 +20,7 @@
 #include <App/MainThreadSignal.h>
 #include <App/MutationClassification.h>
 #include <App/RecoverySnapshot.h>
+#include <App/RecoveryAdmission.h>
 #include <Gui/DocumentExecutionIngress.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
@@ -36,6 +37,7 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include <Gui/View.h>
 #include <src/App/InitApplication.h>
 
 #include <Base/Exception.h>
@@ -903,6 +905,256 @@ TEST_F(CollaborationResponsivenessTest,
         EXPECT_EQ(_guiDocument->presentationCache().committedCoinRoot(), committedRoot);
         EXPECT_EQ(_guiDocument->presentationCache().committedSequence(), committedSequence);
     }
+}
+
+TEST_F(CollaborationResponsivenessTest, busyActivationPreservesGuiAndAppUntilAdmissionEnds)
+{
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName = app.getUniqueDocumentName("deferredActivation");
+    auto* other = app.newDocument(otherName.c_str(), "Deferred activation", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] { app.closeDocument(otherName.c_str()); });
+    auto* otherGui = gui->getDocument(other);
+    ASSERT_NE(otherGui, nullptr);
+    gui->setActiveDocument(_guiDocument);
+    ASSERT_EQ(app.getActiveDocument(), _document);
+
+    std::atomic_bool refreshing {false};
+    OwnerAdmissionAttempt admission(*_document, refreshing);
+    ASSERT_TRUE(admission.startAndWait());
+    ASSERT_TRUE(admission.accepted);
+    ASSERT_NO_THROW(gui->setActiveDocument(otherGui));
+    int heartbeats = 0;
+    QTimer heartbeat;
+    heartbeat.setInterval(1);
+    QObject::connect(&heartbeat, &QTimer::timeout, [&] { ++heartbeats; });
+    heartbeat.start();
+    const auto busyUntil = std::chrono::steady_clock::now() + 80ms;
+    while (std::chrono::steady_clock::now() < busyUntil) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_GT(heartbeats, 0);
+    EXPECT_EQ(gui->activeDocument(), _guiDocument);
+    EXPECT_EQ(app.getActiveDocument(), _document);
+    EXPECT_TRUE(_guiDocument->isActive());
+    EXPECT_FALSE(otherGui->isActive());
+    // The process lifecycle guard is unchanged; a direct App mutation is still
+    // rejected while the GUI request waits without changing either side.
+    EXPECT_THROW(app.setActiveDocument(other), Base::RuntimeError);
+
+    admission.releaseAndJoin();
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (gui->activeDocument() != otherGui && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(gui->activeDocument(), otherGui);
+    EXPECT_EQ(app.getActiveDocument(), other);
+    EXPECT_FALSE(_guiDocument->isActive());
+    EXPECT_TRUE(otherGui->isActive());
+}
+
+TEST_F(CollaborationResponsivenessTest, latestDeferredActivationIncludesNullAndCurrentTarget)
+{
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto firstName = app.getUniqueDocumentName("deferredFirst");
+    const auto secondName = app.getUniqueDocumentName("deferredSecond");
+    auto* first = app.newDocument(firstName.c_str(), "First", flags);
+    auto* second = app.newDocument(secondName.c_str(), "Second", flags);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    const auto closeOthers = qScopeGuard([&] {
+        app.closeDocument(secondName.c_str());
+        app.closeDocument(firstName.c_str());
+    });
+    auto* firstGui = gui->getDocument(first);
+    auto* secondGui = gui->getDocument(second);
+    ASSERT_NE(firstGui, nullptr);
+    ASSERT_NE(secondGui, nullptr);
+    std::atomic_bool refreshing {false};
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        SCOPED_TRACE(cycle);
+        gui->setActiveDocument(_guiDocument);
+        OwnerAdmissionAttempt admission(*_document, refreshing);
+        ASSERT_TRUE(admission.startAndWait());
+        ASSERT_TRUE(admission.accepted);
+        gui->setActiveDocument(firstGui);
+        gui->setActiveDocument(secondGui);
+        auto* expected = cycle == 0 ? secondGui : cycle == 1 ? nullptr : _guiDocument;
+        if (cycle != 0) {
+            gui->setActiveDocument(expected);
+        }
+        EXPECT_EQ(gui->activeDocument(), _guiDocument);
+        EXPECT_EQ(app.getActiveDocument(), _document);
+        admission.releaseAndJoin();
+        // Service several retry periods even for a cancelled request, so an
+        // obsolete first/second request cannot pass by publishing later.
+        const auto deadline = std::chrono::steady_clock::now() + 100ms;
+        while (std::chrono::steady_clock::now() < deadline) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(1ms);
+        }
+        EXPECT_EQ(gui->activeDocument(), expected);
+        EXPECT_EQ(app.getActiveDocument(), expected ? expected->getDocument() : nullptr);
+    }
+}
+
+TEST_F(CollaborationResponsivenessTest, deferredActivationRejectsClosedAndAdvancedTargets)
+{
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    std::atomic_bool refreshing {false};
+    for (const bool closeTarget : {false, true}) {
+        SCOPED_TRACE(closeTarget ? "closed/reopened target" : "advanced epoch");
+        const auto otherName = app.getUniqueDocumentName("retiredActivation");
+        auto* other = app.newDocument(otherName.c_str(), "Retired activation", flags);
+        ASSERT_NE(other, nullptr);
+        const auto closeOther = qScopeGuard([&] { app.closeDocument(otherName.c_str()); });
+        auto* otherGui = gui->getDocument(other);
+        ASSERT_NE(otherGui, nullptr);
+        gui->setActiveDocument(_guiDocument);
+        const auto before = other->collaborationIdentity();
+        OwnerAdmissionAttempt admission(*_document, refreshing);
+        ASSERT_TRUE(admission.startAndWait());
+        ASSERT_TRUE(admission.accepted);
+        gui->setActiveDocument(otherGui);
+        admission.releaseAndJoin();
+        const auto timerRan = std::make_shared<bool>(false);
+        QTimer::singleShot(0, qApp, [timerRan] { *timerRan = true; });
+        if (closeTarget) {
+            ASSERT_TRUE(app.closeDocument(otherName.c_str()));
+            other = app.newDocument(otherName.c_str(), "Replacement", flags);
+            ASSERT_NE(other, nullptr);
+            EXPECT_NE(other->collaborationIdentity().instanceId, before.instanceId);
+        }
+        else {
+            const App::RecoverySnapshotSaveOptions options;
+            const auto advanced = app.advanceDocumentCollaborationEpoch(
+                *other, options, "deferred activation epoch regression");
+            ASSERT_NE(advanced.lifecycleEpoch, before.lifecycleEpoch);
+        }
+        ASSERT_FALSE(*timerRan) << "setup serviced the deferred activation before retirement";
+        const auto deadline = std::chrono::steady_clock::now() + 100ms;
+        while (std::chrono::steady_clock::now() < deadline) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(1ms);
+        }
+        EXPECT_EQ(gui->activeDocument(), _guiDocument)
+            << "a stale tab request activated a retired or replacement target";
+        gui->setActiveDocument(_guiDocument);
+    }
+}
+
+TEST_F(CollaborationResponsivenessTest, activationReservationExcludesNewOwnerAdmission)
+{
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName = app.getUniqueDocumentName("reservedActivation");
+    auto* other = app.newDocument(otherName.c_str(), "Reserved activation", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] { app.closeDocument(otherName.c_str()); });
+    auto* otherGui = gui->getDocument(other);
+    ASSERT_NE(otherGui, nullptr);
+    gui->setActiveDocument(_guiDocument);
+    std::atomic_bool activating {true};
+    OwnerAdmissionAttempt admission(*_document, activating);
+    bool attempted = false;
+    auto connection = app.signalActiveDocument.connect([&](const App::Document& document) {
+        if (&document == other) {
+            attempted = admission.startAndWait();
+        }
+    });
+    const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
+    gui->setActiveDocument(otherGui);
+    EXPECT_TRUE(attempted);
+    EXPECT_FALSE(admission.accepted);
+    EXPECT_FALSE(admission.rejection.empty());
+    EXPECT_EQ(gui->activeDocument(), otherGui);
+    EXPECT_EQ(app.getActiveDocument(), other);
+    admission.releaseAndJoin();
+}
+
+TEST_F(CollaborationResponsivenessTest, explicitAppActivationSupersedesDeferredGuiActivation)
+{
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName = app.getUniqueDocumentName("supersededActivation");
+    auto* other = app.newDocument(otherName.c_str(), "Superseded activation", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] { app.closeDocument(otherName.c_str()); });
+    auto* otherGui = gui->getDocument(other);
+    ASSERT_NE(otherGui, nullptr);
+    gui->setActiveDocument(_guiDocument);
+    std::atomic_bool refreshing {false};
+    OwnerAdmissionAttempt admission(*_document, refreshing);
+    ASSERT_TRUE(admission.startAndWait());
+    ASSERT_TRUE(admission.accepted);
+    gui->setActiveDocument(otherGui);
+    admission.releaseAndJoin();
+    // Explicit App activation emits the current document even when unchanged.
+    app.setActiveDocument(_document);
+    const auto deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(gui->activeDocument(), _guiDocument);
+    EXPECT_EQ(app.getActiveDocument(), _document);
+}
+
+TEST_F(CollaborationResponsivenessTest, closingActiveDocumentRetiresHandlesWhenActivationIsDeferred)
+{
+    class PassiveView final: public Gui::BaseView
+    {
+    public:
+        bool onMsg(const char*) override { return false; }
+        bool onHasMsg(const char*) const override { return false; }
+    } view;
+    auto& app = App::GetApplication();
+    auto* gui = Gui::Application::Instance;
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName = app.getUniqueDocumentName("closingDeferredActivation");
+    auto* other = app.newDocument(otherName.c_str(), "Closing activation", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] { app.closeDocument(otherName.c_str()); });
+    auto* otherGui = gui->getDocument(other);
+    ASSERT_NE(otherGui, nullptr);
+    gui->setActiveDocument(otherGui);
+    // BaseView registration alone does not initialize its document. Production
+    // passive widgets bind their initial document explicitly too; do not rely
+    // on newDocument having emitted a second activation for the fixture.
+    view.setDocument(otherGui);
+    ASSERT_EQ(view.getGuiDocument(), otherGui);
+    {
+        // Pending recovery has no atomic mutation target, so irrevocable App
+        // close is legal while live GUI activation must defer its reservation.
+        App::RecoveryAdmission pendingRecovery;
+        App::LivePresentationRefreshScope refresh;
+        ASSERT_FALSE(refresh.acquired());
+        ASSERT_TRUE(app.closeDocument(otherName.c_str()));
+        EXPECT_EQ(gui->activeDocument(), nullptr);
+        EXPECT_EQ(app.getActiveDocument(), nullptr);
+        EXPECT_EQ(view.getGuiDocument(), nullptr);
+        Base::PyGILStateLocker lock;
+        EXPECT_TRUE(Py::Module("FreeCADGui").getAttr(std::string("ActiveDocument")).isNone());
+    }
+    QApplication::processEvents();
+    EXPECT_EQ(gui->activeDocument(), nullptr);
+    gui->setActiveDocument(_guiDocument);
 }
 
 TEST_F(CollaborationResponsivenessTest, idleActionsRetainRecomputeAndXLinkChecks)
