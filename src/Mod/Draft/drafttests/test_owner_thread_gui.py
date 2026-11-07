@@ -16,6 +16,31 @@ from Test.GuiRecompute import close_document, recompute_document, _pump_gui_unti
 from draftutils import gui_utils, params
 
 
+def _invalid_objects(doc):
+    """Describe the invalid objects, so a failure shows their recompute error."""
+    invalid = []
+    for item in doc.Objects:
+        if "Invalid" not in item.State:
+            continue
+        props = item.PropertiesList
+        info = {"name": item.Name, "state": item.State, "status": item.getStatusString()}
+        for prop in ("Count", "ExpandArray"):
+            if prop in props:
+                info[prop] = getattr(item, prop)
+        for prop in ("PlacementList", "ElementList"):
+            if prop in props:
+                info[prop] = len(getattr(item, prop))
+        base = item.Base if "Base" in props else None
+        if base is not None:
+            info["Base"] = {"state": base.State}
+            if hasattr(base, "Shape"):
+                info["Base"]["null_shape"] = base.Shape.isNull()
+        proxy = getattr(getattr(item, "ViewObject", None), "Proxy", None)
+        info["view_provider"] = type(proxy).__name__ if proxy is not None else None
+        invalid.append(info)
+    return invalid
+
+
 class DraftOwnerThreadFactories(unittest.TestCase):
     def setUp(self):
         self.workbench = Gui.activeWorkbench().name()
@@ -280,9 +305,7 @@ class DraftOwnerThreadFactories(unittest.TestCase):
                     if owner:
                         obj, base = created[0]
                         self._assert_owner_presentation(name, obj, base)
-                    self.assertFalse(
-                        [item.Name for item in doc.Objects if "Invalid" in item.State], name
-                    )
+                    self.assertFalse(_invalid_objects(doc), name)
             finally:
                 close_document(doc)
                 Gui.updateGui()
