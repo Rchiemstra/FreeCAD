@@ -211,4 +211,29 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
+/**
+ * Skips publication of one dynamic-property add on this thread.
+ *
+ * The add of `name` on `container` is still audited. Only that publication
+ * is skipped, and only the first match. `name` must outlive this object.
+ * Removes, renames, and any other add, including from an observer, still
+ * publish. The previous key is restored on destruction.
+ */
+class AppExport DynamicPropertySchemaPublicationSuppressor
+{
+public:
+    DynamicPropertySchemaPublicationSuppressor(const PropertyContainer& container,
+                                               const char* name) noexcept;
+    ~DynamicPropertySchemaPublicationSuppressor();
+
+    DynamicPropertySchemaPublicationSuppressor(
+        const DynamicPropertySchemaPublicationSuppressor&) = delete;
+    DynamicPropertySchemaPublicationSuppressor& operator=(
+        const DynamicPropertySchemaPublicationSuppressor&) = delete;
+
+private:
+    const PropertyContainer* _previousContainer;
+    const char* _previousName;
+};
+
 }  // namespace App
