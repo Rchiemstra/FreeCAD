@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import importlib.util
 import json
+import math
 import os
 import platform
 import shutil
@@ -976,6 +978,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--diagnostics", "--gui-diagnostics",
+        action="store_true",
+        help=(
+            "Record Qt heartbeats and a nonfatal Python traceback after a "
+            "30-second GUI stall; does not stop or restart FreeCAD"
+        ),
+    )
+    parser.add_argument(
         "--wait",
         action="store_true",
         help="Wait for FreeCAD to exit before this script returns",
@@ -1040,6 +1050,138 @@ def _start_freecad(
     if wait:
         return process
     return process
+
+
+def _diagnostic_launch_args(profile: Path, arguments: list[str]) -> list[str]:
+    """Load the opt-in helper only when requested, before document arguments."""
+    source = Path(__file__).with_name("gui_hang_diagnostics.py")
+    spec = importlib.util.spec_from_file_location("freecad_launcher_gui_diagnostics", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("GUI diagnostics runtime could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    directory, result = module.prepare_launch(profile, arguments)
+    print(f"GUI diagnostics directory: {directory}", flush=True)
+    return result
+
+
+def _diagnostic_isolated_profile(arguments: list[str], environment: dict[str, str]) -> Path:
+    override = environment.get("FREECAD_MCP_PROFILE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    name = ".freecad-mcp-isolated"
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value == "--profile-name":
+            if index + 1 >= len(arguments):
+                raise ValueError("--profile-name requires a value")
+            name = arguments[index + 1]
+            index += 1
+        elif value.startswith("--profile-name="):
+            name = value.split("=", 1)[1]
+        index += 1
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise ValueError("--profile-name must be a single directory name")
+    return (_repo_root() / name).resolve()
+
+
+def _diagnostic_exit_monitor_args(arguments: list[str]) -> tuple[Path | None, list[str], float]:
+    """Use the isolated helper's exact child wait without delaying registration."""
+    status = None
+    timeout = 900.0  # Existing isolated helper's absolute startup cap.
+    index = 0
+    while index < len(arguments):
+        option = arguments[index]
+        for name in ("--exit-status-file", "--rpc-wait-timeout"):
+            if option == name or option.startswith(name + "="):
+                if option == name:
+                    if index + 1 >= len(arguments):
+                        raise ValueError(f"{name} requires a value")
+                    index += 1
+                    value = arguments[index]
+                else:
+                    value = option.split("=", 1)[1]
+                if not value:
+                    raise ValueError(f"{name} requires a value")
+                if name == "--exit-status-file":
+                    if status is not None:
+                        raise ValueError("--exit-status-file may be specified only once")
+                    status = Path(value).resolve()
+                else:
+                    timeout = float(value)
+                    if not math.isfinite(timeout) or timeout <= 0:
+                        raise ValueError("--rpc-wait-timeout requires a finite positive value")
+                break
+        index += 1
+    if "--supervise" in arguments:
+        if status is not None:
+            raise ValueError("--exit-status-file cannot be combined with --supervise")
+        return None, list(arguments), timeout
+    result = list(arguments)
+    if status is None:
+        macro = next((Path(value) for value in arguments if Path(value).name == "GuiDiagnostics.FCMacro"), None)
+        if macro is None:
+            raise ValueError("GUI diagnostics startup macro is missing")
+        status = macro.parent / "exit-status.json"
+        result = ["--exit-status-file", str(status), *result]
+    return status, result, timeout
+
+
+def _diagnostic_status_signature(path: Path) -> tuple[int, int, int] | None:
+    try:
+        info = path.stat()
+        return info.st_ino, info.st_mtime_ns, info.st_size
+    except FileNotFoundError:
+        return None
+
+
+def _launch_diagnostic_isolated(command: list[str], environment: dict[str, str],
+                                status_file: Path, timeout: float) -> int:
+    """Retain a helper as exit-code owner, returning after its proven readiness.
+
+    Only the helper writes the child status, after authenticated readiness. No
+    document RPC, PID attachment, process termination, or new lifetime supervisor
+    is introduced here. A missing/stale receipt never counts as readiness.
+    """
+    previous = _diagnostic_status_signature(status_file)
+    options = {"env": environment, "stdin": subprocess.DEVNULL}
+    if os.name == "nt":
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        options["start_new_session"] = True
+    process = subprocess.Popen(command, **options)
+    print(f"GUI diagnostics exit monitor: pid={process.pid}; status={status_file}", flush=True)
+    deadline = time.monotonic() + timeout + 15.0
+    while time.monotonic() < deadline:
+        signature = _diagnostic_status_signature(status_file)
+        if signature is not None and signature != previous:
+            with status_file.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                raise ValueError("GUI diagnostics exit status exceeds its byte bound")
+            record = json.loads(raw)
+            if (not isinstance(record, dict) or set(record) != {"pid", "returncode"}
+                    or type(record["pid"]) is not int or record["pid"] <= 0
+                    or (record["returncode"] is not None and type(record["returncode"]) is not int)):
+                raise ValueError("GUI diagnostics exit status has an invalid schema")
+            if record["returncode"] is not None:
+                print(f"ERROR: FreeCAD exited during diagnostic launch (raw code {record['returncode']}).",
+                      file=sys.stderr)
+                return record["returncode"] or 1
+            if process.poll() is None:
+                # This initial receipt is emitted only after HMAC readiness.
+                # The detached helper now waits for the child's exact exit.
+                return 0
+        code = process.poll()
+        if code is not None:
+            print(f"ERROR: GUI diagnostics launch monitor exited before readiness (code {code}).",
+                  file=sys.stderr)
+            return code or 1
+        time.sleep(0.1)
+    print("ERROR: GUI diagnostics readiness receipt timed out; the existing helper retains lifecycle ownership.",
+          file=sys.stderr)
+    return 1
 
 
 def _codex_executable() -> str | None:
@@ -1125,11 +1267,28 @@ def _start_authenticated_isolated(args: argparse.Namespace) -> int:
     )
     if setup_result.returncode:
         return setup_result.returncode
-    launch_result = subprocess.run(
-        [python, str(scripts / "start_freecad_isolated.py"), *args.args], env=environment
-    )
-    if launch_result.returncode or codex is None:
-        return launch_result.returncode
+    freecad_args = args.args
+    if args.diagnostics:
+        try:
+            profile = _diagnostic_isolated_profile(freecad_args, environment)
+            freecad_args = _diagnostic_launch_args(profile, freecad_args)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"ERROR: GUI diagnostics preparation failed: {error}", file=sys.stderr)
+            return 1
+    try:
+        status_file = None
+        if args.diagnostics:
+            status_file, freecad_args, startup_timeout = _diagnostic_exit_monitor_args(freecad_args)
+        command = [python, str(scripts / "start_freecad_isolated.py"), *freecad_args]
+        if status_file is None:
+            launch_code = subprocess.run(command, env=environment).returncode
+        else:
+            launch_code = _launch_diagnostic_isolated(command, environment, status_file, startup_timeout)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"ERROR: GUI diagnostics launch failed: {error}", file=sys.stderr)
+        return 1
+    if launch_code or codex is None:
+        return launch_code
 
     profile = Path(
         environment.get("FREECAD_MCP_PROFILE_DIR") or _repo_root() / ".freecad-mcp-isolated"
@@ -1215,12 +1374,20 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_mcp_addon_installed()
     _ensure_mcp_auto_start()
 
+    freecad_args = args.args
+    if args.diagnostics:
+        try:
+            freecad_args = _diagnostic_launch_args(_freecad_user_data_base(), freecad_args)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"ERROR: GUI diagnostics preparation failed: {error}", file=sys.stderr)
+            return 1
+
     # The port was proven free above, so any server that answers from here on
     # is the one this launcher started.
     previous_mcp_pid = None
 
     if args.wait:
-        process = _start_freecad(freecad, args.args, wait=True)
+        process = _start_freecad(freecad, freecad_args, wait=True)
         assert isinstance(process, subprocess.Popen)
         if not args.no_wait_for_mcp:
             mcp_status = _wait_for_mcp_rpc(
@@ -1248,7 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"MCP RPC server is ready on localhost:{MCP_RPC_PORT}")
         return process.wait()
 
-    process = _start_freecad(freecad, args.args, wait=False)
+    process = _start_freecad(freecad, freecad_args, wait=False)
     assert isinstance(process, subprocess.Popen)
     print(f"Started FreeCAD: {freecad}")
 
