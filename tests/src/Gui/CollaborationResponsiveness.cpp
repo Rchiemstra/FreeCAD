@@ -5,6 +5,10 @@
 #include <QApplication>
 #include <QTimer>
 
+#include <Inventor/SoRenderManager.h>
+#include <Inventor/actions/SoSearchAction.h>
+#include <Inventor/nodes/SoSwitch.h>
+
 #include <App/Application.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
@@ -15,6 +19,7 @@
 #include <App/FeatureTest.h>
 #include <App/MainThreadSignal.h>
 #include <App/MutationClassification.h>
+#include <App/RecoverySnapshot.h>
 #include <Gui/DocumentExecutionIngress.h>
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
@@ -24,7 +29,9 @@
 #include <Gui/Camera.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentPresentationCache.h>
 #include <Gui/MainWindow.h>
+#include <Gui/PresentationApplyScheduler.h>
 #include <Gui/Tree.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
@@ -630,6 +637,272 @@ TEST_F(CollaborationResponsivenessTest, idleLiveCatchUpDoesNotProbePendingRecomp
     EXPECT_NO_THROW(_guiDocument->catchUpIdleLivePresentation());
     EXPECT_EQ(pending->probes, 0u);
     EXPECT_EQ(refreshCalls, 1);
+}
+
+TEST_F(CollaborationResponsivenessTest, unchangedCompatibilityReadDoesNotRefreshAllViewProviders)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    // Complete the setup's real presentation work before observing the read.
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    int refreshCalls = 0;
+    provider->refresh = [&] { ++refreshCalls; };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+
+    std::string captured;
+    App::CollaborationCompatibilityMutationOptions options;
+    options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
+    const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().commitCompatibilityMutationWithOptions(
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
+            [&] { captured = provider->getObject()->Label.getStrValue(); }, options);
+    });
+    ASSERT_TRUE(result.committed()) << result.message;
+    QApplication::processEvents();
+    EXPECT_EQ(captured, provider->getObject()->Label.getStrValue());
+    EXPECT_EQ(refreshCalls, 0)
+        << "an unchanged owner capture replayed every provider's App properties";
+}
+
+TEST_F(CollaborationResponsivenessTest, stableCommitKeepsDeferredPropertyRefresh)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    int refreshCalls = 0;
+    std::string presented;
+    provider->refresh = [&] {
+        ++refreshCalls;
+        presented = provider->getObject()->Label.getStrValue();
+    };
+    const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+
+    App::CollaborationCompatibilityMutationOptions options;
+    options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
+    const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().commitCompatibilityMutationWithOptions(
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
+            [&] { provider->getObject()->Label.setValue("Deferred property presented"); }, options);
+    });
+    ASSERT_TRUE(result.committed()) << result.message;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (refreshCalls == 0 && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(refreshCalls, 1);
+    EXPECT_EQ(presented, "Deferred property presented");
+}
+
+TEST_F(CollaborationResponsivenessTest, stableCommitKeepsDeferredVisibilityRefresh)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    const bool before = provider->getObject()->Visibility.getValue();
+    ASSERT_EQ(provider->Visibility.getValue(), before);
+
+    App::CollaborationCompatibilityMutationOptions options;
+    options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
+    const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().commitCompatibilityMutationWithOptions(
+            {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
+            [&] { provider->getObject()->Visibility.setValue(!before); }, options);
+    });
+    ASSERT_TRUE(result.committed()) << result.message;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while ((provider->Visibility.getValue() == before
+            || _guiDocument->hasDeferredVisibilityChange(provider))
+           && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_EQ(provider->getObject()->Visibility.getValue(), !before);
+    EXPECT_EQ(provider->Visibility.getValue(), !before);
+    EXPECT_FALSE(_guiDocument->hasDeferredVisibilityChange(provider));
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       unchangedReadHandsBusyCommittedRootBackWithoutProviderRefresh)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    Gui::View3DInventor view(_guiDocument, nullptr);
+    auto* viewer = view.getViewer();
+    ASSERT_NE(viewer, nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    _guiDocument->publishPresentationRevisionFromModel();
+    Gui::PresentationApplyPumpResult applied {};
+    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
+        applied = _guiDocument->pumpPresentationApply(50);
+    }
+    ASSERT_TRUE(applied.committedRevision);
+    ASSERT_NE(_guiDocument->presentationCache().committedCoinRoot(), nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+
+    SoSearchAction search;
+    search.setName("ObjectGroupSwitch");
+    search.setSearchingAll(true);
+    search.apply(viewer->getSoRenderManager()->getSceneGraph());
+    ASSERT_NE(search.getPath(), nullptr);
+    auto* liveSwitch = dynamic_cast<SoSwitch*>(search.getPath()->getTail());
+    ASSERT_NE(liveSwitch, nullptr);
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto restoreActive = qScopeGuard([&] {
+        Gui::Application::Instance->setActiveDocument(_guiDocument);
+    });
+    for (const bool active : {true, false}) {
+        SCOPED_TRACE(active ? "active document" : "inactive document");
+        Gui::Application::Instance->setActiveDocument(active ? _guiDocument : nullptr);
+        QApplication::processEvents();
+        PreparationGate gate;
+        auto work = lane->postToOwner([&] {
+            lane->beginRecoverySnapshotOwnerWork();
+            const auto endWork = qScopeGuard([&] { lane->endRecoverySnapshotOwnerWork(); });
+            return gate.enter({});
+        });
+        const auto release = qScopeGuard([&] {
+            gate.release();
+            work.wait();
+        });
+        ASSERT_TRUE(gate.waitUntilEntered());
+        ASSERT_FALSE(lane->isIdle());
+        _guiDocument->syncCommittedPresentationInViewers();
+        ASSERT_EQ(liveSwitch->whichChild.getValue(), SO_SWITCH_NONE);
+        ASSERT_FALSE(_guiDocument->prefersCommittedPresentation())
+            << "this root was installed for lane activity, not a pending full refresh";
+
+        int refreshCalls = 0;
+        provider->refresh = [&] { ++refreshCalls; };
+        const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+        gate.release();
+        ASSERT_EQ(work.wait_for(5s), std::future_status::ready);
+        ASSERT_TRUE(lane->isIdle());
+        std::string captured;
+        App::CollaborationCompatibilityMutationOptions options;
+        options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
+        const auto result = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+            return _document->collaborationService().commitCompatibilityMutationWithOptions(
+                {App::CollaborationCompatibilityScope::UnknownModel, {}, {}, {}},
+                [&] { captured = provider->getObject()->Label.getStrValue(); }, options);
+        });
+        ASSERT_TRUE(result.committed()) << result.message;
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (liveSwitch->whichChild.getValue() != SO_SWITCH_ALL
+               && std::chrono::steady_clock::now() < deadline) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(1ms);
+        }
+        EXPECT_EQ(captured, provider->getObject()->Label.getStrValue());
+        EXPECT_EQ(liveSwitch->whichChild.getValue(), SO_SWITCH_ALL)
+            << "the immutable committed sibling still blocks live picking";
+        EXPECT_EQ(refreshCalls, 0)
+            << "a root-only handoff must not replay every provider's App properties";
+    }
+}
+
+TEST_F(CollaborationResponsivenessTest,
+       epochAdvanceBeforeQueuedHandoffPreservesCurrentAndLaterWakes)
+{
+    auto* provider = addLivePresentationProbe();
+    ASSERT_NE(provider, nullptr);
+    Gui::View3DInventor view(_guiDocument, nullptr);
+    auto* viewer = view.getViewer();
+    ASSERT_NE(viewer, nullptr);
+    SoSearchAction search;
+    search.setName("ObjectGroupSwitch");
+    search.setSearchingAll(true);
+    search.apply(viewer->getSoRenderManager()->getSceneGraph());
+    ASSERT_NE(search.getPath(), nullptr);
+    auto* liveSwitch = dynamic_cast<SoSwitch*>(search.getPath()->getTail());
+    ASSERT_NE(liveSwitch, nullptr);
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+
+    // The geometry does not change in this regression. Same-instance epoch
+    // advancement deliberately retains the last committed presentation, so
+    // seed it once rather than requiring redundant fallback publications.
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+    _guiDocument->publishPresentationRevisionFromModel();
+    Gui::PresentationApplyPumpResult applied {};
+    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
+        applied = _guiDocument->pumpPresentationApply(50);
+    }
+    ASSERT_TRUE(applied.committedRevision);
+    auto* const committedRoot = _guiDocument->presentationCache().committedCoinRoot();
+    const auto committedSequence = _guiDocument->presentationCache().committedSequence();
+    ASSERT_NE(committedRoot, nullptr);
+    _guiDocument->catchUpIdleLivePresentation();
+    QApplication::processEvents();
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        SCOPED_TRACE(cycle);
+        ASSERT_EQ(_guiDocument->presentationCache().committedCoinRoot(), committedRoot);
+        ASSERT_EQ(_guiDocument->presentationCache().committedSequence(), committedSequence);
+
+        PreparationGate gate;
+        auto work = lane->postToOwner([&] {
+            lane->beginRecoverySnapshotOwnerWork();
+            const auto endWork = qScopeGuard([&] { lane->endRecoverySnapshotOwnerWork(); });
+            return gate.enter({});
+        });
+        const auto release = qScopeGuard([&] {
+            gate.release();
+            work.wait();
+        });
+        ASSERT_TRUE(gate.waitUntilEntered());
+        _guiDocument->syncCommittedPresentationInViewers();
+        ASSERT_EQ(liveSwitch->whichChild.getValue(), SO_SWITCH_NONE);
+        gate.release();
+        ASSERT_EQ(work.wait_for(5s), std::future_status::ready);
+        ASSERT_TRUE(lane->isIdle());
+
+        int refreshCalls = 0;
+        provider->refresh = [&] { ++refreshCalls; };
+        const auto clearProbe = qScopeGuard([&] { provider->refresh = {}; });
+        // The public signal exercises the real Gui stable observer. Queue its
+        // handoff before advancing the same live instance through App's public
+        // administrative recovery API. Its owner dispatch services marshalled
+        // native work, not Qt timers, so the old handoff stays undelivered.
+        _document->signalBecameStable(*_document);
+        if (cycle < 2) {
+            const auto before = _document->collaborationIdentity();
+            const auto timerRan = std::make_shared<std::atomic_bool>(false);
+            QTimer::singleShot(0, qApp, [timerRan] { timerRan->store(true); });
+            const App::RecoverySnapshotSaveOptions recoveryOptions;
+            const auto advanced = App::GetApplication().advanceDocumentCollaborationEpoch(
+                *_document, recoveryOptions, "queued GUI handoff epoch regression");
+            ASSERT_FALSE(timerRan->load())
+                << "epoch advancement delivered Qt timers before the stale-wake check";
+            ASSERT_EQ(advanced.instanceId, before.instanceId);
+            ASSERT_NE(advanced.lifecycleEpoch, before.lifecycleEpoch);
+            ASSERT_EQ(advanced.state, App::DocumentLifecycleState::Live);
+            if (cycle == 1) {
+                // A new-epoch wake can supersede the undelivered old wake. The
+                // old callback must not clear that newer queue's ownership.
+                _document->signalBecameStable(*_document);
+            }
+        }
+        // Cycle0 must release/requeue a stale wake; cycle1 protects a newer
+        // wake; cycle2 proves neither leaves the flag stuck for a later read.
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (liveSwitch->whichChild.getValue() != SO_SWITCH_ALL
+               && std::chrono::steady_clock::now() < deadline) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(1ms);
+        }
+        EXPECT_EQ(liveSwitch->whichChild.getValue(), SO_SWITCH_ALL);
+        EXPECT_EQ(refreshCalls, 0);
+        EXPECT_EQ(_guiDocument->presentationCache().committedCoinRoot(), committedRoot);
+        EXPECT_EQ(_guiDocument->presentationCache().committedSequence(), committedSequence);
+    }
 }
 
 TEST_F(CollaborationResponsivenessTest, idleActionsRetainRecomputeAndXLinkChecks)
