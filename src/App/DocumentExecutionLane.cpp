@@ -587,6 +587,36 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
     return _document.recomputeCoordinator().status(id);
 }
 
+std::optional<bool> DocumentExecutionLane::recomputeTerminalForWait(
+    const DocumentRecomputeId id) const
+{
+    const auto terminal = [](const auto& observation) {
+        using State = DocumentCommandRecomputeState;
+        return observation.state == State::Completed
+            || observation.state == State::PartialFailure
+            || observation.state == State::Cancelled;
+    };
+    {
+        std::lock_guard lock(_mutex);
+        // Match recomputeStatus()'s published-observation precedence without
+        // copying its feature list. Public snapshots still use recomputeStatus().
+        if (_active && _active->recomputeId == id && _active->snapshot.recompute) {
+            return terminal(*_active->snapshot.recompute);
+        }
+        if (_active && _active->snapshot.recompute
+            && static_cast<DocumentRecomputeId>(_active->snapshot.recompute->id) == id) {
+            return terminal(*_active->snapshot.recompute);
+        }
+        for (const auto& [commandId, snapshot] : _terminalSnapshots) {
+            static_cast<void>(commandId);
+            if (snapshot.recompute && snapshot.recompute->id == id) {
+                return terminal(*snapshot.recompute);
+            }
+        }
+    }
+    return _document.recomputeCoordinator().terminalForWait(id);
+}
+
 bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reason)
 {
     std::optional<DocumentRecomputeId> recomputeId;
