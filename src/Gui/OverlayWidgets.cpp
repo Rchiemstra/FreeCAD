@@ -2279,7 +2279,7 @@ void OverlayTitleBar::endDrag()
             OverlayTabWidget::_DragFrame->hide();
         }
         if (OverlayTabWidget::_DragFloating) {
-            OverlayTabWidget::_DragFrame->hide();
+            OverlayTabWidget::_DragFloating->hide();
         }
     }
 }
