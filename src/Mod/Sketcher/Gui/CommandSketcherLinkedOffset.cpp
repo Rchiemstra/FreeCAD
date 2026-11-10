@@ -16,6 +16,7 @@
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/MainWindow.h>
 #include <Gui/QuantitySpinBox.h>
 #include <Gui/Selection/Selection.h>
@@ -44,6 +45,17 @@ Sketcher::SketchObject* target()
     auto* document = Gui::Application::Instance->activeDocument();
     auto* edit = document ? dynamic_cast<ViewProviderSketch*>(document->getInEdit()) : nullptr;
     return edit ? static_cast<Sketcher::SketchObject*>(edit->getObject()) : nullptr;
+}
+
+void updateLinkedOffsetDocument(Sketcher::SketchObject& sketch)
+{
+    auto* document = sketch.getDocument();
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    auto* edit = guiDocument ? dynamic_cast<ViewProviderSketch*>(guiDocument->getInEdit()) : nullptr;
+    // Edit mode publishes Shape when it closes, as for other sketch tools.
+    if (!edit || edit->getObject() != &sketch) {
+        Gui::requestDocumentRecompute(*document);
+    }
 }
 
 std::vector<std::string> selectedRelations(const Sketcher::SketchObject& sketch, bool all)
@@ -163,6 +175,7 @@ void showOperation(Sketcher::SketchObject& sketch, const std::vector<std::string
             }
             Sketcher::operateLinkedOffsets(*live, ids, operation, distance->rawValue(),
                                            tolerance->rawValue());
+            updateLinkedOffsetDocument(*live);
             dialog->accept();
         }
         catch (const Standard_Failure& error) {
@@ -226,6 +239,7 @@ protected:
             }
             else {
                 Sketcher::operateLinkedOffsets(*sketch, ids, operation);
+                updateLinkedOffsetDocument(*sketch);
             }
         }
         catch (const Standard_Failure& error) {

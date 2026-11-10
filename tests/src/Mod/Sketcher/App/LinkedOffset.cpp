@@ -10,6 +10,8 @@
 #include <Base/Reader.h>
 #include <Base/Writer.h>
 #include <Mod/Sketcher/App/LinkedOffset.h>
+#include <Mod/Sketcher/App/BSplineOffset.h>
+#include <Mod/Sketcher/App/GeometryFacade.h>
 #include "SketcherTestHelpers.h"
 
 class LinkedOffsetTest: public SketchObjectTest
@@ -40,6 +42,68 @@ protected:
         parameters.tolerance = 0.005;
         Sketcher::attachLinkedOffset(geometry, {{1, true}}, {2}, parameters);
         getObject()->Geometry.setValues(geometry);
+    }
+
+    void checkSplineOutputEdit(int additionalEdit)
+    {
+        using V = Base::Vector3d;
+        Part::GeomBSplineCurve source({V(0, 0, 0), V(3, 4, 0), V(7, 4, 0), V(10, 0, 0)},
+                                     {1, 1, 1, 1}, {0, 1}, {4, 4}, 3);
+        auto offset = Sketcher::makeBSplineOffset(source);
+        ASSERT_EQ(offset.status, Sketcher::BSplineOffsetStatus::Success) << offset.message;
+        getObject()->addGeometry(&source);
+        getObject()->addGeometry(offset.curve.get());
+        auto geometry = getObject()->Geometry.getValues();
+        std::vector<std::unique_ptr<Part::Geometry>> owned;
+        for (auto*& curve : geometry) {
+            owned.emplace_back(curve->clone());
+            curve = owned.back().get();
+        }
+        Sketcher::Constraint block;
+        block.Type = Sketcher::Block;
+        block.First = 1;
+        Sketcher::GeometryFacade::getFacade(geometry[1])->setBlocked(true);
+        Sketcher::attachLinkedOffset(geometry, {{0, false}}, {1}, {});
+        Sketcher::ownLinkedOffsetBlocks(geometry, {&block});
+        getObject()->Geometry.setValues(geometry);
+        getObject()->addConstraint(&block);
+        const auto knots = offset.curve->getKnots();
+        size_t interval = 1;
+        for (size_t i = 2; i < knots.size(); ++i) {
+            if (knots[i] - knots[i - 1] > knots[interval] - knots[interval - 1]) {
+                interval = i;
+            }
+        }
+        const double parameter = (knots[interval - 1] + knots[interval]) / 2;
+        ASSERT_TRUE(getObject()->insertBSplineKnot(1, parameter, 1));
+        EXPECT_EQ(Sketcher::listLinkedOffsets(*getObject()).at(0).status,
+                  Sketcher::LinkedOffsetStatus::TopologyChanged);
+        if (additionalEdit == 1) {
+            ASSERT_TRUE(getObject()->insertBSplineKnot(1, (knots[interval - 1] + parameter) / 2, 1));
+        }
+        else if (additionalEdit == 2) {
+            ASSERT_TRUE(getObject()->modifyBSplineKnotMultiplicity(1, int(interval) + 1, 1));
+        }
+        EXPECT_EQ(Sketcher::listLinkedOffsets(*getObject()).at(0).status,
+                  Sketcher::LinkedOffsetStatus::TopologyChanged);
+        EXPECT_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+            Sketcher::LinkedOffsetOperation::Refresh), std::invalid_argument);
+        EXPECT_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+            Sketcher::LinkedOffsetOperation::Edit, 2., .01), std::invalid_argument);
+        const auto before = Sketcher::linkedOffsetsJson(*getObject());
+        const auto poles = static_cast<const Part::GeomBSplineCurve*>(
+            getObject()->getGeometry(1))->getPoles();
+        auto* document = getObject()->getDocument();
+        const int undoCount = document->getAvailableUndos();
+        EXPECT_NO_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+            Sketcher::LinkedOffsetOperation::Detach));
+        EXPECT_TRUE(Sketcher::listLinkedOffsets(*getObject()).empty());
+        EXPECT_EQ(getObject()->Constraints.getSize(), 0);
+        EXPECT_EQ(static_cast<const Part::GeomBSplineCurve*>(
+            getObject()->getGeometry(1))->getPoles(), poles);
+        EXPECT_EQ(document->getAvailableUndos(), undoCount + 1);
+        EXPECT_TRUE(document->undo());
+        EXPECT_EQ(Sketcher::linkedOffsetsJson(*getObject()), before);
     }
 };
 
@@ -300,4 +364,67 @@ TEST_F(LinkedOffsetTest, OpaqueSourceVersionIsUnavailable)
     const auto relation = Sketcher::listLinkedOffsets(*getObject())[0];
     EXPECT_NE(relation.status, Sketcher::LinkedOffsetStatus::Ok);
     EXPECT_FALSE(relation.reason.empty());
+}
+
+TEST_F(LinkedOffsetTest, InvalidatedOutputCanDetach)
+{
+    populate();
+    Sketcher::invalidateLinkedOffsetAncestry(*getObject(), 2);
+    const auto inspection = Sketcher::listLinkedOffsets(*getObject()).at(0);
+    EXPECT_EQ(inspection.status, Sketcher::LinkedOffsetStatus::TopologyChanged);
+    EXPECT_TRUE(inspection.outputs.empty());
+    EXPECT_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+        Sketcher::LinkedOffsetOperation::Refresh), std::invalid_argument);
+    EXPECT_NO_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+        Sketcher::LinkedOffsetOperation::Detach));
+    EXPECT_TRUE(Sketcher::listLinkedOffsets(*getObject()).empty());
+}
+
+TEST_F(LinkedOffsetTest, RepeatedInvalidationKeepsOriginalTombstone)
+{
+    populate();
+    const auto original = Sketcher::listLinkedOffsets(*getObject()).at(0);
+    for (int i = 0; i < 2; ++i) {
+        Sketcher::invalidateLinkedOffsetAncestry(*getObject(), 2);
+        EXPECT_EQ(Sketcher::listLinkedOffsets(*getObject()).at(0).status,
+                  Sketcher::LinkedOffsetStatus::TopologyChanged);
+        const auto ext = std::dynamic_pointer_cast<const Sketcher::LinkedOffsetExtension>(
+            getObject()->getGeometry(2)->getExtension(
+                Sketcher::LinkedOffsetExtension::getClassTypeId()).lock());
+        EXPECT_EQ(ext->invalidatedUuid, original.relation.outputs.front().uuid);
+    }
+}
+
+TEST_F(LinkedOffsetTest, ForgedTombstoneCannotClaimExistingOutput)
+{
+    populate();
+    const auto original = Sketcher::listLinkedOffsets(*getObject()).at(0);
+    Part::GeomLineSegment extra;
+    extra.setPoints(Base::Vector3d(0, 5, 0), Base::Vector3d(10, 5, 0));
+    auto ext = std::make_unique<Sketcher::LinkedOffsetExtension>();
+    ext->membership = original.relation.id;
+    ext->invalidatedUuid = original.relation.outputs.front().uuid;
+    extra.setExtension(std::move(ext));
+    auto geometry = getObject()->Geometry.getValues();
+    geometry.push_back(&extra);
+    getObject()->Geometry.setValues(geometry);
+    EXPECT_EQ(Sketcher::listLinkedOffsets(*getObject()).at(0).status,
+              Sketcher::LinkedOffsetStatus::Ambiguous);
+    EXPECT_THROW(Sketcher::operateLinkedOffsets(*getObject(), {},
+        Sketcher::LinkedOffsetOperation::Detach), std::invalid_argument);
+}
+
+TEST_F(LinkedOffsetTest, OutputKnotInsertionCanDetach)
+{
+    checkSplineOutputEdit(0);
+}
+
+TEST_F(LinkedOffsetTest, OutputRepeatedKnotInsertionCanDetach)
+{
+    checkSplineOutputEdit(1);
+}
+
+TEST_F(LinkedOffsetTest, OutputKnotMultiplicityCanDetach)
+{
+    checkSplineOutputEdit(2);
 }

@@ -797,3 +797,78 @@ class TestLinkedOffsetOperations(unittest.TestCase):
             self.assertEqual(self.state(), before)
         self.doc.redo()
         self.assertIsNotNone(self.doc.getObject("Sentinel"))
+
+    def test_invalidated_secondary_output_detaches(self):
+        self.add_extra_output()
+        def invalidate(root):
+            geometry = root.findall(".//Property[@name='Geometry']/GeometryList/Geometry")
+            ext = next(e for e in geometry[2].findall(".//GeoExtension")
+                       if e.get("type") == "Sketcher::LinkedOffsetExtension")
+            ext.set("invalidatedUuid", ext.get("uuid"))
+            ext.set("uuid", str(uuid.uuid4()))
+        self.rewrite_document(invalidate)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["status"], "TopologyChanged")
+        Sketcher.detachLinkedOffsets(self.sketch)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(self.sketch.ConstraintCount, 0)
+
+    def test_forged_invalidated_output_membership_refuses_detach(self):
+        relation, = Sketcher.listLinkedOffsets(self.sketch)
+        self.sketch.addGeometry(Part.LineSegment(FreeCAD.Vector(0, 4, 0),
+                                                FreeCAD.Vector(10, 4, 0)))
+        def forge(root):
+            geometry = root.findall(".//Property[@name='Geometry']/GeometryList/Geometry")
+            extensions = geometry[2].find("GeoExtensions")
+            ET.SubElement(extensions, "GeoExtension", {
+                "type": "Sketcher::LinkedOffsetExtension", "uuid": str(uuid.uuid4()),
+                "invalidatedUuid": relation["outputs"][0]["uuid"],
+                "membership": relation["id"], "version": "1", "record": ""})
+            extensions.set("count", str(len(extensions)))
+        self.rewrite_document(forge)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["status"], "Ambiguous")
+        before = self.state()
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            Sketcher.detachLinkedOffsets(self.sketch)
+        self.assertEqual(self.state(), before)
+
+    def test_duplicate_invalidated_outputs_refuse_detach(self):
+        self.sketch.addGeometry(Part.LineSegment(FreeCAD.Vector(0, 4, 0),
+                                                FreeCAD.Vector(10, 4, 0)))
+        def duplicate(root):
+            geometry = root.findall(".//Property[@name='Geometry']/GeometryList/Geometry")
+            owner = next(e for e in geometry[1].findall(".//GeoExtension")
+                         if e.get("type") == "Sketcher::LinkedOffsetExtension")
+            owner.set("invalidatedUuid", owner.get("uuid"))
+            owner.set("uuid", str(uuid.uuid4()))
+            extensions = geometry[2].find("GeoExtensions")
+            attributes = dict(owner.attrib)
+            attributes.update(uuid=str(uuid.uuid4()), record="")
+            ET.SubElement(extensions, "GeoExtension", attributes)
+            extensions.set("count", str(len(extensions)))
+        self.rewrite_document(duplicate)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["status"], "Ambiguous")
+        before = self.state()
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            Sketcher.detachLinkedOffsets(self.sketch)
+        self.assertEqual(self.state(), before)
+
+    def check_output_analytic_topology_detach(self, operation):
+        self.sketch.delConstraint(0)
+        if operation == "extend":
+            self.sketch.extend(1, 2, 2)
+        else:
+            self.sketch.addGeometry(Part.LineSegment(FreeCAD.Vector(5, -5, 0),
+                                                    FreeCAD.Vector(5, 5, 0)))
+            self.sketch.trim(1, FreeCAD.Vector(8, 2, 0))
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["status"], "TopologyChanged")
+        before = tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry)
+        Sketcher.detachLinkedOffsets(self.sketch)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
+        self.assertEqual(tuple(g.toShape().exportBrepToString() for g in self.sketch.Geometry),
+                         before)
+
+    def test_output_extend_detaches(self):
+        self.check_output_analytic_topology_detach("extend")
+
+    def test_output_trim_detaches(self):
+        self.check_output_analytic_topology_detach("trim")

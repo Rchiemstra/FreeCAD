@@ -341,7 +341,11 @@ void invalidateLinkedOffsetAncestry(Part::Geometry& geometry)
 {
     if (extension(&geometry)) {
         auto ext = ensure(&geometry);
-        ext->invalidatedUuid = ext->uuid;
+        // Repeated edits of an output must retain the identity in its relation.
+        // Detached geometry may be adopted as a new source under its current UUID.
+        if (ext->membership.empty() || ext->invalidatedUuid.empty()) {
+            ext->invalidatedUuid = ext->uuid;
+        }
         ext->uuid = LinkedOffsetExtension().uuid;
     }
 }
@@ -409,12 +413,14 @@ std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch
     const auto& geometry = sketch.Geometry.getValues();
     std::map<std::string, std::vector<int>> identities;
     std::set<std::string> ignored;
-    std::set<std::string> invalidated;
+    std::map<std::string, std::vector<int>> invalidated;
     std::map<std::string, std::vector<std::shared_ptr<const LinkedOffsetExtension>>> groups;
     for (size_t i = 0; i < geometry.size(); ++i) {
         if (const auto ext = extension(geometry[i])) {
             identities[ext->uuid].push_back(int(i));
-            invalidated.insert(ext->invalidatedUuid);
+            if (!ext->invalidatedUuid.empty()) {
+                invalidated[ext->invalidatedUuid].push_back(int(i));
+            }
             if (ext->version != "1" && !ext->membership.empty()) {
                 ignored.insert(ext->membership);
             }
@@ -435,11 +441,11 @@ std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch
             inspection.reason = reason;
         };
         int owners = 0;
-        std::string ownerUuid;
+        std::shared_ptr<const LinkedOffsetExtension> owner;
         for (const auto& ext : members) {
             if (!ext->record.empty()) {
                 ++owners;
-                ownerUuid = ext->uuid;
+                owner = ext;
                 try {
                     inspection.relation = parseRelation(ext->record);
                 }
@@ -473,9 +479,23 @@ std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch
         for (const auto& entry : inspection.relation.outputs) {
             outputIds.insert(entry.uuid);
         }
+        // A unique tombstone can explain an output topology change, but must
+        // never resolve it for regeneration or compete with a live identity.
+        const auto outputIdentity = [&](const auto& ext) -> std::string {
+            if (outputIds.count(ext->uuid)) {
+                return ext->uuid;
+            }
+            const auto found = invalidated.find(ext->invalidatedUuid);
+            if (outputIds.count(ext->invalidatedUuid) && !expectedIds.count(ext->uuid)
+                && !identities.count(ext->invalidatedUuid)
+                && found != invalidated.end() && found->second.size() == 1) {
+                return ext->invalidatedUuid;
+            }
+            return {};
+        };
         for (const auto& ext : members) {
             if (ext->uuid.empty() || identities.at(ext->uuid).size() != 1
-                || (owners == 1 && !outputIds.count(ext->uuid))) {
+                || (owners == 1 && outputIdentity(ext).empty())) {
                 fail(LinkedOffsetStatus::Ambiguous, "Unexpected or duplicate output member.");
             }
         }
@@ -488,7 +508,7 @@ std::vector<LinkedOffsetInspection> listLinkedOffsets(const SketchObject& sketch
         }
         if (owners == 1 && (inspection.relation.sources.empty()
             || inspection.relation.outputs.empty()
-            || inspection.relation.outputs.front().uuid != ownerUuid)) {
+            || inspection.relation.outputs.front().uuid != outputIdentity(owner))) {
             fail(LinkedOffsetStatus::Ambiguous, "Invalid designated output.");
         }
         const auto resolve = [&](const auto& expected, bool output, auto& resolved) {

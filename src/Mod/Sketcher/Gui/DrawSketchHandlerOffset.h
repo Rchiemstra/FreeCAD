@@ -614,9 +614,26 @@ private:
     {
         if (chainLink) {
             auto* sketch = sketchgui->getSketchObject();
+            bool allowExternal = false;
+            bool allowConstruction = false;
+            bool allowReal = false;
+            for (int source : selectedGeoIds) {
+                if (isExternalGeoId(source)) {
+                    allowExternal = true;
+                }
+                else if (const auto* geo = sketch->getGeometry(source)) {
+                    if (GeometryFacade::getConstruction(geo)) {
+                        allowConstruction = true;
+                    }
+                    else {
+                        allowReal = true;
+                    }
+                }
+            }
             for (int id = 0; id <= sketch->getHighestCurveIndex(); ++id) {
                 const auto* geo = sketch->getGeometry(id);
-                if (geo && isBSplineCurve(*geo) && !GeometryFacade::isInternalAligned(geo)) {
+                if (geo && isBSplineCurve(*geo) && !GeometryFacade::isInternalAligned(geo)
+                    && sourceClassAllowed(id, allowExternal, allowConstruction, allowReal)) {
                     for (int source : listOfGeoIds) {
                         if (areCoincident(id, source)) {
                             throw Base::ValueError(QT_TRANSLATE_NOOP("Notifications",

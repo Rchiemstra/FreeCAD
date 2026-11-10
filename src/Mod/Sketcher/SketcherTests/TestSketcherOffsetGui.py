@@ -399,6 +399,31 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         )
         self.assert_solves_without_conflicts()
 
+    def test_chain_link_ignores_touching_construction_bspline(self):
+        self.add_open_chain()
+        spline = Part.BSplineCurve()
+        spline.buildFromPolesMultsKnots(
+            [FreeCAD.Vector(10, 8, 0), FreeCAD.Vector(10, 10, 0),
+             FreeCAD.Vector(12, 12, 0), FreeCAD.Vector(14, 12, 0)],
+            [4, 4], [0., 1.], False, 3)
+        self.sketch.addGeometry(spline, True)
+        self.recompute_gui_document()
+        timer = QtCore.QTimer()
+        def dismiss_warning():
+            dialog = QtGui.QApplication.activeModalWidget()
+            if isinstance(dialog, QtGui.QMessageBox):
+                dialog.accept()
+        timer.timeout.connect(dismiss_warning)
+        timer.start(10)
+        try:
+            before, _ = self.run_offset_from_selection(
+                ["Edge1"], FreeCAD.Vector(4, 4, 0), chain_link=True)
+        finally:
+            timer.stop()
+        self.assertGreaterEqual(self.sketch.GeometryCount - before, 2)
+        self.assertTrue(self.sketch.getConstruction(2))
+        self.assert_solves_without_conflicts()
+
     # The B-spline route uses actual Qt controls, with no Python implementation of the fit.
     def spline_control(self, widget_type, suffix):
         controls = FreeCADGui.getMainWindow().findChildren(widget_type, "BSplineOffset" + suffix)
@@ -1458,3 +1483,53 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
 
     def test_rework_edit_document_closed(self):
         self.check_rework_deleted_edit_target(True)
+
+    def check_linked_command_updates_shape(self, operation):
+        self.linked_fixture()
+        FreeCADGui.activeDocument().resetEdit()
+        extrusion = self.doc.addObject("Part::Extrusion", "DependentExtrusion")
+        extrusion.Base = self.sketch
+        extrusion.Dir = FreeCAD.Vector(0, 0, 5)
+        extrusion.Solid = False
+        if operation != "Edit":
+            self.translate_linked_geometry(0, FreeCAD.Vector(3, 0, 0))
+        self.recompute_gui_document()
+        before = (self.sketch.Shape.exportBrepToString(), extrusion.Shape.exportBrepToString())
+        count = self.doc.UndoCount
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch)
+        FreeCADGui.runCommand("Sketcher_LinkedOffset" + operation, 0)
+        if operation == "Edit":
+            dialog = FreeCADGui.getMainWindow().findChild(QtGui.QDialog, "LinkedOffsetEdit")
+            dialog.findChild(QtGui.QAbstractSpinBox, "LinkedOffsetDistance").setProperty(
+                "rawValue", -2.)
+            dialog.findChild(QtGui.QPushButton, "LinkedOffsetRefresh").click()
+        self.assertTrue(self.wait_until(lambda: "Touched" not in self.sketch.State))
+        from Test.GuiRecompute import wait_for_mutation_ready
+        wait_for_mutation_ready(self.doc)
+        expected = Part.makeCompound([g.toShape() for g in self.sketch.Geometry])
+        self.assertAlmostEqual(self.sketch.Shape.Length, expected.Length, places=6)
+        # Face area comes from numerical integration over offset B-splines.
+        self.assertAlmostEqual(
+            extrusion.Shape.Area, expected.Length * 5, delta=1e-6 * expected.Length * 5)
+        self.assertAlmostEqual(self.sketch.Shape.BoundBox.XMax, expected.BoundBox.XMax)
+        self.assertAlmostEqual(extrusion.Shape.BoundBox.XMax, expected.BoundBox.XMax)
+        after = (self.sketch.Shape.exportBrepToString(), extrusion.Shape.exportBrepToString())
+        self.assertNotEqual(before[0], after[0])
+        self.assertNotEqual(before[1], after[1])
+        self.assertEqual(self.doc.UndoCount, count + 1)
+        self.undo_gui_document()
+        # Undo restores the inputs and leaves them touched; recompute as a user would.
+        self.recompute_gui_document()
+        self.assertEqual(self.sketch.Shape.exportBrepToString(), before[0])
+        self.assertEqual(extrusion.Shape.exportBrepToString(), before[1])
+        self.assertEqual(self.doc.UndoCount, count)
+
+    def test_linked_edit_outside_edit_updates_shape_and_dependent(self):
+        self.check_linked_command_updates_shape("Edit")
+
+    def test_linked_refresh_outside_edit_updates_shape_and_dependent(self):
+        self.check_linked_command_updates_shape("Refresh")
+
+    def test_linked_refresh_all_outside_edit_updates_shape_and_dependent(self):
+        self.check_linked_command_updates_shape("RefreshAll")
