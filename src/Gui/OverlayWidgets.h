@@ -396,6 +396,7 @@ protected:
 private:
     friend class OverlayProxyWidget;
     friend class OverlayTitleBar;
+    friend class OverlayTitleBarDragTest;
     friend class OverlayManager;
     friend class OverlayManager::Private;
     friend class OverlaySplitterHandle;

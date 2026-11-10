@@ -30,6 +30,7 @@ add_executable(Gui_tests_run
         DocumentRecovery.cpp
         DockWidget.cpp
         DockPlatformPlacement.cpp
+        OverlayTitleBarDrag.cpp
         DocumentExecutionWaitTestHelpers.cpp
         GuiPythonGate.cpp
         UpdateGuiThread.cpp

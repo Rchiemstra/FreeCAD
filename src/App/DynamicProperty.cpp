@@ -55,6 +55,28 @@ using namespace App;
 
 namespace
 {
+struct StructuralSchemaPublicationSlot
+{
+    const PropertyContainer* container = nullptr;
+    const char* name = nullptr;
+};
+
+// One named add on one container. Cleared on the first match so a nested
+// observer add is not covered.
+thread_local StructuralSchemaPublicationSlot structuralSchemaPublicationSlot;
+
+bool takeSuppressedStructuralAdd(const PropertyContainer& container, const char* addedName)
+{
+    if (!addedName || !structuralSchemaPublicationSlot.container
+        || !structuralSchemaPublicationSlot.name
+        || structuralSchemaPublicationSlot.container != &container
+        || std::strcmp(structuralSchemaPublicationSlot.name, addedName) != 0) {
+        return false;
+    }
+    structuralSchemaPublicationSlot = {};
+    return true;
+}
+
 void enforceStructuralPropertyMutation(PropertyContainer& container, const char*)
 {
     if (Document* doc = documentFromPropertyContainer(&container)) {
@@ -62,7 +84,9 @@ void enforceStructuralPropertyMutation(PropertyContainer& container, const char*
     }
 }
 
-void publishStructuralPropertyMutation(PropertyContainer& container)
+// addedName is set only by addDynamicProperty. Other schema changes pass
+// null and always publish.
+void publishStructuralPropertyMutation(PropertyContainer& container, const char* addedName = nullptr)
 {
     auto* document = documentFromPropertyContainer(&container);
     if (!document) {
@@ -96,12 +120,33 @@ void publishStructuralPropertyMutation(PropertyContainer& container)
     const auto effects = classifyMutation(input);
     document->recordCollaborationAtomicPresentationEffects(effects);
     Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
-    if (document->collaborationRevisionPublicationSuppressed(&container)) {
+    // Audit and recorder above always run. Only one named add is unpublished.
+    const bool keyedAdd = takeSuppressedStructuralAdd(container, addedName);
+    if (keyedAdd || document->collaborationRevisionPublicationSuppressed(&container)) {
         return;
     }
     static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 }  // namespace
+
+namespace App
+{
+DynamicPropertySchemaPublicationSuppressor::DynamicPropertySchemaPublicationSuppressor(
+    const PropertyContainer& container,
+    const char* name) noexcept
+    : _previousContainer(structuralSchemaPublicationSlot.container)
+    , _previousName(structuralSchemaPublicationSlot.name)
+{
+    structuralSchemaPublicationSlot.container = &container;
+    structuralSchemaPublicationSlot.name = name;
+}
+
+DynamicPropertySchemaPublicationSuppressor::~DynamicPropertySchemaPublicationSuppressor()
+{
+    structuralSchemaPublicationSlot.container = _previousContainer;
+    structuralSchemaPublicationSlot.name = _previousName;
+}
+}  // namespace App
 
 std::size_t CStringHasher::operator()(const char* s) const {
     if (!s) {
@@ -347,7 +392,7 @@ Property* DynamicProperty::addDynamicProperty(
     pcProperty->syncType(attr);
     pcProperty->StatusBits.set((size_t)Property::PropDynamic);
 
-    publishStructuralPropertyMutation(pc);
+    publishStructuralPropertyMutation(pc, name.c_str());
     if (auto* document = documentFromPropertyContainer(&pc)) {
         document->emitCollaborationAppendDynamicProperty(*pcProperty);
     }
