@@ -12,6 +12,7 @@
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Circle.hxx>
 #include <GeomConvert.hxx>
+#include <NCollection_Array1.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Precision.hxx>
@@ -414,13 +415,13 @@ TEST(OffsetChainDistance, InvalidSplineDefinitions)
             }
             else if (kind <= 4) {
                 // Bypass setters which can normalize or reject malformed data.
-                auto* weights = const_cast<TColStd_Array1OfReal*>(native->Weights());
+                auto* weights = const_cast<NCollection_Array1<double>*>(native->Weights());
                 ASSERT_NE(weights, nullptr);
                 const double values[] {nan, inf, 0, -1};
                 weights->SetValue(2, values[kind - 1]);
             }
             else {
-                auto& knots = const_cast<TColStd_Array1OfReal&>(native->Knots());
+                auto& knots = const_cast<NCollection_Array1<double>&>(native->Knots());
                 knots.SetValue(2, kind == 5 ? nan : kind == 6 ? inf : 0);
             }
             (inSource ? source : candidate).push_back(std::move(curve));
