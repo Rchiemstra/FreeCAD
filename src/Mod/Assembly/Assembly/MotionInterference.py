@@ -15,10 +15,16 @@ import threading
 
 import FreeCAD as App
 import AssemblyApp
-from PySide import QtCore
 
 from .api import _require_assembly
 from .MotionCoverage import RigidSweepCoverage
+
+
+def _process_events():
+    if App.GuiUp:
+        from PySide import QtCore
+
+        QtCore.QCoreApplication.processEvents()
 
 
 class SweepCancellation:
@@ -212,6 +218,10 @@ class _InfeasiblePose(RuntimeError):
     """A solved pose demonstrably misses a prescribed coordinate or enabled limit."""
 
 
+class _SweepCancelled(Exception):
+    pass
+
+
 class _SimulationTrajectory:
     """Native finite trajectory, using disposable parameter/motion copies.
 
@@ -252,6 +262,12 @@ class _SimulationTrajectory:
             self.motions.append((joint, kind, formula))
         if not self.motions:
             raise ValueError("Simulation has no driven joints")
+        self.angular_entry = {
+            joint.Name: _coordinate(joint, "deg") for joint in joints
+            if any(j == joint and kind == "Angular" for j, kind, _ in self.motions)
+            or getattr(joint, "EnableAngleMin", False)
+            or getattr(joint, "EnableAngleMax", False)}
+        self.angle_offsets = {}
         self.initial = {obj.Name: App.Placement(obj.Placement) for obj in assembly.Document.Objects
                         if "Placement" in obj.PropertiesList}
 
@@ -328,10 +344,11 @@ class _SimulationTrajectory:
                        if len(values) == 1 else dict(coordinates=values))
                 for name, values in coordinates.items()}
 
-    def generate(self, end, step):
+    def generate(self, end, step, write, checkpoint):
         doc = self.assembly.Document
         created = []
-        try:
+
+        def prepare():
             for name, placement in self.initial.items():
                 obj = doc.getObject(name)
                 if obj.Placement.toMatrix().A != placement.toMatrix().A:
@@ -359,7 +376,15 @@ class _SimulationTrajectory:
                 motion.Formula = formula
                 motions.append(motion)
             sim.Group = motions
-            code = self.assembly.generateSimulation(sim)
+            return sim
+
+        try:
+            if not checkpoint():
+                raise _SweepCancelled()
+            sim = write(prepare)
+            code = self.assembly.generateSimulation(sim, checkpoint)
+            if not checkpoint():
+                raise _SweepCancelled()
             if code != 0:
                 raise RuntimeError(f"Simulation generation failed ({code})")
             times = AssemblyApp._motionSimulationFrameTimes(self.assembly)
@@ -377,14 +402,29 @@ class _SimulationTrajectory:
                         or i > 0 and t <= times[i]
                         for i, (t, wanted) in enumerate(zip(times[1:], expected)))):
                 raise RuntimeError("Simulation has missing or unexpected frames/times or end frame")
+            self.angle_offsets = {}
+            for joint in self.assembly.Joints:
+                if joint.Name not in self.angular_entry:
+                    continue
+                # Input frame 0 precedes prescribed motion, including at a
+                # nonzero start time. Align its turn once and retain all turns
+                # subsequently tracked by the native recorder.
+                angle = AssemblyApp._motionSimulationJointState(
+                    self.assembly, joint, 0, "", self.start)[0]
+                self.angle_offsets[joint.Name] = 360 * round(
+                    (self.angular_entry[joint.Name] - math.degrees(angle)) / 360)
             return times
         finally:
-            for name in reversed(created):
-                doc.removeObject(name)
+            def cleanup():
+                for name in reversed(created):
+                    doc.removeObject(name)
+
+            write(cleanup)
 
     def record(self, time, frame):
         try:
-            return dict(time=time, frame=frame, drivenCoordinates=self.coordinates(time, frame))
+            return dict(time=time, frame=frame, drivenCoordinates=self.coordinates(
+                time, frame, self.angle_offsets))
         except Exception as error:
             raise RuntimeError(f"Frame {frame} (t = {time:g} s): {error}") from error
 
@@ -655,7 +695,7 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
             # Keep the native solver call short. All solving and document access
             # stays on this thread; no complete trajectory precedes the first scan.
             for offset in range(0, segments, 8):
-                QtCore.QCoreApplication.processEvents()
+                _process_events()
                 if cancel.cancelled:
                     return
                 size = min(8, segments - offset)
@@ -664,14 +704,17 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                 frames = write(lambda: generate(first, last, size))
                 # Frame 0 is unsolved INPUT, frame 1 is the solved start.
                 for frame in range(1, frames):
-                    QtCore.QCoreApplication.processEvents()
+                    _process_events()
                     if cancel.cancelled:
                         return
                     write(lambda: assembly.updateForFrame(frame))
                     yield frame
 
-        class Cancelled(Exception):
-            pass
+        Cancelled = _SweepCancelled
+
+        def checkpoint():
+            _process_events()
+            return not cancel.cancelled
 
         def evaluate(coordinate, frame, phase, index, native_frame=None):
             if cancel.cancelled:
@@ -723,14 +766,14 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                 raise Cancelled()
 
         def extra_pose(coordinate, index):
-            QtCore.QCoreApplication.processEvents()
+            _process_events()
             if cancel.cancelled:
                 raise Cancelled()
             if trajectory is not None:
                 # Re-solve a prefix to preserve the original mechanism branch.
                 segments = max(1, math.ceil((coordinate - start) / step))
                 spacing = (coordinate - start) / segments
-                times = write(lambda: trajectory.generate(coordinate, spacing))
+                times = trajectory.generate(coordinate, spacing, write, checkpoint)
                 for native_frame in range(1, len(times)):
                     if cancel.cancelled:
                         raise Cancelled()
@@ -818,9 +861,9 @@ def _sweep(assembly, joint, first, second, *, start, end, count, unit, step, cle
                 return
             write(lambda: setattr(assembly, "InterferenceClearance", requirement))
             if trajectory is not None:
-                times = write(lambda: trajectory.generate(end, step))
+                times = trajectory.generate(end, step, write, checkpoint)
                 for frame, time in enumerate(times[1:], 1):
-                    QtCore.QCoreApplication.processEvents()
+                    _process_events()
                     if cancel.cancelled:
                         raise Cancelled()
                     write(lambda: assembly.updateForFrame(frame))

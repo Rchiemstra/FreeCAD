@@ -3628,38 +3628,6 @@
       "evidence": "QtCore.QCoreApplication.processEvents()"
     },
     {
-      "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
-      "occurrence": 2,
-      "category": "process-events-polling",
-      "subsystem": "Assembly",
-      "disposition": "investigate",
-      "evidence": "QtCore.QCoreApplication.processEvents()"
-    },
-    {
-      "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
-      "occurrence": 3,
-      "category": "process-events-polling",
-      "subsystem": "Assembly",
-      "disposition": "investigate",
-      "evidence": "QtCore.QCoreApplication.processEvents()"
-    },
-    {
-      "path": "src/Mod/Assembly/Assembly/MotionInterference.py",
-      "occurrence": 4,
-      "category": "process-events-polling",
-      "subsystem": "Assembly",
-      "disposition": "investigate",
-      "evidence": "QtCore.QCoreApplication.processEvents()"
-    },
-    {
-      "path": "src/Mod/Assembly/Assembly/MotionJointGrid.py",
-      "occurrence": 1,
-      "category": "process-events-polling",
-      "subsystem": "Assembly",
-      "disposition": "investigate",
-      "evidence": "QtCore.QCoreApplication.processEvents()"
-    },
-    {
       "path": "src/Mod/Assembly/Assembly/api.py",
       "occurrence": 1,
       "category": "direct-recompute",

@@ -10,6 +10,15 @@ import AssemblyApp
 EVENTS = ("firstContact", "firstClearanceViolation", "firstGapViolation")
 
 
+def _event_order(record, sweep):
+    if "ranges" in sweep:
+        # Fractional axis indices preserve product order, including descending axes.
+        return tuple((v-a)/(b-a) if a != b else 0
+                     for v, (a, b) in zip(record["pose"], sweep["ranges"]))
+    start, end = sweep["interval"]
+    return (record["coordinate"] * (1 if end >= start else -1),)
+
+
 def _rigid_classes(assembly):
     import UtilsAssembly
 
@@ -166,7 +175,6 @@ def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=100
             child.update(pair=pair, exclusionRule=exclusions.get(
                 frozenset((a["sourceId"], b["sourceId"]))))
             result["pairResults"].append(child)
-            direction = 1 if child["interval"][1] >= child["interval"][0] else -1
             for key in EVENTS:
                 event = child[key]
                 if event is None:
@@ -179,8 +187,7 @@ def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=100
                 event.update(pair=pair, eventType=key, rules=rules)
                 result["events"].append(event)
                 previous = result[key]
-                if previous is None or direction * event["coordinate"] < (
-                        direction * previous["coordinate"]):
+                if previous is None or _event_order(event, child) < _event_order(previous, child):
                     result[key] = event
             if child["completeness"] != "complete":
                 result.update(completeness=child["completeness"], reason=child["reason"])
@@ -188,9 +195,8 @@ def sweepAll(assembly, sweep, *, mechanism=None, pairBudget=1000, poseBudget=100
         else:
             result.update(completeness="complete", reason="")
         if result["pairResults"]:
-            direction = 1 if result["pairResults"][0]["interval"][1] >= (
-                result["pairResults"][0]["interval"][0]) else -1
-            result["events"].sort(key=lambda e: (direction * e["coordinate"], e["pair"]))
+            traversal = result["pairResults"][0]
+            result["events"].sort(key=lambda e: (_event_order(e, traversal), e["pair"]))
         result["firstEvent"] = next(iter(result["events"]), None)
     except Exception as error:
         result.update(completeness="incomplete", reason=str(error))

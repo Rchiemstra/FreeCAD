@@ -7,11 +7,12 @@ import math
 
 import FreeCAD as App
 import AssemblyApp
-from PySide import QtCore
 
 from .api import _require_assembly
+from .MotionAllPairs import _event_order
 from .MotionInterference import (
-    _coordinate, _driver, _InfeasiblePose, _interval, _SimulationTrajectory, _validate_options,
+    _coordinate, _driver, _InfeasiblePose, _interval, _process_events,
+    _SimulationTrajectory, _validate_options,
 )
 
 
@@ -143,7 +144,7 @@ def sweepJoints(assembly, joints, ranges=None, steps=1, *, first=None, second=No
         grid = {}
 
         def check_cancel():
-            QtCore.QCoreApplication.processEvents()
+            _process_events()
             if cancel.cancelled:
                 raise _Cancelled()
 
@@ -206,9 +207,7 @@ def sweepJoints(assembly, joints, ranges=None, steps=1, *, first=None, second=No
                     doc.removeObject(name)
 
         def order(record):
-            # Fractional axis indices retain product traversal order in either direction.
-            return tuple((v-a)/(b-a) if a != b else 0
-                         for v, (a, b, _, _) in zip(record["pose"], intervals))
+            return _event_order(record, result)
 
         def evaluate(values, index, phase, grid_index):
             check_cancel()

@@ -106,6 +106,23 @@ namespace PartApp = Part;
 
 namespace
 {
+class SimulationInterrupted {};
+
+class CheckpointAssembly: public ASMTAssembly
+{
+public:
+    std::function<bool()> checkpoint;
+
+    void updateFromMbD() override
+    {
+        ASMTAssembly::updateFromMbD();
+        // Continue the same native solve, preserving closed-loop branches and
+        // signed angular history. Never generate a whole trajectory unchecked.
+        if (checkpoint && times->size() % 8 == 0 && !checkpoint()) {
+            throw SimulationInterrupted();
+        }
+    }
+};
 
 bool isFinitePlacement(const Base::Placement& plc);
 
@@ -1117,9 +1134,21 @@ PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
     return PyObject_CallNoArgs(callback);
 }
 
-int AssemblyObject::generateSimulation(App::DocumentObject* sim)
+int AssemblyObject::generateSimulation(
+    App::DocumentObject* sim,
+    const std::function<bool()>& checkpoint
+)
 {
-    mbdAssembly = makeMbdAssembly();
+    mbdAssembly = makeMbdAssembly(bool(checkpoint));
+    auto controlled = std::dynamic_pointer_cast<CheckpointAssembly>(mbdAssembly);
+    if (controlled) {
+        controlled->checkpoint = checkpoint;
+    }
+    Base::ScopeGuard releaseCheckpoint([&] {
+        if (controlled) {
+            controlled->checkpoint = {};
+        }
+    });
     objectPartMap.clear();
 
     motions = getMotionsFromSimulation(sim);
@@ -1142,6 +1171,10 @@ int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 
     try {
         mbdAssembly->runKINEMATIC();
+    }
+    catch (const SimulationInterrupted&) {
+        motions.clear();
+        return -8;
     }
     catch (...) {
         Base::Console().error("Generation of simulation failed\n");
@@ -1933,9 +1966,10 @@ void AssemblyObject::redrawJointPlacement(App::DocumentObject* joint)
     }
 }
 
-std::shared_ptr<ASMTAssembly> AssemblyObject::makeMbdAssembly()
+std::shared_ptr<ASMTAssembly> AssemblyObject::makeMbdAssembly(bool checkpoints)
 {
-    auto assembly = CREATE<ASMTAssembly>::With();
+    std::shared_ptr<ASMTAssembly> assembly = checkpoints
+        ? CREATE<CheckpointAssembly>::With() : CREATE<ASMTAssembly>::With();
     assembly->externalSystem->freecadAssemblyObject = this;
     assembly->setName("OndselAssembly");
 

@@ -63,6 +63,8 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Compound.hxx>
+#include <BRep_Builder.hxx>
 
 namespace Assembly
 {
@@ -416,14 +418,44 @@ TopoDS_Shape resolveWorldShape(
     // getSubObject resolves the displayed occurrence directly, without Part's
     // persistent root/subname shape cache (which can also write properties).
     Base::PyGILStateLocker lock;
-    PyObject* value = nullptr;
-    Base::Matrix4D world;
-    root->getSubObject(occurrenceSubName.c_str(), &value, &world);
-    Py::Object owned(value ? value : Py_None, value != nullptr);
-    if (!value || !PyObject_TypeCheck(value, &Part::TopoShapePy::Type)) {
-        return {};
-    }
-    return static_cast<Part::TopoShapePy*>(value)->getTopoShapePtr()->getShape();
+    std::function<TopoDS_Shape(const std::string&)> extract;
+    extract = [&](const std::string& path) -> TopoDS_Shape {
+        PyObject* value = nullptr;
+        Base::Matrix4D world;
+        auto* owner = root->getSubObject(path.c_str(), &value, &world);
+        Py::Object owned(value ? value : Py_None, value != nullptr);
+        if (value && PyObject_TypeCheck(value, &Part::TopoShapePy::Type)) {
+            return static_cast<Part::TopoShapePy*>(value)->getTopoShapePtr()->getShape();
+        }
+        if (!owner) {
+            return {};
+        }
+        // A collapsed array element can resolve to a container with no Shape.
+        // Resolve children through the full occurrence path to retain each
+        // element's placement/scale, without consulting or writing Part's cache.
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        bool any = false;
+        for (const auto& sub : owner->getSubObjects()) {
+            if (sub.empty()) {
+                continue;
+            }
+            const auto childPath = path + sub;
+            auto* child = root->getSubObject(childPath.c_str());
+            const int visible = owner->isElementVisible(sub.substr(0, sub.find('.')).c_str());
+            if (!child || visible == 0 || (visible < 0 && !child->Visibility.getValue())) {
+                continue;
+            }
+            const auto shape = extract(childPath);
+            if (!shape.IsNull()) {
+                builder.Add(compound, shape);
+                any = true;
+            }
+        }
+        return any ? TopoDS_Shape(compound) : TopoDS_Shape();
+    };
+    return extract(occurrenceSubName);
 }
 
 Base::Matrix4D resolveWorldTransform(

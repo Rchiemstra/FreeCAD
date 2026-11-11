@@ -213,6 +213,67 @@ class TestDragFeedbackGui(unittest.TestCase):
         self.assertTrue(self.feedback.findings[0][2])
         self.event("release")
 
+    def test_highlight_mesh_is_reused_per_leaf_and_presentation_is_bounded(self):
+        import Part
+
+        self.arm.Shape = Part.makeCompound([
+            Part.makeSphere(2, App.Vector(i*5, 0, 0)) for i in range(12)])
+        copies = {}
+        threads = []
+        native = AssemblyApp._runPreparedInterferenceScan
+
+        class Shape:
+            def __init__(self, shape, path):
+                self.shape, self.path = shape, path
+
+            @property
+            def Placement(self):
+                return self.shape.Placement
+
+            def copy(self):
+                copies[self.path] = copies.get(self.path, 0) + 1
+                threads.append(threading.get_ident())
+                return self.shape.copy()
+
+        def scan(prepared):
+            result = native(prepared)
+            for leaf in result["leaves"]:
+                leaf["worldShape"] = Shape(leaf["worldShape"], leaf["occurrenceSubName"])
+            return result
+
+        self.feedback = MotionInterference.setDragFeedback(
+            self.assembly, [(self.arm, self.obstacle)] * 12, clearance=10)
+        with patch.object(AssemblyApp, "_runPreparedInterferenceScan", side_effect=scan):
+            for z in (0, 1):
+                self.arm.Placement.Base.z = z
+                self.feedback._lastStart = -float("inf")
+                self.feedback.step()
+                self.wait(lambda: self.feedback._future is None)
+                self.wait(lambda: bool(self.feedback.findings))
+                # Pending presentation is drained by timer polls, each with a fixed item budget.
+                self.wait(lambda: not self.feedback._timer.isActive())
+        self.assertEqual(copies, {self.arm.Name + ".": 1, self.obstacle.Name + ".": 1})
+        self.assertNotIn(threading.get_ident(), threads, "Highlight meshing must run on the worker")
+        self.assertEqual(self.feedback._root.getChild(0).getNumChildren(), 4,
+                         "Repeated findings must share one highlight per leaf")
+
+    def test_highlight_presentation_yields_within_one_poll(self):
+        from Assembly.DragFeedback import _Feedback
+
+        feedback = _Feedback.__new__(_Feedback)
+        consumed = []
+
+        def chunks():
+            for i in range(100):
+                consumed.append(i)
+                yield
+
+        feedback._presentation = chunks()
+        # A stopped clock must still leave a hard work bound.
+        with patch("Assembly.DragFeedback.time.monotonic", return_value=0):
+            feedback._presentPending()
+        self.assertEqual(len(consumed), 4)
+
     def test_resting_contact_after_busy_and_latest_step_wins(self):
         self.enable()
         self.begin()

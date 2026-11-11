@@ -5,6 +5,8 @@
 import io
 import math
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -19,6 +21,46 @@ import AssemblyApp
 
 
 class TestMotionInterference(unittest.TestCase):
+    def test_package_and_sweep_without_pyside(self):
+        script = '''
+import importlib.abc
+import sys
+class NoPySide(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in ('PySide', 'PySide2', 'PySide6'):
+            raise ModuleNotFoundError('PySide deliberately unavailable')
+sys.meta_path.insert(0, NoPySide())
+for name in list(sys.modules):
+    if name == 'Assembly' or name.startswith(('Assembly.', 'PySide')):
+        del sys.modules[name]
+import Assembly
+from AssemblyTests.TestMotionInterference import TestMotionSweep
+fixture = TestMotionSweep()
+fixture.setUp()
+try:
+    result = fixture.sweep(interval=(0, 1), step=1, coverageBudget=0,
+                           refinementPoseBudget=0)
+    assert result['completeness'] == 'complete', result['reason']
+    assert len(result['samples']) == 2
+finally:
+    fixture.tearDown()
+print('HEADLESS_WITHOUT_PYSIDE_OK')
+'''
+        with tempfile.TemporaryDirectory(dir=os.environ.get("FREECAD_USER_HOME")) as directory:
+            path = os.path.join(directory, "without_pyside.py")
+            with open(path, "w") as stream:
+                stream.write("import sys\nsys.path[:] = " + repr(sys.path) + "\n" + script)
+            home = os.path.join(directory, "home")
+            os.mkdir(home)
+            env = dict(os.environ, FREECAD_USER_HOME=home)
+            env.pop("DISPLAY", None)
+            env.pop("WAYLAND_DISPLAY", None)
+            command = os.path.join(App.getHomePath(), "bin", "FreeCADCmd")
+            child = subprocess.run([command, path], env=env, capture_output=True,
+                                   text=True, timeout=120)
+            self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+            self.assertIn("HEADLESS_WITHOUT_PYSIDE_OK", child.stdout, child.stdout + child.stderr)
+
     def setUp(self):
         self.doc = App.newDocument("MotionInterference")
         self.assembly = Assembly.createAssembly(self.doc)
@@ -54,6 +96,31 @@ class TestMotionInterference(unittest.TestCase):
                              "Worker topology must be independent of the document")
             self.assertEqual(leaf["worldShape"].Placement.toMatrix().A,
                              obj.Placement.toMatrix().A)
+
+    def test_collapsed_part_array_selected_and_prepared_geometry(self):
+        source = self.doc.addObject("App::Part", "ArraySource")
+        solid = source.newObject("Part::Feature", "ArraySolid")
+        solid.Shape = Part.makeBox(1, 1, 1)
+        array = self.assembly.newObject("App::Link", "PartArray")
+        array.setLink(source)
+        array.ShowElement = False
+        array.ElementCount = 2
+        array.PlacementList = [App.Placement(),
+                               App.Placement(App.Vector(5, 0, 0), App.Rotation())]
+        self.second.Placement.Base.x = 5.5
+        self.doc.recompute()
+        before = {o.Name: o.PropertiesList for o in self.doc.Objects}
+        first = (self.assembly, "PartArray.1.")
+        result = Assembly.scanSelectedPair(self.assembly, first, self.second,
+                                           measureDistances=True)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["pairs"][0]["solidDetection"]["kind"], "Penetration")
+        prepared = AssemblyApp._prepareSelectedPairScan(
+            self.assembly, first, self.second, measureDistances=True)
+        result = AssemblyApp._runPreparedInterferenceScan(prepared)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["pairs"][0]["solidDetection"]["kind"], "Penetration")
+        self.assertEqual(before, {o.Name: o.PropertiesList for o in self.doc.Objects})
 
     def test_read_only_clearance_override(self):
         self.second.Placement.Base.x = 2
@@ -849,6 +916,79 @@ class TestMotionSweep(unittest.TestCase):
         UtilsAssembly.getSimulationGroup(self.assembly).Group = [sim]
         self.doc.recompute()
         return sim
+
+    def test_simulation_cancel_during_generation(self):
+        from Assembly import MotionInterference as motion
+
+        sim = self.simulation("time", step=0.001)
+        before = self.state()
+        token = Assembly.SweepCancellation()
+        generated = []
+        generating = []
+        native = motion._SimulationTrajectory.generate
+
+        def generate(trajectory, *args, **kwargs):
+            generating.append(True)
+            try:
+                return native(trajectory, *args, **kwargs)
+            finally:
+                generated.append(self.assembly.numberOfFrames())
+                generating.pop()
+
+        def events():
+            if generating and self.assembly.numberOfFrames() >= 2:
+                token.cancel()
+
+        with patch.object(motion._SimulationTrajectory, "generate", generate), \
+                patch.object(motion, "_process_events", side_effect=events, create=True):
+            result = self.sweep_simulation(sim, cancel=token, refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "cancelled", result["reason"])
+        self.assertEqual(result["samples"], [])
+        self.assertTrue(generated)
+        self.assertLessEqual(generated[0], 10, "Cancellation must run between bounded frame chunks")
+        self.assert_restored(before)
+
+    def test_simulation_negative_entry_angle(self):
+        self.revolute()
+        self.arm.Placement.Rotation = App.Rotation(App.Vector(0, 0, 1), -120)
+        self.joint.EnableAngleMin = self.joint.EnableAngleMax = True
+        self.joint.AngleMin, self.joint.AngleMax = -130, -100
+        self.doc.recompute()
+        sim = self.simulation("initialValue+pi/18*time", step=0.25)
+        placements = {o.Name: o.Placement.toMatrix().A for o in self.doc.Objects
+                      if "Placement" in o.PropertiesList}
+        history = (self.doc.UndoCount, self.doc.RedoCount, self.doc.getFileChangeState())
+        result = self.sweep_simulation(sim, refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "complete", result["reason"])
+        self.assertEqual(len(result["samples"]), 5)
+        for sample in result["samples"]:
+            self.assertAlmostEqual(sample["drivenCoordinates"][self.joint.Name]["value"],
+                                   -120 + 10*sample["time"], places=6)
+        self.assertEqual(placements, {o.Name: o.Placement.toMatrix().A for o in self.doc.Objects
+                                      if "Placement" in o.PropertiesList})
+        self.assertEqual(history, (self.doc.UndoCount, self.doc.RedoCount,
+                                   self.doc.getFileChangeState()))
+
+    def test_all_grid_orders_refined_pose_across_pairs(self):
+        from Assembly.MotionAllPairs import sweepAll
+
+        # Both pairs hit coarse index 1. The later-enumerated pair refines earlier.
+        leaves = [dict(path=name + ".", component=name + ".", rigidComponent=name,
+                       sourceId=name) for name in ("A", "B", "C")]
+
+        def sweep(first, second, **options):
+            pose = [0, 8 if second[1] == "B." else 3]
+            event = dict(coordinate=1, pose=pose, scan=dict(pairs=[]))
+            return dict(interval=(0, 3), ranges=[(0, 10), (0, 10)],
+                        firstContact=event, firstClearanceViolation=None,
+                        firstGapViolation=None, completeness="complete", reason="")
+
+        with patch.object(AssemblyApp, "_motionInterferenceLeaves",
+                          return_value=dict(leaves=leaves, exclusions=[])):
+            result = sweepAll(self.assembly, sweep, pairBudget=2)
+        self.assertEqual(result["firstContact"]["pose"], [0, 3])
+        self.assertEqual(result["firstEvent"]["pose"], [0, 3])
+        self.assertEqual([e["pose"][1] for e in result["events"]], [3, 8])
 
     def sweep_simulation(self, sim, **options):
         return Assembly.sweepSimulation(self.assembly, sim, self.arm, self.obstacle, **options)

@@ -472,6 +472,48 @@ Py::Object motionSimulationFrameTimesPy(const Py::Tuple& args)
     return times;
 }
 
+Py::Object tessellateInterferenceShapePy(const Py::Tuple& args)
+{
+    PyObject* value = nullptr;
+    if (!PyArg_ParseTuple(args.ptr(), "O!", &Part::TopoShapePy::Type, &value)) {
+        throw Py::Exception();
+    }
+    try {
+        // Feedback passes an exclusive copy of a worker-owned leaf, never a
+        // document shape or a snapshot still used by an interference scan.
+        Part::TopoShape shape(*static_cast<Part::TopoShapePy*>(value)->getTopoShapePtr());
+        std::vector<Base::Vector3d> vertices;
+        std::vector<Data::ComplexGeoData::Facet> faces;
+        {
+            Base::PyGILStateRelease unlock;
+            shape.setTransform(Base::Matrix4D());
+            shape.getFaces(vertices, faces, 0.1);
+        }
+        Py::List points;
+        Py::List indices;
+        for (const auto& vertex : vertices) {
+            points.append(point(vertex));
+        }
+        for (const auto& face : faces) {
+            indices.append(Py::asObject(
+                Py_BuildValue("(iii)", int(face.I1), int(face.I2), int(face.I3))));
+        }
+        Py::Tuple mesh(2);
+        mesh[0] = points;
+        mesh[1] = indices;
+        return mesh;
+    }
+    catch (const Standard_Failure& error) {
+        throw Py::RuntimeError(error.GetMessageString());
+    }
+    catch (const Base::Exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+    catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+}
+
 Py::Object motionSimulationJointStatePy(const Py::Tuple& args)
 {
     PyObject* hostPy = nullptr;

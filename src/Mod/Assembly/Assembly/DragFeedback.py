@@ -57,6 +57,44 @@ def setDragFeedback(assembly, pairs=None, enabled=True, *, clearance=None):
     return feedback
 
 
+def _scan_and_mesh(generation, prepared, meshes):
+    scans = [AssemblyApp._runPreparedInterferenceScan(p) for p in prepared]
+    findings = []
+    for scan in scans:
+        if scan["cancelled"]:
+            continue
+        if not scan["complete"] or not scan["pairs"]:
+            raise RuntimeError("Static contact scan incomplete")
+        for pair in scan["pairs"]:
+            if not pair["distanceMeasured"]:
+                raise RuntimeError("Static contact scan did not measure the pair")
+            distance = pair["solidDetection"]["minimumDistance"]
+            if not math.isfinite(distance) or distance < 0:
+                raise RuntimeError("Static contact scan returned an invalid distance")
+            if pair["excluded"]:
+                continue
+            hits = [h for h in pair["faceHits"] if not h["suppressedByExclusion"]]
+            contact = pair["solidDetection"]["kind"] in ("Contact", "Penetration") or any(
+                h["kind"] in ("Contact", "Penetration") for h in hits)
+            violation = contact or pair["detection"]["kind"] == "ClearanceViolation" or any(
+                h["kind"] == "ClearanceViolation" for h in hits)
+            if violation:
+                leaves = [scan["leaves"][pair[key]] for key in ("leafIndexA", "leafIndexB")]
+                findings.append((leaves, distance, contact))
+    highlights = {}
+    for leaves, _, _ in findings:
+        for leaf in leaves:
+            path = leaf["occurrenceSubName"]
+            if path in highlights:
+                continue
+            if path not in meshes:
+                # Exclusive topology/geometry; OCCT meshing releases the GIL.
+                meshes[path] = AssemblyApp._tessellateInterferenceShape(leaf["worldShape"].copy())
+            highlights[path] = (App.Placement(leaf["worldShape"].Placement), meshes[path])
+    closest = min(findings, key=lambda finding: finding[1], default=None)
+    return generation, findings, highlights, closest
+
+
 class _Feedback:
     def __init__(self, assembly, pairs, clearance):
         self.assembly, self.pairs, self.clearance = assembly, pairs, clearance
@@ -73,6 +111,9 @@ class _Feedback:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._token = AssemblyApp.newInterferenceScanCancellation()
         self._root = self._scene = None
+        self._meshes = {}
+        self._nodes = {}
+        self._presentation = None
         self.findings = []
         self.message = ""
         self._timer = QtCore.QTimer()
@@ -81,6 +122,7 @@ class _Feedback:
         App.addDocumentObserver(self)
 
     def _clear(self):
+        self._presentation = None
         if self._root is not None:
             self._scene.removeChild(self._root)
             self._root = self._scene = None
@@ -125,50 +167,31 @@ class _Feedback:
         if self._geometry is None:
             self._geometry = prepared
         # Geometry is owned by the session, independent of the document.
-        self._future = self._executor.submit(
-            lambda: (generation, [AssemblyApp._runPreparedInterferenceScan(p) for p in prepared]))
+        self._future = self._executor.submit(_scan_and_mesh, generation, prepared, self._meshes)
 
     def _poll(self):
         try:
             self._startPending()
             if self._future is None:
-                if self._pending is None:
+                self._presentPending()
+                if self._pending is None and self._presentation is None:
                     self._timer.stop()
                 return
             if not self._future.done():
                 return
             future, self._future = self._future, None
-            generation, scans = future.result()
+            generation, findings, highlights, closest = future.result()
             if not self.enabled or generation != self._generation:
                 self._startPending()
                 return
-            for scan in scans:
-                if scan["cancelled"]:
-                    continue
-                if not scan["complete"] or not scan["pairs"]:
-                    raise RuntimeError("Static contact scan incomplete")
-                for pair in scan["pairs"]:
-                    if not pair["distanceMeasured"]:
-                        raise RuntimeError("Static contact scan did not measure the pair")
-                    distance = pair["solidDetection"]["minimumDistance"]
-                    if not math.isfinite(distance) or distance < 0:
-                        raise RuntimeError("Static contact scan returned an invalid distance")
-                    if pair["excluded"]:
-                        continue
-                    hits = [h for h in pair["faceHits"] if not h["suppressedByExclusion"]]
-                    contact = pair["solidDetection"]["kind"] in ("Contact", "Penetration") or any(
-                        h["kind"] in ("Contact", "Penetration") for h in hits)
-                    violation = contact or pair["detection"]["kind"] == "ClearanceViolation" or any(
-                        h["kind"] == "ClearanceViolation" for h in hits)
-                    if violation:
-                        leaves = [scan["leaves"][pair[key]] for key in ("leafIndexA", "leafIndexB")]
-                        self.findings.append((leaves, distance, contact))
+            self.findings = findings
             if self.findings:
-                self._present()
+                self._present(highlights, closest)
+                self._presentPending()
         except Exception as error:
             self._fail(error)
 
-    def _present(self):
+    def _present(self, highlights, closest):
         view = Gui.getDocument(self.assembly.Document.Name).activeView()
         self._scene = view.getSceneGraph()
         self._root = coin.SoType.fromName("SoSkipBoundingGroup").createInstance()
@@ -182,23 +205,54 @@ class _Feedback:
         material.diffuseColor = (1.0, 0.2, 0.05)
         material.transparency = 0.35
         content.addChild(material)
-        for leaves, _, _ in self.findings:
-            for leaf in leaves:
-                # Meshing must not populate triangulations on a document shape.
-                vertices, faces = leaf["worldShape"].copy().tessellate(0.1)
-                coords = coin.SoCoordinate3()
-                coords.point.setValues(0, len(vertices), [tuple(v) for v in vertices])
-                triangles = coin.SoIndexedFaceSet()
-                indices = [index for face in faces for index in (*face, -1)]
-                triangles.coordIndex.setValues(0, len(indices), indices)
-                content.addChild(coords)
-                content.addChild(triangles)
+        self._presentation = self._highlightSteps(content, highlights)
         self._scene.addChild(self._root)
-        leaves, distance, contact = min(self.findings, key=lambda finding: finding[1])
+        leaves, distance, contact = closest
         kind = App.Qt.translate("Assembly", "Contact" if contact else "Clearance violation")
         self.message = App.Qt.translate("Assembly", "{} at this pose: {} / {} — {:.6g} mm").format(
             kind, leaves[0]["displayPath"], leaves[1]["displayPath"], distance)
         Gui.getMainWindow().statusBar().showMessage(self.message)
+
+    def _highlightSteps(self, content, highlights):
+        for path, (placement, (vertices, faces)) in highlights.items():
+            cached = self._nodes.get(path)
+            if cached is None:
+                node = coin.SoSeparator()
+                transform = coin.SoTransform()
+                node.addChild(transform)
+                coords = coin.SoCoordinate3()
+                node.addChild(coords)
+                triangles = coin.SoIndexedFaceSet()
+                node.addChild(triangles)
+                # Bound each Coin field update; large leaves span timer polls.
+                for offset in range(0, len(vertices), 2048):
+                    chunk = vertices[offset:offset+2048]
+                    coords.point.setValues(offset, len(chunk), chunk)
+                    yield
+                for offset in range(0, len(faces), 2048):
+                    indices = [i for face in faces[offset:offset+2048] for i in (*face, -1)]
+                    triangles.coordIndex.setValues(offset*4, len(indices), indices)
+                    yield
+                cached = self._nodes[path] = (node, transform)
+            node, transform = cached
+            transform.translation = tuple(placement.Base)
+            transform.rotation = tuple(placement.Rotation.Q)
+            content.addChild(node)
+            yield
+
+    def _presentPending(self):
+        deadline = time.monotonic() + 0.002
+        # A time budget alone cannot bound work with a coarse/mock clock.
+        for _ in range(4):
+            if self._presentation is None:
+                return
+            try:
+                next(self._presentation)
+            except StopIteration:
+                self._presentation = None
+                return
+            if time.monotonic() >= deadline:
+                return
 
     def _fail(self, error):
         self.close()
@@ -212,6 +266,8 @@ class _Feedback:
         self.enabled = False
         self._pending = None
         self._geometry = None
+        self._meshes = {}
+        self._nodes = {}
         self._generation += 1
         self._timer.stop()
         AssemblyApp.cancelInterferenceScan(self._token)
@@ -240,6 +296,9 @@ class _Feedback:
         placement = prop in ("Placement", "LinkPlacement", "PlacementList")
         if not placement and not (prop == "Shape" and obj.FullName in self._placing):
             self._geometry = None
+            # Replace the worker cache instead of mutating one still in use.
+            self._meshes = {}
+            self._nodes = {}
         if placement:
             self._placing.discard(obj.FullName)
         self._generation += 1

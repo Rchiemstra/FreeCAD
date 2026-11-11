@@ -25,6 +25,7 @@
 #pragma once
 
 #include <boost/signals2.hpp>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -158,7 +159,7 @@ public:
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
     being in an active transaction (joint creation).*/
     SolveResult solve(bool enableRedo = false);
-    int generateSimulation(App::DocumentObject* sim);
+    int generateSimulation(App::DocumentObject* sim, const std::function<bool()>& checkpoint = {});
     /** Run a synchronous Python sweep body with solver/placement state isolated. */
     PyObject* withMotionSweepState(PyObject* callback);
     int updateForFrame(size_t index);
@@ -192,7 +193,7 @@ public:
     void syncGroundedJoints();
 
     // Ondsel Solver interface
-    std::shared_ptr<MbD::ASMTAssembly> makeMbdAssembly();
+    std::shared_ptr<MbD::ASMTAssembly> makeMbdAssembly(bool checkpoints = false);
     void create_mbdSimulationParameters(App::DocumentObject* sim);
     std::shared_ptr<MbD::ASMTPart> makeMbdPart(
         std::string& name,

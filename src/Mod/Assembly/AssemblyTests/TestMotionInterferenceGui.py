@@ -98,6 +98,36 @@ class TestMotionInterferenceGui(unittest.TestCase):
             Gui.activeDocument().resetEdit()
         self.fixture.tearDown()
 
+    def test_timer_cancels_while_native_simulation_is_generating(self):
+        import Assembly
+        from Assembly import MotionInterference as motion
+
+        sim = self.fixture.simulation("0.01*time", step=0.001)
+        before = self.fixture.state()
+        token = Assembly.SweepCancellation()
+        frames = []
+        native = motion._SimulationTrajectory.generate
+
+        def cancel_generated():
+            if self.assembly.numberOfFrames() >= 2:
+                token.cancel()
+            else:
+                QtCore.QTimer.singleShot(0, cancel_generated)
+
+        def generate(trajectory, *args, **kwargs):
+            QtCore.QTimer.singleShot(0, cancel_generated)
+            try:
+                return native(trajectory, *args, **kwargs)
+            finally:
+                frames.append(self.assembly.numberOfFrames())
+
+        with patch.object(motion._SimulationTrajectory, "generate", generate):
+            result = self.fixture.sweep_simulation(sim, cancel=token, refinementPoseBudget=0)
+        self.assertEqual(result["completeness"], "cancelled", result["reason"])
+        self.assertEqual(result["samples"], [])
+        self.assertLessEqual(frames[0], 8, "GUI Cancel must run before full generation")
+        self.fixture.assert_restored(before)
+
     def wait(self, condition, timeout=30000):
         loop = QtCore.QEventLoop()
         poll = QtCore.QTimer()
