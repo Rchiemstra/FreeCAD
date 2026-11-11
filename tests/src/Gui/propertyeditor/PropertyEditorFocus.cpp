@@ -303,8 +303,16 @@ private Q_SLOTS:
         QVERIFY(!editor);
     }
 
-    void closingEditorFinishesItsOwnDocumentTransaction()
+    void closingEditorPreservesDocumentTransactions_data()
     {
+        QTest::addColumn<bool>("bookedBefore");
+        QTest::newRow("booked-before") << true;
+        QTest::newRow("booked-after") << false;
+    }
+
+    void closingEditorPreservesDocumentTransactions()
+    {
+        QFETCH(bool, bookedBefore);
         TestDocument fixture;
         auto* object = fixture.object;
         auto* property = object->addDynamicProperty("App::PropertyInteger", "Size", "Values");
@@ -313,16 +321,26 @@ private Q_SLOTS:
         view.setAutomaticDocumentUpdate(true);
         view.buildUp({{"Size", {property}}});
         const auto index = view.model()->index(0, 1, view.model()->index(0, 0));
+        int transaction = bookedBefore ? fixture.document->openTransaction("Existing edit") : 0;
         view.openEditor(index);
         QVERIFY(view.indexWidget(index));
-        QVERIFY(fixture.document->getBookedTransactionID());
+        QCOMPARE(fixture.document->getBookedTransactionID(), transaction);
+        if (!bookedBefore) {
+            transaction = fixture.document->openTransaction("Later edit");
+        }
+        QVERIFY(transaction);
         TestDocument other;
+        const int otherTransaction = other.document->openTransaction("Other document edit");
+        QVERIFY(otherTransaction);
         QCOMPARE(App::GetApplication().getActiveDocument(), other.document);
         view.closeEditor();
-        QCOMPARE(fixture.document->getBookedTransactionID(), 0);
+        QCOMPARE(fixture.document->getBookedTransactionID(), transaction);
+        QCOMPARE(other.document->getBookedTransactionID(), otherTransaction);
+        fixture.document->abortTransaction();
+        other.document->abortTransaction();
     }
 
-    void tabFinishesTransactionBeforeOpeningNextEditor_data()
+    void tabSubmitsValueBeforeOpeningNextEditor_data()
     {
         QTest::addColumn<int>("key");
         QTest::addColumn<bool>("singleEditableProperty");
@@ -332,7 +350,7 @@ private Q_SLOTS:
         QTest::newRow("backtab-single") << int(Qt::Key_Backtab) << true;
     }
 
-    void tabFinishesTransactionBeforeOpeningNextEditor()
+    void tabSubmitsValueBeforeOpeningNextEditor()
     {
         QFETCH(int, key);
         QFETCH(bool, singleEditableProperty);
@@ -367,8 +385,7 @@ private Q_SLOTS:
         QPointer<QWidget> editor = view.indexWidget(startIndex);
         QVERIFY(editor);
         QTRY_VERIFY(editor->hasFocus());
-        const int transaction = fixture.document->getBookedTransactionID();
-        QVERIFY(transaction);
+        QCOMPARE(fixture.document->getBookedTransactionID(), 0);
         auto* spinBox = qobject_cast<QSpinBox*>(editor);
         QVERIFY(spinBox);
         spinBox->setKeyboardTracking(false);
@@ -377,25 +394,30 @@ private Q_SLOTS:
         lineEdit->selectAll();
         QTest::keyClicks(lineEdit, "17");
         QCOMPARE(property->getValue(), 0L);
-        int commits = 0;
-        bool nextEditorWasOpenAtCommit = false;
-        long valueAtCommit = 0;
-        auto connection = fixture.document->signalCommitTransaction.connect([&](const App::Document&) {
-            ++commits;
-            nextEditorWasOpenAtCommit = view.indexWidget(nextIndex) != nullptr;
-            valueAtCommit = property->getValue();
-        });
+        // This proxy isolates Qt focus ordering. Production lane transactions
+        // and recompute are covered by PropertyEditorTransaction.cpp.
+        int changes = 0;
+        bool nextEditorWasOpenAtChange = false;
+        long valueAtChange = 0;
+        auto connection = fixture.document->signalChangedObject.connect(
+            [&](const App::DocumentObject&, const App::Property& changed) {
+                if (&changed == property) {
+                    ++changes;
+                    auto* nextEditor = view.indexWidget(nextIndex);
+                    nextEditorWasOpenAtChange = nextEditor && nextEditor != editor.data();
+                    valueAtChange = property->getValue();
+                }
+            });
         const auto disconnect = qScopeGuard([&] { connection.disconnect(); });
 
         QTest::keyClick(editor, static_cast<Qt::Key>(key));
         QTRY_VERIFY(view.indexWidget(nextIndex));
         QCOMPARE(view.currentIndex(), nextIndex);
-        QCOMPARE(commits, 1);
-        QVERIFY(!nextEditorWasOpenAtCommit);
-        QCOMPARE(valueAtCommit, 17L);
+        QCOMPARE(changes, 1);
+        QVERIFY(!nextEditorWasOpenAtChange);
+        QCOMPARE(valueAtChange, 17L);
         QCOMPARE(property->getValue(), 17L);
-        QVERIFY(fixture.document->getBookedTransactionID());
-        QVERIFY(fixture.document->getBookedTransactionID() != transaction);
+        QCOMPARE(fixture.document->getBookedTransactionID(), 0);
         QTRY_VERIFY(!editor);
         connection.disconnect();
         view.closeEditor();
@@ -434,8 +456,7 @@ private Q_SLOTS:
         view.openEditor(index);
         QPointer<QWidget> editor = view.indexWidget(index);
         QVERIFY(editor);
-        const int transaction = fixture.document->getBookedTransactionID();
-        QVERIFY(transaction);
+        QCOMPARE(fixture.document->getBookedTransactionID(), 0);
         property->setValue(17);
         QTRY_VERIFY(editor->hasFocus());
         auto* spinBox = qobject_cast<QSpinBox*>(editor);
@@ -464,8 +485,7 @@ private Q_SLOTS:
         else {
             view.openEditor(index);
             QVERIFY(view.indexWidget(index));
-            QVERIFY(fixture.document->getBookedTransactionID());
-            QVERIFY(fixture.document->getBookedTransactionID() != transaction);
+            QCOMPARE(fixture.document->getBookedTransactionID(), 0);
             view.closeEditor();
             QCOMPARE(fixture.document->getBookedTransactionID(), 0);
         }
@@ -531,7 +551,7 @@ private Q_SLOTS:
         QVERIFY(lineEdit);
         QVERIFY(button);
         const int transaction = fixture.document->getBookedTransactionID();
-        QCOMPARE(transaction != 0, automaticUpdate);
+        QCOMPARE(transaction, 0);
         QCOMPARE(lineEdit->text(), original.fileName());
         lineEdit->setFocus();
         QCoreApplication::processEvents();

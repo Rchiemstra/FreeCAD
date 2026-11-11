@@ -652,6 +652,11 @@ void PropertyItem::setPropertyName(const QString& name, const QString& realName)
     displayText = str;
 }
 
+void PropertyItem::setEditTransactionName(std::string name)
+{
+    editTransactionName = std::move(name);
+}
+
 void PropertyItem::setPropertyValue(const std::string& value)
 {
     const auto runLegacyCommand = [](const std::string& command) {
@@ -746,7 +751,8 @@ void PropertyItem::setPropertyValue(const std::string& value)
         }
 
         for (auto& [doc, propertyValues] : laneEdits) {
-            const auto outcome = submitDocumentPropertyEdit(*doc, std::move(propertyValues));
+            const auto outcome = submitDocumentPropertyEdit(
+                *doc, std::move(propertyValues), editTransactionName, !editTransactionName.empty());
             if (!outcome.accepted()) {
                 reportDocumentCommandSubmitBlocked(*doc, outcome);
             }

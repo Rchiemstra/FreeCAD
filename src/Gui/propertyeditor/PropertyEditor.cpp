@@ -337,6 +337,7 @@ void PropertyEditor::openTransaction()
     auto item = static_cast<PropertyItem*>(editingIndex.internalPointer());
     auto items = item->getPropertyData();
     for (auto propItem = item->parent(); items.empty() && propItem; propItem = propItem->parent()) {
+        item = propItem;
         items = propItem->getPropertyData();
     }
     if (items.empty()) {
@@ -360,9 +361,6 @@ void PropertyEditor::openTransaction()
         FC_LOG("pending transaction");
         return;
     }
-    // Book a named undo transaction for this edit. Lane Edit commands still
-    // record the value change; closeTransaction commits only this booking, and
-    // a zero id still means this editor has nothing to close.
     auto* document = obj->getDocument();
     std::ostringstream str;
     str << tr("Edit").toUtf8().constData() << ' ';
@@ -381,6 +379,14 @@ void PropertyEditor::openTransaction()
     str << prop->getName();
     if (items.size() > 1) {
         str << "...";
+    }
+    if (document->executionLane()) {
+        // An untouched editor must leave a stable document boundary. Copy the
+        // requested label into the eventual Edit instead of booking a native
+        // transaction that the GUI would have to finish at editor close.
+        transactionItem = item;
+        item->setEditTransactionName(str.str());
+        return;
     }
     transactionDocument = document;
     transactionID = document->setActiveTransaction(
@@ -440,6 +446,9 @@ void PropertyEditor::recomputeDocument(App::Document* doc)
 
 void PropertyEditor::closeTransaction()
 {
+    if (auto item = std::exchange(transactionItem, QPointer<PropertyItem>())) {
+        item->setEditTransactionName({});
+    }
     const int id = std::exchange(transactionID, 0);
     const auto document = std::exchange(transactionDocument, App::DocumentT());
     auto* doc = document.getDocument();

@@ -189,6 +189,7 @@ private:
 
     int transactionID = 0;
     App::DocumentT transactionDocument;
+    QPointer<PropertyItem> transactionItem;
 
     QColor groupColor;
     QBrush background;

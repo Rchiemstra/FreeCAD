@@ -89,7 +89,9 @@ GuiExport std::optional<std::string> copyPropertyValueFromPythonRhs(
 /** Admit one property-editor Edit through DocumentHandle::trySubmit(). */
 GuiExport App::DocumentCommandSubmitOutcome submitDocumentPropertyEdit(
     App::Document& document,
-    std::vector<App::DocumentCommandPropertyValue> propertyValues);
+    std::vector<App::DocumentCommandPropertyValue> propertyValues,
+    std::string transactionLabel = {},
+    bool recomputeAfterEdit = false);
 
 /** Poll command status without waiting and notify the GUI document when terminal. */
 GuiExport void scheduleUndoRedoCommandCompletion(
