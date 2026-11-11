@@ -730,6 +730,7 @@ TEST_F(CollaborationResponsivenessTest, stableCommitKeepsDeferredVisibilityRefre
 TEST_F(CollaborationResponsivenessTest,
        unchangedReadHandsBusyCommittedRootBackWithoutProviderRefresh)
 {
+    const auto sequenceBeforeSeed = _guiDocument->presentationCache().committedSequence();
     auto* provider = addLivePresentationProbe();
     ASSERT_NE(provider, nullptr);
     Gui::View3DInventor view(_guiDocument, nullptr);
@@ -738,11 +739,7 @@ TEST_F(CollaborationResponsivenessTest,
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
     _guiDocument->publishPresentationRevisionFromModel();
-    Gui::PresentationApplyPumpResult applied {};
-    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
-        applied = _guiDocument->pumpPresentationApply(50);
-    }
-    ASSERT_TRUE(applied.committedRevision);
+    ASSERT_TRUE(Gui::Test::pumpPresentationApplyUntilCommitted(*_guiDocument, sequenceBeforeSeed));
     ASSERT_NE(_guiDocument->presentationCache().committedCoinRoot(), nullptr);
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
@@ -812,6 +809,7 @@ TEST_F(CollaborationResponsivenessTest,
 TEST_F(CollaborationResponsivenessTest,
        epochAdvanceBeforeQueuedHandoffPreservesCurrentAndLaterWakes)
 {
+    const auto sequenceBeforeSeed = _guiDocument->presentationCache().committedSequence();
     auto* provider = addLivePresentationProbe();
     ASSERT_NE(provider, nullptr);
     Gui::View3DInventor view(_guiDocument, nullptr);
@@ -833,11 +831,7 @@ TEST_F(CollaborationResponsivenessTest,
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
     _guiDocument->publishPresentationRevisionFromModel();
-    Gui::PresentationApplyPumpResult applied {};
-    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
-        applied = _guiDocument->pumpPresentationApply(50);
-    }
-    ASSERT_TRUE(applied.committedRevision);
+    ASSERT_TRUE(Gui::Test::pumpPresentationApplyUntilCommitted(*_guiDocument, sequenceBeforeSeed));
     auto* const committedRoot = _guiDocument->presentationCache().committedCoinRoot();
     const auto committedSequence = _guiDocument->presentationCache().committedSequence();
     ASSERT_NE(committedRoot, nullptr);
