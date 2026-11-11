@@ -23,11 +23,14 @@ class TestStepAttributes(unittest.TestCase):
         self.prefs.SetBool('ImportUserAttributes', True)
         self.prefs.SetBool('ImportSavedViews', False)
         self.prefs.SetBool('ImportSemanticPMI', False)
+        self.prefs.SetBool('ReduceObjects', False)
+        self.prefs.SetBool('ExpandCompound', False)
 
     def tearDown(self):
         for name in set(App.listDocuments()) - self.existing:
             App.closeDocument(name)
-        for key in ('ImportUserAttributes', 'ImportSavedViews', 'ImportSemanticPMI'):
+        for key in ('ImportUserAttributes', 'ImportSavedViews', 'ImportSemanticPMI',
+                    'ReduceObjects', 'ExpandCompound'):
             if key in self.saved:
                 self.prefs.SetBool(key, self.saved[key])
             else:
@@ -638,3 +641,34 @@ class TestStepAttributes(unittest.TestCase):
         self.assertFalse(record.Owner)
         self.assertTrue(record.UnavailableReason)
         self.assertEqual(self.by_name(doc, 'orphan').Value, 'no shape')
+
+
+class TestStepAttributePreferences(unittest.TestCase):
+    def test_setup_restores_reduction_and_expansion_preferences(self):
+        prefs = App.ParamGet('User parameter:BaseApp/Preferences/Mod/Import')
+        saved = {x[1]: x[2] for x in prefs.GetContents() or []}
+        keys = ('ReduceObjects', 'ExpandCompound')
+        try:
+            for initial in (None, True, False):
+                with self.subTest(initial=initial):
+                    for key in keys:
+                        if initial is None:
+                            prefs.RemBool(key)
+                        else:
+                            prefs.SetBool(key, initial)
+                    case = TestStepAttributes('test_independent_descriptive_and_measured_properties')
+                    case.setUp()
+                    try:
+                        for key in keys:
+                            self.assertFalse(prefs.GetBool(key, True), key)
+                    finally:
+                        case.tearDown()
+                    contents = {x[1]: x[2] for x in prefs.GetContents() or []}
+                    for key in keys:
+                        self.assertEqual(contents.get(key), initial)
+        finally:
+            for key in keys:
+                if key in saved:
+                    prefs.SetBool(key, saved[key])
+                else:
+                    prefs.RemBool(key)

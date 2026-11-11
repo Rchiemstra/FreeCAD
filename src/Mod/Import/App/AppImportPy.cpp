@@ -49,6 +49,7 @@
 #endif
 
 #include <chrono>
+#include <mutex>
 #include <set>
 #include "dxf/ImpExpDxf.h"
 #include "SketchExportHelper.h"
@@ -241,14 +242,28 @@ private:
                 ocaf.setMode(mode);
             }
             metadata.attach(ocaf);
-            ocaf.loadShapes();
+            // Every document lane has its own owner thread, so another document
+            // can emit these application signals while this import runs.
+            std::mutex liveMutex;
+            std::set<const App::DocumentObject*> live;
+            {
+                // Only objects created by this conversion can have color results.
+                fastsignals::scoped_connection created = App::GetApplication().signalNewObject.connect(
+                    [&live, &liveMutex](const App::DocumentObject& object) {
+                        std::lock_guard lock(liveMutex);
+                        live.insert(&object);
+                    });
+                fastsignals::scoped_connection removed = App::GetApplication().signalDeletedObject.connect(
+                    [&live, &liveMutex](const App::DocumentObject& object) {
+                        std::lock_guard lock(liveMutex);
+                        live.erase(&object);
+                    });
+                ocaf.loadShapes();
+            }
             // Merging removes intermediate features. Drop their color results
             // before metadata allocations can reuse an old object's address.
             if (!ocaf.partColors.empty()) {
-                std::set<const App::DocumentObject*> live;
-                for (auto document : App::GetApplication().getDocuments()) {
-                    for (auto object : document->getObjects()) { live.insert(object); }
-                }
+                std::lock_guard lock(liveMutex);
                 std::erase_if(ocaf.partColors, [&live](const auto& color) {
                     return !live.contains(color.first);
                 });

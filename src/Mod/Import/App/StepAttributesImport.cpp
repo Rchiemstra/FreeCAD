@@ -26,7 +26,7 @@
 #include <StepBasic_SiUnitAndLengthUnit.hxx>
 #include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
 #include <Standard_Version.hxx>
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
 #include <StepData_Factors.hxx>
 #else
 #include <StepData_GlobalFactors.hxx>
@@ -383,7 +383,7 @@ std::string unitFactor(Handle(StepBasic_NamedUnit) unit, bool angle,
                 ? !Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(unit).IsNull()
                 : !Handle(StepBasic_SiUnitAndLengthUnit)::DownCast(unit).IsNull();
             STEPConstruct_UnitContext context;
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
             StepData_Factors localFactors;
             localFactors.SetCascadeUnit(model->LocalLengthUnit());
             if (!correct || context.ComputeFactors(si, localFactors) != 0
@@ -394,7 +394,7 @@ std::string unitFactor(Handle(StepBasic_NamedUnit) unit, bool angle,
                           : !context.LengthDone() || context.PlaneAngleDone())) {
                 return fail("conflicting measure type and SI unit");
             }
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
             // Lengths are stored in mm and angles in degrees, independent of the model's unit.
             factor *= angle ? context.PlaneAngleFactor() * 180 / M_PI
                 : context.LengthFactor() * localFactors.CascadeUnit();

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -170,6 +171,51 @@ class TestStepViews(unittest.TestCase):
         self.assertEqual(sibling.ClippingExpression, "(((#310*#312)+#310))")
         self.assertNotIn("depth", sibling.UnavailableReason)
 
+    def check_bounded_clipping(self, nodes, expected):
+        start = time.monotonic()
+        doc = self.variant([("#306,(#310,#312));", "#306,(#310,#400,#312));")],
+                           "\n".join(nodes))
+        self.assertLess(time.monotonic() - start, 10, "clipping graph import exceeded budget")
+        shapes = [o.Shape for o in doc.Objects if o.isDerivedFrom("Part::Feature")]
+        self.assertEqual(sum(len(s.Solids) for s in shapes), 1)
+        self.assertAlmostEqual(sum(s.Volume for s in shapes), 6)
+        view, sibling = self.records(doc.StepViews)
+        self.assertEqual((view.StepEntityId, sibling.StepEntityId), ("#315", "#316"))
+        self.assertEqual(view.PresentationStatus, "unavailable")
+        self.assertIn(expected, view.UnavailableReason)
+        self.assertIn("#400", view.SourceClippingTree)
+        self.assertLess(len(view.ClippingExpression), 65536)
+        self.assertLess(len(view.Planes), 10)
+        self.assertEqual(len(sibling.Planes), 2)
+        self.assertEqual(sibling.ClippingExpression, "(((#310*#312)+#310))")
+
+    def test_branching_shared_clipping_preserves_geometry_and_views(self):
+        # Only 70 Boolean nodes, but naive expansion visits 2**35 leaves.
+        nodes = []
+        for level in range(35):
+            kind = "UNION" if level % 2 == 0 else "INTERSECTION"
+            children = "#310,#312" if level == 34 else f"#{402 + 2*level},#{403 + 2*level}"
+            for number in (400 + 2*level, 401 + 2*level):
+                nodes.append(f"#{number}=CAMERA_MODEL_D3_MULTI_CLIPPING_{kind}('shared',({children}));")
+        self.check_bounded_clipping(nodes, "budget")
+
+    def test_shared_clipping_respects_depth_on_each_path(self):
+        # A subtree cached along a shallow path must still obey the depth limit
+        # when another operand reaches it through a second long chain.
+        nodes = ["#400=CAMERA_MODEL_D3_MULTI_CLIPPING_UNION('shared depth',(#401,#501));"]
+        for start, leaf in ((401, "#310"), (501, "#401")):
+            for number in range(start, start + 40):
+                kind = "INTERSECTION" if number % 2 else "UNION"
+                child = leaf if number == start + 39 else f"#{number + 1}"
+                nodes.append(f"#{number}=CAMERA_MODEL_D3_MULTI_CLIPPING_{kind}('chain',({child}));")
+        self.check_bounded_clipping(nodes, "depth")
+
+    def test_cyclic_clipping_preserves_geometry_and_views(self):
+        self.check_bounded_clipping([
+            "#400=CAMERA_MODEL_D3_MULTI_CLIPPING_UNION('cycle',(#401,#310));",
+            "#401=CAMERA_MODEL_D3_MULTI_CLIPPING_INTERSECTION('cycle',(#400,#312));"],
+            "cycle")
+
     def test_missing_volume_and_unsupported_clipping_isolated(self):
         for replacements, expected in (
                 ([("#301,#306,(#310,#312)", "#301,$,(#310,#312)")], "missing view volume"),
@@ -333,6 +379,27 @@ class TestStepViews(unittest.TestCase):
         self.assertEqual(len([o for o in doc.Objects if o.Name.startswith("StepSavedView")]), 2)
         self.assertEqual(len([o for o in doc.Objects if o.Name.startswith("StepPMI")
                               and o.TypeId == "App::DocumentObjectGroup"]), 2)
+
+    def test_ordinary_import_colors_survive_merge_and_multiple_documents(self):
+        unrelated = App.newDocument("UnrelatedColors")
+        sentinel = unrelated.addObject("Part::Feature", "Sentinel")
+        path = os.path.join(DATA, "views-nested.step")
+        for mode, merge in ((0, False), (0, True), (1, False), (3, False)):
+            with self.subTest(mode=mode, merge=merge):
+                before = set(App.listDocuments())
+                doc = App.newDocument("OrdinaryColors")
+                doc.saveAs(os.path.join(self.temp.name, doc.Name + ".FCStd"))
+                colors = Import.insert(path, doc.Name, mode=mode, merge=merge,
+                                       useLinkGroup=True, savedViews=False,
+                                       semanticPMI=False, userAttributes=False)
+                imported = [d for n, d in App.listDocuments().items() if n not in before]
+                features = {o for d in imported for o in d.Objects
+                            if o.isDerivedFrom("Part::Feature")}
+                self.assertTrue(colors)
+                self.assertEqual({o for o, values in colors}, features)
+                self.assertNotIn(sentinel, features)
+                if mode and not merge:
+                    self.assertTrue(any(o.Document != doc for o in features))
 
     def test_multi_document_links_unavailable(self):
         path = os.path.join(DATA, "views-nested.step")

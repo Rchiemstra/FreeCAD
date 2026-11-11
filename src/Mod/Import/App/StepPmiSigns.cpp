@@ -10,7 +10,7 @@
 #include <StepBasic_PlaneAngleMeasureWithUnit.hxx>
 #include <StepBasic_SiUnitAndLengthUnit.hxx>
 #include <StepData_StepModel.hxx>
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
 #include <StepData_Factors.hxx>
 #else
 #include <StepData_GlobalFactors.hxx>
@@ -23,7 +23,7 @@ namespace Import
 {
 namespace
 {
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
 bool signedMeasure(const Handle(Standard_Transient)& source, double& value, std::string& unit,
                    const StepData_Factors& localFactors)
 #else
@@ -39,7 +39,7 @@ bool signedMeasure(const Handle(Standard_Transient)& source, double& value, std:
         return false;
     }
     STEPConstruct_UnitContext context;
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
     if (context.ComputeFactors(measure->UnitComponent().NamedUnit(), localFactors) != 0) {
 #else
     if (context.ComputeFactors(measure->UnitComponent().NamedUnit()) != 0) {
@@ -49,7 +49,7 @@ bool signedMeasure(const Handle(Standard_Transient)& source, double& value, std:
     value = measure->ValueComponent();
     if (context.LengthDone() && !context.PlaneAngleDone()) {
         // UnitContext divides by the transfer unit; undo that to obtain mm.
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
         value *= context.LengthFactor() * localFactors.CascadeUnit();
 #else
         value *= context.LengthFactor()
@@ -101,7 +101,7 @@ void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
     if (model.IsNull()) {
         return;
     }
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
     StepData_Factors localFactors;
     localFactors.SetCascadeUnit(model->LocalLengthUnit());
 #endif
@@ -120,7 +120,7 @@ void StepPmiImport::captureSignedBounds(const Handle(StepData_StepModel)& model)
         }
         double lower = 0, upper = 0;
         std::string lowerUnit, upperUnit;
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
         const bool hasLower = signedMeasure(bounds->LowerBound(), lower, lowerUnit, localFactors);
         const bool hasUpper = signedMeasure(bounds->UpperBound(), upper, upperUnit, localFactors);
 #else

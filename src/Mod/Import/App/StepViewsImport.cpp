@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "StepViewsImport.h"
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <CXX/Objects.hxx>
 #include <STEPCAFControl_Reader.hxx>
 #include <STEPConstruct_UnitContext.hxx>
 #include <Standard_Version.hxx>
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
 #include <StepData_Factors.hxx>
 #else
 #include <StepData_GlobalFactors.hxx>
@@ -161,7 +163,7 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
     std::set<int> dimensions;
     bool valid = !units.IsNull();
     double length = 0;
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
     StepData_Factors localFactors;
     localFactors.SetCascadeUnit(model->LocalLengthUnit());
 #endif
@@ -202,7 +204,7 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
             // ComputeFactors(context) in 7.6 overwrites earlier errors. Validate
             // every declaration independently, including duplicate dimensions.
             STEPConstruct_UnitContext single;
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
             if (single.ComputeFactors(unit, localFactors) != 0) { valid = false; }
 #else
             if (single.ComputeFactors(unit) != 0) { valid = false; }
@@ -218,7 +220,7 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
         }
     }
     if (!valid || !dimensions.count(1)) { return 0; }
-#if OCC_VERSION_HEX >= 0x080000
+#if OCC_VERSION_HEX >= 0x070800
     // Undo the model's transfer unit to obtain mm, as on 7.6.3.
     double result = length * localFactors.CascadeUnit();
 #else
@@ -228,6 +230,27 @@ double lengthFactor(const Handle(StepRepr_RepresentationContext)& context,
 #endif
     return std::isfinite(result) && result > 0 ? result : 0;
 }
+
+// Bound both graph traversal and materialized Boolean expressions. A shared DAG
+// can have a tiny source representation and an exponentially large expression.
+constexpr size_t clippingWorkLimit = 8192;
+constexpr size_t clippingTextLimit = 65536;
+struct ClippingLimit : std::runtime_error
+{
+    ClippingLimit() : std::runtime_error("clipping budget exceeded") {}
+};
+struct CachedClipping
+{
+    std::string expression;
+    int height;
+};
+struct ClippingState
+{
+    size_t work = 0;
+    size_t cachedBytes = 0;
+    std::map<const Standard_Transient*, CachedClipping> expressions;
+    std::set<const Standard_Transient*> active;
+};
 
 std::vector<Handle(Standard_Transient)> clippingChildren(
     const Handle(Standard_Transient)& entity, char& operation)
@@ -241,6 +264,7 @@ std::vector<Handle(Standard_Transient)> clippingChildren(
         auto array = !camera.IsNull() ? camera->ShapeClipping() : intersection->ShapeClipping();
         if (!array.IsNull()) {
             for (int i = array->Lower(); i <= array->Upper(); ++i) {
+                if (children.size() >= clippingWorkLimit) { throw ClippingLimit(); }
                 children.push_back(array->Value(i).Value());
             }
         }
@@ -250,6 +274,7 @@ std::vector<Handle(Standard_Transient)> clippingChildren(
         auto array = unionNode->ShapeClipping();
         if (!array.IsNull()) {
             for (int i = array->Lower(); i <= array->Upper(); ++i) {
+                if (children.size() >= clippingWorkLimit) { throw ClippingLimit(); }
                 children.push_back(array->Value(i).Value());
             }
         }
@@ -259,12 +284,21 @@ std::vector<Handle(Standard_Transient)> clippingChildren(
 }
 
 std::string sourceClipping(const Handle(Standard_Transient)& root,
-                           const Handle(StepData_StepModel)& model)
+                           const Handle(StepData_StepModel)& model, std::string& reason)
 {
     std::string result;
+    auto limited = [&]() {
+        reason += "clipping provenance budget exceeded; ";
+        result.resize(std::min(result.size(), clippingTextLimit));
+        return result + " [clipping budget exceeded]";
+    };
     std::vector<Handle(Standard_Transient)> pending {root};
     std::set<const Standard_Transient*> seen;
+    size_t work = 0;
     while (!pending.empty()) {
+        if (++work > clippingWorkLimit || result.size() > clippingTextLimit) {
+            return limited();
+        }
         auto entity = pending.back();
         pending.pop_back();
         if (entity.IsNull() || !seen.insert(entity.get()).second) { continue; }
@@ -273,10 +307,14 @@ std::string sourceClipping(const Handle(Standard_Transient)& root,
         try {
             auto children = clippingChildren(entity, operation);
             for (const auto& child : children) {
+                if (++work > clippingWorkLimit || result.size() > clippingTextLimit) {
+                    return limited();
+                }
                 result += id(model, child) + ",";
                 pending.push_back(child);
             }
         }
+        catch (const ClippingLimit&) { return limited(); }
         catch (const std::exception&) {} // Leaf or unsupported typed operand: ID/type retained.
         result += "); ";
     }
@@ -287,10 +325,32 @@ std::string sourceClipping(const Handle(Standard_Transient)& root,
 std::string clipping(const Handle(Standard_Transient)& entity,
     const Handle(StepData_StepModel)& model, double scale,
     std::vector<StepViewRecord>& planes, std::vector<std::string>& ids,
-    std::string& reason, int depth = 0)
+    std::string& reason, ClippingState& state, int depth = 0)
 {
+    if (++state.work > clippingWorkLimit) { throw ClippingLimit(); }
     if (entity.IsNull()) { throw std::runtime_error("missing clipping operand"); }
     if (depth > 64) { throw std::runtime_error("clipping depth exceeds 64"); }
+    if (state.active.contains(entity.get())) { throw std::runtime_error("clipping cycle"); }
+    auto cached = state.expressions.find(entity.get());
+    if (cached != state.expressions.end()) {
+        if (depth + cached->second.height > 64) {
+            throw std::runtime_error("clipping depth exceeds 64");
+        }
+        return cached->second.expression;
+    }
+    state.active.insert(entity.get());
+    struct ActiveOperand
+    {
+        std::set<const Standard_Transient*>& active;
+        const Standard_Transient* entity;
+        ~ActiveOperand() { active.erase(entity); }
+    } active {state.active, entity.get()};
+    auto remember = [&](const std::string& expression, int height = 0) {
+        state.cachedBytes += expression.size();
+        if (state.cachedBytes > 4 * clippingTextLimit) { throw ClippingLimit(); }
+        state.expressions.emplace(entity.get(), CachedClipping {expression, height});
+        return expression;
+    };
     auto plane = Handle(StepGeom_Plane)::DownCast(entity);
     if (!plane.IsNull()) {
         const auto sourceId = id(model, plane);
@@ -326,17 +386,22 @@ std::string clipping(const Handle(Standard_Transient)& entity,
         record.numbers["sourceLengthFactor"] = scale;
         record.flags["Capping"] = false; // STEP camera plane has no capping attribute.
         planes.push_back(std::move(record));
-        return sourceId;
+        return remember(sourceId);
     }
     char operation;
     auto children = clippingChildren(entity, operation);
     if (children.empty()) { throw std::runtime_error("empty clipping expression"); }
     std::string result = "(";
+    int height = 0;
     for (auto child : children) {
         if (result.size() > 1) { result += operation; }
         try {
-            result += clipping(child, model, scale, planes, ids, reason, depth + 1);
+            auto expression = clipping(child, model, scale, planes, ids, reason, state, depth + 1);
+            height = std::max(height, state.expressions.at(child.get()).height + 1);
+            if (result.size() + expression.size() + 1 > clippingTextLimit) { throw ClippingLimit(); }
+            result += expression;
         }
+        catch (const ClippingLimit&) { throw; }
         catch (const Standard_Failure& error) {
             reason += "clipping operand " + id(model, child) + ": " + error.GetMessageString() + "; ";
             result += "unavailable:" + id(model, child);
@@ -345,9 +410,25 @@ std::string clipping(const Handle(Standard_Transient)& entity,
             reason += "clipping operand " + id(model, child) + ": " + error.what() + "; ";
             result += "unavailable:" + id(model, child);
         }
+        if (result.size() + 1 > clippingTextLimit || reason.size() > clippingTextLimit) {
+            throw ClippingLimit();
+        }
     }
-    return result + ")";
+    return remember(result + ")", height);
 }
+
+std::string clipping(const Handle(Standard_Transient)& entity,
+    const Handle(StepData_StepModel)& model, double scale,
+    std::vector<StepViewRecord>& planes, std::vector<std::string>& ids, std::string& reason)
+{
+    ClippingState state;
+    try { return clipping(entity, model, scale, planes, ids, reason, state); }
+    catch (const ClippingLimit&) {
+        reason += "clipping budget exceeded; ";
+        return "";
+    }
+}
+
 void cameraData(const Handle(StepVisual_CameraModelD3)& camera,
                 const Handle(StepData_StepModel)& model, double scale, StepViewRecord& record)
 {
@@ -583,7 +664,7 @@ void StepViewsImport::capture(const STEPCAFControl_Reader& reader,
             // A missing volume must not hide this camera's independent clipping data.
             try {
                 auto multi = Handle(StepVisual_CameraModelD3MultiClipping)::DownCast(camera);
-                record.strings["SourceClippingTree"] = multi.IsNull() ? "" : sourceClipping(multi, model);
+                record.strings["SourceClippingTree"] = multi.IsNull() ? "" : sourceClipping(multi, model, reason);
                 record.strings["ClippingExpression"] = multi.IsNull() ? ""
                     : clipping(multi, model, scale, planeRecords, record.planes, reason);
                 if (record.strings["ClippingExpression"].find('+') != std::string::npos) {
