@@ -1754,8 +1754,16 @@ def _fallback_text_offset():
     return offset * 20.0
 
 
-def _initial_text_offset(assembly, target_data, camera_direction=None, camera_up=None):
-    """Relative TextPosition toward camera upper-right, clamped to 10–100 mm."""
+_AUTO_CAMERA = object()
+
+
+def _initial_text_offset(
+    assembly, target_data, camera_direction=_AUTO_CAMERA, camera_up=_AUTO_CAMERA
+):
+    """Relative TextPosition toward camera upper-right, clamped to 10–100 mm.
+
+    Omitted axes use the GUI camera; explicit None selects the 20 mm fallback.
+    """
     fallback = _fallback_text_offset()
     diagonal = 0.0
 
@@ -1781,6 +1789,8 @@ def _initial_text_offset(assembly, target_data, camera_direction=None, camera_up
 
     # Build a camera-relative upper-right offset in assembly-local space.
     if camera_direction is None or camera_up is None:
+        return fallback
+    if camera_direction is _AUTO_CAMERA or camera_up is _AUTO_CAMERA:
         if App.GuiUp:
             try:
                 view = Gui.ActiveDocument.ActiveView

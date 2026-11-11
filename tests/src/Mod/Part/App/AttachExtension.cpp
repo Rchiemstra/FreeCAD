@@ -109,6 +109,44 @@ TEST_F(AttachExtensionTest, testPlanePlane)
     EXPECT_TRUE(true);
 }
 
+TEST_F(AttachExtensionTest, testAppliedOffsetRotationIsOutputAndUndoable)
+{
+    auto* document = getDocument();
+    auto* plane = document->addObject<Part::Plane>("Plane");
+    ASSERT_TRUE(plane);
+    document->recompute();
+    document->setTransactionMode(1);
+
+    auto& applied = plane->AttachmentOffsetApplied;
+    EXPECT_TRUE(applied.getType() & App::Prop_ReadOnly);
+    EXPECT_TRUE(applied.getType() & App::Prop_Hidden);
+    EXPECT_FALSE(applied.getType() & App::Prop_Transient);
+    EXPECT_FALSE(applied.getType() & App::Prop_NoPersist);
+    ASSERT_FALSE(plane->isTouched());
+    ASSERT_FALSE(document->mustExecute());
+
+    const Base::Rotation rotation(Base::Vector3d(0, 0, 1), std::numbers::pi / 2.0);
+    document->openTransaction("Applied offset rotation");
+    applied.setValue(rotation);
+    document->commitTransaction();
+    EXPECT_FALSE(plane->isTouched());
+    EXPECT_FALSE(document->mustExecute());
+    ASSERT_GT(document->getAvailableUndos(), 0);
+
+    for (int i = 0; i < 2; ++i) {
+        document->undo();
+        EXPECT_EQ(applied.getValue(), Base::Rotation());
+        EXPECT_FALSE(plane->isTouched());
+        EXPECT_FALSE(document->mustExecute());
+        if (i == 0) {
+            document->redo();
+            EXPECT_EQ(applied.getValue(), rotation);
+            EXPECT_FALSE(plane->isTouched());
+            EXPECT_FALSE(document->mustExecute());
+        }
+    }
+}
+
 TEST_F(AttachExtensionTest, testMidPlane)
 {
     auto firstPlane = getDocument()->addObject<Part::Plane>("FirstPlane");

@@ -153,6 +153,14 @@ class DocumentObject(ExtensionContainer):
         """
         ...
 
+    @constmethod
+    def getExpressionReferences(self, expression: str, /) -> list[dict]:
+        """Parse without evaluation; return identifier, object, property, hidden,
+        error and external_document for each reference. Object is None when
+        unresolved; property includes subpaths. No document state is changed.
+        """
+        ...
+
     @classmethod
     def evalExpression(cls, expression: str, /) -> Any:
         """

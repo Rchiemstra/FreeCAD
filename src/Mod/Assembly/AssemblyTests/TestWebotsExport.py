@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Assembly
 import JointObject
 import Materials
@@ -20,7 +21,7 @@ class TestWebotsExport(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
         self.temporary_directory.cleanup()
 
     def _path(self, name="Robot.proto"):

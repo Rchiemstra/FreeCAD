@@ -96,21 +96,16 @@ int GeoListModel<T>::getGeoIdFromGeomListIndex(int index) const
 template<typename T>
 const Part::Geometry* GeoListModel<T>::getGeometryFromGeoId(const std::vector<T>& geometrylist, int geoId)
 {
-    if constexpr (std::is_same<T, GeometryPtr>()) {
-        if (geoId >= 0) {
-            return geometrylist[geoId];
-        }
-        else {
-            return geometrylist[geometrylist.size() + geoId];
-        }
+    const auto count = static_cast<int>(geometrylist.size());
+    if (geoId == GeoEnum::GeoUndef || geoId >= count || geoId < -count) {
+        return nullptr;
     }
-    else if constexpr (std::is_same<T, GeometryFacadeUniquePtr>()) {
-        if (geoId >= 0) {
-            return geometrylist[geoId]->getGeometry();
-        }
-        else {
-            return geometrylist[geometrylist.size() + geoId]->getGeometry();
-        }
+    const auto index = geoId < 0 ? count + geoId : geoId;
+    if constexpr (std::is_same<T, GeometryPtr>()) {
+        return geometrylist[index];
+    }
+    else {
+        return geometrylist[index] ? geometrylist[index]->getGeometry() : nullptr;
     }
 }
 
@@ -120,21 +115,16 @@ const Sketcher::GeometryFacade* GeoListModel<T>::getGeometryFacadeFromGeoId(
     int geoId
 )
 {
-    if constexpr (std::is_same<T, GeometryPtr>()) {
-        if (geoId >= 0) {
-            return GeometryFacade::getFacade(geometrylist[geoId]).release();
-        }
-        else {
-            return GeometryFacade::getFacade(geometrylist[geometrylist.size() + geoId]).release();
-        }
+    const auto* geometry = getGeometryFromGeoId(geometrylist, geoId);
+    if (!geometry) {
+        return nullptr;
     }
-    else if constexpr (std::is_same<T, GeometryFacadeUniquePtr>()) {
-        if (geoId >= 0) {
-            return geometrylist[geoId].get();
-        }
-        else {
-            return geometrylist[geometrylist.size() + geoId].get();
-        }
+    if constexpr (std::is_same<T, GeometryPtr>()) {
+        return GeometryFacade::getFacade(geometry).release();
+    }
+    else {
+        const auto index = geoId < 0 ? static_cast<int>(geometrylist.size()) + geoId : geoId;
+        return geometrylist[index].get();
     }
 }
 
@@ -143,13 +133,28 @@ const Sketcher::GeometryFacade* GeoListModel<T>::getGeometryFacadeFromGeoId(
 template<typename T>
 const Part::Geometry* GeoListModel<T>::getGeometryFromGeoId(int geoId) const
 {
-    return GeoListModel<T>::getGeometryFromGeoId(geomlist, geoId);
+    return isGeoIdValid(geoId)
+        ? GeoListModel<T>::getGeometryFromGeoId(geomlist, geoId) : nullptr;
 }
 
 template<typename T>
 const Sketcher::GeometryFacade* GeoListModel<T>::getGeometryFacadeFromGeoId(int geoId) const
 {
-    return GeoListModel<T>::getGeometryFacadeFromGeoId(geomlist, geoId);
+    return isGeoIdValid(geoId)
+        ? GeoListModel<T>::getGeometryFacadeFromGeoId(geomlist, geoId) : nullptr;
+}
+
+template<typename T>
+bool GeoListModel<T>::isGeoIdValid(int geoId, bool optional) const
+{
+    const auto count = static_cast<int>(geomlist.size());
+    if (intGeoCount < 0 || intGeoCount > count || count - intGeoCount < 2) {
+        return false;
+    }
+    if (geoId == GeoEnum::GeoUndef) {
+        return optional;
+    }
+    return geoId >= 0 ? geoId < intGeoCount : geoId >= -(count - intGeoCount);
 }
 
 template<typename T>
@@ -157,6 +162,9 @@ Base::Vector3d GeoListModel<T>::getPoint(int geoId, Sketcher::PointPos pos) cons
 {
     const Part::Geometry* geo = getGeometryFromGeoId(geoId);
 
+    if (!geo) {
+        THROWM(Base::IndexError, "Geometry unavailable in GeoList");
+    }
     return getPoint(geo, pos);
 }
 
@@ -415,6 +423,9 @@ template class SketcherExport GeoListModel<std::unique_ptr<const Sketcher::Geome
 // Remark: It looks like when implementing a method of GeoListModel for GeometryFacadeUniquePtr then
 // under MinGW the explicit template instantiation doesn't do anything. As workaround all other
 // methods must be declared separately
+template SketcherExport bool GeoListModel<GeometryFacadeUniquePtr>::isGeoIdValid(
+    int geoId, bool optional
+) const;
 template SketcherExport const Part::Geometry* GeoListModel<GeometryFacadeUniquePtr>::getGeometryFromGeoId(
     int geoId
 ) const;

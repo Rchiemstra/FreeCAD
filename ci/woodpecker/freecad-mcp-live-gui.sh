@@ -9,6 +9,10 @@ set -e
 export FREECAD_MCP_ISOLATED_FREECAD="$CI_WORKSPACE/build/debug/bin/FreeCAD"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
 
+# The live-GUI harness attaches gdb to a FreeCAD that stops answering (the
+# child permits ptrace).
+sh ci/woodpecker/ensure-gdb.sh
+
 cd tools/mcp/freecad-mcp
 pip install --no-build-isolation --no-deps -e .
 sh scripts/run_live_gui_tests.sh -rfE --tb=short

@@ -383,6 +383,14 @@ void PropertySheet::Paste(const Property& from)
         }
     }
 
+    // Overlapping cell assignments and removals can erase aliases already restored
+    // at another address. Restore both maps before rebuilding alias dependencies.
+    aliasProp = froms.aliasProp;
+    revAliasProp = froms.revAliasProp;
+    for (const auto& entry : data) {
+        recomputeDependencies(entry.first);
+    }
+
     if (!spanChanges.empty()) {
         mergedCells = froms.mergedCells;
         if (auto sheet = freecad_cast<Sheet*>(getContainer())) {

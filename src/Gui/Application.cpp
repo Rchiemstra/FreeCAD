@@ -57,14 +57,18 @@
 #include <format>
 #include <cstdint>
 #include <list>
+#include <memory>
 #include <ranges>
+#include <utility>
 
 #include <App/Document.h>
 #include <App/DocumentWouldBlock.h>
+#include <App/CollaborationRegistry.h>
 #include "Utilities.h"
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
+#include <App/MutationClassification.h>
 #include <App/Property.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
@@ -276,6 +280,14 @@ struct ApplicationP
         bool statusChanged {false};
     };
 
+    struct DeferredDocumentActivation
+    {
+        const App::Document* document {nullptr};
+        Gui::Document* guiDocument {nullptr};
+        App::DocumentInstanceId instanceId {0};
+        App::DocumentLifecycleEpoch lifecycleEpoch {0};
+    };
+
     explicit ApplicationP(bool GUIenabled)
     {
         // create the macro manager
@@ -302,6 +314,16 @@ struct ApplicationP
     std::map<const App::Document*, Gui::Document*> documents;
     /// Active document
     Gui::Document* activeDocument {nullptr};
+    std::optional<DeferredDocumentActivation> deferredDocumentActivation;
+    std::unique_ptr<QTimer> deferredDocumentActivationTimer;
+
+    void cancelDeferredDocumentActivation()
+    {
+        deferredDocumentActivation.reset();
+        if (deferredDocumentActivationTimer) {
+            deferredDocumentActivationTimer->stop();
+        }
+    }
     std::vector<Gui::Document*> editDocuments;
 
     MacroManager* macroMngr;
@@ -878,6 +900,9 @@ Application::Application(bool GUIenabled)
 
 Application::~Application()
 {
+    // Retire the application-owned wake before teardown can service Qt events.
+    d->cancelDeferredDocumentActivation();
+    d->deferredDocumentActivationTimer.reset();
     AutoSaver::shutdownRecoveryWrites();
     Base::Console().log("Destruct Gui::Application\n");
 #ifdef USE_3DCONNEXION_NAVLIB
@@ -1284,6 +1309,19 @@ void Application::slotDeleteDocument(const App::Document& Doc)
     // worry about this.
     if (d->activeDocument == doc->second) {
         setActiveDocument(nullptr);
+        if (d->activeDocument == doc->second) {
+            // Close is already irrevocable. A queued recovery reservation can
+            // defer normal activation, but no GUI handle may outlive this
+            // document. Detach GUI state only; App close performs its own
+            // active-document reset without waiving lifecycle admission.
+            d->cancelDeferredDocumentActivation();
+            d->activeDocument = nullptr;
+            for (auto* view : d->passive) {
+                view->setDocument(nullptr);
+            }
+            Base::PyGILStateLocker lock;
+            Py::Module("FreeCADGui").setAttr(std::string("ActiveDocument"), Py::None());
+        }
     }
 
     d->viewproviderMap.deleteDocument(Doc);
@@ -1456,6 +1494,8 @@ void Application::slotActiveDocument(const App::Document& Doc)
     std::map<const App::Document*, Gui::Document*>::iterator doc = d->documents.find(&Doc);
     // this can happen when closing a document with two views opened
     if (doc != d->documents.end()) {
+        // An explicit App activation supersedes a pending GUI-tab request too.
+        d->cancelDeferredDocumentActivation();
         // this can happen when calling App.setActiveDocument directly from Python
         // because no MDI view will be activated
         if (d->activeDocument != doc->second) {
@@ -2145,21 +2185,70 @@ void Application::setEditDocument(Gui::Document* pcDocument)
 
 void Application::setActiveDocument(Gui::Document* pcDocument)
 {
+    ApplicationP::DeferredDocumentActivation request;
+    if (pcDocument) {
+        // Do not dereference a stale GUI pointer supplied by a closing view.
+        const auto found = std::ranges::find_if(d->documents, [pcDocument](const auto& item) {
+            return item.second == pcDocument;
+        });
+        if (found == d->documents.end() || pcDocument->isAboutToClose()) {
+            return;
+        }
+        const auto identity = App::GetApplication().collaborationRegistry().identity(
+            *found->first);
+        if (!identity || identity->state != App::DocumentLifecycleState::Live) {
+            return;
+        }
+        request = {found->first, pcDocument, identity->instanceId, identity->lifecycleEpoch};
+    }
+
+    // Latest valid request wins, including a return to the current tab or None.
+    d->cancelDeferredDocumentActivation();
     if (d->activeDocument == pcDocument) {
         return;  // nothing needs to be done
     }
 
-    updateActions();
-
-    if (pcDocument) {
-        // This happens if a document with more than one view is about being
-        // closed and a second view is activated. The document is still not
-        // removed from the map.
-        App::Document* doc = pcDocument->getDocument();
-        if (d->documents.find(doc) == d->documents.end()) {
+    // App's lifecycle guard is process-wide. Reserve admission before changing
+    // any GUI state, so the App activation cannot reject after a partial switch.
+    App::LivePresentationRefreshScope activation;
+    if (!activation.acquired()) {
+        if (d->isClosing) {
             return;
         }
+        d->deferredDocumentActivation = request;
+        if (!d->deferredDocumentActivationTimer) {
+            d->deferredDocumentActivationTimer = std::make_unique<QTimer>();
+            d->deferredDocumentActivationTimer->setSingleShot(true);
+            QObject::connect(d->deferredDocumentActivationTimer.get(), &QTimer::timeout,
+                             qApp, [this] {
+                const auto pending = std::exchange(d->deferredDocumentActivation, std::nullopt);
+                if (!pending || d->isClosing) {
+                    return;
+                }
+                if (pending->document) {
+                    // Both map entries and the registered instance/epoch must
+                    // survive. Never resolve a stale request by document name.
+                    const auto found = d->documents.find(pending->document);
+                    if (found == d->documents.end() || found->second != pending->guiDocument) {
+                        return;
+                    }
+                    const auto identity = App::GetApplication().collaborationRegistry().identity(
+                        *found->first);
+                    if (!identity || identity->instanceId != pending->instanceId
+                        || identity->lifecycleEpoch != pending->lifecycleEpoch
+                        || identity->state != App::DocumentLifecycleState::Live
+                        || found->second->isAboutToClose()) {
+                        return;
+                    }
+                }
+                setActiveDocument(pending->guiDocument);
+            });
+        }
+        d->deferredDocumentActivationTimer->start(25);
+        return;
     }
+
+    updateActions();
     if (d->activeDocument) {
         d->activeDocument->setIsActive(false);
     }
@@ -3129,7 +3218,7 @@ void tryRunEventLoop(GUISingleApplication& mainApp)
         boost::interprocess::file_lock flock(filename.c_str());
         if (flock.try_lock()) {
             Base::Console().log("Init: Executing event loop…\n");
-            QApplication::exec();
+            const int exitCode = QApplication::exec();
 
             // Qt can't handle exceptions thrown from event handlers, so we need
             // to manually rethrow SystemExitExceptions.
@@ -3142,6 +3231,14 @@ void tryRunEventLoop(GUISingleApplication& mainApp)
             flock.unlock();
             lock.close();
             fi.deleteFile();
+            if (exitCode != 0) {
+                // Propagate async startup failures after leaving Qt's event
+                // handlers, through the existing executable exit-code path.
+                Base::PyGILStateLocker gil;
+                Py::Long code(exitCode);
+                PyErr_SetObject(PyExc_SystemExit, code.ptr());
+                throw Base::SystemExitException();
+            }
         }
         else {
             Base::Console().error(

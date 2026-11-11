@@ -18,8 +18,11 @@ set(Sketcher_Scripts
 set(Sketcher_TestScripts
     SketcherTests/__init__.py
     SketcherTests/TestSketchFillet.py
+    SketcherTests/TestSketchTrimDegenerate.py
     SketcherTests/TestSketcherSolver.py
     SketcherTests/TestSketchExpression.py
+    SketcherTests/ExpressionDiagnosticsFixture.py
+    SketcherTests/TestSketchExpressionDiagnostics.py
     SketcherTests/TestSketchDeltaPosition.py
     SketcherTests/TestSketchValidateCoincidents.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.py
@@ -28,6 +31,7 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchEditFailures.py
     SketcherTests/TestSketchMalformedConstraints.py
     SketcherTests/TestSketcherEllipse.py
+    SketcherTests/TestSketchExternalProjection.py
     SketcherTests/TestSketchReferenceRepair.py
 )
 
@@ -49,9 +53,11 @@ if(BUILD_GUI)
           SketcherTests/TestSketcherOffsetGui.py
           SketcherTests/TestExternalFacePreselection.py
           SketcherTests/TestVisualLayerListGui.py
+          SketcherTests/TestSketchExpressionDiagnosticsGui.py
           SketcherTests/TestViewSectionGui.py
           SketcherTests/TestSketchReferenceRepairGui.py
           SketcherTests/TestSketchEditCleanGui.py
+          SketcherTests/TestSketchClipboardGui.py
     )
 endif(BUILD_GUI)
 

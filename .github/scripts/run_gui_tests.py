@@ -39,8 +39,8 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-# Suites Woodpecker pipeline 336 actually completed. Extra registered Gui
-# names are allowed; missing any of these is a discovery miss, not a skip.
+# Required GUI suites. Extra registered Gui names are allowed; a missing
+# required suite is a discovery failure, not a skip.
 EXPECTED_GUI_SUITES: tuple[str, ...] = (
     "GuiDocument",
     "TestSpreadsheetWindowGui",

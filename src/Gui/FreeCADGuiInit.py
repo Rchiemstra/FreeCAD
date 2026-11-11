@@ -550,6 +550,9 @@ Gui.addWorkbench(_fc_patch_workbench_icon_object(NoneWorkbench()))
 # init modules
 InitApplications()
 
+# Global observational expression report, available in every workbench.
+import freecad.expression_diagnostics_gui
+
 # set standard workbench (needed as fallback)
 Gui.activateWorkbench("NoneWorkbench")
 

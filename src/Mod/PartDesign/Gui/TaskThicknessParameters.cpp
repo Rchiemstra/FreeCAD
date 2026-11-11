@@ -357,6 +357,10 @@ TaskDlgThicknessParameters::~TaskDlgThicknessParameters() = default;
 
 bool TaskDlgThicknessParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     auto obj = getObject();
     if (!obj->isError()) {
         getViewObject()->showPreviousFeature(false);

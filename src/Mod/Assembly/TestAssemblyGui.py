@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Assembly GUI integration tests, collected by the GUI integration runner."""
+"""Assembly GUI integration tests that need the GUI and a real model tree,
+collected by the GUI integration runner."""
 
 import sys
 import FreeCAD as App
 
+from AssemblyTests.TestExtractComponent import TestExtractComponentGui
 from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
 from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, TestDragFeedbackGui
 
@@ -13,4 +15,9 @@ from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, T
 if App.ConfigGet("TestCase").startswith("TestAssemblyGui"):
     sys.stdout = sys.__stdout__
 
-True if TestJointEditorSwitch and TestMotionInterferenceGui and TestDragFeedbackGui else False
+__all__ = [
+    "TestDragFeedbackGui",
+    "TestExtractComponentGui",
+    "TestJointEditorSwitch",
+    "TestMotionInterferenceGui",
+]

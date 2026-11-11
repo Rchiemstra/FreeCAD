@@ -2279,7 +2279,7 @@ void OverlayTitleBar::endDrag()
             OverlayTabWidget::_DragFrame->hide();
         }
         if (OverlayTabWidget::_DragFloating) {
-            OverlayTabWidget::_DragFrame->hide();
+            OverlayTabWidget::_DragFloating->hide();
         }
     }
 }
@@ -2297,7 +2297,7 @@ void OverlayTitleBar::mouseMoveEvent(QMouseEvent* me)
     }
 
     if (OverlayTabWidget::_Dragging != this && mouseMovePending && (me->buttons() & Qt::LeftButton)) {
-        if (isNear(dragOffset, me->pos())) {
+        if (isNear(dragOffset, mapToParent(me->pos()))) {
             return;
         }
         mouseMovePending = false;
@@ -2366,7 +2366,7 @@ void OverlayTitleBar::mousePressEvent(QMouseEvent* me)
         )
     );
 
-    dragOffset = me->pos();
+    dragOffset = mapToParent(me->pos());
     setCursor(Qt::ClosedHandCursor);
     mouseMovePending = true;
 }

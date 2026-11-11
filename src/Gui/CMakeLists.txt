@@ -783,6 +783,7 @@ SET(Propertyeditor_SRCS
     propertyeditor/PropertyEditor.h
     propertyeditor/PropertyItem.cpp
     propertyeditor/PropertyItem.h
+    ExpressionDiagnosticsPresentation.h
     propertyeditor/PropertyItemDelegate.cpp
     propertyeditor/PropertyItemDelegate.h
     propertyeditor/PropertyModel.cpp
@@ -1146,6 +1147,7 @@ SET(Widget_CPP_SRCS
     WorkbenchSelector.cpp
     ElideLabel.cpp
     ElideCheckBox.cpp
+    OpenGLViewportResize.cpp
     FontScaledSVG.cpp
     SplitButton.cpp
 )
@@ -1179,10 +1181,12 @@ SET(Widget_HPP_SRCS
     Widgets.h
     Window.h
     WindowLayout.h
+    ViewDropDocking.h
     WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
     ElideCheckBox.h
+    OpenGLViewportResize.h
     FontScaledSVG.h
     SplitButton.h
 )
@@ -1259,6 +1263,7 @@ SET(Workbench_CPP_SRCS
 )
 SET(Workbench_SRCS
     ${Workbench_CPP_SRCS}
+    DockWidget.h
     DockWindowManager.h
     OverlayManager.h
     OverlayWidgets.h

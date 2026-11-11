@@ -56,12 +56,23 @@ class TestJointEditorSwitch(unittest.TestCase):
                 if name != "Proxy"}
 
     def tearDown(self):
-        if JointObject.activeTask is not None:
-            JointObject.activeTask.reject()
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
-        self.gui_doc.resetEdit()
-        App.closeDocument(self.doc.Name)
+        # A failed button click leaves the editor open. Each step must run even
+        # when an earlier one raises, or the next test inherits that dialog.
+        try:
+            if JointObject.activeTask is not None:
+                JointObject.activeTask.reject()
+        finally:
+            try:
+                if Gui.Control.activeDialog():
+                    Gui.Control.closeDialog()
+            finally:
+                try:
+                    self.gui_doc.resetEdit()
+                finally:
+                    try:
+                        App.closeDocument(self.doc.Name)
+                    finally:
+                        Gui.updateGui()
 
     def mouse(self, widget, point, button=QtCore.Qt.LeftButton,
               modifiers=QtCore.Qt.NoModifier):
@@ -79,12 +90,60 @@ class TestJointEditorSwitch(unittest.TestCase):
             QtWidgets.QApplication.sendEvent(widget, QtGui.QKeyEvent(kind, key, modifiers))
 
     def finish(self, accept):
+        # showDialog leaves OK/Cancel enabled under a hidden OverlayRight until
+        # OverlayManager's debounced layout timer runs (DockOverlayDelay, 200ms).
+        # Context-menu input restarts that timer, so an immediate isVisible()
+        # lookup raises StopIteration. Re-fetch the button after every pump and
+        # click it before the next one; a box kept across the pump is deleted
+        # when the panel is replaced.
         role = QtWidgets.QDialogButtonBox.Ok if accept else QtWidgets.QDialogButtonBox.Cancel
-        buttons = [box.button(role) for box in
-                   Gui.getMainWindow().findChildren(QtWidgets.QDialogButtonBox)]
-        button = next(button for button in buttons if button and button.isVisible())
-        self.mouse(button, button.rect().center())
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while True:
+            clicked = False
+            for box in Gui.getMainWindow().findChildren(QtWidgets.QDialogButtonBox):
+                button = box.button(role)
+                if button is not None and button.isVisible():
+                    self.mouse(button, button.rect().center())
+                    clicked = True
+                    break
+            # Drop the wrappers before pumping. The panel is destroyed on the
+            # next event-loop turn when the edited joint changes.
+            box = None
+            button = None
+            if clicked:
+                break
+            if elapsed.elapsed() >= 5000:
+                self.fail(self.missingButton(role))
+            loop = QtCore.QEventLoop()
+            QtCore.QTimer.singleShot(10, loop.quit)
+            loop.exec_()
         Gui.updateGui()
+
+    def missingButton(self, role):
+        task = JointObject.activeTask
+        joint = task.joint.Name if task is not None else None
+        boxes = []
+        for box in Gui.getMainWindow().findChildren(QtWidgets.QDialogButtonBox):
+            hidden = None
+            widget = box
+            while widget is not None:
+                if hidden is None and (widget.isHidden() or not widget.isVisible()):
+                    hidden = (widget.metaObject().className(), widget.objectName(),
+                              widget.isVisible(), widget.isHidden())
+                widget = widget.parentWidget()
+            boxes.append({
+                "hidden_ancestor": hidden,
+                "buttons": [(button.text(), button.isVisible(), button.isEnabled())
+                            for button in box.buttons()],
+            })
+        roleName = "OK" if role == QtWidgets.QDialogButtonBox.Ok else "Cancel"
+        return (
+            "No visible " + roleName + " button for the joint editor after 5s"
+            + "; joint=" + repr(joint)
+            + "; dialog=" + repr(Gui.Control.activeTaskDialog())
+            + "; button_boxes=" + repr(boxes)
+        )
 
     def openJoint(self, joint, tree, expected=None):
         if not tree:
@@ -153,13 +212,20 @@ class TestJointEditorSwitch(unittest.TestCase):
             triggered = []
             offered = []
             attempts = []
+            # A singleShot retry still queued when QMenu.exec returns clicks or
+            # closes a menu belonging to a later test. Stop it on every exit.
+            pending = {"active": True}
+            chooseTimer = QtCore.QTimer()
+            chooseTimer.setSingleShot(True)
 
             def chooseEdit():
+                if not pending["active"]:
+                    return
                 menus = [w for w in QtWidgets.QApplication.topLevelWidgets()
                          if isinstance(w, QtWidgets.QMenu) and w.isVisible()]
                 if not menus and len(attempts) < 50:
                     attempts.append(None)
-                    QtCore.QTimer.singleShot(10, chooseEdit)
+                    chooseTimer.start(10)
                     return
                 for menu in menus:
                     for action in menu.actions():
@@ -175,12 +241,17 @@ class TestJointEditorSwitch(unittest.TestCase):
                 for menu in menus:
                     menu.close()
 
+            chooseTimer.timeout.connect(chooseEdit)
             # contextMenuEvent enters QMenu.exec(); choose its real action there.
-            QtCore.QTimer.singleShot(0, chooseEdit)
+            chooseTimer.start(0)
             event = QtGui.QContextMenuEvent(
                 QtGui.QContextMenuEvent.Mouse, point, widget.viewport().mapToGlobal(point)
             )
-            QtWidgets.QApplication.sendEvent(widget.viewport(), event)
+            try:
+                QtWidgets.QApplication.sendEvent(widget.viewport(), event)
+            finally:
+                pending["active"] = False
+                chooseTimer.stop()
             self.assertTrue(triggered, "Right-click menu must offer Edit Joint: " + repr(offered))
         Gui.updateGui()
         self.assertIsNotNone(JointObject.activeTask)
@@ -263,15 +334,70 @@ class TestJointEditorSwitch(unittest.TestCase):
     def test_context_switch_commits_first_edit_then_cancel(self):
         self.checkEditedSwitch(tree=False, accept=False)
 
-    def deleteReferences(self, multiple=False):
+    def referenceRowTarget(self, row):
+        # OverlayManager's app event filter retargets a mouse event when
+        # QCursor is on a transparent OverlayTabWidget (the dock is still
+        # sliding in). The feature row then never becomes selected. A hidden
+        # dock is safe: the cursor is not on an overlay, so the event reaches
+        # the viewport. Re-fetch every attempt; do not keep the widgets.
         featureList = JointObject.activeTask.jForm.featureList
-        point = featureList.visualItemRect(featureList.item(0)).center()
-        self.mouse(featureList.viewport(), point)
+        item = featureList.item(row)
+        viewport = featureList.viewport()
+        point = featureList.visualItemRect(item).center() if item is not None else None
+        chain = []
+        hitList = False
+        hitOverlay = False
+        if point is not None:
+            widget = QtWidgets.QApplication.widgetAt(viewport.mapToGlobal(point))
+            while widget is not None:
+                chain.append((widget.metaObject().className(), widget.objectName()))
+                if widget.objectName() == "featureList" or (
+                    widget.objectName() == "qt_scrollarea_viewport"
+                    and widget.parentWidget() is not None
+                    and widget.parentWidget().objectName() == "featureList"
+                ):
+                    hitList = True
+                if widget.metaObject().className() == "Gui::OverlayTabWidget":
+                    hitOverlay = True
+                widget = widget.parentWidget()
+        ready = item is not None and (hitList or not hitOverlay)
+        return ready, viewport, point, chain, featureList
+
+    def clickReferenceRow(self, row, modifiers=QtCore.Qt.NoModifier):
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        chain = []
+        featureList = None
+        while True:
+            ready, viewport, point, chain, featureList = self.referenceRowTarget(row)
+            if ready:
+                self.mouse(viewport, point, modifiers=modifiers)
+                return
+            size = None
+            if featureList is not None:
+                size = (featureList.width(), featureList.height(), featureList.isVisible())
+            viewport = None
+            featureList = None
+            if elapsed.elapsed() >= 5000:
+                self.fail(
+                    "Feature row "
+                    + str(row)
+                    + " is covered by a transparent overlay after 5s; list="
+                    + repr(size)
+                    + "; widgetAt="
+                    + repr(chain)
+                )
+            loop = QtCore.QEventLoop()
+            QtCore.QTimer.singleShot(10, loop.quit)
+            loop.exec_()
+
+    def deleteReferences(self, multiple=False):
+        self.clickReferenceRow(0)
         if multiple:
-            self.mouse(featureList.viewport(), featureList.visualItemRect(featureList.item(1)).center(),
-                       modifiers=QtCore.Qt.ControlModifier)
+            self.clickReferenceRow(1, modifiers=QtCore.Qt.ControlModifier)
+            featureList = JointObject.activeTask.jForm.featureList
             self.assertEqual(len(featureList.selectedIndexes()), 2)
-        self.key(featureList, QtCore.Qt.Key_Delete)
+        self.key(JointObject.activeTask.jForm.featureList, QtCore.Qt.Key_Delete)
         Gui.updateGui()
 
     def checkInvalidSwitch(self, tree):

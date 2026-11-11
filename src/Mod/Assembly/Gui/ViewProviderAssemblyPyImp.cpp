@@ -136,7 +136,8 @@ PyObject* ViewProviderAssemblyPy::isolateComponents(PyObject* args)
 {
     PyObject* pyList = nullptr;
     int modeInt = 0;
-    if (!PyArg_ParseTuple(args, "Oi", &pyList, &modeInt)) {
+    int selection = 0;
+    if (!PyArg_ParseTuple(args, "Oi|p", &pyList, &modeInt, &selection)) {
         return nullptr;
     }
 
@@ -165,18 +166,18 @@ PyObject* ViewProviderAssemblyPy::isolateComponents(PyObject* args)
     }
 
     auto mode = static_cast<ViewProviderAssembly::IsolateMode>(modeInt);
-    getViewProviderAssemblyPtr()->isolateComponents(partsSet, mode);
+    getViewProviderAssemblyPtr()->isolateComponents(partsSet, mode, selection);
 
-    Py_DECREF(Py_None);
-    return Py_None;
+    return Py::new_reference_to(Py::None());
 }
 
 PyObject* ViewProviderAssemblyPy::clearIsolate(PyObject* args)
 {
-    if (!PyArg_ParseTuple(args, "")) {
+    int selection = 0;
+    if (!PyArg_ParseTuple(args, "|p", &selection)) {
         return nullptr;
     }
 
-    getViewProviderAssemblyPtr()->clearIsolate();
+    getViewProviderAssemblyPtr()->clearIsolate(selection);
     return Py::new_reference_to(Py::None());
 }

@@ -3,6 +3,12 @@
 add_subdirectory(Dialogs)
 add_subdirectory(propertyeditor)
 
+# The drag controller has no document dependency. Keep its input/lifetime
+# regressions runnable without building the complete native GUI test binary.
+add_executable(ViewDropDocking_tests_run ViewDropDocking.cpp)
+target_include_directories(ViewDropDocking_tests_run PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(ViewDropDocking_tests_run PRIVATE GTest::gtest_main Qt6::Widgets Qt6::Test)
+
 # Standard C++ GTest tests
 add_executable(Gui_tests_run
         Assistant.cpp
@@ -18,9 +24,13 @@ add_executable(Gui_tests_run
         PersonalViewContext.cpp
         PropertyEditorPaint.cpp
         PropertyEditorTransaction.cpp
+        ExpressionDiagnosticsPresentation.cpp
         SharedPresentationCoordinator.cpp
         DocumentPresentationCache.cpp
         DocumentRecovery.cpp
+        DockWidget.cpp
+        DockPlatformPlacement.cpp
+        OverlayTitleBarDrag.cpp
         DocumentExecutionWaitTestHelpers.cpp
         GuiPythonGate.cpp
         UpdateGuiThread.cpp
@@ -42,6 +52,7 @@ add_executable(Gui_tests_run
         StyleParameters/ColorShadingTest.cpp
         InputHintTest.cpp
         MainWindow.cpp
+        TreeDocumentRename.cpp
         NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
         SoDatumLabel.cpp
@@ -67,6 +78,7 @@ target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
+    ${QtTest_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )
@@ -74,6 +86,11 @@ target_link_libraries(Gui_tests_run PRIVATE
 if(TARGET PartGui)
     target_link_libraries(Gui_tests_run PRIVATE PartGui)
     target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PART_CAPTURE_CACHE)
+endif()
+
+if(TARGET PartDesignGui)
+    add_dependencies(Gui_tests_run PartDesignGui)
+    target_compile_definitions(Gui_tests_run PRIVATE FREECAD_TEST_PARTDESIGN_DATUM_EXTENTS)
 endif()
 
 target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

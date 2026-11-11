@@ -61,13 +61,9 @@ EditModeInformationOverlayCoinConverter::EditModeInformationOverlayCoinConverter
 
 void EditModeInformationOverlayCoinConverter::convert(const Part::Geometry* geometry, int geoid)
 {
-    if (geoid >= 0) {
-        // Get the SketchObject from the ViewProvider.
-        if (auto* obj = viewProvider.getSketchObject()) {
-            if (obj->isInGroup(geoid, false)) {
-                return;
-            }
-        }
+    if (!geometry || !ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)
+        || ViewProviderSketchCoinAttorney::getRenderGroupHandle(viewProvider, geoid) != geoid) {
+        return;
     }
 
     if (geometry->is<Part::GeomBSplineCurve>()) {

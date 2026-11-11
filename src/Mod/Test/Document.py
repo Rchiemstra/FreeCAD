@@ -1257,6 +1257,66 @@ class UndoRedoCases(unittest.TestCase):
         self.Doc.addObject("App::FeatureTest", "Del")
         self.Doc.getObject("Del").Integer = 2
 
+    def checkAddedDynamicPropertyUndoRedo(self, locked):
+        self.Doc.openTransaction("Create Object")
+        box = self.Doc.addObject("App::FeatureTest", "TestBox")
+        original = box.Integer
+        self.Doc.commitTransaction()
+        self.Doc.openTransaction("Add and Change Property")
+        box.addProperty("App::PropertyLength", "DummyLength", "DummyProperties", locked=locked)
+        box.DummyLength = 123
+        box.Integer = 15
+        self.Doc.commitTransaction()
+        self.Doc.recompute()
+
+        for cycle in range(3):
+            with self.subTest(cycle=cycle):
+                self.Doc.undo()
+                self.assertNotIn("DummyLength", box.PropertiesList)
+                self.assertEqual(box.Integer, original)
+                self.Doc.redo()
+                self.assertEqual(box.DummyLength.Value, 123)
+                self.assertEqual(box.Integer, 15)
+                self.assertEqual("LockDynamic" in box.getPropertyStatus("DummyLength"), locked)
+                if locked:
+                    self.assertFalse(box.removeProperty("DummyLength"))
+
+    def testUndoRedoLockedDynamicProperty(self):
+        # Issue #32285: undo must remove even a locked property added by this step.
+        self.checkAddedDynamicPropertyUndoRedo(True)
+
+    def testUndoRedoUnlockedDynamicProperty(self):
+        self.checkAddedDynamicPropertyUndoRedo(False)
+
+    def testUndoRedoEarlierLockedDynamicProperty(self):
+        box = self.Doc.getObject("Base")
+        self.Doc.openTransaction("Add Locked Property")
+        box.addProperty("App::PropertyLength", "DummyLength", locked=True)
+        box.DummyLength = 42
+        self.Doc.commitTransaction()
+        self.Doc.openTransaction("Change Earlier Locked Property")
+        box.DummyLength = 123
+        self.Doc.commitTransaction()
+
+        for cycle in range(3):
+            with self.subTest(cycle=cycle):
+                self.Doc.undo()
+                self.assertEqual(box.DummyLength.Value, 42)
+                self.assertIn("LockDynamic", box.getPropertyStatus("DummyLength"))
+                self.assertFalse(box.removeProperty("DummyLength"))
+                self.Doc.redo()
+                self.assertEqual(box.DummyLength.Value, 123)
+                self.assertIn("LockDynamic", box.getPropertyStatus("DummyLength"))
+                self.assertFalse(box.removeProperty("DummyLength"))
+
+    def testAbortLockedDynamicProperty(self):
+        box = self.Doc.getObject("Base")
+        self.Doc.openTransaction("Add Locked Property")
+        box.addProperty("App::PropertyLength", "DummyLength", locked=True)
+        box.DummyLength = 123
+        self.Doc.abortTransaction()
+        self.assertNotIn("DummyLength", box.PropertiesList)
+
     def testUndoProperties(self):
         # first transaction
         self.Doc.openTransaction("Transaction1")
@@ -2349,14 +2409,9 @@ class DocumentObserverCases(unittest.TestCase):
             self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
         self.assertEqual(self.Obs.signal.pop(0), "DocCreated")
         self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.signal.pop(0), "DocBeforeChange")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocChanged")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocRelabled")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc1)
+        # The bootstrap label is constructor state: observers see it when the
+        # document is created, and creation announces no Label change.
+        self.assertEqual(self.Doc1.Label, "Observer1")
         self.assertTrue(not self.Obs.signal and not self.Obs.parameter and not self.Obs.parameter2)
 
         self.Doc2 = FreeCAD.newDocument("Observer2")
@@ -2365,14 +2420,9 @@ class DocumentObserverCases(unittest.TestCase):
             self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
         self.assertEqual(self.Obs.signal.pop(0), "DocCreated")
         self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.signal.pop(0), "DocBeforeChange")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocChanged")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
-        self.assertEqual(self.Obs.parameter2.pop(0), "Label")
-        self.assertEqual(self.Obs.signal.pop(0), "DocRelabled")
-        self.assertTrue(self.Obs.parameter.pop(0) is self.Doc2)
+        # The bootstrap label is constructor state: observers see it when the
+        # document is created, and creation announces no Label change.
+        self.assertEqual(self.Doc2.Label, "Observer2")
         self.assertTrue(not self.Obs.signal and not self.Obs.parameter and not self.Obs.parameter2)
 
         FreeCAD.setActiveDocument("Observer1")
@@ -2561,8 +2611,7 @@ class DocumentObserverCases(unittest.TestCase):
         self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
         self.assertTrue(self.GuiObs.signal.pop(0) == "DocActivated")
         self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
-        self.assertTrue(self.GuiObs.signal.pop(0) == "DocRelabled")
-        self.assertTrue(self.GuiObs.parameter.pop(0) is self.GuiDoc1)
+        # The label is initialized before creation is announced: no relabel.
         self.assertTrue(
             not self.GuiObs.signal and not self.GuiObs.parameter and not self.GuiObs.parameter2
         )

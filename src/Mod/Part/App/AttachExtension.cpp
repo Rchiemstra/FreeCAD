@@ -172,6 +172,14 @@ AttachExtension::AttachExtension()
         "Extra placement to apply in addition to attachment (in local coordinates)"
     );
 
+    EXTENSION_ADD_PROPERTY_TYPE(
+        AttachmentOffsetApplied,
+        (Base::Rotation()),
+        "Attachment",
+        (App::PropertyType)(App::Prop_ReadOnly | App::Prop_Hidden | App::Prop_Output),
+        "Offset rotation already contained in Placement"
+    );
+
     // Only show these properties when applicable. Controlled by extensionOnChanged
     this->MapPathParameter.setStatus(App::Property::Status::Hidden, true);
     this->MapReversed.setStatus(App::Property::Status::Hidden, true);
@@ -394,6 +402,20 @@ bool AttachExtension::positionBySupport()
         _props.attacher->setOffset(AttachmentOffset.getValue() * basePlacement.inverse());
         auto placement = _props.attacher->calculateAttachedPlacement(plaOriginal, &subChanged);
         placement = parentGroupPlacement(getExtendedObject()).inverse() * placement;
+        // Undo/redo restores Placement and the applied offset in unspecified order.
+        const bool replaying = getExtendedObject()->getDocument()->isPerformingTransaction();
+        const auto& rotation = AttachmentOffset.getValue().getRotation();
+        const auto& applied = AttachmentOffsetApplied.getValue();
+        if (_props.attacher->mapMode == mmTranslate) {
+            // Translate leaves orientation editable through Placement. It already contains the
+            // previous offset rotation, so apply only the change, without rotating the offset
+            // translation (which Translate adds directly to the support vertex).
+            placement.setRotation(
+                rotation == applied || replaying
+                    ? plaOriginal.getRotation()
+                    : plaOriginal.getRotation() * applied.inverse() * rotation
+            );
+        }
         if (subChanged) {
             Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
                 App::Property::User3,
@@ -402,6 +424,9 @@ bool AttachExtension::positionBySupport()
             AttachmentSupport.setValues(AttachmentSupport.getValues(), _props.attacher->getSubValues());
         }
         getPlacement().setValue(placement);
+        if (!replaying && rotation != applied) {
+            AttachmentOffsetApplied.setValue(rotation);
+        }
         _active = 1;
         return true;
     }
@@ -463,6 +488,9 @@ App::DocumentObjectExecReturn* AttachExtension::extensionExecute()
 
 void AttachExtension::extensionOnChanged(const App::Property* prop)
 {
+    if (prop == &AttachmentOffsetApplied && getExtendedObject()->isRestoring()) {
+        _offsetAppliedRestored = true;
+    }
     if (!getExtendedObject()->isRestoring()) {
         // If we change anything that affects our position, update it immediately so you can see it
         // interactively.
@@ -738,6 +766,10 @@ void AttachExtension::handleLegacyTangentPlaneOrientation()
 
 void AttachExtension::onExtendedDocumentRestored()
 {
+    if (!_offsetAppliedRestored
+        && AttachmentOffsetApplied.getValue() != AttachmentOffset.getValue().getRotation()) {
+        AttachmentOffsetApplied.setValue(AttachmentOffset.getValue().getRotation());
+    }
     try {
         initBase(false);
         if (_baseProps.attachment) {

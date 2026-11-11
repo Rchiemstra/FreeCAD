@@ -23,8 +23,10 @@
 
 import TestApp
 
+from AssemblyTests.TestIsolateSelectionGui import TestIsolateSelectionGui
 from AssemblyTests.TestComponentPattern import TestComponentPattern, TestComponentPatternGui
 
+from AssemblyTests.TestExtractComponent import TestExtractComponent, TestExtractComponentGui
 from AssemblyTests.TestCore import TestCore
 from AssemblyTests.TestMotionInterference import TestMotionInterference, TestMotionSweep
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
@@ -55,6 +57,10 @@ True if TestSimulationExport else False
 True if TestPreferencesImport else False
 True if TestReviewNotesIssues else False
 True if TestReviewNotesGuiIssues else False
+True if TestIsolateSelectionGui else False
 
 True if TestComponentPattern else False
 True if TestComponentPatternGui else False
+
+True if TestExtractComponent else False
+True if TestExtractComponentGui else False

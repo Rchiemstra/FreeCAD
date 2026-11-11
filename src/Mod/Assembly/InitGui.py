@@ -64,6 +64,7 @@ class AssemblyWorkbench(Workbench):
         from PySide.QtCore import QT_TRANSLATE_NOOP
         import CommandCreateAssembly
         import CommandInsertLink
+        import CommandExtractComponent
         import CommandInsertNewPart
         import CommandCreateJoint
         import CommandSolveAssembly
@@ -73,6 +74,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
+        import CommandIsolate
         import CommandComponentPattern
         import CommandReviewNote
         import AssemblyPreferences as Preferences
@@ -88,6 +90,7 @@ class AssemblyWorkbench(Workbench):
         cmdList = [
             "Assembly_CreateAssembly",
             "Assembly_Insert",
+            "Assembly_ExtractComponent",
             "Part_LinkArrays",
             "Assembly_ComponentPattern",
             "Assembly_SolveAssembly",
@@ -95,6 +98,8 @@ class AssemblyWorkbench(Workbench):
             "Assembly_CreateSnapshot",
             "Assembly_CreateSimulation",
             "Assembly_CreateBom",
+            "Assembly_IsolateSelection",
+            "Assembly_ExitIsolation",
         ]
 
         cmdListMenuOnly = [
@@ -161,6 +166,9 @@ class AssemblyWorkbench(Workbench):
                 ["Assembly_EditReviewNote", "Assembly_ToggleResolveReviewNote"],
             )
 
+        if recipient == "View" and UtilsAssembly.activeAssembly() is not None:
+            self.appendContextMenu("", ["Assembly_IsolateSelection", "Assembly_ExitIsolation"])
+
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             return
@@ -175,6 +183,12 @@ class AssemblyWorkbench(Workbench):
         assembly = UtilsAssembly.activeAssembly()
         if assembly is None:
             return
+
+        if recipient == "Tree":
+            import CommandExtractComponent
+
+            if CommandExtractComponent.selectedComponent() is not None:
+                self.appendContextMenu("", ["Assembly_ExtractComponent"])
 
         for sel in selection:
             for sub_name in sel.SubElementNames:
@@ -386,5 +400,7 @@ class AssemblyWorkbench(Workbench):
 
 Gui.addWorkbench(AssemblyWorkbench())
 
+# Registered separately for the GUI CI runner, which selects units containing Gui.
+FreeCAD.__unit_test__ += ["AssemblyTests.TestIsolateSelectionGui"]
 # Registered separately so the GUI test runner executes the joint editor tests.
 FreeCAD.__unit_test__ += ["TestAssemblyGui"]

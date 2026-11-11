@@ -31,6 +31,7 @@ import unittest
 import zipfile
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Part
 
 import CommandReviewNote
@@ -45,7 +46,7 @@ def _close_document(name):
         import FreeCADGui as Gui
 
         Gui.updateGui()
-    App.closeDocument(name)
+    close_document_by_name(name)
     if App.GuiUp:
         Gui.updateGui()
 
@@ -2555,6 +2556,11 @@ class TestReviewNotesGui(unittest.TestCase):
         import math
         import FreeCADGui as Gui
 
+        # The empty-document camera is too tightly zoomed for this 40 mm offset.
+        # Fix the frame so raster extents and border checks have a stable scale.
+        Gui.ActiveDocument.ActiveView.getCameraNode().height.setValue(100.0)
+        Gui.updateGui()
+
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
         )
@@ -3935,6 +3941,10 @@ class TestReviewNotesGui(unittest.TestCase):
         from pivy.coin import SbRotation, SbVec3f
         from PySide import QtCore, QtGui
 
+        # Mouse synthesis needs the annotation inside the actual viewport.
+        Gui.ActiveDocument.ActiveView.getCameraNode().height.setValue(100.0)
+        Gui.updateGui()
+
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
         )
@@ -3959,6 +3969,18 @@ class TestReviewNotesGui(unittest.TestCase):
         base = App.Vector(note.BasePosition)
         text0 = App.Vector(note.TextPosition)
         world0 = base + text0
+        # Dock widths vary across the full workbench suite. Center the actual
+        # annotation so both the press and the complete drag fit this viewport.
+        eye_offset = cam.orientation.getValue().multVec(
+            SbVec3f(0, 0, cam.focalDistance.getValue())
+        )
+        cam.position.setValue(
+            world0.x + eye_offset[0],
+            world0.y + eye_offset[1],
+            world0.z + eye_offset[2],
+        )
+        view.redraw()
+        Gui.updateGui()
         try:
             px, py = view.getPointOnViewport(world0)
         except Exception:
@@ -3967,6 +3989,10 @@ class TestReviewNotesGui(unittest.TestCase):
         scale = float(gl.devicePixelRatioF()) if hasattr(gl, "devicePixelRatioF") else 1.0
         sx = int(round(float(px) / scale))
         sy = int(round((float(height) - float(py) - 1.0) / scale))
+        self.assertTrue(
+            gl.rect().contains(sx, sy),
+            "{} press ({}, {}) outside {}".format(operation, sx, sy, gl.rect()),
+        )
 
         finish_samples = []
 

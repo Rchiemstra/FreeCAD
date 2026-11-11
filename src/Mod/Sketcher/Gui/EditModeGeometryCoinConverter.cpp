@@ -167,6 +167,9 @@ void EditModeGeometryCoinConverter::convert(const Sketcher::GeoListFacade& geoli
 
         const auto GeoId = geolistfacade.getGeoIdFromGeomListIndex(i);
         const auto geom = geolistfacade.getGeometryFacadeFromGeoId(GeoId);
+        if (!geom) {
+            continue;
+        }
         const auto type = geom->getGeometry()->getTypeId();
 
         int layerId = getSafeGeomLayerId(geom);
@@ -174,8 +177,7 @@ void EditModeGeometryCoinConverter::convert(const Sketcher::GeoListFacade& geoli
 
         auto coinLayer = geometryLayerParameters.getSafeCoinLayer(layerId);
 
-        auto* obj = viewProvider.getSketchObject();
-        bool isGroupMember = GeoId >= 0 && obj->isInGroup(GeoId, false);
+        bool isGroupMember = ViewProviderSketchCoinAttorney::getRenderGroupHandle(viewProvider, GeoId) != GeoId;
 
         if (type == Part::GeomPoint::getClassTypeId()) {  // add a point
             convert<
@@ -291,6 +293,9 @@ void EditModeGeometryCoinConverter::convert(const Sketcher::GeoListFacade& geoli
             pverts[i++].setValue(point.x, point.y, pointz);
         }
         geometryLayerNodes.PointsCoordinate[l]->point.finishEditing();
+        if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+            return;
+        }
 
         for (auto t = 0; t < geometryLayerParameters.getSubLayerCount(); t++) {
             geometryLayerNodes.CurvesCoordinate[l][t]->point.setNum(Coords[l][t].size());
@@ -312,6 +317,9 @@ void EditModeGeometryCoinConverter::convert(const Sketcher::GeoListFacade& geoli
 
             geometryLayerNodes.CurvesCoordinate[l][t]->point.finishEditing();
             geometryLayerNodes.CurveSet[l][t]->numVertices.finishEditing();
+            if (!ViewProviderSketchCoinAttorney::isRedrawCurrent(viewProvider)) {
+                return;
+            }
         }
     }
 }

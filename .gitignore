@@ -80,3 +80,6 @@ tsupdate_stdout.log
 tmp/
 /debug_logs/
 results/
+
+# Independent addon repositories used for local development
+/dev-addons/

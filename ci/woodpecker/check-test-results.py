@@ -91,7 +91,16 @@ def gtest_result(args):
                 stdout=output, stderr=subprocess.STDOUT, check=False,
             ).returncode
     # A complete green report is mandatory even for quarantined processes.
-    executed = xml_count(args.path)
+    try:
+        executed = xml_count(args.path)
+    except (OSError, ValueError) as error:
+        # A crash before gtest's final report must retain its signal and the
+        # last test, rather than replacing both with a missing-XML message.
+        tail = "\n".join(args.log.read_text(errors="replace").splitlines()[-40:])
+        raise ValueError(
+            f"{args.binary}: process exit {args.exit_code}; {error}\n"
+            f"-- invocation log tail --\n{tail}"
+        ) from error
     if args.exit_code == 0:
         print(f"{args.binary}: executed={executed} process exit 0")
         return

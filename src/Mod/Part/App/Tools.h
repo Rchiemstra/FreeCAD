@@ -53,6 +53,8 @@ class TopoShape;
 class gp_Lin;
 class gp_Pln;
 class Bnd_Box;
+class Geom_Curve;
+class Geom2d_Curve;
 
 namespace Base
 {
@@ -158,6 +160,11 @@ namespace Part
 PartExport void closestPointsOnLines(const gp_Lin& lin1, const gp_Lin& lin2, gp_Pnt& p1, gp_Pnt& p2);
 PartExport bool intersect(const gp_Pln& pln1, const gp_Pln& pln2, gp_Lin& lin);
 PartExport bool tangentialArc(const gp_Pnt& p0, const gp_Vec& v0, const gp_Pnt& p1, gp_Pnt& c, gp_Dir& a);
+
+// Radius or minor radius at most Precision::Confusion(), through one trimmed curve.
+// OCCT 8 does not return from the 2D conic intersector; OCCT 7.6 throws Standard_NullValue.
+PartExport bool isDegenerateConic(const Handle(Geom_Curve) & curve);
+PartExport bool isDegenerateConic(const Handle(Geom2d_Curve) & curve);
 
 class PartExport Tools
 {

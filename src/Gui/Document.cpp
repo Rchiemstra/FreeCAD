@@ -21,10 +21,12 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <tuple>
 #include <memory>
+#include <optional>
 #include <list>
 #include <ranges>
 #include <string>
@@ -78,8 +80,10 @@
 #include <App/Transactions.h>
 #include <App/ElementNamingUtils.h>
 #include <App/MutationClassification.h>
+#include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Base/Matrix.h>
 #include <Base/Reader.h>
 #include <Base/Writer.h>
@@ -134,10 +138,15 @@ struct DocumentP
     std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
     /** Keep committed Coin visible after apply until idle live updateData. */
     bool _preferCommittedPresentation {false};
+    bool _committedPresentationInstalled {false};
+    bool _committedPresentationHandoffQueued {false};
+    std::uint64_t _committedPresentationHandoffGeneration {0};
+    App::DocumentLifecycleEpoch _committedPresentationHandoffEpoch {0};
     bool _livePresentationCatchUpQueued {false};
     /** Providers whose show()/hide() was deferred; compared, never dereferenced. */
     std::set<const ViewProviderDocumentObject*> _deferredVisibilitySync;
     PersonalViewContextStore personalViewContexts;
+    bool sharedPresentationCommitActive {false};
     bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
     int _iWinCount;
@@ -1350,7 +1359,10 @@ void Document::slotTransactionRemove(const App::DocumentObject& obj, App::Transa
         // transaction being a nullptr indicates that undo/redo is off and the object
         // can be safely deleted
         if (transaction) {
-            transaction->addObjectNew(viewProvider);
+            // A compatibility commit defers this signal until the document
+            // object is already in the undo transaction. Restoring records in
+            // sequence order must put this provider back before that object.
+            transaction->addObjectNewBefore(viewProvider, &obj);
         }
         else {
             delete viewProvider;
@@ -1414,15 +1426,104 @@ void Document::slotRecomputed(const App::Document& doc)
     });
 }
 
+namespace
+{
+// The queued live-presentation callbacks (the idle catch-up and the
+// committed-root handoff) capture the document name, never a pointer, because
+// the document may close before they run on the GUI thread. Both re-resolve it
+// here. A document still in the name map is still registered for
+// collaboration: Application::closeDocument() erases the map entry before it
+// drops the registry entry, so collaborationIdentity() does not throw for it.
+// Live model state is read only after App::LivePresentationRefreshScope
+// admission, in catchUpIdleLivePresentation() and in the handoff.
+App::Document* findQueuedPresentationDocument(const std::string& docName)
+{
+    if (!Gui::Application::Instance) {
+        return nullptr;
+    }
+    auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+    return appDoc;
+}
+}  // namespace
+
 void Document::slotBecameStable(const App::Document& doc)
 {
     if (d->_pcDocument != &doc) {
         return;
     }
 
-    // Still inside the owner's blocking marshal. Defer past lock release before
-    // touching live Coin (same AutoSaver / DrawViewDraft pattern).
-    scheduleLivePresentationCatchUp();
+    // Stability alone does not mean that any live view data was deferred. In
+    // particular, an unchanged compatibility read must not replay every App
+    // property through every view provider. The actual deferred App/provider
+    // paths queue their own catch-up. Keep the committed-root handoff too: a
+    // busy lane can install that root without setting explicit preference.
+    if (d->_livePresentationCatchUpQueued || !d->_deferredVisibilitySync.empty()
+        || d->_preferCommittedPresentation) {
+        // The deferred work already owns its full provider refresh.
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+    const auto identity = doc.collaborationIdentity();
+    if (!d->_committedPresentationInstalled
+        || (d->_committedPresentationHandoffQueued
+            && d->_committedPresentationHandoffEpoch == identity.lifecycleEpoch)) {
+        return;
+    }
+
+    // A read may have displayed the immutable committed root while the lane
+    // was busy. Only swap that sibling back to live picking; updateView() on
+    // every unchanged provider is neither necessary nor cheap. Keep this
+    // wake independent of the full-refresh queue so a real deferred change
+    // arriving before delivery cannot be consumed by the lightweight handoff.
+    d->_committedPresentationHandoffQueued = true;
+    d->_committedPresentationHandoffEpoch = identity.lifecycleEpoch;
+    const auto generation = ++d->_committedPresentationHandoffGeneration;
+    const std::string docName = doc.getName();
+    Gui::scheduleGuiSingleShot(0, [docName, identity, generation]() {
+        auto* appDoc = findQueuedPresentationDocument(docName);
+        if (!appDoc) {
+            return;
+        }
+        const auto current = appDoc->collaborationIdentity();
+        if (current.instanceId != identity.instanceId) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->d->_committedPresentationHandoffGeneration != generation) {
+            return;
+        }
+        // Release only this queued wake, even if the same live document has
+        // advanced epoch. An older callback must never clear a newer wake.
+        guiDoc->d->_committedPresentationHandoffQueued = false;
+        if (guiDoc->isAboutToClose()) {
+            return;
+        }
+        if (current.lifecycleEpoch != identity.lifecycleEpoch) {
+            guiDoc->slotBecameStable(*appDoc);
+            return;
+        }
+        if (!guiDoc->d->_committedPresentationInstalled) {
+            return;
+        }
+        if (guiDoc->d->_livePresentationCatchUpQueued
+            || !guiDoc->d->_deferredVisibilitySync.empty()
+            || guiDoc->d->_preferCommittedPresentation) {
+            guiDoc->scheduleLivePresentationCatchUp();
+            return;
+        }
+        App::LivePresentationRefreshScope refresh;
+        if (!refresh.acquired() || guiDoc->deferLivePresentationUpdates()) {
+            guiDoc->slotBecameStable(*appDoc);
+            return;
+        }
+        guiDoc->syncCommittedPresentationInViewers();
+        for (auto* view : guiDoc->d->baseViews) {
+            auto* inventorView = dynamic_cast<View3DInventor*>(view);
+            if (inventorView && inventorView->getViewer()) {
+                inventorView->getViewer()->redraw();
+            }
+        }
+    });
 }
 
 bool Document::deferLivePresentationUpdates() const
@@ -1447,6 +1548,12 @@ void Document::noteDeferredVisibilityChange(const ViewProviderDocumentObject* vi
     }
 }
 
+bool Document::hasDeferredVisibilityChange(
+    const ViewProviderDocumentObject* viewProvider) const
+{
+    return d->_deferredVisibilitySync.contains(viewProvider);
+}
+
 void Document::scheduleLivePresentationCatchUp()
 {
     if (!d->_pcDocument || d->_livePresentationCatchUpQueued) {
@@ -1455,8 +1562,8 @@ void Document::scheduleLivePresentationCatchUp()
     d->_livePresentationCatchUpQueued = true;
     const std::string docName = d->_pcDocument->getName();
     Gui::scheduleGuiSingleShot(0, [docName]() {
-        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
-        if (!appDoc || !Application::Instance) {
+        auto* appDoc = findQueuedPresentationDocument(docName);
+        if (!appDoc) {
             return;
         }
         auto* guiDoc = Application::Instance->getDocument(appDoc);
@@ -1986,6 +2093,7 @@ void Document::syncCommittedPresentationInViewers()
     const bool preferCommitted = committedRoot != nullptr && hasCommittedPresentation
         && (d->_preferCommittedPresentation
             || documentExecutionLaneBusy(*d->_pcDocument));
+    bool committedInstalled = false;
     for (auto* view : d->baseViews) {
         auto* inventorView = dynamic_cast<View3DInventor*>(view);
         if (!inventorView) {
@@ -1996,8 +2104,10 @@ void Document::syncCommittedPresentationInViewers()
             // sibling so live objectGroup is the only navigable geometry.
             viewer->installCommittedPresentationRoot(
                 preferCommitted ? committedRoot : nullptr, preferCommitted);
+            committedInstalled = committedInstalled || preferCommitted;
         }
     }
+    d->_committedPresentationInstalled = committedInstalled;
 }
 
 void Document::enqueuePresentationDelta(PresentationDelta&& delta)
@@ -2158,7 +2268,7 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     const auto structuralReplayBlock = qScopeGuard([structurallyPinnedDocument]() {
         structurallyPinnedDocument->finishCollaborationStableReadCapture();
     });
-    if (d->sharedPresentationPublicationSuppressed) {
+    if (d->sharedPresentationCommitActive) {
         SharedPresentationCommitResult result;
         result.status = SharedPresentationCommitStatus::SerializationFailed;
         result.diagnostic = "nested shared-presentation commits are not admitted";
@@ -2166,9 +2276,6 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     }
 
     syncSharedPresentationIdentity();
-    callbacks.currentIdentity = [this]() {
-        return std::optional<App::DocumentIdentity> {d->_pcDocument->collaborationIdentity()};
-    };
     callbacks.validateAppRevisions = [this](const auto& observations) {
         return d->_pcDocument->collaborationRevisions().validate(observations);
     };
@@ -2224,75 +2331,83 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
         };
     }
 
-    struct PublicationSuppression final
-    {
-        explicit PublicationSuppression(bool& flag)
-            : flag(flag)
-        {
-            flag = true;
-        }
-        ~PublicationSuppression()
-        {
-            flag = false;
-        }
-        bool& flag;
-    } suppression(d->sharedPresentationPublicationSuppressed);
-
+    d->sharedPresentationCommitActive = true;
+    const auto finishCommit = qScopeGuard([this] {
+        d->sharedPresentationCommitActive = false;
+    });
     if (!Application::Instance) {
         SharedPresentationCommitResult result;
         result.status = SharedPresentationCommitStatus::SerializationFailed;
         result.diagnostic = "GUI application is unavailable";
         return result;
     }
-    try {
-        App::Document* const appDocument = d->_pcDocument;
-        Application::Instance->beginSharedPresentationNotificationBarrier(
-            [appDocument,
-             allowedGuiWrites = std::move(allowedGuiWrites)](
-                const Gui::ViewProvider& viewProvider,
-                const App::Property& property) {
-                // App-property echoes use the same application signal but are
-                // audited independently by the App transaction boundary.
-                if (property.getContainer() != &viewProvider) {
-                    return true;
-                }
-                const auto* objectView =
-                    dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
-                const auto* object = objectView ? objectView->getObject() : nullptr;
-                const char* propertyName = property.getName();
-                if (!object || object->getDocument() != appDocument
-                    || !propertyName || *propertyName == '\0') {
-                    return false;
-                }
-                const SharedPresentationRevisionKey observed {
-                    appDocument->collaborationObjectIdentity(*object), propertyName};
-                return std::binary_search(allowedGuiWrites.begin(),
-                                          allowedGuiWrites.end(),
-                                          observed);
-            });
-    }
-    catch (const Base::Exception& exception) {
-        SharedPresentationCommitResult result;
-        result.status = SharedPresentationCommitStatus::SerializationFailed;
-        result.diagnostic = exception.what();
-        return result;
-    }
     struct NotificationBarrier final
     {
         ~NotificationBarrier()
         {
-            if (active) {
-                application.finishSharedPresentationNotificationBarrier(false);
-            }
+            finish(false);
         }
         void finish(bool committed) noexcept
         {
-            application.finishSharedPresentationNotificationBarrier(committed);
-            active = false;
+            if (active) {
+                application.finishSharedPresentationNotificationBarrier(committed);
+                publicationSuppressed = false;
+                active = false;
+            }
         }
         Application& application;
-        bool active {true};
-    } notificationBarrier {*Application::Instance};
+        bool& publicationSuppressed;
+        bool active {false};
+    } notificationBarrier {*Application::Instance, d->sharedPresentationPublicationSuppressed};
+
+    // currentIdentity is the first operation inside admitted work. Starting
+    // the GUI audit here leaves typed admission retries free to run independent
+    // idle refreshes, including their own presentation publications. The
+    // coordinator protects callback lifetime and rejects duplicate/late work.
+    std::exception_ptr notificationBarrierStartupFailure;
+    callbacks.currentIdentity =
+        [this, &notificationBarrier, &notificationBarrierStartupFailure,
+         allowedGuiWrites = std::move(allowedGuiWrites)] {
+            App::MainThreadSignalConfig::invoke([&] {
+                if (notificationBarrier.active) {
+                    return;
+                }
+                App::Document* const appDocument = d->_pcDocument;
+                try {
+                    Application::Instance->beginSharedPresentationNotificationBarrier(
+                        [appDocument, allowedGuiWrites](
+                            const Gui::ViewProvider& viewProvider,
+                            const App::Property& property) {
+                            // App-property echoes use the same application signal but are
+                            // audited independently by the App transaction boundary.
+                            if (property.getContainer() != &viewProvider) {
+                                return true;
+                            }
+                            const auto* objectView =
+                                dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
+                            const auto* object = objectView ? objectView->getObject() : nullptr;
+                            const char* propertyName = property.getName();
+                            if (!object || object->getDocument() != appDocument
+                                || !propertyName || *propertyName == '\0') {
+                                return false;
+                            }
+                            const SharedPresentationRevisionKey observed {
+                                appDocument->collaborationObjectIdentity(*object), propertyName};
+                            return std::binary_search(allowedGuiWrites.begin(),
+                                                      allowedGuiWrites.end(),
+                                                      observed);
+                        });
+                }
+                catch (...) {
+                    notificationBarrierStartupFailure = std::current_exception();
+                    throw;
+                }
+                notificationBarrier.publicationSuppressed = true;
+                notificationBarrier.active = true;
+            }, true);
+            return std::optional<App::DocumentIdentity> {
+                d->_pcDocument->collaborationIdentity()};
+        };
 
     // StatusBits are not part of TransactionObject's ordinary value payload.
     // Always attempt the caller's GUI rollback, then restore every status-only
@@ -2358,6 +2473,25 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
 
     auto result = d->sharedPresentationCoordinator.commit(
         d->sharedPresentationRevisions, request, callbacks);
+    // Only barrier startup failures are serialization failures. Exceptions from
+    // the actual lifecycle query retain the coordinator's StaleDocument result.
+    if (notificationBarrierStartupFailure
+        && result.status == SharedPresentationCommitStatus::StaleDocument) {
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = "shared-presentation notification barrier startup failed: ";
+        try {
+            std::rethrow_exception(notificationBarrierStartupFailure);
+        }
+        catch (const Base::Exception& exception) {
+            result.diagnostic += exception.what();
+        }
+        catch (const std::exception& exception) {
+            result.diagnostic += exception.what();
+        }
+        catch (...) {
+            result.diagnostic += "unknown exception";
+        }
+    }
     if (atomicBoundaryResult
         && atomicBoundaryResult->status == App::DocumentCommitStatus::RollbackFailed) {
         result.status = SharedPresentationCommitStatus::RollbackFailed;
@@ -3755,6 +3889,20 @@ void Document::slotShowHidden(const App::Document& doc)
  */
 void Document::SaveDocFile(Base::Writer& writer) const
 {
+    // Writer::writeFiles() calls persistence objects directly on the document
+    // owner thread, bypassing the GUI-thread signal that registered this file.
+    // Tree items, ViewProviders and cameras must be read on the GUI thread.
+    // Wait for serialization to finish before the writer advances or is destroyed.
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        // Python view providers may need the GIL on the GUI thread.
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
+        App::MainThreadSignalConfig::invoke([this, &writer] { SaveDocFile(writer); }, true);
+        return;
+    }
+
     syncSharedPresentationIdentity();
     d->pendingPresentationSave = d->sharedPresentationRevisions.capturePersistence();
 
@@ -4223,7 +4371,7 @@ bool Document::canClose(bool checkModify, bool checkLink)
         return true;
     }
 
-    if (getDocument()->testStatus(App::Document::TempDoc)) {
+    if (skipsSaveOnClose() || getDocument()->testStatus(App::Document::TempDoc)) {
         return true;
     }
 

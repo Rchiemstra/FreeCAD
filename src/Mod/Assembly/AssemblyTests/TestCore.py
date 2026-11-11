@@ -22,6 +22,7 @@
 # ***************************************************************************/
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Assembly
 import Part
 import os
@@ -93,12 +94,161 @@ class AssemblyTestBase(unittest.TestCase):
             import FreeCADGui as Gui
 
             Gui.updateGui()
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
         if App.GuiUp:
             Gui.updateGui()
 
 
 class TestCore(AssemblyTestBase):
+    def _presolve_joint(self, joint_type, fixed, moving, moving_first=False):
+        joint = self.jointgroup.newObject("App::FeaturePython", "PresolveJoint")
+        JointObject.Joint(joint, JointObject.JointTypes.index(joint_type))
+        parts = (moving, fixed) if moving_first else (fixed, moving)
+        joint.Reference1 = (parts[0], ["", ""])
+        joint.Reference2 = (parts[1], ["", ""])
+        return joint
+
+    def _presolve_parts(self):
+        self.assembly.Type = "Assembly"
+        fixed = self.assembly.newObject("Part::Box", "FixedPart")
+        moving = self.assembly.newObject("Part::Box", "MovingPart")
+        ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
+        JointObject.GroundedJoint(ground, fixed)
+        return fixed, moving
+
+    def test_presolve_keeps_free_axial_placement(self):
+        fixed, moving = self._presolve_parts()
+        for kind in ("Slider", "Cylindrical"):
+            for rotation in (App.Rotation(), App.Rotation(15, 25, 35)):
+                for distance in (-35, 35):
+                    for moving_first in (False, True):
+                        for flipped in (False, True):
+                            with self.subTest(
+                                kind=kind,
+                                rotation=rotation,
+                                distance=distance,
+                                moving_first=moving_first,
+                                flipped=flipped,
+                            ):
+                                fixed.Placement = App.Placement(App.Vector(10, 20, 30), rotation)
+                                twist = App.Rotation(
+                                    App.Vector(0, 0, 1), 37 if kind == "Cylindrical" else 0
+                                )
+                                if flipped:
+                                    twist = twist * App.Rotation(App.Vector(1, 0, 0), 180)
+                                moving.Placement = fixed.Placement * App.Placement(
+                                    App.Vector(0, 0, distance), twist
+                                )
+                                before = moving.Placement
+                                joint = self._presolve_joint(kind, fixed, moving, moving_first)
+                                try:
+                                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                                    self.assertTrue(moving.Placement.isSame(before, 1e-6))
+                                finally:
+                                    self.doc.removeObject(joint.Name)
+
+    def test_presolve_aligns_constrained_axes_with_offset_connectors(self):
+        fixed, moving = self._presolve_parts()
+        fixed.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation(15, 25, 35))
+        fixed_before = fixed.Placement
+        connector1 = App.Placement(App.Vector(2, 3, 4), App.Rotation(10, 20, 30))
+        connector2 = App.Placement(App.Vector(5, 6, 7), App.Rotation(30, 20, 10))
+        fixed_jcs = fixed.Placement * connector1
+        for kind in ("Slider", "Cylindrical"):
+            with self.subTest(kind=kind):
+                twist = App.Rotation(App.Vector(0, 0, 1), 37)
+                swing = App.Rotation(App.Vector(1, 0, 0), 25)
+                moving.Placement = (
+                    fixed_jcs
+                    * App.Placement(App.Vector(8, -9, 35), swing * twist)
+                    * connector2.inverse()
+                )
+                before = moving.Placement
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    joint.Detach1 = True
+                    joint.Detach2 = True
+                    joint.Placement1 = connector1
+                    joint.Placement2 = connector2
+                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                    relative = fixed_jcs.inverse() * (moving.Placement * connector2)
+                    self.assertTrue(relative.Base.isEqual(App.Vector(0, 0, 35), 1e-6))
+                    expected = twist if kind == "Cylindrical" else App.Rotation()
+                    self.assertTrue(relative.Rotation.isSame(expected, 1e-6))
+                    self.assertTrue(fixed.Placement.isSame(fixed_before, 1e-6))
+                    joint.Proxy.undoPreSolve(joint)
+                    self.assertTrue(moving.Placement.isSame(before, 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
+    def test_axial_presolve_on_expression_recompute(self):
+        fixed, moving = self._presolve_parts()
+        variables = self.doc.addObject("App::VarSet", "Offsets")
+        variables.addProperty("App::PropertyLength", "ConnectorOffset")
+        for kind in ("Slider", "Cylindrical"):
+            with self.subTest(kind=kind):
+                variables.ConnectorOffset = 1
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    joint.setExpression("Offset2.Base.x", "Offsets.ConnectorOffset")
+                    self.doc.recompute()
+                    twist = App.Rotation(App.Vector(0, 0, 1), 37 if kind == "Cylindrical" else 0)
+                    moving.Placement = App.Placement(App.Vector(), twist) * App.Placement(
+                        App.Vector(-1, 0, 35), App.Rotation()
+                    )
+                    variables.ConnectorOffset = 2
+                    with patch.object(
+                        joint.Proxy, "preSolve", wraps=joint.Proxy.preSolve
+                    ) as presolve:
+                        self.doc.recompute()
+                    self.assertGreater(presolve.call_count, 0)
+                    self.assertAlmostEqual(moving.Placement.Base.z, 35, places=6)
+                    self.assertTrue(moving.Placement.Rotation.isSame(twist, 1e-6))
+                    relative = fixed.Placement.inverse() * (moving.Placement * joint.Placement2)
+                    self.assertAlmostEqual(relative.Base.x, 0, places=6)
+                    self.assertAlmostEqual(relative.Base.y, 0, places=6)
+                    self.assertTrue(fixed.Placement.isSame(App.Placement(), 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
+    def test_slider_chain_expression_recompute_keeps_distinct_offsets(self):
+        fixed, moving = self._presolve_parts()
+        parts = [fixed, moving] + [self.assembly.newObject("Part::Box", "Panel") for _ in range(2)]
+        variables = self.doc.addObject("App::VarSet", "Offsets")
+        variables.addProperty("App::PropertyLength", "ConnectorOffset")
+        for previous, part in zip(parts, parts[1:]):
+            joint = self._presolve_joint("Slider", previous, part)
+            joint.setExpression("Offset2.Base.x", "Offsets.ConnectorOffset")
+        self.doc.recompute()
+        distances = (0, 35, -20, 80)
+        for part, distance in zip(parts, distances):
+            part.Placement.Base = App.Vector(0, 0, distance)
+        variables.ConnectorOffset = 2
+        self.doc.recompute()
+        for index, (part, distance) in enumerate(zip(parts, distances)):
+            self.assertTrue(part.Placement.Base.isEqual(App.Vector(-2 * index, 0, distance), 1e-6))
+        before = [part.Placement for part in parts]
+        unrelated = self.doc.addObject("App::FeaturePython", "Unrelated")
+        self.doc.removeObject(unrelated.Name)
+        self.doc.recompute()
+        for part, placement in zip(parts, before):
+            self.assertTrue(part.Placement.isSame(placement, 1e-6))
+
+    def test_fixed_and_revolute_presolve_still_match_connectors(self):
+        fixed, moving = self._presolve_parts()
+        fixed.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation(15, 25, 35))
+        for kind in ("Fixed", "Revolute"):
+            with self.subTest(kind=kind):
+                moving.Placement = fixed.Placement * App.Placement(
+                    App.Vector(8, -9, 35), App.Rotation(20, 30, 40)
+                )
+                joint = self._presolve_joint(kind, fixed, moving)
+                try:
+                    self.assertTrue(joint.Proxy.matchJCS(joint))
+                    self.assertTrue(moving.Placement.isSame(fixed.Placement, 1e-6))
+                finally:
+                    self.doc.removeObject(joint.Name)
+
     def test_component_count_for_link_array(self):
         source = self.doc.addObject("Part::Box", "ArraySource")
         array = self.assembly.newObject("App::Link", "Array")
@@ -649,6 +799,26 @@ class TestCore(AssemblyTestBase):
         self.doc.recompute()
         self.assertFalse(self.doc.mustExecute())
         created = []
+        from PySide import QtCore
+
+        observed = []
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Inspector(QtCore.QObject):
+            inspect = QtCore.Signal(object)
+
+            def __init__(self):
+                super().__init__()
+                self.inspect.connect(self.check, QtCore.Qt.BlockingQueuedConnection)
+
+            @QtCore.Slot(object)
+            def check(self, joint):
+                # The owner is paused inside the mutation, before publication.
+                # Read the native provider on the GUI thread, where absence is
+                # meaningful, rather than guiViewObject's off-thread fallback.
+                observed.append((QtCore.QThread.currentThread() == gui_thread, joint.ViewObject))
+
+        inspector = Inspector()
 
         def create_joint():
             joint = Assembly.createJoint(
@@ -660,14 +830,23 @@ class TestCore(AssemblyTestBase):
                 presolve=False,
                 recompute=False,
             )
-            self.assertIsNone(joint.ViewObject)
+            inspector.inspect.emit(joint)
             created.append(joint)
             return True
 
-        result = self.doc.commitCompatibilityMutation(
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = self.doc.commitCompatibilityMutationAsync(
             create_joint, structural=True, recompute=False
         )
+        # Waiting off the GUI thread lets native publication replay on it.
+        with ThreadPoolExecutor(max_workers=1) as waiter:
+            completion = waiter.submit(handle["wait"], 15.0)
+            _pump_gui_until(completion.done, 20.0)
+            result = completion.result()
         self.assertTrue(result.get("committed"), result)
+        self.assertEqual(observed, [(True, None)])
         joint = created[0]
         self.assertIsNotNone(joint.ViewObject)
         self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
@@ -1420,6 +1599,317 @@ class TestCore(AssemblyTestBase):
         self.assertIn("Perpendicular", violated)
         self.assertEqual(self._solve_placement_snapshot(), before)
         self.assertEqual(UtilsAssembly.violatedJointLabels(self.assembly), violated)
+
+    def _point(self, sub):
+        shape = Part.getShape(self.assembly, sub, App.Matrix(), True)
+        self.assertGreater(len(shape.Vertexes), 0, sub)
+        return shape.Vertexes[0].Point
+
+    def _component(self, full):
+        comp, rel = UtilsAssembly.getComponentReference(self.assembly, self.assembly, full)
+        self.assertIsNotNone(comp, full)
+        return comp, rel
+
+    def _assert_marker(self, full, vertex_rel=None):
+        comp, rel = self._component(full)
+        if vertex_rel is None:
+            vertex_rel = rel
+        ref = (comp, [rel, vertex_rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._point(full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
+        return comp, rel, ref
+
+    def _fixed_to_target(self, target, comp, rel, vertex_rel=None):
+        ground = self.jointgroup.newObject("App::FeaturePython", "GroundedJoint")
+        JointObject.GroundedJoint(ground, target)
+        joint = self.jointgroup.newObject("App::FeaturePython", "FixedJoint")
+        JointObject.Joint(joint, 0)
+        target_comp, target_rel = self._component(target.Name + ".Vertex1")
+        if vertex_rel is None:
+            vertex_rel = rel
+        joint.Proxy.setJointConnectors(
+            joint,
+            [(target_comp, [target_rel, target_rel]), (comp, [rel, vertex_rel])],
+        )
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0)
+
+    def _box(self, parent, name, length, width, height, placement):
+        maker = parent.newObject if hasattr(parent, "newObject") else parent.addObject
+        box = maker("Part::Box", name)
+        box.Length = length
+        box.Width = width
+        box.Height = height
+        box.Placement = placement
+        return box
+
+    def _linear_array(self, linked, occurrences, offset, spacing=False):
+        array = self.assembly.newObject("Part::LinkArrayLinear", "Array")
+        array.LinkedObject = linked
+        array.Occurrences = occurrences
+        array.Offset = offset
+        array.ShowElement = True
+        if spacing:
+            array.Mode = "Spacing"
+        return array
+
+    def _move(self, obj, placement):
+        if hasattr(self.doc, "commitCompatibilityMutation"):
+
+            def mutate():
+                obj.Placement = placement
+                return True
+
+            committed = self.doc.commitCompatibilityMutation(
+                mutate, structural=True, recompute=True
+            )
+            self.assertTrue(committed["committed"], committed)
+        else:
+            obj.Placement = placement
+        self.doc.recompute()
+        self.assertEqual(self.assembly.solve(), 0)
+
+    def _assert_stored(self, true, target, ref, limit, solved_limit=None):
+        stored = UtilsAssembly.getJcsGlobalPlc(self.doc.getObject("FixedJoint").Placement2, ref)
+        gap = (stored.Base - true).Length
+        self.assertLess(gap, limit, "stored gap {:.4f} mm".format(gap))
+        solved_limit = limit if solved_limit is None else solved_limit
+        solved = (true - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, solved_limit, "solved gap {:.4f} mm".format(solved))
+
+    def _circle(self, face_sub):
+        edge = Part.getShape(self.assembly, face_sub, App.Matrix(), True).getElement("Edge1")
+        self.assertEqual(edge.Curve.TypeId, "Part::GeomCircle", face_sub)
+        return edge.Curve.Location
+
+    def _axes(self, face_full):
+        dot = face_full.rfind(".")
+        shape = Part.getShape(self.assembly, face_full[: dot + 1], App.Matrix(), True)
+        face = shape.getElement(face_full[dot + 1 :])
+        edge = face.getElement("Edge2")
+        self.assertEqual(edge.Curve.TypeId, "Part::GeomBSplineCurve", face_full)
+        axes = [
+            other.Surface
+            for other in shape.Faces
+            if other.Surface.TypeId == "Part::GeomCylinder"
+            and any(
+                item.Curve.TypeId == "Part::GeomBSplineCurve"
+                and item.CenterOfGravity == edge.CenterOfGravity
+                and item.Length == edge.Length
+                for item in other.Edges
+            )
+        ]
+        line1 = Part.Line(axes[0].Center, axes[0].Center + axes[0].Axis)
+        line2 = Part.Line(axes[1].Center, axes[1].Center + axes[1].Axis)
+        point = line1.intersect(line2, Part.Precision.confusion())[0]
+        return App.Vector(point.X, point.Y, point.Z)
+
+    def test_link_array_fixed_joint_uses_inner_source_placement_once(self):
+        _msg("  Test 'Link array joint matches inner source placement'")
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        source = self._box(
+            sub,
+            "Source",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 40, 15), App.Rotation(App.Vector(0, 0, 1), 90)),
+        )
+        array = self._linear_array(sub, 2, 100)
+        target = self._box(
+            self.assembly,
+            "Target",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 200, 0), App.Rotation()),
+        )
+        plain = self.assembly.newObject("App::Link", "Plain")
+        plain.LinkedObject = sub
+        plain.Placement = App.Placement(App.Vector(0, -80, 0), App.Rotation())
+        self.doc.recompute()
+
+        element = array.ElementList[1]
+        self.assertGreater(element.Placement.Base.x, 50)
+        full = "{}.{}.Sub.Source.Vertex1".format(array.Name, element.Name)
+        comp, rel, _ref = self._assert_marker(full)
+        edge_comp, edge_rel = self._component(
+            "{}.{}.Sub.Source.Edge1".format(array.Name, element.Name)
+        )
+        edge_ref = (edge_comp, [edge_rel, rel])
+        edge_marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(edge_ref), edge_ref)
+        edge_gap = (edge_marker.Base - self._point(full)).Length
+        self.assertLess(edge_gap, 1e-6, "marker gap {:.4f} mm".format(edge_gap))
+        plain_full = "Plain.Sub.Source.Vertex1"
+        _plain_comp, _plain_rel, plain_ref = self._assert_marker(plain_full)
+        self.assertEqual(UtilsAssembly.getObject(plain_ref).Name, source.Name)
+
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
+
+    def test_link_array_fixed_joint_ignores_source_object_placement(self):
+        _msg("  Test 'Link array joint ignores source object placement'")
+        source = self._box(
+            self.doc, "Source", 10, 20, 30, App.Placement(App.Vector(0, 80, 15), App.Rotation())
+        )
+        array = self._linear_array(source, 2, 100)
+        target = self._box(
+            self.assembly,
+            "Target",
+            10,
+            20,
+            30,
+            App.Placement(App.Vector(0, 200, 0), App.Rotation()),
+        )
+        plain = self.assembly.newObject("App::Link", "Plain")
+        plain.LinkedObject = source
+        self.doc.recompute()
+
+        element = array.ElementList[1]
+        full = "{}.{}.{}.Vertex1".format(array.Name, element.Name, source.Name)
+        comp, rel, _ref = self._assert_marker(full)
+        self._assert_marker(plain.Name + ".Vertex1")
+
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
+
+    def test_link_array_joint_follows_moved_inner_body(self):
+        _msg("  Test 'Link array joint follows a moved inner body'")
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = self._box(
+            sub, "InnerBox", 10, 10, 10, App.Placement(App.Vector(0, 30, 0), App.Rotation())
+        )
+        array = self._linear_array(sub, 3, 120, spacing=True)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
+
+        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, array.ElementList[1].Name)
+        comp, rel, ref = self._assert_marker(full)
+        self._fixed_to_target(target, comp, rel)
+        self._assert_stored(self._point(full), target, ref, 1e-6)
+
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._point(full), target, ref, 1e-6)
+
+    def test_link_array_joint_follows_moved_inner_cylinder_bottom(self):
+        _msg("  Test 'Link array joint follows a moved cylinder bottom circle'")
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = sub.newObject("Part::Cylinder", "InnerCyl")
+        inner.Radius = 5
+        inner.Height = 10
+        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
+        array = self._linear_array(sub, 3, 120, spacing=True)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
+
+        bottom_index = None
+        bottom_face = None
+        for index, face in enumerate(inner.Shape.Faces, 1):
+            if face.Surface.TypeId != "Part::GeomPlane":
+                continue
+            if bottom_face is None or face.CenterOfGravity.z < bottom_face.CenterOfGravity.z:
+                bottom_face = face
+                bottom_index = index
+        self.assertEqual(len(bottom_face.Edges), 1)
+        self.assertEqual(bottom_face.getElement("Edge1").Curve.TypeId, "Part::GeomCircle")
+        self.assertNotEqual(inner.Shape.getElement("Edge1").Curve.TypeId, "Part::GeomCircle")
+
+        element = array.ElementList[1]
+        face_full = "{}.{}.Sub.InnerCyl.Face{}".format(array.Name, element.Name, bottom_index)
+        comp, face_rel = self._component(face_full)
+        _edge_comp, edge_rel = self._component(
+            "{}.{}.Sub.InnerCyl.Edge1".format(array.Name, element.Name)
+        )
+        self.assertTrue(face_rel.endswith("Face{}".format(bottom_index)), face_rel)
+        self.assertTrue(edge_rel.endswith("Edge1"), edge_rel)
+        ref = (comp, [face_rel, edge_rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._circle(face_full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
+
+        self._fixed_to_target(target, comp, face_rel, edge_rel)
+        self._assert_stored(self._circle(face_full), target, ref, 1e-6)
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._circle(face_full), target, ref, 1e-6)
+
+    def test_link_array_joint_follows_moved_cylinder_intersection(self):
+        _msg("  Test 'Link array joint follows a moved cylinder intersection'")
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        inner = sub.newObject("Part::Feature", "Fusion")
+        inner.Shape = Part.makeCylinder(5, 40).fuse(
+            Part.makeCylinder(8, 40, App.Vector(-20, 0, 20), App.Vector(1, 0, 0))
+        )
+        inner.Placement = App.Placement(App.Vector(0, 30, 0), App.Rotation())
+        array = self._linear_array(sub, 2, 100)
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
+
+        full = "{}.{}.Sub.Fusion.Face1".format(array.Name, array.ElementList[1].Name)
+        comp, rel = self._component(full)
+        _edge_comp, edge_rel = self._component(full.replace("Face1", "Edge2"))
+        ref = (comp, [rel, edge_rel])
+        marker = UtilsAssembly.getJcsGlobalPlc(UtilsAssembly.findPlacement(ref), ref)
+        gap = (marker.Base - self._axes(full)).Length
+        self.assertLess(gap, 1e-6, "marker gap {:.4f} mm".format(gap))
+        self._fixed_to_target(target, comp, rel, edge_rel)
+        self._assert_stored(self._axes(full), target, ref, 1e-6)
+        self._move(inner, App.Placement(App.Vector(0, 70, 0), App.Rotation()))
+        self._assert_stored(self._axes(full), target, ref, 1e-6)
+
+    def _check_pattern_array_joint(self, kind):
+        _msg("  Test 'Link array joint on a {} pattern'".format(kind.lower()))
+        sub = self.doc.addObject("Assembly::AssemblyObject", "Sub")
+        sub.newObject("Assembly::JointGroup", "SubJoints")
+        rotation = App.Rotation(App.Vector(0, 0, 1), 90)
+        inner = self._box(
+            sub, "InnerBox", 10, 10, 10, App.Placement(App.Vector(0, 30, 15), rotation)
+        )
+        array = self.assembly.newObject("Part::LinkArray" + kind, "Array")
+        array.LinkedObject = sub
+        array.ShowElement = True
+        if kind == "Circular":
+            array.Axis = (None, ["Z_Axis"])
+            array.BinormalAxis = (None, ["Y_Axis"])
+        elif kind in ("Path", "Point"):
+            pattern = self.doc.addObject("Part::Feature", "Pattern")
+            pattern.Shape = Part.makePolygon([App.Vector(), App.Vector(120, 0, 0)])
+            if kind == "Path":
+                array.Path = (pattern, ["Edge1"])
+                array.Count = 2
+            else:
+                array.PointObject = pattern
+        target = self._box(self.assembly, "Target", 20, 20, 20, App.Placement())
+        self.doc.recompute()
+
+        self.assertGreaterEqual(len(array.ElementList), 2)
+        element = array.ElementList[1]
+        self.assertFalse(element.Placement.isIdentity())
+        full = "{}.{}.Sub.InnerBox.Vertex1".format(array.Name, element.Name)
+        comp, rel, ref = self._assert_marker(full)
+        self._fixed_to_target(target, comp, rel)
+        solved = (self._point(full) - self._point(target.Name + ".Vertex1")).Length
+        self.assertLess(solved, 1e-5, "solved gap {:.4f} mm".format(solved))
+        self._move(inner, App.Placement(App.Vector(0, 70, 15), rotation))
+        self._assert_stored(self._point(full), target, ref, 1e-6, 1e-5)
+
+    def test_link_array_joint_on_polar_pattern(self):
+        self._check_pattern_array_joint("Polar")
+
+    def test_link_array_joint_on_circular_pattern(self):
+        self._check_pattern_array_joint("Circular")
+
+    def test_link_array_joint_on_path_pattern(self):
+        self._check_pattern_array_joint("Path")
+
+    def test_link_array_joint_on_point_pattern(self):
+        self._check_pattern_array_joint("Point")
 
 
 def _shape_circle(obj, element):

@@ -686,6 +686,11 @@ def test_long_lived_gui_transaction_is_rejected_as_busy_without_qt_bootstrap() -
         "Gui::Command::openActiveDocumentCommand long-lived transaction",
     )
 
+    _assert_body_calls(
+        _body_for(coordinator, "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions"),
+        "rejectCommitPrerequisites(",
+        "DocumentCommitCoordinator shared prerequisite admission",
+    )
     coordinator_without_comments = _suppress_cpp_non_code(coordinator, keep_literals=True)
     compact = re.sub(r"\s+", "", coordinator_without_comments)
     # A transaction being applied or rolled back is unconditionally Busy. A
@@ -700,7 +705,7 @@ def test_long_lived_gui_transaction_is_rejected_as_busy_without_qt_bootstrap() -
         "||(!nestInCallerTransaction&&(_document.hasPendingTransaction()"
         "||_document.getBookedTransactionID()!=0));"
         "if(nativeTransactionInProgress){"
-        "returnmakeResult(DocumentCommitStatus::Busy,edit,"
+        "returnreject(DocumentCommitStatus::Busy,"
         '"documentalreadyhasanativetransactioninprogress");}'
     )
     assert busy_admission in compact, (

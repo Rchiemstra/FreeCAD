@@ -28,7 +28,7 @@
 
 # datum tools
 from PartDesignTests.TestDatum import TestDatumPoint, TestDatumLine, TestDatumPlane
-from PartDesignTests.TestDatum import TestDeactivatedPlacement
+from PartDesignTests.TestDatum import TestDeactivatedPlacement, TestTranslateAttachment
 from PartDesignTests.TestShapeBinder import TestShapeBinder
 from PartDesignTests.TestShapeBinder import TestSubShapeBinder
 
@@ -67,3 +67,6 @@ from PartDesignTests.TestSuppressed import TestSuppressed
 
 # Topological naming problem
 from PartDesignTests.TestTopologicalNamingProblem import TestTopologicalNamingProblem
+
+from PartDesignTests.TestAllowanceProfile import TestAllowanceProfile
+from PartDesignTests.TestFittingTolerance import TestFittingTolerance

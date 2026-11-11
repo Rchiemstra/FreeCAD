@@ -261,6 +261,47 @@ class TestActiveObject(unittest.TestCase):
         self.assertFalse(boolean.ViewObject.isVisible())
         self.assertTrue(laterFeature.ViewObject.isVisible())
 
+    def testBooleanActiveBodyVisibilityRestoresDeferredHide(self):
+        from pivy import coin
+
+        boolean, tools = self._createBooleanWithTwoTools()
+        tool = tools[0]
+        view = FreeCADGui.activeView()
+        deferredHide = []
+
+        class Observer:
+            def slotRecomputedDocument(self, document):
+                if document != boolean.Document or deferredHide:
+                    return
+                # Force stale scene visibility while replay defers hide(). Keep
+                # App visibility unchanged so this does not create recompute work.
+                tool.ViewObject.SwitchNode.whichChild = coin.SO_SWITCH_ALL
+                tool.ViewObject.hide()
+                deferredHide.append(tool.ViewObject.isVisible())
+                view.setActiveObject("pdbody", tool)
+
+        observer = Observer()
+        FreeCAD.addDocumentObserver(observer)
+        try:
+            boolean.touch()
+            recompute_document(self.doc)
+        finally:
+            FreeCAD.removeDocumentObserver(observer)
+        self.assertEqual(deferredHide, [True])
+        self.assertFalse(tool.ViewObject.Visibility)
+
+        resultBody = boolean.getParentGeoFeatureGroup()
+        laterFeature = self.doc.addObject("PartDesign::AdditiveBox", "LaterFeature")
+        resultBody.addObject(laterFeature)
+        recompute_document(self.doc)
+        FreeCADGui.updateGui()
+        self.assertTrue(tool.ViewObject.isVisible())
+
+        view.setActiveObject("pdbody", None)
+        self.assertFalse(tool.ViewObject.isVisible())
+        self.assertFalse(boolean.ViewObject.isVisible())
+        self.assertTrue(laterFeature.ViewObject.isVisible())
+
     def testBooleanActiveBodyVisibilityRestoresModeWithOverride(self):
         boolean, tools = self._createBooleanWithTwoTools()
         view = FreeCADGui.activeView()

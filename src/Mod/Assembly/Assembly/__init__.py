@@ -6,6 +6,7 @@ from AssemblyApp import (
     newInterferenceScanCancellation,
     cancelInterferenceScan,
 )
+from ExtractComponent import extract, ExtractionError, ExtractionResult
 
 from .api import (
     JointCreationError,
@@ -27,6 +28,9 @@ __all__ = [
     "scanSelectedPair",
     "newInterferenceScanCancellation",
     "cancelInterferenceScan",
+    "extract",
+    "ExtractionError",
+    "ExtractionResult",
     "JointCreationError",
     "createAssembly",
     "createGroundedJoint",

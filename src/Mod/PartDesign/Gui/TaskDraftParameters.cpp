@@ -389,6 +389,10 @@ TaskDlgDraftParameters::~TaskDlgDraftParameters() = default;
 
 bool TaskDlgDraftParameters::accept()
 {
+    if (deferParameterApplication()) {
+        return false;
+    }
+
     auto tobj = getObject();
     if (!tobj->isError()) {
         getViewObject()->showPreviousFeature(false);

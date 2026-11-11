@@ -139,6 +139,8 @@ EXTRA_GUI_DIRS: tuple[str, ...] = (
 #: beside App-layer modules in the shared top-level package, so they cannot be
 #: selected by directory; each is listed explicitly and reviewed as GUI-only.
 EXTRA_GUI_FILES: tuple[str, ...] = (
+    # Model diff GUI presentation and asynchronous headless comparison ingress.
+    "src/Mod/ModelDiff/modeldiff.py",
     # Draft's main GUI controller (toolbar, task panel dispatch).
     "src/Mod/Draft/DraftGui.py",
     # Draft GUI command definitions (GuiCommand classes).
@@ -172,6 +174,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/UtilsAssembly.py",
     "src/Mod/Assembly/CommandCreateAssembly.py",
     "src/Mod/Assembly/CommandComponentPattern.py",
+    "src/Mod/Assembly/CommandExtractComponent.py",
     "src/Mod/Assembly/ComponentPattern.py",
     "src/Mod/Assembly/CommandCreateBom.py",
     "src/Mod/Assembly/CommandCreateJoint.py",
@@ -186,6 +189,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/Assembly/MotionInterference.py",
     "src/Mod/Assembly/Assembly/MotionJointGrid.py",
     "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandIsolate.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     # Joint task and view-provider handlers imported by Assembly commands.
     "src/Mod/Assembly/JointObject.py",
@@ -359,6 +363,8 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/BasicShapes/CommandShapes.py",
     "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/AllowanceProfile.py",
+    "src/Mod/PartDesign/AllowanceProfileGui.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
     # OpenSCAD's provider module is loaded by OpenSCADCommands.
@@ -405,6 +411,8 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
 # out of the presentation inventory. Each exclusion is individually reviewed
 # as a model/IO/solver helper; GUI-bearing modules are promoted into scope.
 REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
+    "src/Mod/Assembly/ExtractionShape.py": "Headless shape-expression forwarding proxy; no GUI handlers",
+    "src/Mod/Assembly/ExtractComponent.py": "Headless component extraction model/IO API; GUI command is inventoried",
     "src/Mod/BIM/importers/exportIFCHelper.py": "BIM IFC helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Op/SurfaceSupport.py": "CAM geometry helper; GUI caller is inventoried",
     "src/Mod/CAM/Path/Tool/shape/models/base.py": "CAM shape model helper; GUI caller is inventoried",

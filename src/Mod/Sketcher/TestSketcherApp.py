@@ -26,7 +26,9 @@
 # Broken-out test modules
 from SketcherTests.TestSketcherSolver import TestSketcherSolver
 from SketcherTests.TestSketchFillet import TestSketchFillet
+from SketcherTests.TestSketchTrimDegenerate import TestSketchTrimDegenerate
 from SketcherTests.TestSketchExpression import TestSketchExpression
+from SketcherTests.TestSketchExpressionDiagnostics import TestSketchExpressionDiagnostics
 from SketcherTests.TestSketchDeltaPosition import TestSketchDeltaPosition
 from SketcherTests.TestSketchValidateCoincidents import TestSketchValidateCoincidents
 from SketcherTests.TestSketchCarbonCopyReverseMapping import TestSketchCarbonCopyReverseMapping
@@ -34,6 +36,7 @@ from SketcherTests.TestSketchInternalFaces import TestSketchInternalFaces
 from SketcherTests.TestSketchMalformedConstraints import TestSketchMalformedConstraints
 from SketcherTests.TestSketchEditFailures import TestSketchEditFailures
 from SketcherTests.TestSketcherEllipse import TestSketcherEllipse
+from SketcherTests.TestSketchExternalProjection import TestSketchExternalProjection
 
 # Path and PartDesign tests use these functions that used to live here
 # but moved to SketcherTests/TestSketcherSolver.py

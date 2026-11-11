@@ -55,6 +55,7 @@ of a minimal, isolated change.
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document_by_name
 import Part
 import Sketcher
 
@@ -71,7 +72,7 @@ class TestCrossBodyDatumStaleness(unittest.TestCase):
         self.doc = App.newDocument("AssemblyCrossBodyDatumStaleness")
 
     def tearDown(self):
-        App.closeDocument(self.doc.Name)
+        close_document_by_name(self.doc.Name)
 
     def makePaddedSourceBody(self, name):
         body_b = self.doc.addObject("PartDesign::Body", name)
