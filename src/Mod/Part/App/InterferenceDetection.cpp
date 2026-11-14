@@ -18,6 +18,7 @@
 #endif
 
 #include "InterferenceDetection.h"
+#include "BooleanParallel.h"
 #include "FCBRepAlgoAPI_Common.h"
 
 namespace Part
@@ -80,7 +81,7 @@ InterferenceResult classifyCommon(
 
     try {
         FCBRepAlgoAPI_Common mkCommon;
-        mkCommon.SetRunParallel(Standard_True);
+        mkCommon.SetRunParallel(Part::booleanRunParallel());
         mkCommon.SetNonDestructive(Standard_True);
 
         TopTools_ListOfShape arguments;
