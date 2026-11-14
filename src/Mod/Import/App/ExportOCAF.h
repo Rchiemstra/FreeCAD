@@ -35,6 +35,7 @@
 
 #include <App/Material.h>
 #include <Mod/Import/ImportGlobal.h>
+#include "StepPmiExport.h"
 
 
 class TDF_Label;
@@ -59,6 +60,14 @@ class ImportExport ExportOCAF
 public:
     ExportOCAF(Handle(TDocStd_Document) hDoc, bool explicitPlacement);
     virtual ~ExportOCAF();
+    void setAttributeObserver(ShapeExportObserver observer)
+    {
+        attributeObserver = std::move(observer);
+    }
+    void setShapeObserver(ShapeExportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
     void exportObjects(std::vector<App::DocumentObject*>& objs);
     int exportObject(
         App::DocumentObject* obj,
@@ -116,6 +125,8 @@ private:
     TDF_Label rootLabel;
     bool keepExplicitPlacement;
     bool filterBaseFeature {true};
+    ShapeExportObserver shapeObserver;
+    ShapeExportObserver attributeObserver;
 };
 
 class ImportExport ExportOCAFCmd: public ExportOCAF

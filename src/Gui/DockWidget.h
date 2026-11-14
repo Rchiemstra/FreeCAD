@@ -8,6 +8,7 @@
 #include <QGuiApplication>
 #include <QPointer>
 #include <QSizeGrip>
+#include <QWindow>
 
 namespace Gui
 {
@@ -64,6 +65,11 @@ public:
         updatePosition();
     }
 
+    void refresh()
+    {
+        updatePosition();
+    }
+
 protected:
     bool eventFilter(QObject* object, QEvent* event) override
     {
@@ -83,8 +89,10 @@ private:
         if (!window) {
             return;
         }
-        const bool available = isFloatingDockWindow(window) && window->windowType() == Qt::Window
+        const bool available = isFloatingDockWindow(window) && window->windowHandle()
+            && window->windowHandle()->type() == Qt::Window
             && window->windowFlags().testFlag(Qt::FramelessWindowHint)
+            && !window->windowFlags().testFlag(Qt::BypassWindowManagerHint)
             && !(window->windowState() & (Qt::WindowMaximized | Qt::WindowFullScreen));
         if (available) {
             move(qMax(0, window->width() - width()), qMax(0, window->height() - height()));
@@ -96,32 +104,55 @@ private:
     QPointer<QWidget> window;
 };
 
+// WSLg records override_redirect when the X11 peer is created. Qt's temporary
+// unmanaged drag peer cannot become a managed window merely by changing flags.
+// Hide is delivered after Qt unmaps that peer. Retire it there and let Qt's
+// subsequent drop/parent transition create the peer with its final flags.
+inline void releaseUnmanagedFloatingDockWindow(QWidget* widget)
+{
+    if (!isFloatingDockWindow(widget) || widget->isVisible()
+        || !widget->windowFlags().testFlag(Qt::BypassWindowManagerHint)) {
+        return;
+    }
+    QWindow* native = widget->windowHandle();
+    if (native && !native->isVisible() && native->handle()
+        && native->flags().testFlag(Qt::BypassWindowManagerHint)) {
+        native->destroy();
+    }
+}
+
 inline bool normalizeFloatingDockWindow(QWidget* widget)
 {
     if (!isFloatingDockWindow(widget)) {
         return false;
     }
 
-    // Qt resets these flags when floating, restoring a layout, or replacing a
-    // title bar. Show runs before the native window maps. Preserve client
-    // geometry, including on platforms reporting margins for frameless docks.
-    const bool normalized = widget->windowType() == Qt::Tool;
+    // Keep QWidget's Tool state intact: Qt's docking implementation owns its
+    // drag transitions. Change only the platform window type before mapping,
+    // without reparenting the widget or recreating its native surface. Preserve
+    // the temporary Bypass flag too: the first drag map must already use the
+    // normal platform type, before Qt completes the drop and removes Bypass.
+    QWindow* native = widget->windowHandle();
+    const bool normalized = native && widget->windowType() == Qt::Tool
+        && native->type() == Qt::Tool;
     if (normalized) {
-        const QRect floatingGeometry = widget->geometry();
-        widget->setWindowFlags(
-            (widget->windowFlags() & ~Qt::WindowType_Mask & ~Qt::BypassWindowManagerHint) | Qt::Window
-        );
-        widget->setGeometry(floatingGeometry);
-        widget->show();
+        native->setFlags((native->flags() & ~Qt::WindowType_Mask) | Qt::Window);
     }
     // Managed frameless windows have no reliable native resize border on
     // WSLg. A standard Qt grip supplies a visible mouse target and system
     // resize handling without changing the dock layout or tab membership.
-    if (widget->windowType() == Qt::Window
-        && widget->windowFlags().testFlag(Qt::FramelessWindowHint)
-        && !widget->findChild<QSizeGrip*>(QStringLiteral("FreeCADFloatingDockResizeGrip"),
-                                         Qt::FindDirectChildrenOnly)) {
-        new FloatingDockResizeGrip(widget);
+    if (native && native->type() == Qt::Window
+        && widget->windowFlags().testFlag(Qt::FramelessWindowHint)) {
+        auto* grip = widget->findChild<QSizeGrip*>(QStringLiteral("FreeCADFloatingDockResizeGrip"),
+                                                 Qt::FindDirectChildrenOnly);
+        if (!grip) {
+            new FloatingDockResizeGrip(widget);
+        }
+        else if (auto* floatingGrip = dynamic_cast<FloatingDockResizeGrip*>(grip)) {
+            // The subclass normalizes after widget event filters have run.
+            // Refresh a retained grip after that platform-type transition.
+            floatingGrip->refresh();
+        }
     }
     return normalized;
 }
@@ -138,7 +169,9 @@ public:
 protected:
     bool eventFilter(QObject* object, QEvent* event) override
     {
-        if (managedFloatingWindows && event->type() == QEvent::Show && object->isWidgetType()) {
+        if (managedFloatingWindows
+            && (event->type() == QEvent::Show || event->type() == QEvent::Hide)
+            && object->isWidgetType()) {
             auto* widget = static_cast<QWidget*>(object);
             // The application also hosts dialogs and independent main windows.
             // Only normalize docks belonging to this manager, including Qt's
@@ -147,9 +180,13 @@ protected:
                 // QWidget::isAncestorOf stops at a window boundary, whereas
                 // floating docks remain QObject children of their main window.
                 if (dockOwner && parent == dockOwner) {
-                    // Normalizing flags hides and re-shows the widget. That
-                    // nested Show has already reached the widget's handlers.
-                    return normalizeFloatingDockWindow(widget);
+                    if (event->type() == QEvent::Hide) {
+                        releaseUnmanagedFloatingDockWindow(widget);
+                    }
+                    else {
+                        normalizeFloatingDockWindow(widget);
+                    }
+                    break;
                 }
             }
         }
@@ -178,9 +215,13 @@ public:
 protected:
     bool event(QEvent* event) override
     {
-        if (managedFloatingWindows && event->type() == QEvent::Show
-            && normalizeFloatingDockWindow(this)) {
-            return true;
+        if (managedFloatingWindows) {
+            if (event->type() == QEvent::Hide) {
+                releaseUnmanagedFloatingDockWindow(this);
+            }
+            else if (event->type() == QEvent::Show) {
+                normalizeFloatingDockWindow(this);
+            }
         }
         return QDockWidget::event(event);
     }

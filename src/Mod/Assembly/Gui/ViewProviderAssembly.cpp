@@ -80,6 +80,7 @@
 #include "TaskAssemblyMessages.h"
 
 #include "ViewProviderAssembly.h"
+#include "DragFeedback.h"
 #include "ViewProviderAssemblyPy.h"
 
 #include <Gui/Utilities.h>
@@ -361,6 +362,7 @@ void ViewProviderAssembly::unsetEdit(int mode)
         canStartDragging = false;
         docsToMove.clear();
 
+        notifyDragFeedback(getObject(), true);
         unsetDragger();
         detachSelection();
 
@@ -463,6 +465,7 @@ App::DocumentObject* ViewProviderAssembly::getActivePart() const
 bool ViewProviderAssembly::keyPressed(bool pressed, int key)
 {
     if (key == SoKeyboardEvent::ESCAPE) {
+        notifyDragFeedback(getObject(), true);
         if (isInEditMode()) {
             if (Gui::Control().activeDialog(nullptr)) {
                 return true;
@@ -667,6 +670,7 @@ bool ViewProviderAssembly::tryMouseMove(const SbVec2s& cursorPos, Gui::View3DInv
         else {
             assemblyPart->redrawJointPlacements(assemblyPart->getJoints());
         }
+        notifyDragFeedback(getObject());
     }
     return false;
 }
@@ -1200,6 +1204,7 @@ void ViewProviderAssembly::tryInitMove(const SbVec2s& cursorPos, Gui::View3DInve
 
 void ViewProviderAssembly::endMove(bool abort)
 {
+    notifyDragFeedback(getObject(), true);
     const bool wasMoving = partMoving;
     docsToMove.clear();
     partMoving = false;
@@ -1280,12 +1285,15 @@ void ViewProviderAssembly::initMoveDragger()
 
     setDraggerPlacement(draggerInitPlc);
     asmDragger->addMotionCallback(draggerMotionCallback, this);
+    asmDragger->addFinishCallback(finishDragFeedback, this);
 }
 
 void ViewProviderAssembly::endMoveDragger()
 {
+    notifyDragFeedback(getObject(), true);
     if (getDraggerVisibility()) {
         asmDragger->removeMotionCallback(draggerMotionCallback, this);
+        asmDragger->removeFinishCallback(finishDragFeedback, this);
         setDraggerVisibility(false);
     }
 }
@@ -1312,6 +1320,7 @@ void ViewProviderAssembly::draggerMotionCallback(void* data, SoDragger* d)
             pPlc->setValue(movePlc * movingObj.plc);
         }
     }
+    notifyDragFeedback(sudoThis->getObject());
 }
 
 void ViewProviderAssembly::onSelectionChanged(const Gui::SelectionChanges& msg)

@@ -33,8 +33,10 @@
 #include <ranges>
 
 
+#include <App/AutoTransaction.h>
 #include <App/Application.h>
 #include <App/Datums.h>
+#include <App/ScopedDocumentMutation.h>
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/GroupExtension.h>
@@ -89,6 +91,7 @@
 #include "AssemblyLink.h"
 #include "AssemblyObject.h"
 #include "AssemblyObjectPy.h"
+#include "MotionSimulationCoordinates.h"
 #include "AssemblyUtils.h"
 #include "Groups.h"
 #include "ReviewNote.h"
@@ -103,6 +106,23 @@ namespace PartApp = Part;
 
 namespace
 {
+class SimulationInterrupted {};
+
+class CheckpointAssembly: public ASMTAssembly
+{
+public:
+    std::function<bool()> checkpoint;
+
+    void updateFromMbD() override
+    {
+        ASMTAssembly::updateFromMbD();
+        // Continue the same native solve, preserving closed-loop branches and
+        // signed angular history. Never generate a whole trajectory unchecked.
+        if (checkpoint && times->size() % 8 == 0 && !checkpoint()) {
+            throw SimulationInterrupted();
+        }
+    }
+};
 
 bool isFinitePlacement(const Base::Placement& plc);
 
@@ -1066,9 +1086,69 @@ void AssemblyObject::cacheSolveStatus()
     }
 }
 
-int AssemblyObject::generateSimulation(App::DocumentObject* sim)
+PyObject* AssemblyObject::withMotionSweepState(PyObject* callback)
 {
-    mbdAssembly = makeMbdAssembly();
+    // Python cannot snapshot the solver's frame store, placement journal or
+    // authoritative file-change tracking. Keep this scope on the document thread.
+    auto* doc = getDocument();
+    if (solveInProgress || placementAttemptInProgress || dragActive || dragStartAttempt
+        || doc->hasPendingTransaction() || doc->isTransactionLocked() || doc->transacting()
+        || App::GetApplication().getGlobalTransaction() != 0) {
+        throw Base::RuntimeError("Finish the active solve, drag, simulation or transaction before sweeping");
+    }
+    // A GUI sweep/replay pumps events while a geometry worker runs. Prevent
+    // document close from destroying the state this scope must restore. Mutation
+    // admission below also protects saved solver maps containing raw pointers.
+    App::TransactionLocker lifetime(doc);
+    const bool wasClosable = doc->isClosable();
+    doc->setClosable(false);
+    Base::ScopeGuard restoreClosable([&] { doc->setClosable(wasClosable); });
+    auto solver = mbdAssembly;
+    auto parts = objectPartMap;
+    auto representatives = rigidRepByPart;
+    auto members = rigidMembersByRep;
+    auto masses = objMasses;
+    auto savedMotions = motions;
+    const bool pending = solvePending;
+    PlacementAttempt placements(*this);
+    App::ScopedDocumentMutation admission(*doc);
+    Base::ScopeGuard restore([&] {
+        App::ScopedDocumentMutation::Allow controlled(*doc);
+        // Rollback setters can call Python observers. Run them with a clear
+        // error indicator, then propagate the sweep body's original exception.
+        PyObject *type = nullptr, *value = nullptr, *traceback = nullptr;
+        PyErr_Fetch(&type, &value, &traceback);
+        solvePending = pending;
+        placements.restore();
+        mbdAssembly.swap(solver);
+        objectPartMap.swap(parts);
+        rigidRepByPart.swap(representatives);
+        rigidMembersByRep.swap(members);
+        objMasses.swap(masses);
+        motions.swap(savedMotions);
+        // finish() may touch the assembly for a pre-existing pending solve.
+        placements.restoreFlags();
+        redrawJointPlacements(getJoints());
+        PyErr_Restore(type, value, traceback);
+    });
+    return PyObject_CallNoArgs(callback);
+}
+
+int AssemblyObject::generateSimulation(
+    App::DocumentObject* sim,
+    const std::function<bool()>& checkpoint
+)
+{
+    mbdAssembly = makeMbdAssembly(bool(checkpoint));
+    auto controlled = std::dynamic_pointer_cast<CheckpointAssembly>(mbdAssembly);
+    if (controlled) {
+        controlled->checkpoint = checkpoint;
+    }
+    Base::ScopeGuard releaseCheckpoint([&] {
+        if (controlled) {
+            controlled->checkpoint = {};
+        }
+    });
     objectPartMap.clear();
 
     motions = getMotionsFromSimulation(sim);
@@ -1085,10 +1165,16 @@ int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 
     jointParts(joints);
 
+    recordMotionCoordinates(mbdAssembly, sim, joints, motions);
+
     create_mbdSimulationParameters(sim);
 
     try {
         mbdAssembly->runKINEMATIC();
+    }
+    catch (const SimulationInterrupted&) {
+        motions.clear();
+        return -8;
     }
     catch (...) {
         Base::Console().error("Generation of simulation failed\n");
@@ -1880,9 +1966,10 @@ void AssemblyObject::redrawJointPlacement(App::DocumentObject* joint)
     }
 }
 
-std::shared_ptr<ASMTAssembly> AssemblyObject::makeMbdAssembly()
+std::shared_ptr<ASMTAssembly> AssemblyObject::makeMbdAssembly(bool checkpoints)
 {
-    auto assembly = CREATE<ASMTAssembly>::With();
+    std::shared_ptr<ASMTAssembly> assembly = checkpoints
+        ? CREATE<CheckpointAssembly>::With() : CREATE<ASMTAssembly>::With();
     assembly->externalSystem->freecadAssemblyObject = this;
     assembly->setName("OndselAssembly");
 

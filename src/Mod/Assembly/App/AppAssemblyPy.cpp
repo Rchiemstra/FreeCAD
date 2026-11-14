@@ -24,6 +24,9 @@
 
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
+#include "ExtractReferences.h"
+
+#include "InterferenceScanPy.h"
 
 
 namespace Assembly
@@ -34,7 +37,112 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyApp")
     {
+        add_keyword_method("scanSelectedPair", &Module::scanSelectedPair,
+            "scanSelectedPair(host, first, second, measureDistances=False, "
+            "maxFacePairCandidates=10000, cancel=None) -> dict\n"
+            "Snapshot and scan two component occurrences using the interference checker.\n"
+            "Call on the document thread. Endpoints are objects or (object, subname).\n"
+            "Distances/points are in mm/world coordinates. Results retain witness geometry;\n"
+            "solidDetection preserves the whole-solid result before face-rule aggregation.\n"
+            "measureDistances evaluates distant clear pairs too. complete describes only\n"
+            "this static selected scope. cancel is a newInterferenceScanCancellation token.");
+        add_varargs_method("newInterferenceScanCancellation", &Module::newCancellation,
+            "Create a thread-safe cooperative scan cancellation token.");
+        add_varargs_method("cancelInterferenceScan", &Module::cancelScan,
+            "Cancel scans using the supplied token; cancellation is cooperative.");
+        add_varargs_method("_motionSimulationFrameTimes", &Module::motionSimulationFrameTimes,
+            "Internal: native solver timestamps, including the unsolved input frame.");
+        add_varargs_method("_motionSimulationJointState", &Module::motionSimulationJointState,
+            "Internal: participating joint's prescribed and solver coordinates.");
+        add_varargs_method("_withMotionSweepState", &Module::withMotionSweepState,
+            "Internal synchronous document-thread scope for the motion controller.");
+        add_varargs_method("_withMotionSweepMutation", &Module::withMotionSweepMutation,
+            "Internal: controlled synchronous motion writes; must not deliver events.");
+        add_keyword_method("_prepareSelectedPairScan", &Module::prepareSelectedPair,
+            "Internal: snapshot selected geometry on the document thread.");
+        add_varargs_method("_runPreparedInterferenceScan", &Module::runPrepared,
+            "Internal: run an owned immutable snapshot on a worker, once.");
+        add_varargs_method("_tessellateInterferenceShape", &Module::tessellateShape,
+            "Internal: mesh an exclusively owned feedback shape without the GIL.");
+        add_varargs_method("_motionInterferenceLeaves", &Module::motionInterferenceLeaves,
+            "Internal: static checker's physical leaves, component prefixes and exclusions.");
+        add_varargs_method("_extractionReferences", &Module::references,
+                           "Internal property reference preflight and replacement.");
+        add_varargs_method("_serviceDocumentOwner", &Module::serviceOwner,
+                           "Drain marshalled GUI tasks via an empty owner hop.");
+        add_varargs_method("_isGuiThread", &Module::guiThread,
+                           "True when this thread is the GUI thread.");
         initialize("This module is the Assembly module.");  // register with Python
+    }
+
+private:
+    Py::Object tessellateShape(const Py::Tuple& args)
+    {
+        return tessellateInterferenceShapePy(args);
+    }
+    Py::Object motionInterferenceLeaves(const Py::Tuple& args)
+    {
+        return motionInterferenceLeavesPy(args);
+    }
+    Py::Object prepareSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
+    {
+        return scanSelectedPairPy(args, keywords, true);
+    }
+    Py::Object runPrepared(const Py::Tuple& args)
+    {
+        return runPreparedInterferenceScanPy(args);
+    }
+    Py::Object motionSimulationFrameTimes(const Py::Tuple& args)
+    {
+        return motionSimulationFrameTimesPy(args);
+    }
+    Py::Object motionSimulationJointState(const Py::Tuple& args)
+    {
+        return motionSimulationJointStatePy(args);
+    }
+    Py::Object withMotionSweepState(const Py::Tuple& args)
+    {
+        return withMotionSweepStatePy(args);
+    }
+    Py::Object withMotionSweepMutation(const Py::Tuple& args)
+    {
+        return withMotionSweepStatePy(args, true);
+    }
+    Py::Object scanSelectedPair(const Py::Tuple& args, const Py::Dict& keywords)
+    {
+        return scanSelectedPairPy(args, keywords);
+    }
+    Py::Object newCancellation(const Py::Tuple& args)
+    {
+        return newInterferenceScanCancellationPy(args);
+    }
+    Py::Object cancelScan(const Py::Tuple& args)
+    {
+        return cancelInterferenceScanPy(args);
+    }
+    Py::Object references(const Py::Tuple& args)
+    {
+        auto result = extractionReferences(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
+    }
+    Py::Object serviceOwner(const Py::Tuple& args)
+    {
+        auto result = serviceDocumentOwner(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
+    }
+    Py::Object guiThread(const Py::Tuple& args)
+    {
+        auto result = isGuiThread(args.ptr());
+        if (!result) {
+            throw Py::Exception();
+        }
+        return Py::Object(result, true);
     }
 };
 

@@ -48,6 +48,8 @@
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/App/TopoShape.h>
+#include <Mod/Part/App/TopoShapePy.h>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/Spreadsheet/App/Cell.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
@@ -61,6 +63,8 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Compound.hxx>
+#include <BRep_Builder.hxx>
 
 namespace Assembly
 {
@@ -411,14 +415,63 @@ TopoDS_Shape resolveWorldShape(
         return {};
     }
 
-    // Resolve exclusively through the root/subobject path so nested
-    // App::Part / Link / AssemblyLink placements are included. No manual
-    // placement composition fallback.
-    return Part::Feature::getShape(
-        const_cast<App::DocumentObject*>(root),
-        Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
-        occurrenceSubName.c_str()
-    );
+    // getSubObject resolves the displayed occurrence directly, without Part's
+    // persistent root/subname shape cache (which can also write properties).
+    Base::PyGILStateLocker lock;
+    std::function<TopoDS_Shape(const std::string&)> extract;
+    extract = [&](const std::string& path) -> TopoDS_Shape {
+        PyObject* value = nullptr;
+        Base::Matrix4D world;
+        auto* owner = root->getSubObject(path.c_str(), &value, &world);
+        Py::Object owned(value ? value : Py_None, value != nullptr);
+        if (value && PyObject_TypeCheck(value, &Part::TopoShapePy::Type)) {
+            return static_cast<Part::TopoShapePy*>(value)->getTopoShapePtr()->getShape();
+        }
+        if (!owner) {
+            return {};
+        }
+        // A collapsed array element can resolve to a container with no Shape.
+        // Resolve children through the full occurrence path to retain each
+        // element's placement/scale, without consulting or writing Part's cache.
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        bool any = false;
+        for (const auto& sub : owner->getSubObjects()) {
+            if (sub.empty()) {
+                continue;
+            }
+            const auto childPath = path + sub;
+            auto* child = root->getSubObject(childPath.c_str());
+            const int visible = owner->isElementVisible(sub.substr(0, sub.find('.')).c_str());
+            if (!child || visible == 0 || (visible < 0 && !child->Visibility.getValue())) {
+                continue;
+            }
+            const auto shape = extract(childPath);
+            if (!shape.IsNull()) {
+                builder.Add(compound, shape);
+                any = true;
+            }
+        }
+        return any ? TopoDS_Shape(compound) : TopoDS_Shape();
+    };
+    return extract(occurrenceSubName);
+}
+
+Base::Matrix4D resolveWorldTransform(
+    const App::DocumentObject* root,
+    const std::string& subName
+)
+{
+    Base::Matrix4D world;
+    auto* owner = root->getSubObject(subName.c_str(), nullptr, &world);
+    if (!owner) {
+        throw Base::ValueError("Feedback occurrence is no longer available");
+    }
+    // getSubObject's matrix stops at the occurrence. Include the terminal
+    // link's private scale / LinkTransform and linked-definition placements.
+    owner->getLinkedObject(true, &world, false);
+    return world;
 }
 
 bool tryMakeLeaf(
@@ -478,7 +531,12 @@ bool tryMakeLeaf(
 
     TopoDS_Shape shape;
     try {
-        shape = resolveWorldShape(root, occurrence, subName);
+        const auto displayed = resolveWorldShape(root, occurrence, subName);
+        if (!displayed.IsNull()) {
+            // Copy topology AND geometry before releasing the GIL to a worker.
+            shape = BRepBuilderAPI_Copy(displayed.Located(TopLoc_Location()), true, false)
+                        .Shape().Located(displayed.Location());
+        }
     }
     catch (const Base::Exception& exc) {
         InterferenceLeaf leaf;
@@ -524,6 +582,7 @@ bool tryMakeLeaf(
     leaf.displayPath = display;
     leaf.sourceId = objectKey(resolveSourceDefinition(occurrence));
     leaf.worldShape = shape;
+    leaf.worldTransform = resolveWorldTransform(root, subName);
     try {
         leaf.worldBoundBox = shapeBoundBox(shape);
     }
@@ -1548,6 +1607,27 @@ bool resolveInterferenceComponentOccurrence(
     return false;
 }
 
+
+std::vector<InterferenceLeaf> reposeInterferenceLeaves(
+    const App::DocumentObject* root,
+    const std::vector<InterferenceLeaf>& ownedLeaves
+)
+{
+    auto leaves = ownedLeaves;
+    for (auto& leaf : leaves) {
+        const auto current = resolveWorldTransform(root, leaf.occurrenceSubName);
+        auto inverse = leaf.worldTransform;
+        inverse.inverse();
+        Part::TopoShape shape(leaf.worldShape);
+        shape.transformShape(current * inverse, false, true);
+        leaf.worldShape = shape.getShape();
+        leaf.worldTransform = current;
+        leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
+        leaf.cachedFaces.clear();
+        leaf.facesCached = false;
+    }
+    return leaves;
+}
 
 std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
     const App::DocumentObject* root,
@@ -2805,7 +2885,8 @@ void recordPairCounts(
         pairResult.excluded = false;
     }
 
-    if (pairResult.detection.kind != Part::InterferenceKind::Clear || !pairResult.faceHits.empty()
+    if (pairResult.distanceMeasured || pairResult.detection.kind != Part::InterferenceKind::Clear
+        || !pairResult.faceHits.empty()
         || hasExcludable
         || pairResult.detection.kind == Part::InterferenceKind::InvalidInput
         || pairResult.detection.kind == Part::InterferenceKind::Inconclusive
@@ -2874,6 +2955,8 @@ bool evaluateLeafPairWithClearanceRules(
         pairResult.leafIndexA = indexA;
         pairResult.leafIndexB = indexB;
         pairResult.detection = solid;
+        pairResult.solidDetection = solid;
+        pairResult.distanceMeasured = options.measureSelectedPairDistances;
         if (solid.kind == Part::InterferenceKind::Penetration
             && !appendPenetrationRepresentativeFaceHit(
                 pairResult,
@@ -2943,6 +3026,8 @@ bool evaluateLeafPairWithClearanceRules(
     pairResult.leafIndexA = indexA;
     pairResult.leafIndexB = indexB;
     pairResult.detection = solid;
+    pairResult.solidDetection = solid;
+    pairResult.distanceMeasured = options.measureSelectedPairDistances;
 
     const std::size_t cap = options.maxFacePairCandidates > 0 ? options.maxFacePairCandidates
                                                               : candidates.size();
@@ -3355,7 +3440,7 @@ InterferenceScanResult runInterferenceScanBetweenLeafSets(
             }
             Base::BoundBox3d boxB = result.leaves[idx].worldBoundBox;
             enlargeBoundBox(boxB, margin);
-            if (boxesOverlap(boxA, boxB)) {
+            if (options.measureSelectedPairDistances || boxesOverlap(boxA, boxB)) {
                 candidates.emplace_back(i, idx);
             }
         }

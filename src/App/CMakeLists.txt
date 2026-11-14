@@ -173,6 +173,7 @@ SET(Document_CPP_SRCS
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    ScopedDocumentMutation.cpp
     DocumentPresentationBoundary.cpp
     DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
@@ -264,6 +265,7 @@ SET(Document_HPP_SRCS
     CollaborativeOperationRegistry.h
     CollaborativeSetPropertyOperation.h
     Document.h
+    ScopedDocumentMutation.h
     DocumentFileWriter.h
     DocumentCollaborationService.h
     DocumentCommand.h
@@ -383,6 +385,7 @@ SET(FreeCADApp_CPP_SRCS
     ${Document_CPP_SRCS}
     ${Properties_CPP_SRCS}
     Application.cpp
+    MainThreadSignal.cpp
     ApplicationDirectories.cpp
     ApplicationDirectoriesPyImp.cpp
     ApplicationPy.cpp
@@ -440,7 +443,6 @@ SET(FreeCADApp_HPP_SRCS
     Services.h
     StringHasher.h
     MainThreadSignal.h
-    MainThreadSignal.cpp
 )
 
 # auto-generate resource file with all available translations
