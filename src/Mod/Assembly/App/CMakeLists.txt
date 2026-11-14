@@ -63,6 +63,8 @@ SET(Assembly_SRCS
     ExtractReferences.h
     AssemblyObject.cpp
     AssemblyObject.h
+    MotionSimulationCoordinates.cpp
+    MotionSimulationCoordinates.h
     AssemblyLink.cpp
     AssemblyLink.h
     AssemblyUtils.cpp
@@ -75,6 +77,8 @@ SET(Assembly_SRCS
     ReviewNote.h
     InterferenceScan.cpp
     InterferenceScan.h
+    InterferenceScanPy.cpp
+    InterferenceScanPy.h
     InterferenceScanSession.cpp
     InterferenceScanSession.h
 

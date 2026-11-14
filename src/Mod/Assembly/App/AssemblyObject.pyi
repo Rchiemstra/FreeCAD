@@ -43,16 +43,20 @@ class AssemblyObject(Part):
         ...
 
     @constmethod
-    def generateSimulation(self, simulationObject: DocumentObject, /) -> int:
+    def generateSimulation(self, simulationObject: DocumentObject, checkpoint=None, /) -> int:
         """
         Generate the simulation.
 
         Args:
         simulationObject: The simulation Object.
+        checkpoint: Optional callable, called on this thread every eight output
+        frames. Return false to stop generation. Call without a motion mutation
+        admission if the callback delivers GUI events.
 
         Returns:
         0 in case of success, otherwise the following codes in this order of
         priority:
+        -8 if interrupted by checkpoint.
         -6 if no parts are fixed.
         -4 if over-constrained,
         -3 if conflicting constraints,

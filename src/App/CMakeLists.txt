@@ -173,6 +173,7 @@ SET(Document_CPP_SRCS
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    ScopedDocumentMutation.cpp
     DocumentPresentationBoundary.cpp
     DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
@@ -264,6 +265,7 @@ SET(Document_HPP_SRCS
     CollaborativeOperationRegistry.h
     CollaborativeSetPropertyOperation.h
     Document.h
+    ScopedDocumentMutation.h
     DocumentFileWriter.h
     DocumentCollaborationService.h
     DocumentCommand.h

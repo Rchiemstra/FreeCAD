@@ -28,6 +28,7 @@ from AssemblyTests.TestComponentPattern import TestComponentPattern, TestCompone
 
 from AssemblyTests.TestExtractComponent import TestExtractComponent, TestExtractComponentGui
 from AssemblyTests.TestCore import TestCore
+from AssemblyTests.TestMotionInterference import TestMotionInterference, TestMotionSweep
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
 from AssemblyTests.TestCommandCreateView import TestCommandCreateView
 from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
@@ -43,6 +44,8 @@ from AssemblyTests.TestReviewNotesIssues import (
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
+True if TestMotionInterference else False
+True if TestMotionSweep else False
 True if TestCommandInsertLink else False
 True if TestCommandCreateView else False
 True if TestCrossBodyDatumStaleness else False

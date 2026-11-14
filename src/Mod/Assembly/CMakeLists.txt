@@ -33,6 +33,7 @@ set(Assembly_Scripts
     CommandCreateJoint.py
     CommandCreateView.py
     CommandCreateSimulation.py
+    CommandMotionInterference.py
     CommandCreateSnapshot.py
     CommandExportASMT.py
     CommandReviewNote.py
@@ -63,6 +64,11 @@ INSTALL(
 SET(AssemblyScripts_SRCS
     Assembly/__init__.py
     Assembly/api.py
+    Assembly/DragFeedback.py
+    Assembly/MotionAllPairs.py
+    Assembly/MotionCoverage.py
+    Assembly/MotionInterference.py
+    Assembly/MotionJointGrid.py
 )
 
 
@@ -70,6 +76,9 @@ SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestIsolateSelectionGui.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestMotionInterference.py
+    AssemblyTests/TestMotionInterferenceGui.py
+    AssemblyTests/TestDragFeedbackGui.py
     AssemblyTests/TestExtractComponent.py
     AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestJointEditorSwitch.py
