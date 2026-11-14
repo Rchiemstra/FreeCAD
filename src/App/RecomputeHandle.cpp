@@ -6,6 +6,7 @@
 #include "DocumentExecutionLane.h"
 #include "DocumentObserver.h"
 #include "DocumentWouldBlock.h"
+#include "private/RecomputeScheduling.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -153,18 +154,41 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
         DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
     }
 
+    const bool optimized = Internal::useOptimizedRecomputeScheduling();
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
         while (true) {
             // Pump coordinator work on the owner thread only inside wait().
             static_cast<void>(owner->recomputeCoordinator().poll(_id));
-            auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
-            if (!coordinatorSnapshot) {
-                return closedDocumentSnapshot();
+            if (optimized) {
+                const auto terminal = owner->recomputeCoordinator().terminalForWait(_id);
+                if (!terminal) {
+                    return closedDocumentSnapshot();
+                }
+                const auto* lane = owner->executionLane();
+                const auto publishedTerminal = lane ? lane->recomputeTerminalForWait(_id) : terminal;
+                if (*terminal || !publishedTerminal || *publishedTerminal
+                    || std::chrono::steady_clock::now() >= deadline) {
+                    const auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
+                    if (!coordinatorSnapshot) {
+                        return closedDocumentSnapshot();
+                    }
+                    finalizeIfTerminal(*owner, *coordinatorSnapshot);
+                    const auto snapshot = status();
+                    if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
+                        return snapshot;
+                    }
+                }
             }
-            finalizeIfTerminal(*owner, *coordinatorSnapshot);
-            const auto snapshot = status();
-            if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
-                return snapshot;
+            else {
+                auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
+                if (!coordinatorSnapshot) {
+                    return closedDocumentSnapshot();
+                }
+                finalizeIfTerminal(*owner, *coordinatorSnapshot);
+                const auto snapshot = status();
+                if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
+                    return snapshot;
+                }
             }
             if (QCoreApplication::instance()) {
                 QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);

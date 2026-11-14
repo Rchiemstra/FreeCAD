@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -899,4 +900,434 @@ TEST_F(RecomputeHandleTest, nativeErrorSnapshotSurvivesNestedRecomputeAndReplay)
         EXPECT_STREQ(_document->getErrorDescription(error), diagnostic.c_str());
         EXPECT_EQ(error->getStatus(), status);
     }
+}
+
+namespace
+{
+
+// Document-visible results of one recompute. The preference value is not part
+// of the text: off and on must produce the same string, so a scheduler that
+// changes order, readiness, errors, cancellation, or undo/redo fails the test.
+class SchedulingPreferenceGuard
+{
+public:
+    explicit SchedulingPreferenceGuard(const bool optimized)
+        : _group(App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Document"))
+        , _previous(_group->GetBool("OptimizeRecomputeScheduling", false))
+    {
+        _group->SetBool("OptimizeRecomputeScheduling", optimized);
+    }
+
+    ~SchedulingPreferenceGuard()
+    {
+        _group->SetBool("OptimizeRecomputeScheduling", _previous);
+    }
+
+    SchedulingPreferenceGuard(const SchedulingPreferenceGuard&) = delete;
+    SchedulingPreferenceGuard& operator=(const SchedulingPreferenceGuard&) = delete;
+
+private:
+    ParameterGrp::handle _group;
+    bool _previous;
+};
+
+const char* textOrEmpty(const char* value)
+{
+    return value ? value : "";
+}
+
+std::string objectObservation(const App::DocumentObject& object)
+{
+    std::ostringstream out;
+    out << textOrEmpty(object.getNameInDocument())
+        << " touched=" << object.isTouched()
+        << " valid=" << object.isValid()
+        << " error=" << object.isError()
+        << " must=" << object.mustRecompute()
+        << " label=" << textOrEmpty(object.Label.getValue());
+    if (const auto* feature = dynamic_cast<const App::FeatureTest*>(&object)) {
+        out << " exec=" << feature->ExecCount.getValue()
+            << " result=" << textOrEmpty(feature->ExecResult.getValue());
+    }
+    out << " diag=" << textOrEmpty(object.getDocument()->getErrorDescription(&object));
+    std::vector<std::string> touched(object.getTouchedProperties().begin(),
+                                     object.getTouchedProperties().end());
+    std::sort(touched.begin(), touched.end());
+    out << " props=";
+    for (const auto& name : touched) {
+        out << name << ',';
+    }
+    return out.str();
+}
+
+std::string documentObservation(const App::Document& document)
+{
+    std::ostringstream out;
+    out << "undos=" << document.getAvailableUndos()
+        << " redos=" << document.getAvailableRedos() << '\n';
+    auto undoNames = document.getAvailableUndoNames();
+    auto redoNames = document.getAvailableRedoNames();
+    out << "undoNames=";
+    for (const auto& name : undoNames) {
+        out << name << ',';
+    }
+    out << "\nredoNames=";
+    for (const auto& name : redoNames) {
+        out << name << ',';
+    }
+    out << '\n';
+    auto objects = document.getObjects();
+    std::sort(objects.begin(), objects.end(), [](const App::DocumentObject* left,
+                                                 const App::DocumentObject* right) {
+        return std::string(textOrEmpty(left->getNameInDocument()))
+            < std::string(textOrEmpty(right->getNameInDocument()));
+    });
+    for (const auto* object : objects) {
+        if (object && object->getNameInDocument()) {
+            out << objectObservation(*object) << '\n';
+        }
+    }
+    return out.str();
+}
+
+struct ObservedRecompute
+{
+    std::vector<std::string> signals;
+    std::vector<::fastsignals::connection> connections;
+
+    ~ObservedRecompute()
+    {
+        for (auto& connection : connections) {
+            connection.disconnect();
+        }
+    }
+
+    void watch(App::Document& document)
+    {
+        connections.push_back(document.signalBeforeRecompute.connect(
+            [this](const App::Document&) {
+                signals.emplace_back("beforeRecompute");
+            }));
+        connections.push_back(document.signalChangedObject.connect(
+            [this](const App::DocumentObject& object, const App::Property& property) {
+                signals.emplace_back(std::string("changed ")
+                                      + textOrEmpty(object.getNameInDocument()) + ' '
+                                      + textOrEmpty(property.getName()));
+            }));
+        connections.push_back(document.signalTouchedObject.connect(
+            [this](const App::DocumentObject& object) {
+                signals.emplace_back(std::string("touched ")
+                                      + textOrEmpty(object.getNameInDocument()));
+            }));
+        connections.push_back(document.signalRecomputedObject.connect(
+            [this](const App::DocumentObject& object) {
+                signals.emplace_back(std::string("recomputedObject ")
+                                      + textOrEmpty(object.getNameInDocument()));
+            }));
+        connections.push_back(document.signalRecomputed.connect(
+            [this](const App::Document&, const std::vector<App::DocumentObject*>& objects) {
+                std::string line = "recomputed";
+                for (const auto* object : objects) {
+                    line += ' ';
+                    line += object ? textOrEmpty(object->getNameInDocument()) : "?";
+                }
+                signals.emplace_back(std::move(line));
+            }));
+        connections.push_back(document.signalOpenTransaction.connect(
+            [this](const App::Document&, std::string name) {
+                signals.emplace_back("openTransaction " + name);
+            }));
+        connections.push_back(document.signalCommitTransaction.connect(
+            [this](const App::Document&) {
+                signals.emplace_back("commitTransaction");
+            }));
+        connections.push_back(document.signalAbortTransaction.connect(
+            [this](const App::Document&) {
+                signals.emplace_back("abortTransaction");
+            }));
+    }
+
+    std::string text() const
+    {
+        std::ostringstream out;
+        for (const auto& signal : signals) {
+            out << signal << '\n';
+        }
+        return out.str();
+    }
+};
+
+struct CloseDocument
+{
+    std::string name;
+    ~CloseDocument()
+    {
+        if (!name.empty()) {
+            App::GetApplication().closeDocument(name.c_str());
+        }
+    }
+};
+
+std::string undoRedoTrail(App::Document& document)
+{
+    std::ostringstream out;
+    out << "before\n" << documentObservation(document);
+    for (int step = 0; step < 32 && document.getAvailableUndos() > 0; ++step) {
+        out << "undo " << document.undo() << '\n' << documentObservation(document);
+    }
+    for (int step = 0; step < 32 && document.getAvailableRedos() > 0; ++step) {
+        out << "redo " << document.redo() << '\n' << documentObservation(document);
+    }
+    return out.str();
+}
+
+std::string finishObservation(ObservedRecompute& observed, std::ostringstream& out)
+{
+    const std::string text = out.str();
+    for (auto& connection : observed.connections) {
+        connection.disconnect();
+    }
+    observed.connections.clear();
+    return text;
+}
+
+std::string observeSuccessfulRecompute()
+{
+    CloseDocument guard;
+    guard.name = App::GetApplication().getUniqueDocumentName("schedEquiv");
+    auto* document = App::GetApplication().newDocument(
+        guard.name.c_str(), "scheduling equivalence");
+    if (!document) {
+        throw std::runtime_error("could not create scheduling equivalence document");
+    }
+    document->setMaxUndoStackSize(20);
+
+    // Names are valid FreeCAD identifiers. A hyphen would be rewritten and the
+    // recorded signal text would no longer match the name passed to addObject.
+    auto* readyA = document->addObject<App::FeatureTest>("a_ready");
+    auto* readyM = document->addObject<App::FeatureTest>("m_ready");
+    auto* parent = document->addObject<App::FeatureTest>("b_parent");
+    auto* child = document->addObject<App::FeatureTest>("c_child");
+    child->Source1.setValue(parent);
+    for (auto* object : {readyA, readyM, parent, child}) {
+        object->Label.setValue("before");
+    }
+    const int settled = document->recompute();
+    document->clearUndos();
+    document->openTransaction("user edit before recompute");
+    readyA->Label.setValue("user-label");
+    document->commitTransaction();
+    readyA->touch();
+    readyM->touch();
+    parent->touch();
+    child->touch();
+
+    ObservedRecompute observed;
+    observed.watch(*document);
+    bool hasError = true;
+    const int recomputed = document->recompute({}, false, &hasError);
+    const std::string trail = undoRedoTrail(*document);
+    std::ostringstream out;
+    out << "settled=" << settled << " returned=" << recomputed
+        << " hasError=" << hasError << '\n';
+    out << observed.text() << trail;
+    return finishObservation(observed, out);
+}
+
+std::string observeFailedRecompute()
+{
+    CloseDocument guard;
+    guard.name = App::GetApplication().getUniqueDocumentName("schedFail");
+    auto* document = App::GetApplication().newDocument(
+        guard.name.c_str(), "scheduling failure equivalence");
+    if (!document) {
+        throw std::runtime_error("could not create scheduling failure document");
+    }
+    document->setMaxUndoStackSize(20);
+    auto* okA = document->addObject<App::FeatureTest>("a_ok");
+    auto* okM = document->addObject<App::FeatureTest>("m_ok");
+    auto* failed = document->addObject<App::FeatureTestException>("f_fail");
+    auto* child = document->addObject<App::FeatureTest>("z_child");
+    auto* grand = document->addObject<App::FeatureTest>("d_grand");
+    child->Source1.setValue(failed);
+    grand->Source1.setValue(child);
+    for (App::DocumentObject* object : {static_cast<App::DocumentObject*>(okA),
+                                        static_cast<App::DocumentObject*>(okM),
+                                        static_cast<App::DocumentObject*>(failed),
+                                        static_cast<App::DocumentObject*>(child),
+                                        static_cast<App::DocumentObject*>(grand)}) {
+        object->touch();
+    }
+    document->clearUndos();
+
+    ObservedRecompute observed;
+    observed.watch(*document);
+    bool hasError = false;
+    const int recomputed = document->recompute({}, false, &hasError);
+    std::ostringstream out;
+    out << "returned=" << recomputed << " hasError=" << hasError << '\n';
+    out << observed.text() << documentObservation(*document);
+    return finishObservation(observed, out);
+}
+
+std::string observeCancelledRecompute()
+{
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    struct ReleaseBlocker
+    {
+        ~ReleaseBlocker()
+        {
+            App::FeatureTestAsyncBlocker::releaseBlocker();
+        }
+    } release;
+    static_cast<void>(release);
+
+    CloseDocument guard;
+    guard.name = App::GetApplication().getUniqueDocumentName("schedCancel");
+    auto* document = App::GetApplication().newDocument(
+        guard.name.c_str(), "scheduling cancel equivalence");
+    if (!document) {
+        throw std::runtime_error("could not create scheduling cancel document");
+    }
+    document->setMaxUndoStackSize(20);
+    auto* early = document->addObject<App::FeatureTest>("a_early");
+    auto* blocker = document->addObject<App::FeatureTestAsyncBlocker>("m_block");
+    auto* after = document->addObject<App::FeatureTest>("z_after");
+    after->Source1.setValue(blocker);
+    early->touch();
+    blocker->touch();
+    after->touch();
+    document->clearUndos();
+
+    ObservedRecompute observed;
+    observed.watch(*document);
+    auto handle = document->recomputeAsync();
+    std::exception_ptr threadError;
+    std::thread canceller([&] {
+        try {
+            if (!App::FeatureTestAsyncBlocker::waitUntilStarted(15s)) {
+                throw std::runtime_error("blocker did not start");
+            }
+            if (!handle->cancel("scheduling equivalence cancel")) {
+                throw std::runtime_error("cancel was rejected");
+            }
+        }
+        catch (...) {
+            threadError = std::current_exception();
+        }
+        App::FeatureTestAsyncBlocker::releaseBlocker();
+    });
+    struct JoinCanceller
+    {
+        std::thread& thread;
+        ~JoinCanceller()
+        {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+    } join {canceller};
+
+    const auto snapshot = handle->wait(30s);
+    join.thread.join();
+    if (threadError) {
+        std::rethrow_exception(threadError);
+    }
+
+    std::ostringstream out;
+    out << "state=" << App::documentRecomputeStateName(snapshot.state)
+        << " diag=" << snapshot.diagnostic
+        << " terminal=" << snapshot.terminal() << '\n';
+    for (const auto& feature : snapshot.features) {
+        out << "feature " << feature.featureId << ' '
+            << App::documentRecomputeFeatureStateName(feature.state)
+            << " executed=" << feature.executed
+            << " diag=" << feature.diagnostic << '\n';
+    }
+    out << observed.text() << documentObservation(*document);
+    return finishObservation(observed, out);
+}
+
+}  // namespace
+
+TEST_F(RecomputeHandleTest, optimizedSchedulingMatchesLegacySignalsTouchedStateAndUndo)
+{
+    std::string legacy;
+    {
+        SchedulingPreferenceGuard preference(false);
+        legacy = observeSuccessfulRecompute();
+    }
+    std::string optimized;
+    {
+        SchedulingPreferenceGuard preference(true);
+        optimized = observeSuccessfulRecompute();
+    }
+
+    const auto readyA = legacy.find("recomputedObject a_ready");
+    const auto readyM = legacy.find("recomputedObject m_ready");
+    const auto parent = legacy.find("recomputedObject b_parent");
+    const auto child = legacy.find("recomputedObject c_child");
+    EXPECT_NE(readyA, std::string::npos) << legacy;
+    EXPECT_NE(readyM, std::string::npos) << legacy;
+    EXPECT_LT(readyA, readyM) << legacy;
+    EXPECT_NE(parent, std::string::npos) << legacy;
+    EXPECT_NE(child, std::string::npos) << legacy;
+    EXPECT_LT(parent, child) << legacy;
+    EXPECT_LT(parent, readyM) << legacy;
+    EXPECT_LT(readyA, parent) << legacy;
+    EXPECT_NE(legacy.find("label=user-label"), std::string::npos);
+    EXPECT_NE(legacy.find("\nundo 1\n"), std::string::npos);
+    EXPECT_EQ(legacy, optimized);
+}
+
+TEST_F(RecomputeHandleTest, optimizedSchedulingMatchesLegacyFailureTouchAndSignals)
+{
+    std::string legacy;
+    {
+        SchedulingPreferenceGuard preference(false);
+        legacy = observeFailedRecompute();
+    }
+    std::string optimized;
+    {
+        SchedulingPreferenceGuard preference(true);
+        optimized = observeFailedRecompute();
+    }
+
+    const auto okA = legacy.find("recomputedObject a_ok");
+    const auto okM = legacy.find("recomputedObject m_ok");
+    EXPECT_NE(okA, std::string::npos) << legacy;
+    EXPECT_NE(okM, std::string::npos) << legacy;
+    EXPECT_LT(okA, okM) << legacy;
+    EXPECT_EQ(legacy.find("recomputedObject z_child"), std::string::npos) << legacy;
+    EXPECT_EQ(legacy.find("recomputedObject d_grand"), std::string::npos) << legacy;
+    EXPECT_EQ(legacy.find("recomputedObject f_fail"), std::string::npos) << legacy;
+    const auto failed = legacy.find("\nf_fail touched=");
+    ASSERT_NE(failed, std::string::npos);
+    const auto failedLine = legacy.substr(failed + 1, legacy.find('\n', failed + 1) - (failed + 1));
+    EXPECT_NE(failedLine.find("error=1"), std::string::npos);
+    EXPECT_NE(failedLine.find("exec=0"), std::string::npos);
+    EXPECT_NE(legacy.find("hasError=1"), std::string::npos);
+    EXPECT_EQ(legacy, optimized);
+}
+
+TEST_F(RecomputeHandleTest, optimizedSchedulingMatchesLegacyCancelTouchAndSignals)
+{
+    std::string legacy;
+    {
+        SchedulingPreferenceGuard preference(false);
+        legacy = observeCancelledRecompute();
+    }
+    std::string optimized;
+    {
+        SchedulingPreferenceGuard preference(true);
+        optimized = observeCancelledRecompute();
+    }
+
+    EXPECT_NE(legacy.find("feature a_early committed"), std::string::npos) << legacy;
+    EXPECT_NE(legacy.find("feature z_after cancelled"), std::string::npos) << legacy;
+    EXPECT_NE(legacy.find("recomputedObject a_early"), std::string::npos) << legacy;
+    EXPECT_EQ(legacy.find("recomputedObject z_after"), std::string::npos) << legacy;
+    EXPECT_NE(legacy.find("scheduling equivalence cancel"), std::string::npos);
+    EXPECT_EQ(legacy, optimized);
 }
