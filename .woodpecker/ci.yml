@@ -77,8 +77,14 @@
 #   * A step whose `depends_on` target was filtered out by a `when` condition
 #     is itself SKIPPED (this Woodpecker version does NOT support the
 #     `{name: ..., optional: true}` object form in depends_on -- only strings).
-#   * A failed dependency skips its dependents (desired: failures gate
-#     downstream work).
+#   * Woodpecker runs the DAG in levels by dependency depth: a step starts only
+#     when every step one level up has finished, not just its own
+#     dependencies. Chaining two long steps adds their times; give them the
+#     same dependencies to run them side by side.
+#   * Once any step fails, every step that has not started yet is skipped,
+#     whether it depends on the failed step or not, unless its `when.status`
+#     includes failure. A step with that status also runs after its own
+#     dependency failed or was skipped.
 #
 # ---------------------------------------------------------------------------
 # MCP core/e2e verdict (the green-but-lying defence):
@@ -286,6 +292,10 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-debug-build.sh
 
+  # Unit, integration and e2e each need only the debug build, so they start
+  # together beside freecad-mcp-live-gui. A failure in one of them, or in the
+  # live GUI step, no longer skips the others. Each step keeps its files in its
+  # own container's /tmp and home; the shared workspace is only read.
   - name: freecad-unit-tests
     image: *freecad_ci_deps_image
     pull: true
@@ -297,7 +307,7 @@ steps:
   - name: freecad-integration-tests
     image: *freecad_ci_deps_image
     pull: true
-    depends_on: [freecad-unit-tests]
+    depends_on: [freecad-debug-build]
     commands:
       - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-integration-tests.sh
@@ -305,7 +315,7 @@ steps:
   - name: freecad-e2e
     image: *freecad_ci_deps_image
     pull: true
-    depends_on: [freecad-integration-tests]
+    depends_on: [freecad-debug-build]
     commands:
       - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-e2e.sh
@@ -313,7 +323,7 @@ steps:
   - name: freecad-release-linux
     image: *freecad_ci_deps_image
     pull: true
-    depends_on: [freecad-e2e]
+    depends_on: [freecad-unit-tests, freecad-integration-tests, freecad-e2e]
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     when:
@@ -385,11 +395,20 @@ steps:
       - sh ci/woodpecker/freecad-mcp-live-gui.sh
 
   # core: four sequential shards (collab → sketch → part → rest). One ~2.5 h
-  # MARKER=core step used to stay red until every native test finished. Later
-  # shards depend_on earlier ones, so the first failing group goes red and
-  # skips the rest. e2e stays a sibling of collab (does not wait for core).
+  # MARKER=core step used to stay red until every native test finished. Each
+  # shard reports its own group, so the first failing group shows which one.
+  # e2e stays a sibling of collab (does not wait for core).
   # CORE_SHARD selects files; pytest marker stays `core` (JUnit verdict files
   # still named ci_rc_core.txt). Partition: ci/woodpecker/freecad-mcp-core-shards.py
+  #
+  # Collab, the later shards and e2e use `when.status: [success, failure]`:
+  # without it, a failure in any step of the level before (the FreeCAD unit,
+  # integration and e2e steps, or live-gui) would skip them, although they do
+  # not depend on those steps. With it they also run after their own
+  # dependencies failed. If images-ready/debug-build never produced FreeCADCmd,
+  # freecad-mcp-freecad-tests.sh skips with exit 0 (no 127). If the image gate
+  # failed, a missing keyed image fails at pull on an already red pipeline. See
+  # ci/woodpecker/ci-images.md.
   - name: freecad-mcp-core-collab
     image: *freecad_ci_mcp_image
     pull: true
@@ -400,18 +419,15 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
+        status: [success, failure]
       - event: pull_request
+        status: [success, failure]
     commands:
-      - cat .ci-images/identity.txt
+      - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
-  # Sketch/part/rest depend only on the previous core shard. Woodpecker 3.16
-  # still skips not-yet-started steps once any sibling (e2e) has failed unless
-  # `when.status` includes failure. Collab failure still skips these via
-  # depends_on. Do not add e2e to this chain. If images-ready/debug-build never
-  # produced FreeCADCmd, freecad-mcp-freecad-tests.sh skips with exit 0 (no 127).
-  # If the image gate failed, a missing keyed image fails at pull on an already
-  # red pipeline. See ci/woodpecker/ci-images.md.
+  # Sketch/part/rest depend only on the previous core shard, so they keep one
+  # shard running at a time. Do not add e2e to this chain.
   - name: freecad-mcp-core-sketch
     image: *freecad_ci_mcp_image
     pull: true
@@ -471,7 +487,9 @@ steps:
       MARKER: e2e
     when:
       - event: [tag, manual]
+        status: [success, failure]
       - event: pull_request
+        status: [success, failure]
     commands:
-      - cat .ci-images/identity.txt
+      - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
