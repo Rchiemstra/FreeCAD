@@ -65,6 +65,8 @@
 #include "PatternInstanceControls.h"
 #include "PatternParametersWidget.h"
 #include "TaskLinkArrayParameters.h"
+#include "PatternPathParametersWidget.h"
+#include "PatternCircularParametersWidget.h"
 #include "ui_TaskLinkArrayParameters.h"
 #include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
@@ -242,8 +244,15 @@ TaskLinkArrayParameters::TaskLinkArrayParameters(
             &path->Spacing,
             &path->StartOffset,
             &path->EndOffset,
+            &path->CyclicOffset,
             &path->ReversePath,
-            &path->Align
+            &path->Align,
+            &path->TangentAxis,
+            &path->FlipTangentAxis,
+            &path->VerticalAxis,
+            &path->FlipVerticalAxis,
+            &path->OriginPointIndex,
+            &path->RelativeToFirst
         );
         setupInstanceControls(viewer);
         return;
@@ -545,7 +554,8 @@ void TaskLinkArrayParameters::setInstanceSuppressed(int index, bool suppress)
 
 void TaskLinkArrayParameters::fillDirectionCombo(
     Gui::ComboLinks& combo,
-    Part::LinearPatternDirection direction
+    Part::LinearPatternDirection direction,
+    bool allowEmpty
 )
 {
     combo.clear();
@@ -553,6 +563,16 @@ void TaskLinkArrayParameters::fillDirectionCombo(
     App::PropertyLinkSub defaultAxis;
     const bool isLinear = array->isDerivedFrom<Part::LinkArrayLinear>();
     const bool isSecondDirection = direction == Part::LinearPatternDirection::Second;
+
+    // first so it defaults to this if nothing is selected
+    if (allowEmpty) {
+        combo.addLink(
+            nullptr,
+            std::string(),
+            tr("No reference"),
+            PatternParametersWidget::NoDirectionUserData
+        );
+    }
 
     if (isLinear && !isSecondDirection) {
         combo.addLink(defaultAxis, tr("Object X-axis"), PatternParametersWidget::DefaultDirectionUserData);
@@ -816,8 +836,8 @@ void TaskLinkArrayParameters::onSelectionChanged(const Gui::SelectionChanges& ms
         referenceKind = "polar pattern axis";
     }
     else if (auto* circular = freecad_cast<Part::LinkArrayCircular*>(array)) {
-        Base::Console().log("index: {}\n", getActiveDirectionWidget()->getAxisIndex());
-        if (getActiveDirectionWidget()->getAxisIndex() == 1) {
+        if (getActiveDirectionWidget()->getSelectionIndex()
+            == PartGui::PatternCircularParametersWidget::BINORMAL_AXIS_INDEX) {
             reference = &circular->BinormalAxis;
             referenceKind = "circular pattern tangent axis";
         }
@@ -827,8 +847,22 @@ void TaskLinkArrayParameters::onSelectionChanged(const Gui::SelectionChanges& ms
         }
     }
     else if (auto* path = freecad_cast<Part::LinkArrayPath*>(array)) {
-        reference = &path->Path;
-        referenceKind = "path pattern edges";
+        if (getActiveDirectionWidget()->getSelectionIndex()
+            == PartGui::PatternPathParametersWidget::VERTICAL_AXIS_INDEX) {
+            reference = &path->Path;
+            referenceKind = "path pattern vertical axis";
+        }
+        else if (
+            getActiveDirectionWidget()->getSelectionIndex()
+            == PartGui::PatternPathParametersWidget::TANGENT_AXIS_INDEX
+        ) {
+            reference = &path->Path;
+            referenceKind = "path pattern tangent axis";
+        }
+        else {
+            reference = &path->Path;
+            referenceKind = "path pattern edges";
+        }
     }
     else if (auto* point = freecad_cast<Part::LinkArrayPoint*>(array)) {
         reference = &point->PointObject;

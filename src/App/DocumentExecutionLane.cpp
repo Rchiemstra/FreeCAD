@@ -1113,13 +1113,13 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                 }
             }
 
-            // Open a real undo transaction (not only a booking) so property-editor
-            // edits show up in UndoNames. Name it "Edit"; operationId is an internal
-            // token and must not be the Undo menu label (M2). Transaction control
-            // goes through the commit coordinator, the sole owner of the private
-            // native controls.
+            // The submitted edit owns its transaction, including its undo label.
+            // operationId remains an internal token, not an Undo menu label.
+            // Transaction control goes through the commit coordinator.
             auto& collaboration = _document.collaborationService();
-            const int transactionId = collaboration.openMutationTransaction("Edit", 0);
+            const auto& edit = *command.command.edit;
+            const int transactionId = collaboration.openMutationTransaction(
+                edit.transactionLabel.empty() ? "Edit" : edit.transactionLabel, 0);
             if (transactionId == 0) {
                 return false;
             }
@@ -1163,6 +1163,11 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                 std::istringstream stream(propertyValue.copiedValue);
                 copied->restoreFromStream(stream);
                 property->Paste(*copied);
+            }
+            // Automatic updates belong to the admitted mutation, so closing or
+            // destroying its GUI editor cannot lose the recompute or split undo.
+            if (edit.recomputeAfterEdit && _document.isTouched()) {
+                static_cast<void>(_document.recompute());
             }
             if (!collaboration.commitApplicationTransaction()) {
                 return false;

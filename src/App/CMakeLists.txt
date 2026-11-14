@@ -383,6 +383,7 @@ SET(FreeCADApp_CPP_SRCS
     ${Document_CPP_SRCS}
     ${Properties_CPP_SRCS}
     Application.cpp
+    MainThreadSignal.cpp
     ApplicationDirectories.cpp
     ApplicationDirectoriesPyImp.cpp
     ApplicationPy.cpp
@@ -440,7 +441,6 @@ SET(FreeCADApp_HPP_SRCS
     Services.h
     StringHasher.h
     MainThreadSignal.h
-    MainThreadSignal.cpp
 )
 
 # auto-generate resource file with all available translations

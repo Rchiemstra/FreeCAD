@@ -231,6 +231,7 @@ public:
     QString propertyName() const;
     void setPropertyName(const QString& name, const QString& realName = QString());
     void setPropertyValue(const QString&);
+    void setEditTransactionName(std::string name);
     void setNameToolTipOverride(const QString& tooltip);
     static bool dataRequiresOwnerRead(int column, int role);
     virtual QVariant data(int column, int role) const;
@@ -264,6 +265,7 @@ private:
     QString asString(const Py::Object&) const;
     QString asSequence(const Py::Object&) const;
     QString asMapping(const Py::Object&) const;
+    std::string editTransactionName;
 
 protected:
     QString propName;
