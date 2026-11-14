@@ -169,7 +169,10 @@ class KeyTests(ShellFixture):
                                 env={**os.environ, "TIER": "arch",
                                      "PATH": f"{bindir}:{os.environ['PATH']}"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("PyYAML", (self.root / "python-calls").read_text())
+        calls = (self.root / "python-calls").read_text()
+        self.assertIn("PyYAML", calls)
+        self.assertIn("pytest-xdist", calls)
+        self.assertIn("-n auto", calls)
 
     def test_refresh_and_host_migration_documented(self):
         docs = ROOT / "ci/woodpecker/ci-images.md"
