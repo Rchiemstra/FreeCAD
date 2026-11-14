@@ -17,6 +17,7 @@
 #include <QScopeGuard>
 #include <QStyle>
 #include <QStyleOption>
+#include <QWindow>
 #include <QtTest/QTest>
 
 #include <Gui/DockWidget.h>
@@ -207,7 +208,9 @@ TEST_P(DockWidgetTest, repeatedFloatingPreservesVisibilityAndDocking)
 
     for (int cycle = 0; cycle < 3; ++cycle) {
         dock.setFloating(true);
-        EXPECT_EQ(dock.windowType(), floatingType());
+        EXPECT_EQ(dock.windowType(), Qt::Tool);
+        ASSERT_NE(dock.windowHandle(), nullptr);
+        EXPECT_EQ(dock.windowHandle()->type(), floatingType());
         EXPECT_TRUE(dock.isFloating());
         EXPECT_TRUE(dock.isVisible());
         EXPECT_EQ(dock.features(), features);
@@ -236,7 +239,9 @@ TEST_P(DockWidgetTest, hiddenFloatingDockStaysHiddenUntilShown)
 
     dock.show();
     EXPECT_TRUE(dock.isVisible());
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.geometry(), expected);
     EXPECT_EQ(dock.parentWidget(), &window);
 }
@@ -256,7 +261,9 @@ TEST_P(DockWidgetTest, titleBarReplacementKeepsFloatingWindowManaged)
     delete oldTitle;
     EXPECT_TRUE(dock.isVisible());
     EXPECT_TRUE(dock.isFloating());
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_FALSE(dock.windowFlags().testFlag(Qt::BypassWindowManagerHint));
     EXPECT_EQ(dock.geometry(), expected);
 }
@@ -277,7 +284,9 @@ TEST_P(DockWidgetTest, restoresFloatingLayoutAndCanDockAgain)
     ASSERT_TRUE(window.restoreState(state));
     EXPECT_TRUE(dock.isVisible());
     EXPECT_TRUE(dock.isFloating());
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.geometry(), expected);
 
     dock.setFloating(false);
@@ -344,7 +353,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesPlainAddonDocksAndPreservesGeomet
     EXPECT_TRUE(dock.isHidden());
 
     dock.show();
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.geometry(), expected);
     EXPECT_TRUE(dock.isFloating());
     EXPECT_TRUE(dock.isVisible());
@@ -352,7 +363,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesPlainAddonDocksAndPreservesGeomet
     const QByteArray state = window.saveState();
     dock.setFloating(false);
     ASSERT_TRUE(window.restoreState(state));
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.geometry(), expected);
     EXPECT_TRUE(dock.isFloating());
 
@@ -380,7 +393,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     EXPECT_EQ(first.parentWidget(), second.parentWidget());
     EXPECT_FALSE(first.isFloating());
     EXPECT_FALSE(second.isFloating());
-    EXPECT_EQ(group->windowType(), floatingType());
+    EXPECT_EQ(group->windowType(), Qt::Tool);
+    ASSERT_NE(group->windowHandle(), nullptr);
+    EXPECT_EQ(group->windowHandle()->type(), floatingType());
     EXPECT_TRUE(group->isVisible());
     EXPECT_FALSE(group->windowFlags().testFlag(Qt::BypassWindowManagerHint));
     EXPECT_TRUE(window.tabifiedDockWidgets(&first).contains(&second));
@@ -392,7 +407,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     const QRect expected(120, 150, 350, 260);
     group->setGeometry(expected);
     group->show();
-    EXPECT_EQ(group->windowType(), floatingType());
+    EXPECT_EQ(group->windowType(), Qt::Tool);
+    ASSERT_NE(group->windowHandle(), nullptr);
+    EXPECT_EQ(group->windowHandle()->type(), floatingType());
     EXPECT_EQ(group->geometry(), expected);
     EXPECT_EQ(first.parentWidget(), group);
     EXPECT_EQ(second.parentWidget(), group);
@@ -418,7 +435,9 @@ TEST_P(DockWidgetTest, applicationFilterManagesActualFloatingTabGroups)
     group = first.parentWidget();
     ASSERT_NE(group, nullptr);
     ASSERT_TRUE(group->inherits("QDockWidgetGroupWindow"));
-    EXPECT_EQ(group->windowType(), floatingType());
+    EXPECT_EQ(group->windowType(), Qt::Tool);
+    ASSERT_NE(group->windowHandle(), nullptr);
+    EXPECT_EQ(group->windowHandle()->type(), floatingType());
     // Qt restores a group's saved rectangle as its frame position. Keep that
     // native convention, including the offscreen platform's frame margins.
     EXPECT_EQ(group->size(), savedGeometry.size());
@@ -500,7 +519,9 @@ TEST_P(DockWidgetTest, normalizedDockReceivesShowOnce)
     dock.showEvents = 0;
     dock.show();
 
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.showEvents, 1);
 }
 
@@ -517,7 +538,9 @@ TEST_P(DockWidgetTest, applicationFilterDeliversNormalizedShowOnce)
     dock.showEvents = 0;
     dock.show();
 
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(dock.showEvents, 1);
 }
 
@@ -645,7 +668,9 @@ TEST_P(DockWidgetTest, framedFloatingDocksDoNotGainAnExtraResizeGrip)
     ScopedFloatingDockWindowEventFilter filter(&window, GetParam());
     qApp->installEventFilter(&filter);
     dock.show();
-    EXPECT_EQ(dock.windowType(), floatingType());
+    EXPECT_EQ(dock.windowType(), Qt::Tool);
+    ASSERT_NE(dock.windowHandle(), nullptr);
+    EXPECT_EQ(dock.windowHandle()->type(), floatingType());
     EXPECT_EQ(resizeGrip(dock), nullptr);
 }
 

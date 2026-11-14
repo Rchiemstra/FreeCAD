@@ -81,6 +81,10 @@ struct AppExport DocumentCommandEditPayload
     std::string provenance;
     std::vector<DocumentCommandObjectTarget> targets;
     std::vector<DocumentCommandPropertyValue> propertyValues;
+    /** User-visible undo label; empty preserves the default "Edit" label. */
+    std::string transactionLabel;
+    /** Finish automatic property updates inside the lane-owned transaction. */
+    bool recomputeAfterEdit {false};
 };
 
 /** Pointer-free undo/redo payload carried by one admitted command. */
