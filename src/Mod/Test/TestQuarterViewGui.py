@@ -91,14 +91,21 @@ def _sizes(doc_name, viewport):
 
 
 def _repaint_until_fired(window, filter_object, attempts=25):
-    """Repaint the main window until its armed paint filter has fired.
+    """Repaint the main window until its paint filter has fired.
 
     Under load the window can still be waiting for its expose after a resize,
-    and a repaint then paints nothing. Nothing is pumped between the paint that
-    fires and the return, so the queued replay has not run yet.
+    and a repaint then paints nothing. The filter is armed only for the
+    synchronous repaint(). A paint that arrives during the pump would leave the
+    rest of that pump to run the queued replay before the caller measures.
+    Nothing is pumped between the paint that fires and the return, so the
+    queued replay has not run yet.
     """
     for _ in range(attempts):
-        window.repaint()
+        filter_object.armed = True
+        try:
+            window.repaint()
+        finally:
+            filter_object.armed = False
         if filter_object.done:
             return
         _pump(20)
@@ -247,7 +254,6 @@ class TestQuarterViewGui(unittest.TestCase):
         )
         self.window.installEventFilter(nested)
         try:
-            nested.armed = True
             before_nested = _sizes(self.doc.Name, viewport)
             _repaint_until_fired(self.window, nested)
             held_coin, held_fb = _sizes(self.doc.Name, viewport)
@@ -332,7 +338,6 @@ class TestQuarterViewGui(unittest.TestCase):
         holder = _Hold(self.window, viewport)
         self.window.installEventFilter(holder)
         try:
-            holder.armed = True
             _repaint_until_fired(self.window, holder)
         finally:
             self.window.removeEventFilter(holder)
