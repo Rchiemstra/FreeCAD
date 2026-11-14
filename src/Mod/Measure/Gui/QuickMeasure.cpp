@@ -31,9 +31,11 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/Link.h>
+#include <App/MutationClassification.h>
 #include <App/Part.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Control.h>
@@ -79,6 +81,13 @@ void QuickMeasure::onSelectionChanged(const Gui::SelectionChanges& msg)
 void QuickMeasure::processSelection()
 {
     if (pendingProcessing) {
+        // Measuring resolves the selected sub-elements through the live
+        // objects, which the document execution lane may be replacing. Keep
+        // the selection pending; the timer fires again.
+        App::LivePresentationRefreshScope refresh;
+        if (!refresh.acquired() || Gui::anyDocumentDefersLivePresentationUpdates()) {
+            return;
+        }
         pendingProcessing = false;
         try {
             tryMeasureSelection();
