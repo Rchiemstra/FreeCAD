@@ -23,8 +23,10 @@
 #include <Gui/AutoSaver.h>
 #include <Gui/Document.h>
 #include <Gui/DocumentExecutionIngress.h>
+#include <Gui/DocumentPresentationCache.h>
 #include <Gui/MDIView.h>
 #include <Gui/MainWindow.h>
+#include <Gui/PresentationApplyScheduler.h>
 
 #include <QAbstractButton>
 #include <QMessageBox>
@@ -569,4 +571,28 @@ void Gui::Test::deliverRecoveryRetry(const std::string& name, std::uint64_t inst
                                     std::uint64_t epoch)
 {
     AutoSaverRecoveryTestAccess::deliverRetry(name, instance, epoch);
+}
+
+bool Gui::Test::pumpPresentationApplyUntilCommitted(
+    Gui::Document& guiDocument,
+    std::uint64_t afterSequence,
+    std::chrono::milliseconds timeout
+)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto& cache = guiDocument.presentationCache();
+    auto& scheduler = guiDocument.presentationApplyScheduler();
+    while (true) {
+        (void)guiDocument.pumpPresentationApply(50);
+        if (cache.committedSequence() > afterSequence && !scheduler.hasStagingWork()) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        // A boundary revision posted from the owner thread is staged only once
+        // its queued call runs on this thread.
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }

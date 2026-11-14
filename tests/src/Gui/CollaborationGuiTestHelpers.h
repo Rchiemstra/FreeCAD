@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -218,6 +219,19 @@ bool canCloseWithoutBlockingGui(Gui::Document& guiDocument,
 
 /// MainWindow::closeAllDocuments() with lane saves pumped to completion in tests only.
 bool closeAllDocumentsWithoutBlockingGui(bool close);
+
+/**
+ * Pumps \p guiDocument's presentation apply until a revision newer than
+ * \p afterSequence is committed and nothing is left staged, or \p timeout
+ * passes. The MainWindow activity timer pumps the same scheduler during any Qt
+ * event processing, so a test must wait for this committed state; it must not
+ * assume that its own pump call is the one that commits the staged revision.
+ */
+[[nodiscard]] bool pumpPresentationApplyUntilCommitted(
+    Gui::Document& guiDocument,
+    std::uint64_t afterSequence = 0,
+    std::chrono::milliseconds timeout = std::chrono::seconds(2)
+);
 
 }  // namespace Gui::Test
 
