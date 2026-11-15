@@ -23,6 +23,8 @@
 
 import math
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -678,3 +680,215 @@ class MatrixTestCase(unittest.TestCase):
 class FileSystem(unittest.TestCase):
     def testEncoding(self):
         self.assertEqual(sys.getfilesystemencoding(), "utf-8")
+
+
+class CommandLineScriptTestCase(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="fc_cli_script_test_")
+        exe_suffix = ".exe" if sys.platform.startswith("win") else ""
+        bin_dir = os.path.join(FreeCAD.getHomePath(), "bin")
+        candidates = [
+            os.path.join(bin_dir, "FreeCADCmd" + exe_suffix),
+            os.path.join(bin_dir, "freecadcmd" + exe_suffix),
+            os.path.join(os.path.dirname(sys.executable), "FreeCADCmd" + exe_suffix),
+            os.path.join(os.path.dirname(sys.executable), "freecadcmd" + exe_suffix),
+        ]
+        self.freecadcmd = next((p for p in candidates if os.path.isfile(p)), candidates[0])
+        self.assertTrue(
+            os.path.isfile(self.freecadcmd),
+            f"FreeCADCmd binary not found in candidates: {candidates}",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write_script(self, name, content):
+        path = os.path.join(self.temp_dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return path
+
+    def _run_freecadcmd(self, *args):
+        run_root = tempfile.mkdtemp(prefix="run_", dir=self.temp_dir)
+        user_home = os.path.join(run_root, "user_home")
+        xdg_config = os.path.join(run_root, "xdg_config")
+        xdg_data = os.path.join(run_root, "xdg_data")
+        xdg_cache = os.path.join(run_root, "xdg_cache")
+        tmp_dir = os.path.join(run_root, "tmp")
+        for d in (user_home, xdg_config, xdg_data, xdg_cache, tmp_dir):
+            os.makedirs(d, exist_ok=True)
+
+        env = os.environ.copy()
+        env.pop("DISPLAY", None)
+        env.pop("WAYLAND_DISPLAY", None)
+        env.update(
+            {
+                "FREECAD_USER_HOME": user_home,
+                "HOME": user_home,
+                "XDG_CONFIG_HOME": xdg_config,
+                "XDG_DATA_HOME": xdg_data,
+                "XDG_CACHE_HOME": xdg_cache,
+                "TMPDIR": tmp_dir,
+                "QT_QPA_PLATFORM": "offscreen",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+        )
+        return subprocess.run(
+            [self.freecadcmd, *args],
+            cwd=self.temp_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
+
+    @staticmethod
+    def _read_lines(path):
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as fh:
+            return [line.rstrip("\r\n") for line in fh]
+
+    def testPyScriptSuccessAndSingleExecution(self):
+        counter = os.path.join(self.temp_dir, "ok_count.txt")
+        script = self._write_script(
+            "cli_ok_mod.py",
+            f"with open({counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('ok\\n')\n"
+            "print('MOD_NAME=' + __name__)\n"
+            "print('SCRIPT_OK')\n",
+        )
+        proc = self._run_freecadcmd(script)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._read_lines(counter), ["ok"])
+        self.assertIn("MOD_NAME=cli_ok_mod", proc.stdout)
+        self.assertIn("SCRIPT_OK", proc.stdout)
+
+    def testPyScriptExceptionExecutesOnceAndFailsNonZeroWithTraceback(self):
+        counter = os.path.join(self.temp_dir, "fail_value_count.txt")
+        script = self._write_script(
+            "cli_fail_value.py",
+            f"with open({counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('run\\n')\n"
+            "def inner():\n"
+            "    raise ValueError('boom-value')\n"
+            "inner()\n",
+        )
+        proc = self._run_freecadcmd(script)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._read_lines(counter), ["run"])
+        self.assertIn("Traceback (most recent call last):", proc.stderr)
+        self.assertIn("in inner", proc.stderr)
+        self.assertIn("ValueError", proc.stderr)
+        self.assertIn("boom-value", proc.stderr)
+
+    def testPyScriptEmptyMessageExceptionIncludesTypeAndTraceback(self):
+        counter = os.path.join(self.temp_dir, "fail_stop_count.txt")
+        script = self._write_script(
+            "cli_fail_stop.py",
+            f"with open({counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('run\\n')\n"
+            "raise StopIteration()\n",
+        )
+        proc = self._run_freecadcmd(script)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._read_lines(counter), ["run"])
+        self.assertIn("Traceback (most recent call last):", proc.stderr)
+        self.assertIn("StopIteration", proc.stderr)
+
+    def testPyScriptImportErrorInsideScriptExecutesOnce(self):
+        counter = os.path.join(self.temp_dir, "fail_import_count.txt")
+        script = self._write_script(
+            "cli_fail_import.py",
+            f"with open({counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('run\\n')\n"
+            "import nonexistent_freecad_test_module_xyz\n",
+        )
+        proc = self._run_freecadcmd(script)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._read_lines(counter), ["run"])
+        self.assertIn("Traceback (most recent call last):", proc.stderr)
+        self.assertIn("ModuleNotFoundError", proc.stderr)
+
+    def testPyScriptSyntaxErrorFailsNonZeroWithLocation(self):
+        script = self._write_script(
+            "cli_fail_syntax.py",
+            "x = 1\nif :\n    pass\n",
+        )
+        proc = self._run_freecadcmd(script)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("SyntaxError", proc.stderr)
+        self.assertIn("line 2", proc.stderr)
+
+    def testDottedPyScriptAndMacroFailure(self):
+        dotted_counter = os.path.join(self.temp_dir, "dotted_count.txt")
+        dotted_script = self._write_script(
+            "my.dotted.fail.py",
+            f"with open({dotted_counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('run\\n')\n"
+            "raise RuntimeError('boom-dotted')\n",
+        )
+        dotted_proc = self._run_freecadcmd(dotted_script)
+        self.assertEqual(dotted_proc.returncode, 1)
+        self.assertEqual(self._read_lines(dotted_counter), ["run"])
+        self.assertIn("Traceback (most recent call last):", dotted_proc.stderr)
+        self.assertIn("RuntimeError", dotted_proc.stderr)
+        self.assertIn("boom-dotted", dotted_proc.stderr)
+
+        macro_counter = os.path.join(self.temp_dir, "macro_count.txt")
+        macro_script = self._write_script(
+            "cli_fail_macro.FCMacro",
+            f"with open({macro_counter!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('run\\n')\n"
+            "raise RuntimeError('boom-macro')\n",
+        )
+        macro_proc = self._run_freecadcmd(macro_script)
+        self.assertEqual(macro_proc.returncode, 1)
+        self.assertEqual(self._read_lines(macro_counter), ["run"])
+        self.assertIn("Traceback (most recent call last):", macro_proc.stderr)
+        self.assertIn("RuntimeError", macro_proc.stderr)
+        self.assertIn("boom-macro", macro_proc.stderr)
+
+    def testMultipleFilesStopAtFirstFailureAndConsoleFlagDoesNotHang(self):
+        order_file = os.path.join(self.temp_dir, "order.txt")
+        first_fail = self._write_script(
+            "cli_first_fail.py",
+            f"with open({order_file!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('first\\n')\n"
+            "raise ValueError('stop-on-first')\n",
+        )
+        second_ok = self._write_script(
+            "cli_second_ok.py",
+            f"with open({order_file!r}, 'a', encoding='utf-8') as f:\n"
+            "    f.write('second\\n')\n",
+        )
+        proc = self._run_freecadcmd(first_fail, second_ok)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._read_lines(order_file), ["first"])
+        self.assertIn("Traceback (most recent call last):", proc.stderr)
+        self.assertIn("stop-on-first", proc.stderr)
+
+        c_proc = self._run_freecadcmd("-c", first_fail)
+        self.assertEqual(c_proc.returncode, 1)
+        self.assertEqual(self._read_lines(order_file), ["first", "first"])
+        self.assertIn("stop-on-first", c_proc.stderr)
+        self.assertNotIn("FreeCAD Console mode", c_proc.stdout + c_proc.stderr)
+
+    def testSystemExitAndInlineCodePreserved(self):
+        exit0 = self._write_script("cli_exit0.py", "import sys\nsys.exit(0)\n")
+        exit3 = self._write_script("cli_exit3.py", "import sys\nsys.exit(3)\n")
+
+        proc0 = self._run_freecadcmd(exit0)
+        self.assertEqual(proc0.returncode, 0)
+        self.assertNotIn("Traceback", proc0.stderr)
+
+        proc3 = self._run_freecadcmd(exit3)
+        self.assertEqual(proc3.returncode, 3)
+        self.assertNotIn("Traceback", proc3.stderr)
+
+        inline_proc = self._run_freecadcmd("-c", "raise ValueError('inline-boom')")
+        self.assertEqual(inline_proc.returncode, 1)
+        self.assertIn("Traceback (most recent call last):", inline_proc.stderr)
+        self.assertIn("inline-boom", inline_proc.stderr)
