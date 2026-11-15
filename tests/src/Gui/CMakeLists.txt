@@ -53,6 +53,7 @@ add_executable(Gui_tests_run
         InputHintTest.cpp
         MainWindow.cpp
         TreeDocumentRename.cpp
+        NotificationAreaReentrancy.cpp
         NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
         SoDatumLabel.cpp
