@@ -863,10 +863,12 @@ class TopoShape(ComplexGeoData):
     @constmethod
     def hashCode(self, upper: int = ..., /) -> int:
         """
-        This value is computed from the value of the underlying shape reference and the location.
-        hashCode(upper) -> int
+        Return a per-process hash code in the range 1..upper (upper > 0, default 2147483647).
+        hashCode([upper]) -> int
         --
-        Orientation is not taken into account.
+        This value is computed from the underlying shape reference and location (isSame equality;
+        orientation is not taken into account). Values are only valid within the current process
+        and are not guaranteed to persist across runs.
         """
         ...
 

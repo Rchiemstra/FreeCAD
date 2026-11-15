@@ -1724,9 +1724,19 @@ PyObject* TopoShapePy::hashCode(PyObject* args) const
     if (!PyArg_ParseTuple(args, "|i", &upper)) {
         return nullptr;
     }
+    if (upper <= 0) {
+        PyErr_SetString(PyExc_ValueError, "upper bound must be positive");
+        return nullptr;
+    }
 
-    int hc = ShapeMapHasher {}(getTopoShapePtr()->getShape());
-    return Py_BuildValue("i", hc);
+#if OCC_VERSION_HEX < 0x070800
+    // Preserve OCCT's bounded hash, including the legacy no-argument value.
+    const int reduced = getTopoShapePtr()->getShape().HashCode(upper);
+#else
+    const size_t hc = ShapeMapHasher {}(getTopoShapePtr()->getShape());
+    const int reduced = static_cast<int>((hc % static_cast<size_t>(upper)) + 1);
+#endif
+    return Py_BuildValue("i", reduced);
 }
 
 PyObject* TopoShapePy::tessellate(PyObject* args) const
