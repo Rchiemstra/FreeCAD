@@ -149,7 +149,8 @@ class KeyTests(ShellFixture):
             self.assertIn("ci-images-ready", ancestors(name))
         continue_on_failure = [
             {"event": ["tag", "manual"], "status": ["success", "failure"]},
-            {"event": "pull_request", "status": ["success", "failure"]}]
+            {"event": ["pull_request", "pull_request_metadata"],
+             "status": ["success", "failure"]}]
         for shard, previous in (("sketch", "collab"), ("part", "sketch"),
                                 ("rest", "part")):
             step = steps[f"freecad-mcp-core-{shard}"]
