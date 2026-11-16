@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include <Base/Exception.h>
 #include <Base/Tools.h>
 #include <Base/Tools2D.h>
@@ -35,8 +37,10 @@
 
 namespace App
 {
+class Document;
 class DocumentObject;
-}
+class LivePresentationRefreshScope;
+}  // namespace App
 
 namespace Gui
 {
@@ -184,6 +188,33 @@ void ActivateHandler(Gui::Document* doc, std::unique_ptr<DrawSketchHandler> hand
 
 /// Returns if a sketch is in edit mode
 bool isSketchInEdit(Gui::Document* doc);
+
+/// Admission for a GUI-thread read of live sketch data, such as geometry and vertex indices,
+/// from a command check. It holds the live presentation refresh reservation while it lives,
+/// like the other GUI readers of live sketch data. It is refused off the GUI thread and while
+/// the document is busy: its execution lane runs a command, notifications are replayed, a
+/// transaction is under way, or another thread holds the reservation. A refused admission
+/// asks the main window to test the commands again, so a command disabled while the document
+/// was busy comes back once it is idle.
+class LiveSketchReadAdmission
+{
+public:
+    explicit LiveSketchReadAdmission(const App::Document& document);
+    ~LiveSketchReadAdmission();
+
+    LiveSketchReadAdmission(const LiveSketchReadAdmission&) = delete;
+    LiveSketchReadAdmission& operator=(const LiveSketchReadAdmission&) = delete;
+    LiveSketchReadAdmission(LiveSketchReadAdmission&&) = delete;
+    LiveSketchReadAdmission& operator=(LiveSketchReadAdmission&&) = delete;
+
+    explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(reservation);
+    }
+
+private:
+    std::unique_ptr<App::LivePresentationRefreshScope> reservation;
+};
 
 /// Returns whether an edit mode command should be activated or not. It is only activated if the
 /// sketcher is no special state or a sketchHandler is active.

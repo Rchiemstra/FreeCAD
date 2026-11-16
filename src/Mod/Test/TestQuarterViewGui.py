@@ -90,72 +90,52 @@ def _sizes(doc_name, viewport):
     return coin, framebuffer
 
 
-class _PaintProbe(QtCore.QObject):
-    """Acts once inside the main window's Paint, then measures after that delivery.
+def _repaint_until_fired(window, filter_object, attempts=25):
+    """Repaint the main window until its armed paint filter has fired.
 
-    in_paint() runs inside the Paint delivery, where the resize guard holds a
-    viewport resize. The probe then posts an event to itself. The guard queues
-    its replay only when the outermost counted delivery ends, which is after
-    this post, so after_paint() runs once the delivery is over and before the
-    replay. That holds whether the paint came from a synchronous repaint() or
-    arrived later through the event loop.
+    Under load the window can still be waiting for its expose after a resize,
+    and a repaint then paints nothing; the paint then comes from the event loop
+    inside _pump(), which also runs the queued replay. Measure the held size in
+    an _AfterFlush step, not after this returns.
     """
-
-    def __init__(self, window):
-        super().__init__()
-        self.window = window
-        self.armed = False
-        self.fired = False
-        self.measured = False
-
-    def eventFilter(self, obj, event):
-        if (
-            not self.armed
-            or self.fired
-            or obj is not self.window
-            or event.type() != QtCore.QEvent.Paint
-        ):
-            return False
-        self.fired = True
-        self.in_paint()
-        QtCore.QCoreApplication.postEvent(self, QtCore.QEvent(QtCore.QEvent.User))
-        return False
-
-    def customEvent(self, event):
-        if event.type() != QtCore.QEvent.User or self.measured:
+    for _ in range(attempts):
+        window.repaint()
+        if filter_object.done:
             return
-        try:
-            self.after_paint()
-        finally:
-            self.measured = True
-
-    def in_paint(self):
-        pass
-
-    def after_paint(self):
-        pass
+        _pump(20)
+        if filter_object.done:
+            return
 
 
-def _paint_and_measure(window, probe, attempts=50):
-    """Repaint the main window until the probe has fired and measured.
+def _pump_until(predicate, timeout_ms=2000):
+    elapsed = 0
+    while not predicate():
+        if elapsed >= timeout_ms:
+            return False
+        _pump(10)
+        elapsed += 10
+    return True
 
-    Under load a synchronous repaint() can paint nothing (the window still
-    waits for its expose), and the paint arrives later in the event loop. The
-    probe stays armed for that, and it measures from its posted event, so
-    pumping here cannot run the queued replay before the measurement.
+
+class _AfterFlush(QtCore.QObject):
+    """Runs a callback on the first event-loop turn after the current paint.
+
+    Emitted from inside the paint, the queued call is posted before the resize
+    guard posts its replay, which happens when the paint flush ends. The
+    callback therefore runs after the flush and before the replay, whether the
+    paint came from repaint() or from the event loop.
     """
-    window.installEventFilter(probe)
-    probe.armed = True
-    try:
-        for _ in range(attempts):
-            if not probe.fired:
-                window.repaint()
-            _pump(20)
-            if probe.measured:
-                return
-    finally:
-        probe.armed = False
-        window.removeEventFilter(probe)
+
+    fire = QtCore.Signal()
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+        self.fire.connect(self._run, QtCore.Qt.QueuedConnection)
+
+    @QtCore.Slot()
+    def _run(self):
+        self.callback()
 
 
 def _wait_stable(viewport, timeout_ms=1500):
@@ -193,7 +173,7 @@ def _mdi_subwindow(widget):
     return None
 
 
-class _NestedResize(_PaintProbe):
+class _NestedResize(QtCore.QObject):
     """Resizes the GL viewport from inside the main window's paint, once.
 
     The viewport widget is resized directly. Resizing the top-level window from
@@ -201,15 +181,31 @@ class _NestedResize(_PaintProbe):
     """
 
     def __init__(self, window, viewport, measure):
-        super().__init__(window)
+        super().__init__()
+        self.window = window
         self.viewport = viewport
         self.measure = measure
+        self.armed = False
+        self.done = False
         self.held = False
         self.held_after_modal = False
-        self.after_delivery = None
         self.cpu = 0.0
+        self.after_flush = None
+        self.step = _AfterFlush(self._measure_after_flush)
 
-    def in_paint(self):
+    def _measure_after_flush(self):
+        self.after_flush = self.measure()
+
+    def eventFilter(self, obj, event):
+        if (
+            not self.armed
+            or self.done
+            or obj is not self.window
+            or event.type() != QtCore.QEvent.Paint
+        ):
+            return False
+        self.done = True
+        self.armed = False
         width = max(80, self.viewport.width() - 40)
         height = max(80, self.viewport.height() - 30)
         # Fixed so a layout pass inside the modal loop cannot put the widget
@@ -230,9 +226,8 @@ class _NestedResize(_PaintProbe):
             app.removeEventFilter(swallow)
         coin, framebuffer = self.measure()
         self.held_after_modal = coin != framebuffer
-
-    def after_paint(self):
-        self.after_delivery = self.measure()
+        self.step.fire.emit()
+        return False
 
 
 class TestQuarterViewGui(unittest.TestCase):
@@ -290,20 +285,28 @@ class TestQuarterViewGui(unittest.TestCase):
             viewport,
             lambda: _sizes(self.doc.Name, viewport),
         )
-        before_nested = _sizes(self.doc.Name, viewport)
-        _paint_and_measure(self.window, nested)
-        self.assertTrue(nested.fired, "the main window never painted")
-        self.assertTrue(nested.measured, "no measurement after the paint delivery")
-        held_coin, held_fb = nested.after_delivery
-        self.assertNotEqual(
-            held_coin,
-            held_fb,
-            "resize was delivered inside the flush (coin=%s fb=%s before=%s)"
-            % (held_coin, held_fb, before_nested),
-        )
-        _pump(40)
-        Gui.updateGui()
+        self.window.installEventFilter(nested)
+        try:
+            nested.armed = True
+            before_nested = _sizes(self.doc.Name, viewport)
+            _repaint_until_fired(self.window, nested)
+            self.assertTrue(
+                _pump_until(lambda: nested.after_flush is not None),
+                "no event-loop turn followed the paint",
+            )
+            held_coin, held_fb = nested.after_flush
+            self.assertNotEqual(
+                held_coin,
+                held_fb,
+                "resize was delivered inside the flush (coin=%s fb=%s before=%s)"
+                % (held_coin, held_fb, before_nested),
+            )
+            _pump(40)
+            Gui.updateGui()
+        finally:
+            self.window.removeEventFilter(nested)
 
+        self.assertTrue(nested.done)
         self.assertTrue(nested.held, "Coin viewport already matched during the held resize")
         self.assertTrue(
             nested.held_after_modal,
@@ -350,55 +353,67 @@ class TestQuarterViewGui(unittest.TestCase):
         Gui.updateGui()
         coin, framebuffer = _sizes(self.doc.Name, viewport)
         self.assertEqual(coin, framebuffer, "setup coin=%s fb=%s" % (coin, framebuffer))
+        measured = {}
 
-        class _Hold(_PaintProbe):
-            def __init__(self, window, gl, sub, measure):
-                super().__init__(window)
+        def after_flush():
+            measured["held"] = _sizes(self.doc.Name, viewport)
+            # Durable child resize, not a top-level QWindow resize (that delivery
+            # is itself a flush). Runs before the queued replay.
+            sub.resize(max(120, sub.width() - 90), max(120, sub.height() - 70))
+            measured["b"] = _sizes(self.doc.Name, viewport)
+
+        class _Hold(QtCore.QObject):
+            def __init__(self, window, gl, callback):
+                super().__init__()
+                self.window = window
                 self.gl = gl
-                self.sub = sub
-                self.measure = measure
+                self.armed = False
+                self.done = False
                 self.size_a = None
-                self.held = None
-                self.after_b = None
-                self.sizes_b = None
+                self.step = _AfterFlush(callback)
 
-            def in_paint(self):
+            def eventFilter(self, obj, event):
+                if (
+                    not self.armed
+                    or self.done
+                    or obj is not self.window
+                    or event.type() != QtCore.QEvent.Paint
+                ):
+                    return False
+                self.done = True
+                self.armed = False
+                self.step.fire.emit()
                 # Viewport only. A top-level resize from this paint syncs the
                 # backing store of the window that is already painting.
                 self.gl.resize(max(80, self.gl.width() - 70), max(80, self.gl.height() - 50))
                 # Device pixels, the unit _sizes() reports for Coin and the framebuffer.
                 ratio = float(self.gl.devicePixelRatio())
                 self.size_a = (int(ratio * self.gl.width()), int(ratio * self.gl.height()))
+                return False
 
-            def after_paint(self):
-                self.held = self.measure()
-                # Durable child resize, not a top-level QWindow resize (that
-                # delivery is itself a flush). Runs before the queued replay.
-                sub = self.sub
-                sub.resize(max(120, sub.width() - 90), max(120, sub.height() - 70))
-                self.after_b = self.measure()
-                self.sizes_b = (sub.size(), (self.gl.width(), self.gl.height()))
-
-        holder = _Hold(
-            self.window,
-            viewport,
-            sub,
-            lambda: _sizes(self.doc.Name, viewport),
-        )
-        _paint_and_measure(self.window, holder)
-        self.assertTrue(holder.fired, "the main window never painted")
-        self.assertTrue(holder.measured, "no measurement after the paint delivery")
+        holder = _Hold(self.window, viewport, after_flush)
+        self.window.installEventFilter(holder)
+        try:
+            holder.armed = True
+            _repaint_until_fired(self.window, holder)
+        finally:
+            self.window.removeEventFilter(holder)
+        self.assertTrue(holder.done)
         self.assertIsNotNone(holder.size_a)
+        self.assertTrue(
+            _pump_until(lambda: "b" in measured), "no event-loop turn followed the paint"
+        )
 
-        coin, framebuffer = holder.held
+        coin, framebuffer = measured["held"]
         self.assertEqual(framebuffer, holder.size_a)
         self.assertNotEqual(coin, framebuffer, "size A was not held")
 
-        coin_b, framebuffer_b = holder.after_b
+        coin_b, framebuffer_b = measured["b"]
         self.assertNotEqual(
             framebuffer_b,
             holder.size_a,
-            "size B did not change the viewport (sub %s viewport %s)" % holder.sizes_b,
+            "size B did not change the viewport (sub %s viewport %s)"
+            % (sub.size(), (viewport.width(), viewport.height())),
         )
         self.assertEqual(coin_b, framebuffer_b, "size B was not delivered outside the flush")
 
