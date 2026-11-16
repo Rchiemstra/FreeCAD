@@ -2816,6 +2816,8 @@ struct DocumentFileWriter::Impl
     std::shared_ptr<NativeFile> destinationSource;
     std::shared_ptr<NativeFile> displaced;
     std::optional<StableHash> displacedSourceHash;
+    std::optional<FileSnapshot> displacedSnapshotState;
+    bool displacedTimestampPrecisionReduced {false};
     bool commitAttempted {false};
 };
 
@@ -3116,12 +3118,58 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                 const auto copiedHash =
                     copyAndHash(*_impl->destinationSource, *_impl->displaced);
                 const auto sourceAfter = stableHash(*_impl->destinationSource);
-                _impl->displaced->preserveMetadataFrom(*_impl->destinationSource, true);
-                _impl->displaced->flush();
-                const auto snapshotHash = stableHash(*_impl->displaced);
+                const auto preserveSnapshotMetadata = [&] {
+                    _impl->displaced->preserveMetadataFrom(*_impl->destinationSource, true);
+                    _impl->displaced->flush();
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                    if (_impl->request.afterDisplacedSnapshotMetadata) {
+                        _impl->request.afterDisplacedSnapshotMetadata(
+                            _impl->displaced->pathUtf8());
+                    }
+#endif
+                };
+                preserveSnapshotMetadata();
+                auto snapshotHash = stableHash(*_impl->displaced);
+                bool timestampPrecisionReduced = false;
+#if defined(__linux__)
+                // Some mounted filesystems expose precise existing mtimes but
+                // round futimens to whole seconds. Keep the independent byte
+                // copy only after repeating the requested metadata update and
+                // proving that exact same rounding, with an unchanged source.
+                constexpr std::uint64_t fractionMask = 0xffffffffULL;
+                auto roundedSource = sourceAfter.snapshot;
+                roundedSource.modified &= ~fractionMask;
+                const bool roundedToWholeSecond =
+                    (sourceAfter.snapshot.modified & fractionMask) != 0
+                    && samePersistentFileState(roundedSource, snapshotHash.snapshot);
+                const bool exactStableCopy = copiedHash == sourceBefore.value
+                    && sourceAfter.value == sourceBefore.value
+                    && snapshotHash.value == sourceBefore.value
+                    && sameObservedFile(sourceBefore.snapshot, sourceAfter.snapshot)
+                    && _impl->destinationSource->pathStillOwned()
+                    && _impl->displaced->pinnedPathStillOwned();
+                if (roundedToWholeSecond && exactStableCopy) {
+                    const auto firstSnapshotHash = snapshotHash;
+                    preserveSnapshotMetadata();
+                    snapshotHash = stableHash(*_impl->displaced);
+                    const auto repeatedSourceHash = stableHash(*_impl->destinationSource);
+                    if (!sameObservedFile(sourceAfter.snapshot, repeatedSourceHash.snapshot)
+                        || repeatedSourceHash.value != sourceAfter.value
+                        || !_impl->destinationSource->pathStillOwned()) {
+                        throw std::runtime_error(
+                            "The previous file changed while backup timestamp precision "
+                            "was being verified");
+                    }
+                    timestampPrecisionReduced =
+                        sameObservedFile(firstSnapshotHash.snapshot, snapshotHash.snapshot)
+                        && firstSnapshotHash.value == snapshotHash.value
+                        && _impl->displaced->pinnedPathStillOwned();
+                }
+#endif
                 if (copiedHash != sourceBefore.value || sourceAfter.value != sourceBefore.value
                     || snapshotHash.value != sourceBefore.value
-                    || !samePersistentFileState(sourceAfter.snapshot, snapshotHash.snapshot)
+                    || (!samePersistentFileState(sourceAfter.snapshot, snapshotHash.snapshot)
+                        && !timestampPrecisionReduced)
                     || !sameObservedFile(sourceBefore.snapshot, sourceAfter.snapshot)
                     || !_impl->destinationSource->pathStillOwned()
                     || !_impl->displaced->pathStillOwned()) {
@@ -3133,6 +3181,8 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                 // it again.
                 _impl->displaced->promoteToDisplacedCanonical();
                 _impl->displacedSourceHash = sourceAfter;
+                _impl->displacedSnapshotState = snapshotHash.snapshot;
+                _impl->displacedTimestampPrecisionReduced = timestampPrecisionReduced;
             }
             catch (const std::exception& exception) {
                 result.warnings.push_back(
@@ -3146,6 +3196,8 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                 }
                 _impl->displaced.reset();
                 _impl->displacedSourceHash.reset();
+                _impl->displacedSnapshotState.reset();
+                _impl->displacedTimestampPrecisionReduced = false;
             }
         }
 
@@ -3213,8 +3265,9 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     || _impl->displacedSourceHash->value != boundarySourceHash.value
                     || !_impl->displaced->pathStillOwned()
                     || boundarySnapshotHash.value != boundarySourceHash.value
-                    || !samePersistentFileState(boundarySourceHash.snapshot,
-                                                boundarySnapshotHash.snapshot)) {
+                    || !_impl->displacedSnapshotState
+                    || !sameObservedFile(*_impl->displacedSnapshotState,
+                                         boundarySnapshotHash.snapshot)) {
                     throw std::runtime_error(
                         "The previous file changed before the replacement boundary");
                 }
@@ -3227,6 +3280,8 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     + std::string(exception.what()));
                 _impl->displaced.reset();
                 _impl->displacedSourceHash.reset();
+                _impl->displacedSnapshotState.reset();
+                _impl->displacedTimestampPrecisionReduced = false;
             }
         }
 
@@ -3268,8 +3323,9 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     || _impl->displacedSourceHash->value != finalSourceHash.value
                     || !_impl->displaced->pinnedPathStillOwned()
                     || finalSnapshotHash.value != finalSourceHash.value
-                    || !samePersistentFileState(finalSourceHash.snapshot,
-                                                finalSnapshotHash.snapshot)) {
+                    || !_impl->displacedSnapshotState
+                    || !sameObservedFile(*_impl->displacedSnapshotState,
+                                         finalSnapshotHash.snapshot)) {
                     throw std::runtime_error(
                         "The previous file or retained snapshot changed at the final boundary");
                 }
@@ -3281,6 +3337,8 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     + std::string(exception.what()));
                 _impl->displaced.reset();
                 _impl->displacedSourceHash.reset();
+                _impl->displacedSnapshotState.reset();
+                _impl->displacedTimestampPrecisionReduced = false;
             }
         }
 
@@ -3290,6 +3348,13 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         std::string displacedPathForResult;
         if (_impl->displaced) {
             displacedPathForResult = _impl->displaced->pathUtf8();
+            if (_impl->displacedTimestampPrecisionReduced) {
+                result.warnings.push_back(
+                    "The previous-file snapshot has reduced modification-time precision: "
+                    "the filesystem rounded it to whole seconds. Its content and "
+                    "permissions were verified, and the snapshot remains an "
+                    "independent copy.");
+            }
         }
 
         // The test hook intentionally runs before the last content and
@@ -4193,6 +4258,8 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
             result.displacedFile.swap(displacedPathForResult);
             result.displacedFileLease = std::move(_impl->displaced);
             _impl->displacedSourceHash.reset();
+            _impl->displacedSnapshotState.reset();
+            _impl->displacedTimestampPrecisionReduced = false;
         }
         if (replacementError) {
             result.warnings.push_back(
