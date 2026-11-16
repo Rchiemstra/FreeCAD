@@ -24,6 +24,7 @@
 #include <Mod/Sketcher/App/LinkedOffset.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 #include "CommandSketcherLinkedOffset.h"
+#include "Utils.h"
 #include "ViewProviderSketch.h"
 
 namespace SketcherGui
@@ -45,6 +46,13 @@ Sketcher::SketchObject* target()
     auto* document = Gui::Application::Instance->activeDocument();
     auto* edit = document ? dynamic_cast<ViewProviderSketch*>(document->getInEdit()) : nullptr;
     return edit ? static_cast<Sketcher::SketchObject*>(edit->getObject()) : nullptr;
+}
+
+void reportDocumentBusy(App::Document& document)
+{
+    App::DocumentCommandSubmitOutcome busy;
+    busy.result = App::DocumentCommandSubmitResult::Busy;
+    Gui::reportDocumentCommandSubmitBlocked(document, busy);
 }
 
 void updateLinkedOffsetDocument(Sketcher::SketchObject& sketch)
@@ -173,6 +181,13 @@ void showOperation(Sketcher::SketchObject& sketch, const std::vector<std::string
                 && (!distance->hasValidInput() || !tolerance->hasValidInput())) {
                 throw std::invalid_argument("Enter valid length quantities.");
             }
+            // The dialog stays open while the document may become busy. The
+            // operation reads the live sketch before it changes it.
+            if (!LiveSketchReadAdmission(*live->getDocument())) {
+                status->setText(QObject::tr("The document is busy. Try again when the active "
+                                            "operation finishes."));
+                return;
+            }
             Sketcher::operateLinkedOffsets(*live, ids, operation, distance->rawValue(),
                                            tolerance->rawValue());
             updateLinkedOffsetDocument(*live);
@@ -222,7 +237,13 @@ protected:
     bool isActive() override
     {
         const auto* sketch = target();
-        return sketch && !Sketcher::listLinkedOffsets(*sketch).empty();
+        if (!sketch) {
+            return false;
+        }
+        // The action update timer calls this while the document lane may be
+        // recomputing the sketch and replacing its geometry.
+        const LiveSketchReadAdmission admission(*sketch->getDocument());
+        return admission && !Sketcher::listLinkedOffsets(*sketch).empty();
     }
 
     void activated(int) override
@@ -233,18 +254,26 @@ protected:
         }
         std::vector<std::string> ids;
         try {
-            ids = selectedRelations(*sketch, all);
-            if (operation == Operation::Edit) {
-                showOperation(*sketch, ids, true);
+            {
+                // Reading the relations and opening the dialog read the live sketch.
+                // The reservation ends before the sketch changes.
+                const LiveSketchReadAdmission admission(*sketch->getDocument());
+                if (!admission) {
+                    reportDocumentBusy(*sketch->getDocument());
+                    return;
+                }
+                ids = selectedRelations(*sketch, all);
+                if (operation == Operation::Edit) {
+                    showOperation(*sketch, ids, true);
+                    return;
+                }
             }
-            else {
-                Sketcher::operateLinkedOffsets(*sketch, ids, operation);
-                updateLinkedOffsetDocument(*sketch);
-            }
+            Sketcher::operateLinkedOffsets(*sketch, ids, operation);
+            updateLinkedOffsetDocument(*sketch);
         }
         catch (const Standard_Failure& error) {
             if (!ids.empty()) {
-                showOperation(*sketch, ids, false, QString::fromUtf8(error.GetMessageString()));
+                showFailure(*sketch, ids, QString::fromUtf8(error.GetMessageString()));
             }
         }
         catch (const std::exception& error) {
@@ -253,12 +282,24 @@ protected:
                 Base::Console().warning("Linked offset: %s\n", error.what());
             }
             else {
-                showOperation(*sketch, ids, false, QString::fromUtf8(error.what()));
+                showFailure(*sketch, ids, QString::fromUtf8(error.what()));
             }
         }
     }
 
 private:
+    static void showFailure(Sketcher::SketchObject& sketch, const std::vector<std::string>& ids,
+                            const QString& failure)
+    {
+        // The dialog reads the live sketch again.
+        const LiveSketchReadAdmission admission(*sketch.getDocument());
+        if (!admission) {
+            Base::Console().warning("Linked offset: %s\n", failure.toStdString().c_str());
+            return;
+        }
+        showOperation(sketch, ids, false, failure);
+    }
+
     Operation operation;
     bool all;
 };
