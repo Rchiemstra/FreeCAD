@@ -69,12 +69,35 @@ PyObject* AssemblyObjectPy::solve(PyObject* args) const
 PyObject* AssemblyObjectPy::generateSimulation(PyObject* args) const
 {
     PyObject* pyobj;
+    PyObject* checkpoint = Py_None;
 
-    if (!PyArg_ParseTuple(args, "O", &pyobj)) {
+    if (!PyArg_ParseTuple(args, "O!|O", &App::DocumentObjectPy::Type, &pyobj, &checkpoint)) {
+        return nullptr;
+    }
+    if (checkpoint != Py_None && !PyCallable_Check(checkpoint)) {
+        PyErr_SetString(PyExc_TypeError, "checkpoint must be callable");
         return nullptr;
     }
     auto* obj = static_cast<App::DocumentObjectPy*>(pyobj)->getDocumentObjectPtr();
-    int ret = this->getAssemblyObjectPtr()->generateSimulation(obj);
+    std::function<bool()> check;
+    if (checkpoint != Py_None) {
+        check = [checkpoint] {
+            PyObject* result = PyObject_CallNoArgs(checkpoint);
+            if (!result) {
+                throw Py::Exception();
+            }
+            const int proceed = PyObject_IsTrue(result);
+            Py_DECREF(result);
+            if (proceed < 0) {
+                throw Py::Exception();
+            }
+            return proceed != 0;
+        };
+    }
+    int ret = this->getAssemblyObjectPtr()->generateSimulation(obj, check);
+    if (PyErr_Occurred()) {
+        return nullptr;
+    }
     return Py_BuildValue("i", ret);
 }
 

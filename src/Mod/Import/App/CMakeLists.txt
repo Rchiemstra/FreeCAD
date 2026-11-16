@@ -25,6 +25,20 @@ SET(Import_SRCS
     ReaderIges.h
     ReaderStep.cpp
     ReaderStep.h
+    StepPmiImport.cpp
+    StepMetadataImport.cpp
+    StepMetadataImport.h
+    StepAttributesImport.cpp
+    StepAttributesImport.h
+    StepViewsImport.cpp
+    StepViewsImport.h
+    StepPmiImport.h
+    StepPmiExport.cpp
+    StepPmiExport.h
+    StepAttributesExport.cpp
+    StepAttributesExport.h
+    StepPmiSigns.cpp
+    StepPmiRead.cpp
     StepShape.pyi
     StepShape.h
     StepShape.cpp

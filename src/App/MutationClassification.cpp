@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "MutationClassification.h"
+#include "ScopedDocumentMutation.h"
 #include "RecoveryAdmission.h"
 #include "private/PreparedLabelReferenceUpdates.h"
 
@@ -453,6 +454,7 @@ bool App::atomicPresentationMutationAdmissionActive() noexcept
 
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
 {
+    ScopedDocumentMutation::check(document);
     auto& admission = atomicPresentationMutationAdmission();
     std::lock_guard lock(admission.mutex);
     if (!admission.target) {

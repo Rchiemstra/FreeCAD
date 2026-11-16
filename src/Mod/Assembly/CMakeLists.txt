@@ -26,10 +26,14 @@ set(Assembly_Scripts
     CommandCreateBom.py
     CommandInsertLink.py
     CommandInsertNewPart.py
+    CommandExtractComponent.py
+    ExtractComponent.py
+    ExtractionShape.py
     CommandSolveAssembly.py
     CommandCreateJoint.py
     CommandCreateView.py
     CommandCreateSimulation.py
+    CommandMotionInterference.py
     CommandCreateSnapshot.py
     CommandExportASMT.py
     CommandReviewNote.py
@@ -47,7 +51,7 @@ set(Assembly_Scripts
 )
 
 if(BUILD_GUI)
-    list (APPEND Assembly_Scripts InitGui.py)
+    list (APPEND Assembly_Scripts InitGui.py TestAssemblyGui.py)
 endif(BUILD_GUI)
 
 INSTALL(
@@ -60,6 +64,11 @@ INSTALL(
 SET(AssemblyScripts_SRCS
     Assembly/__init__.py
     Assembly/api.py
+    Assembly/DragFeedback.py
+    Assembly/MotionAllPairs.py
+    Assembly/MotionCoverage.py
+    Assembly/MotionInterference.py
+    Assembly/MotionJointGrid.py
 )
 
 
@@ -67,6 +76,10 @@ SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestIsolateSelectionGui.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestMotionInterference.py
+    AssemblyTests/TestMotionInterferenceGui.py
+    AssemblyTests/TestDragFeedbackGui.py
+    AssemblyTests/TestExtractComponent.py
     AssemblyTests/TestComponentPattern.py
     AssemblyTests/TestJointEditorSwitch.py
     AssemblyTests/TestCommandCreateView.py

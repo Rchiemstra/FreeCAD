@@ -5437,6 +5437,47 @@ TEST_F(InterferenceScanTest, collapsedArrayPrefixExtractionIsScopedAndRejectsBad
     }
 }
 
+TEST_F(InterferenceScanTest, collapsedPartArrayParticipatesInStaticAndSelectedScans)
+{
+    auto* source = _doc->addObject<App::Part>("ArrayPart");
+    auto* box = makeBox(_doc, "ArrayPartBox", Base::Vector3d(2, 0, 0), 2, 2, 2);
+    source->addObject(box);
+    source->Placement.setValue(Base::Placement(Base::Vector3d(3, 0, 0), Base::Rotation()));
+    auto* array = _doc->addObject<App::Link>("PartArray");
+    array->setLink(-1, source);
+    array->LinkTransform.setValue(true);
+    array->ShowElement.setValue(false);
+    array->ElementCount.setValue(2);
+    array->PlacementList.setValues({
+        Base::Placement(),
+        Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation())});
+    _assembly->addObject(array);
+    auto* obstacle = makeBox(_doc, "ArrayObstacle", Base::Vector3d(15.5, 0, 0), 2, 2, 2);
+    _assembly->addObject(obstacle);
+    _doc->recompute();
+
+    const auto snapshot = Assembly::prepareInterferenceComponentScanSnapshot(_assembly, false);
+    const auto result = Assembly::runInterferenceScanAcrossComponents(snapshot, {});
+    EXPECT_TRUE(result.complete);
+    EXPECT_GE(result.counts.penetrations, 1);
+    const auto leaves = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "PartArray.1.", true);
+    ASSERT_EQ(leaves.size(), 1u);
+    EXPECT_NEAR(leaves.front().worldBoundBox.MinX, 15.0, 1e-6);
+    const auto other = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "ArrayObstacle.", true);
+    const auto selected = Assembly::runInterferenceScanBetweenLeafSets(leaves, other, {});
+    EXPECT_TRUE(selected.complete);
+    EXPECT_GE(selected.counts.penetrations, 1);
+
+    auto* sheet = makeClearanceSheet(_doc, "PartArrayClearance");
+    sheet->setCell(App::CellAddress(1, 0), "true");
+    sheet->setCell(App::CellAddress(1, 1), "PartArray.1.Face1");
+    sheet->setCell(App::CellAddress(1, 3), "0.5");
+    _doc->recompute();
+    const auto rules = Assembly::parseInterferenceClearanceSheet(sheet, _assembly);
+    ASSERT_EQ(rules.rules.size(), 1u);
+    EXPECT_TRUE(rules.rules.front().valid);
+}
+
 TEST_F(InterferenceScanTest, clearanceSheetSelectedPairScopeDoesNotExtractUnrelated)
 {
     auto* source = makeBox(_doc, "SelScopeSrc", Base::Vector3d(0, 0, 0), 20, 20, 20);

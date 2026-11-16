@@ -30,6 +30,9 @@
 
 
 #include "ReaderStep.h"
+#include "StepPmiImport.h"
+#include "StepViewsImport.h"
+#include "StepAttributesImport.h"
 #include <Base/Exception.h>
 #include <Mod/Part/App/encodeFilename.h>
 
@@ -52,6 +55,13 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
     aReader.SetNameMode(true);
     aReader.SetLayerMode(true);
     aReader.SetSHUOMode(true);
+    if (viewsImport) {
+        aReader.SetViewMode(true);
+    }
+    // Off leaves OCCT's own default GDT mode unchanged (default-on in OCCT 7.6).
+    if (readSemanticPmi) {
+        aReader.SetGDTMode(true);
+    }
 #if OCC_VERSION_HEX < 0x070800
     if (aReader.ReadFile(name8bit.c_str()) != IFSelect_RetDone) {
 #else
@@ -63,5 +73,16 @@ void ReaderStep::read(Handle(TDocStd_Document) hDoc, const Message_ProgressRange
         throw Base::FileException("Cannot read STEP file", file);
     }
 
+    if (readSemanticPmi && pmiImport) {
+        pmiImport->captureReadWarnings(aReader.Reader().StepModel());
+    }
+    if (viewsImport) {
+        aReader.SetViewMode(StepViewsImport::canReadXcaf(aReader));
+    }
+    if (attributesImport) { attributesImport->captureSourceScalars(file); }
     aReader.Transfer(hDoc, theProgress);
+    if (attributesImport) { attributesImport->capture(aReader, hDoc); }
+    if (viewsImport) {
+        viewsImport->capture(aReader, hDoc);
+    }
 }

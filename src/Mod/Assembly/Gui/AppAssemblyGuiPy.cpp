@@ -23,6 +23,8 @@
 
 
 #include <Base/Interpreter.h>
+#include "MotionInterferenceGuiPy.h"
+#include "DragFeedback.h"
 
 #ifdef ASSEMBLY_ENABLE_TEST_HOOKS
 # include "ViewProviderReviewNoteTestHarness.h"
@@ -66,10 +68,32 @@ public:
             "reviewNoteTestApplyExceptionsCaughtCount() -> int — test harness only"
         );
 #endif
+        add_varargs_method("_showMotionInterferenceResult", &Module::showMotionResult,
+            "Internal: replay an owned sweep snapshot through the interference checker.");
+        add_varargs_method("_clearMotionInterferenceResult", &Module::clearMotionResult,
+            "Internal: remove the sweep witness preview.");
+        add_varargs_method("_setDragFeedbackCallback", &Module::setDragCallback,
+            "Internal: observe displayed assembly drag steps and drag end.");
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+        add_varargs_method("_motionDragEvent", &Module::dragEvent,
+            "Test only: drive the same mouse handlers as a 3D assembly drag.");
+#endif
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+    Py::Object setDragCallback(const Py::Tuple& args) { return setDragFeedbackCallbackPy(args); }
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+    Py::Object dragEvent(const Py::Tuple& args) { return motionDragEventPy(args); }
+#endif
+    Py::Object showMotionResult(const Py::Tuple& args)
+    {
+        return showMotionInterferenceResultPy(args);
+    }
+    Py::Object clearMotionResult(const Py::Tuple& args)
+    {
+        return clearMotionInterferenceResultPy(args);
+    }
 #ifdef ASSEMBLY_ENABLE_TEST_HOOKS
     Py::Object resetReviewNoteTestHooks(const Py::Tuple& args)
     {

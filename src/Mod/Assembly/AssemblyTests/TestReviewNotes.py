@@ -39,6 +39,18 @@ import JointObject
 import UtilsAssembly
 
 
+def _close_document(name):
+    # Flush queued tree updates before document/model indices are destroyed,
+    # including the explicit closes in persistence and reload tests.
+    if App.GuiUp:
+        import FreeCADGui as Gui
+
+        Gui.updateGui()
+    close_document_by_name(name)
+    if App.GuiUp:
+        Gui.updateGui()
+
+
 def _msg(text, end="\n"):
     App.Console.PrintMessage(text + end)
 
@@ -71,7 +83,7 @@ class TestReviewNotes(unittest.TestCase):
         _msg("  Temporary document '{}'".format(self.doc.Name))
 
     def tearDown(self):
-        close_document_by_name(self.doc.Name)
+        _close_document(self.doc.Name)
 
     def _make_joint(self):
         box2 = self.assembly.newObject("Part::Box", "Box2")
@@ -518,7 +530,7 @@ class TestReviewNotes(unittest.TestCase):
         try:
             self.doc.saveAs(path)
             doc_name = self.doc.Name
-            close_document_by_name(doc_name)
+            _close_document(doc_name)
 
             loaded = App.openDocument(path)
             self.doc = loaded
@@ -554,7 +566,7 @@ class TestReviewNotes(unittest.TestCase):
             )
         finally:
             if App.ActiveDocument:
-                close_document_by_name(App.ActiveDocument.Name)
+                _close_document(App.ActiveDocument.Name)
             # Recreate a blank doc so tearDown can close it cleanly.
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
@@ -604,7 +616,7 @@ class TestReviewNotes(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            close_document_by_name(self.doc.Name)
+            _close_document(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -620,7 +632,7 @@ class TestReviewNotes(unittest.TestCase):
             self.assertEqual(loaded_refs[0]["full"], "Box.Face6", operation)
         finally:
             if App.ActiveDocument:
-                close_document_by_name(App.ActiveDocument.Name)
+                _close_document(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -1903,7 +1915,7 @@ class TestReviewNotes(unittest.TestCase):
         os.close(fd)
         try:
             self.doc.saveAs(path)
-            close_document_by_name(self.doc.Name)
+            _close_document(self.doc.Name)
             loaded = App.openDocument(path)
             self.doc = loaded
             App.setActiveDocument(loaded.Name)
@@ -1917,7 +1929,7 @@ class TestReviewNotes(unittest.TestCase):
                 self.assertFalse(note.ViewObject.Visibility, operation)
         finally:
             if App.ActiveDocument:
-                close_document_by_name(App.ActiveDocument.Name)
+                _close_document(App.ActiveDocument.Name)
             self.doc = App.newDocument(self.__class__.__name__)
             App.setActiveDocument(self.doc.Name)
             try:
@@ -1941,7 +1953,7 @@ class TestReviewNotesGui(unittest.TestCase):
 
         doc_name = self.__class__.__name__
         if App.ActiveDocument and App.ActiveDocument.Name != doc_name:
-            close_document_by_name(App.ActiveDocument.Name)
+            _close_document(App.ActiveDocument.Name)
         if not App.ActiveDocument or App.ActiveDocument.Name != doc_name:
             App.newDocument(doc_name)
         App.setActiveDocument(doc_name)
@@ -1984,7 +1996,7 @@ class TestReviewNotesGui(unittest.TestCase):
         except Exception:
             pass
         if App.ActiveDocument:
-            close_document_by_name(App.ActiveDocument.Name)
+            _close_document(App.ActiveDocument.Name)
 
     def test_gui_commands_and_view_context_eligibility(self):
         operation = "GUI commands registered; Add Note View-eligible"
@@ -4104,7 +4116,7 @@ class TestReviewNotesGui(unittest.TestCase):
             fd, path = tempfile.mkstemp(suffix=".FCStd")
             os.close(fd)
             self.doc.saveAs(path)
-            close_document_by_name(doc_name)
+            _close_document(doc_name)
             App.open(path)
             self.doc = App.ActiveDocument
             Gui.ActiveDocument = Gui.getDocument(self.doc.Name)

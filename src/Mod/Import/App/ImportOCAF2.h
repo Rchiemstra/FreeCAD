@@ -42,6 +42,7 @@
 #include "ExportOCAF.h"
 #include "ImportOCAF.h"
 #include "Tools.h"
+#include "StepPmiExport.h"
 
 
 class TDF_Label;
@@ -84,6 +85,19 @@ public:
 
     static ImportOCAFOptions customImportOptions();
     void setImportOptions(ImportOCAFOptions opts);
+    void setModelShapesOnly(bool value) { modelShapesOnly = value; }
+    void setShapeObserver(ShapeImportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
+    bool supportsPmiAssociation() const
+    {
+        return !options.merge && options.mode == SingleDoc;
+    }
+    bool supportsAttributeAssociation() const
+    {
+        return supportsPmiAssociation() && !options.reduceObjects && !options.expandCompound;
+    }
     void setMerge(bool enable)
     {
         options.merge = enable;
@@ -212,6 +226,8 @@ private:
     Handle(XCAFDoc_ColorTool) aColorTool;
     std::string default_name;
 
+    bool modelShapesOnly = false;
+    ShapeImportObserver shapeObserver;
     ImportOCAFOptions options;
     std::string filePath;
 
@@ -262,6 +278,14 @@ public:
         options.keepPlacement = enable;
     }
     void exportObjects(std::vector<App::DocumentObject*>& objs, const char* name = nullptr);
+    void setAttributeObserver(ShapeExportObserver observer)
+    {
+        attributeObserver = std::move(observer);
+    }
+    void setShapeObserver(ShapeExportObserver observer)
+    {
+        shapeObserver = std::move(observer);
+    }
     bool canFallback(std::vector<App::DocumentObject*> objs);
 
 private:
@@ -298,6 +322,8 @@ private:
     GetShapeColorsFunc getShapeColors;
 
     ExportOCAFOptions options;
+    ShapeExportObserver shapeObserver;
+    ShapeExportObserver attributeObserver;
 };
 
 }  // namespace Import

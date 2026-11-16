@@ -140,6 +140,11 @@ public:
     );
     ~TaskInterferenceCheck() override;
 
+    // Document-thread replay of an owned snapshot; geometry is never rescanned.
+    void presentMotionResult(const Assembly::InterferenceScanResult& result,
+                             std::size_t pairIndex, bool wholeSolid, const QString& context);
+    void clearMotionResult();
+
     bool accept();
     bool reject();
 
@@ -407,6 +412,8 @@ private:
     QPushButton* manageExclusionsButton = nullptr;
 
     Assembly::InterferenceScanResult lastResult;
+    /** Also display a clear whole-solid measurement during motion replay. */
+    bool motionPreview = false;
     /** True after the active scan generation finishes via finishScan() and is not cancelled. */
     bool hasAcceptedScanResult = false;
     /**

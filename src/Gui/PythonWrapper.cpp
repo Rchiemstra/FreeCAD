@@ -370,7 +370,7 @@ public:
             Base::PyGILStateLocker lock;
 
             if (auto sbkPtr = reinterpret_cast<SbkObject*>(pyobj); sbkPtr) {
-                Shiboken::Object::setValidCpp(sbkPtr, false);
+                Shiboken::Object::invalidate(sbkPtr);
             }
             else {
                 Base::Console().developerError(
@@ -384,7 +384,11 @@ public:
 
         connections[PyW_invalidator]
             = connect(PyW_invalidator, &QObject::destroyed, this, destroyedFun);
-        connect(obj, &QObject::destroyed, PyW_invalidator, &QObject::deleteLater);
+        // Invalidate during destruction, before the native address can be reused.
+        // Deferred invalidation can otherwise mark a new live wrapper as deleted.
+        connect(obj, &QObject::destroyed, PyW_invalidator, [PyW_invalidator]() {
+            delete PyW_invalidator;
+        });
     }
 
 private:

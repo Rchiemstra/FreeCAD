@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <cstring>
+
 #include <gtest/gtest.h>
 
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include "Mod/Part/App/FeaturePartCommon.h"
 #include "Mod/Part/App/PropertyTopoShape.h"
+#include <App/Application.h>
+#include <App/DocumentRevisionIndex.h>
+#include <Base/Exception.h>
 #include <src/App/InitApplication.h>
 #include "PartTestHelpers.h"
 #include "Mod/Part/App/TopoShapeCompoundPy.h"
@@ -272,6 +277,64 @@ TEST_F(PropertyTopoShapeTest, testPropertyShapeCachePyObj)
     EXPECT_EQ(PyList_Size(pyObjOutErased), 2);  // setPyObject removed Face2 and Face3
     Py_XDECREF(pyObjOut);
     Py_XDECREF(pyObjOutErased);
+}
+
+TEST_F(PropertyTopoShapeTest, shapeCacheCreationDoesNotPublishObjectStructure)
+{
+    auto* box = _boxes[0];
+    ASSERT_NE(box, nullptr);
+    const auto key = App::DocumentRevisionKey::objectStructure(box->getNameInDocument());
+    const auto before = _doc->collaborationRevisions().current(key);
+    auto* cache = Part::PropertyShapeCache::get(box, true);
+    ASSERT_NE(cache, nullptr);
+    EXPECT_EQ(_doc->collaborationRevisions().current(key), before);
+    ASSERT_NE(
+        box->addDynamicProperty("App::PropertyInteger", "RealMark", "Part", "real model property"),
+        nullptr);
+    EXPECT_EQ(_doc->collaborationRevisions().current(key), before + 1);
+}
+
+TEST_F(PropertyTopoShapeTest, shapeCacheObserverAddsStillPublishObjectStructure)
+{
+    auto* box = _boxes[0];
+    auto* other = _boxes[1];
+    ASSERT_NE(box, nullptr);
+    ASSERT_NE(other, nullptr);
+    const auto boxKey = App::DocumentRevisionKey::objectStructure(box->getNameInDocument());
+    const auto otherKey = App::DocumentRevisionKey::objectStructure(other->getNameInDocument());
+    const auto boxBefore = _doc->collaborationRevisions().current(boxKey);
+    const auto otherBefore = _doc->collaborationRevisions().current(otherKey);
+    std::string observerError;
+    fastsignals::scoped_connection connection =
+        App::GetApplication().signalAppendDynamicProperty.connect(
+            [&](const App::Property& property) {
+                if (!observerError.empty() || !property.getName()
+                    || std::strcmp(property.getName(), "_Part_ShapeCache") != 0
+                    || property.getContainer() != box) {
+                    return;
+                }
+                try {
+                    if (!box->addDynamicProperty(
+                            "App::PropertyInteger", "ObserverMark", "Part", "observer on cache object")) {
+                        observerError = "same-object observer add returned null";
+                    }
+                    if (!other->addDynamicProperty(
+                            "App::PropertyInteger", "ObserverMark", "Part", "observer on second object")) {
+                        observerError = "second-object observer add returned null";
+                    }
+                }
+                catch (const Base::Exception& error) {
+                    observerError = error.what();
+                }
+            });
+
+    auto* cache = Part::PropertyShapeCache::get(box, true);
+    ASSERT_NE(cache, nullptr);
+    EXPECT_TRUE(observerError.empty()) << observerError;
+    // The cache add is not model intent. Each observer add is, so each object
+    // moves by exactly that one publication.
+    EXPECT_EQ(_doc->collaborationRevisions().current(boxKey), boxBefore + 1);
+    EXPECT_EQ(_doc->collaborationRevisions().current(otherKey), otherBefore + 1);
 }
 
 TEST_F(PropertyTopoShapeTest, testRestore)

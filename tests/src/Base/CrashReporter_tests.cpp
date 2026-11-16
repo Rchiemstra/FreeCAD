@@ -640,6 +640,39 @@ TEST_F(CrashReporterTests, DISABLED_DeliberateSegfaultRoundTrip)  // NOLINT
 }
 
 
+TEST_F(CrashReporterTests, zeroInlineTakesTheFollowingPhysicalAddress)  // NOLINT
+{
+    // cpptrace 1.0.4 order: inline frames, then the physical frame they belong to.
+    std::vector<Base::CrashReporter::ResolvedInstruction> frames = {
+        {.rawAddress = 0x10, .objectAddress = 0x1, .isInline = false},
+        {.rawAddress = 0, .objectAddress = 0, .isInline = true},
+        {.rawAddress = 0, .objectAddress = 0, .isInline = true},
+        {.rawAddress = 0x20, .objectAddress = 0x2, .isInline = false},
+    };
+    Base::CrashReporter::attributeInlineFrames(frames);
+    EXPECT_EQ(frames.at(0).rawAddress, 0x10U);
+    EXPECT_EQ(frames.at(1).rawAddress, 0x20U);
+    EXPECT_EQ(frames.at(1).objectAddress, 0x2U);
+    EXPECT_EQ(frames.at(2).rawAddress, 0x20U);
+    EXPECT_EQ(frames.at(2).objectAddress, 0x2U);
+    EXPECT_EQ(frames.at(3).rawAddress, 0x20U);
+}
+
+TEST_F(CrashReporterTests, bareZeroAndTrailingInlineStayZero)  // NOLINT
+{
+    // A non-inline 0 is a capture hole, not an inline, so it is not rewritten. An inline with
+    // nothing after it has no physical instruction to copy.
+    std::vector<Base::CrashReporter::ResolvedInstruction> frames = {
+        {.rawAddress = 0, .objectAddress = 0, .isInline = false},
+        {.rawAddress = 0x30, .objectAddress = 0x3, .isInline = true},
+        {.rawAddress = 0, .objectAddress = 0, .isInline = true},
+    };
+    Base::CrashReporter::attributeInlineFrames(frames);
+    EXPECT_EQ(frames.at(0).rawAddress, 0U);
+    EXPECT_EQ(frames.at(1).rawAddress, 0x30U);
+    EXPECT_EQ(frames.at(2).rawAddress, 0U);
+}
+
 TEST_F(CrashReporterTests, trimLeadingPlumbingFramesLeavesNoPlumbingAlone)  // NOLINT
 {
     const std::vector<Base::CrashReporter::ParsedFrame> frames = {

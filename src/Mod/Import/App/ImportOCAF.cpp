@@ -109,7 +109,8 @@ void ImportOCAF::loadShapes()
 {
     std::vector<App::DocumentObject*> lValue;
     myRefShapes.clear();
-    loadShapes(pDoc->Main(), TopLoc_Location(), default_name, "", false, lValue);
+    loadShapes(modelShapesOnly ? XCAFDoc_DocumentTool::ShapesLabel(pDoc->Main()) : pDoc->Main(),
+               TopLoc_Location(), default_name, "", false, lValue);
     lValue.clear();
 }
 
@@ -344,15 +345,18 @@ void ImportOCAF::createShape(
                 part->Label.setValue(name);
                 lValue.push_back(part);
 
+                if (shapeObserver) {
+                    shapeObserver(label, aShape, part);
+                }
                 loadColors(part, aShape);
             }
         }
         else {
             for (xp.Init(aShape, TopAbs_SOLID); xp.More(); xp.Next(), ctSolids++) {
-                createShape(xp.Current(), loc, name, localValue);
+                createShape(label, xp.Current(), loc, name, localValue);
             }
             for (xp.Init(aShape, TopAbs_SHELL, TopAbs_SOLID); xp.More(); xp.Next(), ctShells++) {
-                createShape(xp.Current(), loc, name, localValue);
+                createShape(label, xp.Current(), loc, name, localValue);
             }
         }
 
@@ -372,11 +376,12 @@ void ImportOCAF::createShape(
         }
     }
     else if (!aShape.IsNull()) {
-        createShape(aShape, loc, name, lValue);
+        createShape(label, aShape, loc, name, lValue);
     }
 }
 
 void ImportOCAF::createShape(
+    const TDF_Label& sourceLabel,
     const TopoDS_Shape& aShape,
     const TopLoc_Location& loc,
     const std::string& name,
@@ -395,6 +400,9 @@ void ImportOCAF::createShape(
     part->Label.setValue(name);
     lvalue.push_back(part);
 
+    if (shapeObserver) {
+        shapeObserver(sourceLabel, aShape, part);
+    }
     loadColors(part, aShape);
 }
 

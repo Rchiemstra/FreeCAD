@@ -30,6 +30,7 @@
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <Mod/Part/App/FCBRepAlgoAPI_Common.h>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Fuse.h>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -458,7 +459,7 @@ std::vector<TopoDS_Edge> DrawProjectSplit::scrubEdges(std::vector<TopoDS_Edge>& 
     bopBuilder.SetCheckInverted(Standard_False);
     // Use oriented bound boxes
     bopBuilder.SetUseOBB(Standard_True);
-    bopBuilder.SetRunParallel(Standard_True);
+    bopBuilder.SetRunParallel(Part::booleanRunParallel());
 
     bopBuilder.Perform();
     if (bopBuilder.HasErrors()) {

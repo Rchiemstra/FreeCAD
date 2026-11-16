@@ -64,11 +64,13 @@ class AssemblyWorkbench(Workbench):
         from PySide.QtCore import QT_TRANSLATE_NOOP
         import CommandCreateAssembly
         import CommandInsertLink
+        import CommandExtractComponent
         import CommandInsertNewPart
         import CommandCreateJoint
         import CommandSolveAssembly
         import CommandExportASMT
         import CommandCreateView
+        import CommandMotionInterference
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
@@ -88,6 +90,7 @@ class AssemblyWorkbench(Workbench):
         cmdList = [
             "Assembly_CreateAssembly",
             "Assembly_Insert",
+            "Assembly_ExtractComponent",
             "Part_LinkArrays",
             "Assembly_ComponentPattern",
             "Assembly_SolveAssembly",
@@ -104,6 +107,7 @@ class AssemblyWorkbench(Workbench):
             "Assembly_ExportASMT",
             "Assembly_CheckInterference",
             "Assembly_CheckSelectedComponents",
+            "Assembly_MotionInterference",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -179,6 +183,12 @@ class AssemblyWorkbench(Workbench):
         assembly = UtilsAssembly.activeAssembly()
         if assembly is None:
             return
+
+        if recipient == "Tree":
+            import CommandExtractComponent
+
+            if CommandExtractComponent.selectedComponent() is not None:
+                self.appendContextMenu("", ["Assembly_ExtractComponent"])
 
         for sel in selection:
             for sub_name in sel.SubElementNames:
@@ -315,6 +325,7 @@ class AssemblyWorkbench(Workbench):
                 self.commands = [
                     "Assembly_CheckInterference",
                     "Assembly_CheckSelectedComponents",
+                    "Assembly_MotionInterference",
                 ]
                 self.title = translate("Assembly", "Interference")
 

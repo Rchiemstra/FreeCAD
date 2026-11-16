@@ -88,6 +88,7 @@
 
 #include "GeoEnum.h"
 #include "SketchObject.h"
+#include "LinkedOffset.h"
 #include "ExternalGeometryFacade.h"
 #include <Mod/Part/App/Datums.h>
 
@@ -534,6 +535,8 @@ int SketchObject::carbonCopy(App::DocumentObject* pObj, bool construction)
         }
         newVals.push_back(geoNew);
     }
+
+    remapLinkedOffsetCopies({newVals.begin() + nextgeoid, newVals.end()});
 
     auto applyConstraintFlipCorrection = [xinv, yinv](Sketcher::Constraint* newConstr) {
         if (!xinv && !yinv) {
