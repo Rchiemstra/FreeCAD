@@ -364,6 +364,11 @@ bool isCommandNeedingBSplineKnotActive(Gui::Document* doc)
         if (!Obj) {
             return false;
         }
+        // The knot checks read the live sketch geometry.
+        const LiveSketchReadAdmission admission(*doc->getDocument());
+        if (!admission) {
+            return false;
+        }
         const std::string& name = names[0];
 
         int geoId {GeoEnum::GeoUndef};

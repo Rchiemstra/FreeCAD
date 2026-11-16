@@ -1731,6 +1731,14 @@
       "evidence": "auto* appDocument = App::GetApplication().getDocument(appDocumentName);"
     },
     {
+      "path": "src/Gui/DocumentExecutionIngress.cpp",
+      "occurrence": 1,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto documents = App::GetApplication().getDocuments();"
+    },
+    {
       "path": "src/Gui/DocumentModel.cpp",
       "occurrence": 1,
       "category": "live-reference-callback",

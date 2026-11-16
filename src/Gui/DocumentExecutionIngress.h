@@ -152,6 +152,13 @@ GuiExport bool submitDocumentClose(App::Document& document, bool allowApplicatio
 GuiExport bool documentExecutionLaneBusy(const App::Document& document);
 
 /**
+ * True while any open document defers live presentation reads, see
+ * Document::deferLivePresentationUpdates(). A selection can reach objects of
+ * other documents through links, so delayed selection readers check them all.
+ */
+GuiExport bool anyDocumentDefersLivePresentationUpdates();
+
+/**
  * True when GUI readers must use DocumentPresentationCache instead of live
  * App::DocumentObject / Property pointers (lane busy or post-commit sticky
  * presentation until idle live updateData).
