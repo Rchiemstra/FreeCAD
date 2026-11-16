@@ -26,11 +26,15 @@
 #include <QLocale>
 #include <QRegularExpression>
 
+#include <App/DocumentWouldBlock.h>
+#include <App/MutationClassification.h>
 #include <App/Transactions.h>
 #include <Base/Quantity.h>
 #include <Base/UnitsApi.h>
+#include <Gui/Application.h>
 #include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 #include <Mod/Sketcher/App/GeometryFacade.h>
 #include <Mod/Sketcher/App/SketchObject.h>
@@ -540,6 +544,29 @@ bool SketcherGui::isCommandActive(Gui::Document* doc)
     return false;
 }
 
+SketcherGui::LiveSketchReadAdmission::LiveSketchReadAdmission(const App::Document& document)
+{
+    if (!App::DocumentWouldBlock::isGuiThread() || !Gui::Application::Instance) {
+        return;
+    }
+    const auto* guiDocument = Gui::Application::Instance->getDocument(&document);
+    if (!guiDocument) {
+        return;
+    }
+    // Reserve before asking whether the document is idle, as Gui::Document does.
+    auto refresh = std::make_unique<App::LivePresentationRefreshScope>();
+    if (refresh->acquired() && !guiDocument->deferLivePresentationUpdates()) {
+        reservation = std::move(refresh);
+        return;
+    }
+    // The end of the busy work does not test the commands again by itself.
+    if (auto* window = Gui::getMainWindow()) {
+        window->updateActions(true);
+    }
+}
+
+SketcherGui::LiveSketchReadAdmission::~LiveSketchReadAdmission() = default;
+
 bool SketcherGui::isCommandNeedingConstraintActive(Gui::Document* doc)
 {
     if (!isCommandActive(doc)) {
@@ -571,6 +598,11 @@ bool SketcherGui::isCommandNeedingGeometryActive(Gui::Document* doc)
         Sketcher::SketchObject::getClassTypeId()
     );
     if (sel.size() == 1) {
+        // getIdsFromName() reads the vertex index of the live sketch.
+        const LiveSketchReadAdmission admission(*doc->getDocument());
+        if (!admission) {
+            return false;
+        }
         auto* Obj = static_cast<Sketcher::SketchObject*>(sel[0].getObject());
         for (const std::string& name : sel[0].getSubNames()) {
             int geoId {GeoEnum::GeoUndef};
@@ -596,6 +628,11 @@ bool SketcherGui::isCommandNeedingBSplineActive(Gui::Document* doc)
         Sketcher::SketchObject::getClassTypeId()
     );
     if (sel.size() == 1) {
+        // The selected names resolve against the live sketch geometry.
+        const LiveSketchReadAdmission admission(*doc->getDocument());
+        if (!admission) {
+            return false;
+        }
         auto* Obj = static_cast<Sketcher::SketchObject*>(sel[0].getObject());
         for (const std::string& name : sel[0].getSubNames()) {
 
