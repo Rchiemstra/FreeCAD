@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import Counter
 import re
 import sys
@@ -125,10 +126,18 @@ def _render(rows: list[tuple[str, str, int]]) -> str:
 
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=OUTPUT,
+        help="Write the inventory here instead of the committed file.",
+    )
+    args = parser.parse_args(argv)
     rows = _collect_rows()
-    OUTPUT.write_text(_render(rows), encoding="utf-8")
-    print(f"wrote {len(rows)} rows to {OUTPUT.relative_to(REPO_ROOT)}")
+    args.output.write_text(_render(rows), encoding="utf-8")
+    print(f"wrote {len(rows)} rows to {args.output}")
 
 
 if __name__ == "__main__":
