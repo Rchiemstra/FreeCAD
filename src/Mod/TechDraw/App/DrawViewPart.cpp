@@ -38,6 +38,7 @@
 
 
 #include <BOPAlgo_Builder.hxx>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <BRepAlgo_NormalProjection.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepBndLib.hxx>
@@ -649,7 +650,7 @@ void DrawViewPart::findFacesV26_3(const std::vector<BaseGeomPtr> &goEdges)
     builder.SetGlue(BOPAlgo_GlueOff);         // No gluing needed as all intersections are real
     builder.SetCheckInverted(Standard_False); // No solids in the input list
     builder.SetUseOBB(Standard_True);         // Use oriented bound boxes
-    builder.SetRunParallel(Standard_True);    // Speed up the process, if possible
+    builder.SetRunParallel(Part::booleanRunParallel());  // Speed up the process, if possible
 
     builder.AddArgument(BRepBuilderAPI_MakeFace(gp_Pln()));
     for (auto edge : goEdges) {

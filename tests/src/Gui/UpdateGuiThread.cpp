@@ -18,6 +18,7 @@
 
 #include <QApplication>
 #include <QTimer>
+#include <QtTest/QTest>
 
 #include <atomic>
 #include <functional>
@@ -178,8 +179,10 @@ TEST_F(UpdateGuiThreadTest, progressChangesDeferPainting)
     bar.setRange(0, 100);
     bar.setValue(0);
     bar.show();
-    QApplication::processEvents();
-    ASSERT_GT(observer.paints, 0);
+    // The window system maps and exposes the window asynchronously; on a
+    // loaded X server the first paint can take more than one event turn.
+    ASSERT_TRUE(QTest::qWaitForWindowExposed(&bar));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return observer.paints > 0; }));
 
     const auto checkDeferred = [&](const auto& change) {
         observer.paints = 0;
