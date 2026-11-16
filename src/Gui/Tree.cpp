@@ -3902,11 +3902,34 @@ void TreeWidget::onItemExpanded(QTreeWidgetItem* item)
     }
 }
 
+namespace
+{
+
+// Selection sync resolves selected sub-elements through the live objects:
+// DocumentItem::findItem() calls getSubObject(), which for a sketch reads its
+// geometry. The document execution lane may replace that state, so callers
+// reserve the live presentation refresh and then wait while any document is
+// busy, as Gui::Document does for its own live reads.
+int selectionSyncRetryInterval()
+{
+    const long timeout = TreeParams::getSelectionTimeout();
+    return timeout > 0 ? static_cast<int>(timeout) : 1;
+}
+
+}  // namespace
+
 void TreeWidget::scrollItemToTop()
 {
     auto doc = Application::Instance->activeDocument();
+    App::LivePresentationRefreshScope refresh;
     for (auto tree : Instances) {
         if (!tree->isSelectionAttached() || tree->isSelectionBlocked()) {
+            continue;
+        }
+
+        if (!refresh.acquired() || anyDocumentDefersLivePresentationUpdates()) {
+            // Sync the plain selection once the documents are idle.
+            tree->selectTimer->start(selectionSyncRetryInterval());
             continue;
         }
 
@@ -4271,6 +4294,12 @@ void TreeWidget::onSelectTimer()
             selectTimer->start();
             return;
         }
+    }
+
+    App::LivePresentationRefreshScope refresh;
+    if (!refresh.acquired() || anyDocumentDefersLivePresentationUpdates()) {
+        selectTimer->start(selectionSyncRetryInterval());
+        return;
     }
 
     _updateStatus(false);
