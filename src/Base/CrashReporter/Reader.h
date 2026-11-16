@@ -116,4 +116,21 @@ struct ParsedCrashReport
     const std::vector<ParsedFrame>& frames
 );
 
+/**
+ * One symbolicated instruction, before its module path is attached.
+ *
+ * cpptrace 1.0.4's libdwarf resolver records a DWARF inlined subroutine with both addresses left
+ * at 0, then the physical frame that contains it. Copy that physical instruction onto the inline
+ * frames so a published crash address is never the null page. A non-inline zero is left alone:
+ * that would be a capture hole, not an inline.
+ */
+struct ResolvedInstruction
+{
+    std::uint64_t rawAddress = 0;
+    std::uint64_t objectAddress = 0;
+    bool isInline = false;
+};
+
+void BaseExport attributeInlineFrames(std::vector<ResolvedInstruction>& frames);
+
 }  // namespace Base::CrashReporter

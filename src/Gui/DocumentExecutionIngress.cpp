@@ -298,7 +298,9 @@ void schedulePropertyEditCommandCompletion(
 
 App::DocumentCommandSubmitOutcome submitDocumentPropertyEdit(
     App::Document& document,
-    std::vector<App::DocumentCommandPropertyValue> propertyValues)
+    std::vector<App::DocumentCommandPropertyValue> propertyValues,
+    std::string transactionLabel,
+    const bool recomputeAfterEdit)
 {
     if (propertyValues.empty()) {
         App::DocumentCommandSubmitOutcome outcome;
@@ -307,8 +309,10 @@ App::DocumentCommandSubmitOutcome submitDocumentPropertyEdit(
         return outcome;
     }
 
-    const auto outcome = document.executionHandle().trySubmit(
-        makeDocumentPropertyEditCommand(document, std::move(propertyValues)));
+    auto command = makeDocumentPropertyEditCommand(document, std::move(propertyValues));
+    command.edit->transactionLabel = std::move(transactionLabel);
+    command.edit->recomputeAfterEdit = recomputeAfterEdit;
+    const auto outcome = document.executionHandle().trySubmit(std::move(command));
     if (outcome.accepted() && outcome.commandId != 0) {
         schedulePropertyEditCommandCompletion(
             document.executionHandle().identity(),

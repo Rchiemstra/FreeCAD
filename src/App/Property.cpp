@@ -32,6 +32,7 @@
 #include <CXX/Objects.hxx>
 
 #include "Property.h"
+#include "PropertyTouchPublication.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
@@ -46,8 +47,21 @@ using namespace App;
 namespace
 {
 
-void publishPropertyMutation(Property& property, bool structural)
+thread_local const Property* suppressedTouchPublication = nullptr;
+
+// Touch is the only event PropertyTouchPublicationSuppressor may skip.
+// Value (including purgeTouched) and status stay publishable for that
+// same property. Classification is unchanged: status is structural.
+enum class PropertyPublication
 {
+    Touch,
+    Value,
+    Status,
+};
+
+void publishPropertyMutation(Property& property, PropertyPublication publication)
+{
+    const bool structural = publication == PropertyPublication::Status;
     auto* container = property.getContainer();
     auto* document = documentFromPropertyContainer(container);
     if (!document) {
@@ -97,11 +111,31 @@ void publishPropertyMutation(Property& property, bool structural)
     if (structural || input.propertyFamily == CollaborationPropertyFamily::Link) {
         Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
     }
-    if (document->collaborationRevisionPublicationSuppressed(&property)) {
+    // Audit above still records the mutation. Only the synthetic touch
+    // is unpublished; document-level suppression still covers every caller.
+    if ((publication == PropertyPublication::Touch && suppressedTouchPublication == &property)
+        || document->collaborationRevisionPublicationSuppressed(&property)) {
         return;
     }
     static_cast<void>(document->collaborationRevisions().publish(effects));
 }
+
+}  // namespace
+
+PropertyTouchPublicationSuppressor::PropertyTouchPublicationSuppressor(
+    const Property& property) noexcept
+    : _previous(suppressedTouchPublication)
+{
+    suppressedTouchPublication = &property;
+}
+
+PropertyTouchPublicationSuppressor::~PropertyTouchPublicationSuppressor()
+{
+    suppressedTouchPublication = _previous;
+}
+
+namespace
+{
 
 constexpr unsigned long serializedPropertyStatusMask()
 {
@@ -380,7 +414,7 @@ void Property::touch()
         }
     }
     StatusBits.set(Touched);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Touch);
     if (father && isNotifyEnabled()) {
         father->onEarlyChange(this);
         father->onChanged(this);
@@ -398,7 +432,7 @@ void Property::purgeTouched()
         }
     }
     StatusBits.reset(Touched);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Value);
 }
 
 void Property::setReadOnly(bool readOnly)
@@ -409,7 +443,7 @@ void Property::setReadOnly(bool readOnly)
 void Property::hasSetValue()
 {
     PropertyCleaner guard(this);
-    publishPropertyMutation(*this, false);
+    publishPropertyMutation(*this, PropertyPublication::Value);
     if (father) {
         if (isNotifyEnabled()) {
             father->onChanged(this);
@@ -504,7 +538,7 @@ void Property::setStatusValue(unsigned long status)
 
     if (father) {
         if (status != oldStatus && !onlyRuntimeLockerBits) {
-            publishPropertyMutation(*this, true);
+            publishPropertyMutation(*this, PropertyPublication::Status);
         }
         if (status != oldStatus) {
             father->onPropertyStatusChanged(*this, oldStatus);

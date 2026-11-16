@@ -28,6 +28,8 @@
 
 import FreeCAD
 
+FreeCAD.__unit_test__ += ["TestStepPmi", "TestStepViews", "TestStepAttributes", "TestStepAttributesExport"]
+
 translate = FreeCAD.Qt.translate
 
 # Append the open handler

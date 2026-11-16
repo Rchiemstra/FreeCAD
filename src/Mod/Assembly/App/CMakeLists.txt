@@ -3,6 +3,7 @@
 set(Assembly_LIBS
     Part
     PartDesign
+    Sketcher
     Spreadsheet
     FreeCADApp
     OndselSolver
@@ -52,8 +53,18 @@ SET(Module_SRCS
 SOURCE_GROUP("Module" FILES ${Module_SRCS})
 
 SET(Assembly_SRCS
+    ExtractXLinkReferences.cpp
+    ExtractXLinkReferences.h
+    ExtractExpressionReferences.cpp
+    ExtractExpressionReferences.h
+    ExtractSketchReferences.cpp
+    ExtractSketchReferences.h
+    ExtractReferences.cpp
+    ExtractReferences.h
     AssemblyObject.cpp
     AssemblyObject.h
+    MotionSimulationCoordinates.cpp
+    MotionSimulationCoordinates.h
     AssemblyLink.cpp
     AssemblyLink.h
     AssemblyUtils.cpp
@@ -66,6 +77,8 @@ SET(Assembly_SRCS
     ReviewNote.h
     InterferenceScan.cpp
     InterferenceScan.h
+    InterferenceScanPy.cpp
+    InterferenceScanPy.h
     InterferenceScanSession.cpp
     InterferenceScanSession.h
 

@@ -55,6 +55,9 @@ public:
         const QModelIndex& index
     ) override;
 
+Q_SIGNALS:
+    void editorCreated(QWidget* editor, const QModelIndex& index);
+
 protected:
     bool eventFilter(QObject*, QEvent*) override;
 

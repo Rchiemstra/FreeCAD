@@ -587,6 +587,8 @@ SET(Part_SRCS
     ExtrusionHelper.h
     FuzzyHelper.cpp
     FuzzyHelper.h
+    BooleanParallel.cpp
+    BooleanParallel.h
     GeometryExtension.cpp
     GeometryExtension.h
     GeometryDefaultExtension.cpp
@@ -595,6 +597,7 @@ SET(Part_SRCS
     GeometryMigrationExtension.cpp
     Geometry.cpp
     Geometry.h
+    BaseGeometry.h
     Geometry2d.cpp
     Geometry2d.h
     GizmoHelper.cpp

@@ -26,13 +26,15 @@ import math
 import FreeCAD as App
 import Part
 
-from PySide import QtCore
-from PySide.QtCore import QT_TRANSLATE_NOOP
 from collections.abc import Sequence
 
 if App.GuiUp:
     import FreeCADGui as Gui
-    from PySide import QtGui, QtWidgets
+    from PySide import QtCore, QtGui, QtWidgets
+    from PySide.QtCore import QT_TRANSLATE_NOOP
+else:
+    def QT_TRANSLATE_NOOP(context, text):
+        return text
 
 
 _deferred_joint_view_providers = {}
@@ -40,6 +42,8 @@ _deferred_joint_view_provider_observer = None
 
 
 def _on_gui_thread():
+    from PySide import QtCore
+
     app = QtCore.QCoreApplication.instance()
     # Like FreeCAD's main-thread guard: without a Qt application every thread
     # may use the (headless) GUI objects.
@@ -152,11 +156,12 @@ __title__ = "Assembly Joint object"
 __author__ = "Ondsel"
 __url__ = "https://www.freecad.org"
 
-from pivy import coin
 import UtilsAssembly
 import AssemblyPreferences as Preferences
 
-from SoSwitchMarker import SoSwitchMarker
+if App.GuiUp:
+    from pivy import coin
+    from SoSwitchMarker import SoSwitchMarker
 
 translate = App.Qt.translate
 
@@ -1885,7 +1890,7 @@ class MakeJointSelGate:
 activeTask = None
 
 
-class TaskAssemblyCreateJoint(QtCore.QObject):
+class TaskAssemblyCreateJoint(QtCore.QObject if App.GuiUp else object):
     def __init__(self, jointTypeIndex, jointObj=None, subclass=False):
         super().__init__()
 
