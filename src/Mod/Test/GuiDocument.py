@@ -532,6 +532,70 @@ class TestGuiDocument(unittest.TestCase):
     def testQueuedPresentationFromOwnerRunsInOrderOnce(self):
         self._queuedPresentationWhileBusy(from_owner=True)
 
+    def testDelayedSelectionReadersWaitForDocumentLane(self):
+        # The tree and Quick Measure resolve each selected sub-element through
+        # getSubObject() on a timer after the selection changes. For a sketch
+        # that reads the geometry the document lane may be replacing, so these
+        # delayed readers must wait for the lane.
+        from Test.GuiRecompute import _pump_gui_until
+
+        lane_busy = threading.Event()
+        lookups = []
+
+        class Probe:
+            def getSubObject(self, obj, subname, retType, matrix, transform, depth):
+                # The tree looks up one path level at a time.
+                if subname == "Child.":
+                    lookups.append(lane_busy.is_set())
+                return False
+
+        group = self.doc.addObject("App::DocumentObjectGroupPython", "Probe")
+        group.Proxy = Probe()
+        group.addObject(self.doc.addObject("Part::Box", "Child"))
+        recompute_document(self.doc)
+
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+
+        def hold_lane():
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("tree selection test did not release the lane")
+
+        def worker():
+            try:
+                self.doc.commitCompatibilityMutation(hold_lane, structural=False, recompute=False)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            _pump_gui_until(entered.is_set, 5)
+            # addSelection() resolves the sub-element itself, on this thread and
+            # before it returns. Only the delayed readers are under test.
+            FreeCADGui.Selection.addSelection(self.doc.Name, "Probe", "Child.Edge1")
+            lookups.clear()
+            lane_busy.set()
+            # Run well past the selection timeout (100 ms by default).
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                QtCore.QCoreApplication.processEvents()
+                time.sleep(0.01)
+            self.assertEqual(lookups, [], "a delayed selection reader read live objects while the lane was busy")
+        finally:
+            lane_busy.clear()
+            release.set()
+            _pump_gui_until(lambda: not thread.is_alive(), 10)
+            thread.join()
+        try:
+            if errors:
+                raise errors[0]
+            # The delayed readers still run once the lane is idle.
+            _pump_gui_until(lambda: False in lookups, 5)
+        finally:
+            FreeCADGui.Selection.clearSelection()
+
     def testQueuedPresentationCannotOvertakeDeferredCallback(self):
         from Test.GuiRecompute import _pump_gui_until
         from draftutils import gui_utils

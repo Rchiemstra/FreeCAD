@@ -738,11 +738,18 @@ TEST_F(CollaborationResponsivenessTest,
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
     _guiDocument->publishPresentationRevisionFromModel();
-    Gui::PresentationApplyPumpResult applied {};
-    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
-        applied = _guiDocument->pumpPresentationApply(50);
+    // The recompute boundary hands the packet over through the event loop,
+    // where the main window's update pump may already commit it. Wait for
+    // the committed root, not for this loop to be the one that commits it.
+    const auto seeded = [&] {
+        return _guiDocument->presentationCache().committedCoinRoot() != nullptr
+            && !_guiDocument->presentationApplyScheduler().hasStagingWork();
+    };
+    for (int turn = 0; turn < 20 && !seeded(); ++turn) {
+        QApplication::processEvents();
+        (void)_guiDocument->pumpPresentationApply(50);
     }
-    ASSERT_TRUE(applied.committedRevision);
+    ASSERT_TRUE(seeded());
     ASSERT_NE(_guiDocument->presentationCache().committedCoinRoot(), nullptr);
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
@@ -833,11 +840,18 @@ TEST_F(CollaborationResponsivenessTest,
     _guiDocument->catchUpIdleLivePresentation();
     QApplication::processEvents();
     _guiDocument->publishPresentationRevisionFromModel();
-    Gui::PresentationApplyPumpResult applied {};
-    for (int turn = 0; turn < 20 && !applied.committedRevision; ++turn) {
-        applied = _guiDocument->pumpPresentationApply(50);
+    // The recompute boundary hands the packet over through the event loop,
+    // where the main window's update pump may already commit it. Wait for
+    // the committed root, not for this loop to be the one that commits it.
+    const auto seeded = [&] {
+        return _guiDocument->presentationCache().committedCoinRoot() != nullptr
+            && !_guiDocument->presentationApplyScheduler().hasStagingWork();
+    };
+    for (int turn = 0; turn < 20 && !seeded(); ++turn) {
+        QApplication::processEvents();
+        (void)_guiDocument->pumpPresentationApply(50);
     }
-    ASSERT_TRUE(applied.committedRevision);
+    ASSERT_TRUE(seeded());
     auto* const committedRoot = _guiDocument->presentationCache().committedCoinRoot();
     const auto committedSequence = _guiDocument->presentationCache().committedSequence();
     ASSERT_NE(committedRoot, nullptr);

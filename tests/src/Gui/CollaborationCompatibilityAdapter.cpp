@@ -951,11 +951,18 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     processEventsFor(std::chrono::milliseconds(300));
 
     _guiDocument->publishPresentationRevisionFromModel();
-    Gui::PresentationApplyPumpResult result {};
-    for (int turn = 0; turn < 20 && !result.committedRevision; ++turn) {
-        result = _guiDocument->pumpPresentationApply(50);
+    // The recompute boundary hands the packet over through the event loop,
+    // where the main window's update pump may already commit it. Wait for
+    // the committed root, not for this loop to be the one that commits it.
+    const auto seeded = [&] {
+        return _guiDocument->presentationCache().committedCoinRoot() != nullptr
+            && !_guiDocument->presentationApplyScheduler().hasStagingWork();
+    };
+    for (int turn = 0; turn < 20 && !seeded(); ++turn) {
+        QApplication::processEvents();
+        (void)_guiDocument->pumpPresentationApply(50);
     }
-    ASSERT_TRUE(result.committedRevision);
+    ASSERT_TRUE(seeded());
 
     // Idle lane and no pending catch-up: the live view providers are current,
     // so the committed root must not replace them, now or later.

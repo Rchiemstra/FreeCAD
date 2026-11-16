@@ -644,6 +644,18 @@ bool documentExecutionLaneBusy(const App::Document& document)
     return lane && !lane->isIdle();
 }
 
+bool anyDocumentDefersLivePresentationUpdates()
+{
+    if (!Application::Instance) {
+        return false;
+    }
+    const auto documents = App::GetApplication().getDocuments();
+    return std::ranges::any_of(documents, [](const App::Document* document) {
+        const auto* guiDocument = Application::Instance->getDocument(document);
+        return guiDocument && guiDocument->deferLivePresentationUpdates();
+    });
+}
+
 bool shouldReadCommittedPresentation(const App::Document& document)
 {
     auto* guiDocument = Application::Instance
