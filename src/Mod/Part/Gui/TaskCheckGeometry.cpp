@@ -34,6 +34,7 @@
 #include <QTreeView>
 #include <Bnd_Box.hxx>
 #include <BOPAlgo_ArgumentAnalyzer.hxx>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <BOPAlgo_ListOfCheckResult.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -823,9 +824,11 @@ int TaskCheckGeometryResults::goBOPSingleCheck(
     BOPCheck.RebuildFaceMode() = rebuildFaceMode;
     BOPCheck.ContinuityMode() = continuityMode;
 
-    BOPCheck.SetParallelMode(!runSingleThreaded);  // this doesn't help for speed right now(occt 6.9.1).
-    BOPCheck.SetRunParallel(!runSingleThreaded);  // performance boost, use all available cores
-    BOPCheck.TangentMode() = tangentMode;         // these 4 new tests add about 5% processing time.
+    // this doesn't help for speed right now(occt 6.9.1).
+    Part::setBooleanParallelMode(!runSingleThreaded);
+    // performance boost, use all available cores
+    BOPCheck.SetRunParallel(Part::booleanRunParallel(!runSingleThreaded));
+    BOPCheck.TangentMode() = tangentMode;  // these 4 new tests add about 5% processing time.
     BOPCheck.MergeVertexMode() = mergeVertexMode;
     BOPCheck.MergeEdgeMode() = mergeEdgeMode;
     BOPCheck.CurveOnSurfaceMode() = curveOnSurfaceMode;

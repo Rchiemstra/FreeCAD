@@ -47,6 +47,7 @@
 #include <Mod/Part/App/FCBRepAlgoAPI_Cut.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Fuse.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Section.h>
+#include <Mod/Part/App/BooleanParallel.h>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_FindPlane.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
@@ -4218,7 +4219,7 @@ TopoShape& TopoShape::makeElementDefeaturing(
     }
 
     BRepAlgoAPI_Defeaturing mkDefeaturing;
-    mkDefeaturing.SetRunParallel(true);
+    mkDefeaturing.SetRunParallel(Part::booleanRunParallel());
     mkDefeaturing.SetToFillHistory(true);
     mkDefeaturing.SetShape(shape.getShape());
     for (const auto& face : faces) {
@@ -4266,7 +4267,7 @@ TopoShape& TopoShape::makeElementGeneralFuse(
     std::vector<TopoShape> shapes(_shapes);
 
     BRepAlgoAPI_BuilderAlgo mkGFA;
-    mkGFA.SetRunParallel(true);
+    mkGFA.SetRunParallel(Part::booleanRunParallel());
     TopTools_ListOfShape GFAArguments;
     for (auto& shape : shapes) {
         if (shape.isNull()) {
@@ -6244,7 +6245,7 @@ TopoShape& TopoShape::makeElementBoolean(
         }
     }
 
-    mk->SetRunParallel(Standard_True);
+    mk->SetRunParallel(Part::booleanRunParallel());
     OSD_Parallel::SetUseOcctThreads(Standard_True);
 
     mk->SetArguments(shapeArguments);
