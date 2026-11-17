@@ -1234,3 +1234,37 @@ class TopoShapeTest(unittest.TestCase, TopoShapeAssertions):
     def testTopoShapeVertexRepr(self):
         self.assertEqual(repr(Part.Vertex(1, 2, 3)), "<Part.Vertex (1, 2, 3)>")
         self.assertEqual(repr(Part.Vertex()), "<Part.Vertex()>")
+
+    def testHashCode(self):
+        box = Part.makeBox(10, 10, 10)
+        max_int = 2147483647
+
+        h_default = box.hashCode()
+        self.assertGreaterEqual(h_default, 1)
+        self.assertLessEqual(h_default, max_int)
+        self.assertEqual(box.hashCode(), h_default)
+        self.assertEqual(box.hashCode(max_int), h_default)
+
+        self.assertEqual(box.hashCode(1), 1)
+
+        h10 = box.hashCode(10)
+        self.assertGreaterEqual(h10, 1)
+        self.assertLessEqual(h10, 10)
+        self.assertEqual(box.hashCode(10), h10)
+
+        face = box.Faces[0]
+        rev_face = face.reversed()
+        self.assertTrue(face.isSame(rev_face))
+        self.assertEqual(rev_face.hashCode(), face.hashCode())
+        self.assertEqual(rev_face.hashCode(10), face.hashCode(10))
+
+        for bad_val in (0, -1, -100):
+            with self.assertRaises(ValueError):
+                box.hashCode(bad_val)
+
+        for bad_type in ("10", 1.5, None):
+            with self.assertRaises(TypeError):
+                box.hashCode(bad_type)
+
+        with self.assertRaises(OverflowError):
+            box.hashCode(2**40)
