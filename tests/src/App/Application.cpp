@@ -8,10 +8,17 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Exception.h>
+#include <Base/Interpreter.h>
 
+#include <QDir>
+#include <QFile>
 #include <QScopeGuard>
+#include <QTemporaryDir>
 
 #include <algorithm>
+#include <initializer_list>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -166,4 +173,150 @@ TEST_F(ApplicationTest, importAndExportTypeListAModuleOnceWhenPatternsDifferOnly
     EXPECT_EQ(
         countNamedModule(App::GetApplication().getExportModules("B8CASEONCE"), "B8OnceModule"),
         1);
+}
+
+namespace
+{
+
+class ScopedScriptImports
+{
+public:
+    explicit ScopedScriptImports(std::initializer_list<const char*> names)
+        : previousPath(PySequence_List(PySys_GetObject("path")), true)
+        , moduleNames(names)
+    {}
+
+    ~ScopedScriptImports()
+    {
+        EXPECT_EQ(PySys_SetObject("path", previousPath.ptr()), 0);
+        for (const char* name : moduleNames) {
+            if (PyDict_DelItemString(PyImport_GetModuleDict(), name) < 0) {
+                PyErr_Clear();  // Failed imports are already removed by Python.
+            }
+        }
+    }
+
+private:
+    Base::PyGILStateLocker lock;
+    Py::Object previousPath;
+    std::vector<const char*> moduleNames;
+};
+
+QString pythonStringLiteral(QString value)
+{
+    value.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
+    value.replace(QStringLiteral("'"), QStringLiteral("\\'"));
+    value.replace(QStringLiteral("\r"), QStringLiteral("\\r"));
+    value.replace(QStringLiteral("\n"), QStringLiteral("\\n"));
+    return QStringLiteral("'") + value + QStringLiteral("'");
+}
+
+std::string writeTempScript(const QTemporaryDir& dir, const QString& name, const QByteArray& content)
+{
+    QFile file(dir.filePath(name));
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    EXPECT_EQ(file.write(content), content.size());
+    file.close();
+    return QDir::fromNativeSeparators(file.fileName()).toStdString();
+}
+
+std::string readTempFile(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return file.readAll().toStdString();
+}
+
+}  // namespace
+
+TEST_F(ApplicationTest, processFilesConsoleModeThrowsAndStopsOnScriptFailure)
+{
+    QTemporaryDir tempDir;
+    ASSERT_TRUE(tempDir.isValid());
+    const ScopedScriptImports imports {"console_first_fail", "console_second_ok"};
+
+    auto& cfg = App::Application::Config();
+    const auto prevIt = cfg.find("RunMode");
+    const bool hadRunMode = prevIt != cfg.end();
+    const std::string prevRunMode = hadRunMode ? prevIt->second : std::string {};
+    const auto cleanup = qScopeGuard([&] {
+        if (hadRunMode) {
+            cfg["RunMode"] = prevRunMode;
+        }
+        else {
+            cfg.erase("RunMode");
+        }
+    });
+    cfg["RunMode"] = "Exit";
+
+    const QString logPath = pythonStringLiteral(
+        QDir::fromNativeSeparators(tempDir.filePath(QStringLiteral("order's.txt"))));
+    const std::string firstFail = writeTempScript(
+        tempDir,
+        QStringLiteral("console_first_fail.py"),
+        QStringLiteral(
+            "with open(%1, 'a', encoding='utf-8') as f:\n"
+            "    f.write('first\\n')\n"
+            "raise ValueError('console-boom')\n")
+            .arg(logPath)
+            .toUtf8());
+    const std::string secondOk = writeTempScript(
+        tempDir,
+        QStringLiteral("console_second_ok.py"),
+        QStringLiteral(
+            "with open(%1, 'a', encoding='utf-8') as f:\n"
+            "    f.write('second\\n')\n")
+            .arg(logPath)
+            .toUtf8());
+
+    EXPECT_THROW(App::Application::processFiles({firstFail, secondOk}), Base::Exception);
+    EXPECT_EQ(readTempFile(tempDir.filePath(QStringLiteral("order's.txt"))), "first\n");
+}
+
+TEST_F(ApplicationTest, processFilesGuiModeSwallowsExceptionAndContinuesWithoutRetryingScript)
+{
+    QTemporaryDir tempDir;
+    ASSERT_TRUE(tempDir.isValid());
+    const ScopedScriptImports imports {"gui_first_fail", "gui_second_ok"};
+
+    auto& cfg = App::Application::Config();
+    const auto prevIt = cfg.find("RunMode");
+    const bool hadRunMode = prevIt != cfg.end();
+    const std::string prevRunMode = hadRunMode ? prevIt->second : std::string {};
+    const auto cleanup = qScopeGuard([&] {
+        if (hadRunMode) {
+            cfg["RunMode"] = prevRunMode;
+        }
+        else {
+            cfg.erase("RunMode");
+        }
+    });
+    cfg["RunMode"] = "Gui";
+
+    const QString logPath = pythonStringLiteral(
+        QDir::fromNativeSeparators(tempDir.filePath(QStringLiteral("order's.txt"))));
+    const std::string firstFail = writeTempScript(
+        tempDir,
+        QStringLiteral("gui_first_fail.py"),
+        QStringLiteral(
+            "with open(%1, 'a', encoding='utf-8') as f:\n"
+            "    f.write('first\\n')\n"
+            "raise ValueError('gui-boom')\n")
+            .arg(logPath)
+            .toUtf8());
+    const std::string secondOk = writeTempScript(
+        tempDir,
+        QStringLiteral("gui_second_ok.py"),
+        QStringLiteral(
+            "with open(%1, 'a', encoding='utf-8') as f:\n"
+            "    f.write('second\\n')\n")
+            .arg(logPath)
+            .toUtf8());
+
+    std::list<std::string> processed;
+    EXPECT_NO_THROW(processed = App::Application::processFiles({firstFail, secondOk}));
+    EXPECT_EQ(processed, std::list<std::string> {secondOk});
+    EXPECT_EQ(readTempFile(tempDir.filePath(QStringLiteral("order's.txt"))), "first\nsecond\n");
 }

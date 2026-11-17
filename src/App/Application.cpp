@@ -3404,16 +3404,29 @@ std::list<std::string> Application::processFiles(const std::list<std::string>& f
                 processed.push_back(it);
             }
             else if (file.hasExtension("py")) {
-                try {
-                    Base::Interpreter().addPythonPath(file.dirPath().c_str());
-                    Base::Interpreter().loadModule(file.fileNamePure().c_str());
-                    processed.push_back(it);
+                Base::Interpreter().addPythonPath(file.dirPath().c_str());
+                const std::string moduleName = file.fileNamePure();
+                if (moduleName.find('.') != std::string::npos) {
+                    Base::Interpreter().runFile(file.filePath().c_str(), true);
                 }
-                catch (const Base::PyException&) {
-                    // if loading the module does not work, try just running the script (run in __main__)
-                    Base::Interpreter().runFile(file.filePath().c_str(),true);
-                    processed.push_back(it);
+                else {
+                    try {
+                        Base::Interpreter().loadModule(moduleName.c_str());
+                    }
+                    catch (const Base::PyException& e) {
+                        Base::PyGILStateLocker lock;
+                        PyObject* excType = e.getPyExceptionType();
+                        if (excType && PyErr_GivenExceptionMatches(excType, PyExc_ImportError)
+                            && e.getStackTrace().empty()) {
+                            // if loading the module does not work, try just running the script (run in __main__)
+                            Base::Interpreter().runFile(file.filePath().c_str(), true);
+                        }
+                        else {
+                            throw;
+                        }
+                    }
                 }
+                processed.push_back(it);
             }
             else {
                 std::vector<std::string> mods = GetApplication().getImportModules(file.extension());
@@ -3437,10 +3450,17 @@ std::list<std::string> Application::processFiles(const std::list<std::string>& f
             throw; // re-throw to main() function
         }
         catch (const Base::Exception& e) {
+            e.reportException();
             Base::Console().error("Exception while processing file: {} [{}]\n", file.filePath(), e.what());
+            if (mConfig["RunMode"] != "Gui") {
+                throw;
+            }
         }
         catch (...) {
             Base::Console().error("Unknown exception while processing file: {} \n", file.filePath());
+            if (mConfig["RunMode"] != "Gui") {
+                throw;
+            }
         }
     }
 

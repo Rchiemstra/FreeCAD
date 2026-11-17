@@ -4,7 +4,13 @@
 # Triggers (top-level `when` below):
 #   * manual, tag                        (any branch; tags ignore branch filter)
 #   * pull_request opened or updated, targeting FreeCAD-start, fix/*, chore/*,
-#     or integrate/* (Woodpecker `branch` matches the PR target branch)
+#     or integrate/* (Woodpecker `branch` matches the PR target branch), but
+#     only when the PR is not a draft
+#   * "Ready for review" on such a PR (pull_request_metadata with reason
+#     ready_for_review); it runs the same pipeline on the PR head and reports
+#     as ci/woodpecker/pull_request_metadata/ci
+# Draft PRs start no pipeline and get no Woodpecker status. Converting a PR
+# back to draft does not cancel a pipeline that is already running.
 # `main` is intentionally NOT triggered here; .woodpecker/block-main.yml fails
 # every pull request into main instead.
 #
@@ -134,7 +140,11 @@
 when:
   - event: [manual, tag]
   - event: pull_request
-    branch: [FreeCAD-start, "fix/*", "chore/*", "integrate/*"]
+    branch: &ci_pr_targets [FreeCAD-start, "fix/*", "chore/*", "integrate/*"]
+    evaluate: 'CI_COMMIT_PULL_REQUEST_DRAFT != "true"'
+  - event: pull_request_metadata
+    branch: *ci_pr_targets
+    evaluate: 'CI_PIPELINE_EVENT_REASON == "ready_for_review"'
 
 labels:
   backend: docker
@@ -400,7 +410,7 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
-      - event: pull_request
+      - event: [pull_request, pull_request_metadata]
     commands:
       - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
@@ -423,7 +433,7 @@ steps:
     when:
       - event: [tag, manual]
         status: [success, failure]
-      - event: pull_request
+      - event: [pull_request, pull_request_metadata]
         status: [success, failure]
     commands:
       - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
@@ -440,7 +450,7 @@ steps:
     when:
       - event: [tag, manual]
         status: [success, failure]
-      - event: pull_request
+      - event: [pull_request, pull_request_metadata]
         status: [success, failure]
     commands:
       - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
@@ -457,7 +467,7 @@ steps:
     when:
       - event: [tag, manual]
         status: [success, failure]
-      - event: pull_request
+      - event: [pull_request, pull_request_metadata]
         status: [success, failure]
     commands:
       - if [ -f .ci-images/identity.txt ]; then cat .ci-images/identity.txt; fi
@@ -471,7 +481,7 @@ steps:
       MARKER: e2e
     when:
       - event: [tag, manual]
-      - event: pull_request
+      - event: [pull_request, pull_request_metadata]
     commands:
       - cat .ci-images/identity.txt
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
