@@ -13,6 +13,7 @@
 #include "NativeRecomputeErrors.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
+#include "private/RecomputeScheduling.h"
 
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
@@ -951,7 +952,11 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
             || identity.instanceId != session.documentInstanceId()) {
             throw Base::RuntimeError("edit session targets a stale document instance");
         }
-        if (!_document.collaborationPreparationSupported()
+        // Generic recompute is explicitly allowed to contain Python payloads.
+        // Its admission never uses this answer; avoid the document-wide scan.
+        if ((!Internal::useOptimizedRecomputeScheduling()
+             || intent.operationType != GenericIsolatedRecomputeOperationType)
+            && !_document.collaborationPreparationSupported()
             && intent.operationType != GenericIsolatedRecomputeOperationType) {
             throw Base::RuntimeError(
                 "document contains a mutable Python payload that cannot be prepared off-thread");

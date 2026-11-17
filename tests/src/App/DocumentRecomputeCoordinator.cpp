@@ -9,6 +9,7 @@
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/FeatureTest.h>
 #include <App/MutationClassification.h>
+#include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
@@ -105,6 +106,12 @@ public:
         return found == _captured.end()
             ? std::nullopt
             : std::optional<std::string>(found->second);
+    }
+
+    std::vector<std::string> captureOrder() const
+    {
+        std::lock_guard lock(_mutex);
+        return _captureOrder;
     }
 
     std::size_t captureCount() const
@@ -941,4 +948,148 @@ TEST_F(DocumentRecomputeCoordinatorTest, documentsOwnDistinctCoordinators)
     EXPECT_FALSE(other->recomputeCoordinator().hasPendingWork());
 
     App::GetApplication().closeDocument(otherName.c_str());
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest, optimizedSchedulingMatchesLegacyGraphAndCancellation)
+{
+    auto preferences = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document");
+    struct RestorePreference
+    {
+        ParameterGrp::handle group;
+        bool previous;
+        ~RestorePreference()
+        {
+            group->SetBool("OptimizeRecomputeScheduling", previous);
+        }
+    } restore {preferences, preferences->GetBool("OptimizeRecomputeScheduling", false)};
+
+    struct Result
+    {
+        App::DocumentRecomputeSnapshot graph;
+        App::DocumentRecomputeSnapshot cancelled;
+        std::vector<std::string> captures;
+        std::vector<std::string> cancelledCaptures;
+    };
+    const auto run = [&](const bool optimized, const bool refreshFence,
+                         const std::string& failureMode) {
+        preferences->SetBool("OptimizeRecomputeScheduling", optimized);
+        _scenario = std::make_shared<RecomputeScenario>();
+        RecomputeScenarioStore::add(_scenarioToken, _scenario);
+        auto graph = request({
+            feature("m-root", {}, _scenarioToken, "Upstream", "root"),
+            feature("b-left", {"m-root"}, _scenarioToken, "First", "left"),
+            feature("x-right", {"m-root"}, _scenarioToken, "Second", "right"),
+            feature("a-diamond", {"b-left", "x-right"}, _scenarioToken, "Child", "diamond"),
+            feature("c-chain", {"a-diamond"}, _scenarioToken, "Stale", "chain"),
+            feature("n-independent", {}, _scenarioToken, "Independent", "independent"),
+            feature("f-failure", {}, _scenarioToken, "Failure", "never", {}, {}, false,
+                    failureMode),
+            feature("e-failure-child", {"f-failure"}, _scenarioToken, "Descendant", "never"),
+            feature("d-failure-grandchild", {"e-failure-child", "f-failure"},
+                    _scenarioToken, "Descendant", "never")});
+        graph.refreshRevisionFenceAfterEachCommit = refreshFence;
+        auto& coordinator = _document->recomputeCoordinator();
+        const auto id = coordinator.submit(std::move(graph));
+        Result result;
+        result.graph = waitTerminal(coordinator, id);
+        result.captures = _scenario->captureOrder();
+        EXPECT_EQ(featureSnapshot(result.graph, "d-failure-grandchild").diagnostic,
+                  "dependency did not commit: f-failure");
+
+        _scenario = std::make_shared<RecomputeScenario>();
+        RecomputeScenarioStore::add(_scenarioToken, _scenario);
+        auto cancelled = request({
+            feature("z-cancelled-root", {}, _scenarioToken, "First", "never", {}, {}, true),
+            feature("b-cancelled-child", {"z-cancelled-root"}, _scenarioToken, "Child", "never"),
+            feature("a-cancelled-grandchild", {"b-cancelled-child"},
+                    _scenarioToken, "Second", "never")});
+        cancelled.refreshRevisionFenceAfterEachCommit = refreshFence;
+        const auto cancelId = coordinator.submit(std::move(cancelled));
+        EXPECT_TRUE(_scenario->waitStarted("z-cancelled-root"));
+        EXPECT_TRUE(coordinator.cancel(cancelId, "equivalence cancellation"));
+        result.cancelled = waitTerminal(coordinator, cancelId);
+        result.cancelledCaptures = _scenario->captureOrder();
+        return result;
+    };
+    const auto compare = [](const auto& legacy, const auto& optimized) {
+        EXPECT_EQ(legacy.state, optimized.state);
+        EXPECT_EQ(legacy.diagnostic, optimized.diagnostic);
+        EXPECT_EQ(legacy.completedFeatures, optimized.completedFeatures);
+        EXPECT_EQ(legacy.failedFeatures, optimized.failedFeatures);
+        EXPECT_EQ(legacy.totalFeatures, optimized.totalFeatures);
+        EXPECT_EQ(legacy.ownerThreadFeatures, optimized.ownerThreadFeatures);
+        EXPECT_EQ(legacy.progress, optimized.progress);
+        ASSERT_EQ(legacy.features.size(), optimized.features.size());
+        for (std::size_t i = 0; i < legacy.features.size(); ++i) {
+            SCOPED_TRACE(legacy.features[i].featureId);
+            EXPECT_EQ(legacy.features[i].featureId, optimized.features[i].featureId);
+            EXPECT_EQ(legacy.features[i].state, optimized.features[i].state);
+            EXPECT_EQ(legacy.features[i].diagnostic, optimized.features[i].diagnostic);
+            EXPECT_EQ(legacy.features[i].executed, optimized.features[i].executed);
+            EXPECT_EQ(legacy.features[i].ownerThreadExecution,
+                      optimized.features[i].ownerThreadExecution);
+        }
+    };
+    for (const bool refreshFence : {false, true}) {
+        SCOPED_TRACE(refreshFence);
+        for (const std::string mode : {"task-fail", "apply-fail"}) {
+            SCOPED_TRACE(mode);
+            const auto legacy = run(false, refreshFence, mode);
+            const auto optimized = run(true, refreshFence, mode);
+            EXPECT_EQ(legacy.captures, optimized.captures);
+            EXPECT_EQ(legacy.cancelledCaptures, optimized.cancelledCaptures);
+            compare(legacy.graph, optimized.graph);
+            compare(legacy.cancelled, optimized.cancelled);
+        }
+    }
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest, optimizedWaitReturnsFullTimeoutAndCancellationSnapshots)
+{
+    auto preferences = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document");
+    struct RestorePreference
+    {
+        ParameterGrp::handle group;
+        bool previous;
+        ~RestorePreference()
+        {
+            group->SetBool("OptimizeRecomputeScheduling", previous);
+        }
+    } restore {preferences, preferences->GetBool("OptimizeRecomputeScheduling", false)};
+    for (const bool optimized : {false, true}) {
+        SCOPED_TRACE(optimized);
+        preferences->SetBool("OptimizeRecomputeScheduling", optimized);
+        _scenario = std::make_shared<RecomputeScenario>();
+        RecomputeScenarioStore::add(_scenarioToken, _scenario);
+        auto plan = request({
+            feature("First", {}, _scenarioToken, "First", "never", {}, {}, true),
+            feature("Second", {"First"}, _scenarioToken, "Second", "never")});
+        plan.refreshRevisionFenceAfterEachCommit = true;
+        const auto id = _document->recomputeCoordinator().submit(std::move(plan));
+        App::RecomputeHandle handle(*_document, id);
+        ASSERT_TRUE(_scenario->waitStarted("First"));
+        const auto running = handle.wait(0ms);
+        EXPECT_FALSE(running.terminal());
+        EXPECT_EQ(running.totalFeatures, 2U);
+        EXPECT_EQ(running.features.size(), 2U);
+        EXPECT_EQ(featureSnapshot(running, "First").state,
+                  App::DocumentRecomputeFeatureState::Preparing);
+        EXPECT_EQ(featureSnapshot(running, "Second").state,
+                  App::DocumentRecomputeFeatureState::Waiting);
+        ASSERT_TRUE(handle.cancel("wait equivalence cancellation"));
+        const auto cancelled = handle.wait(3s);
+        EXPECT_EQ(cancelled.state, App::DocumentRecomputeState::Cancelled);
+        EXPECT_EQ(cancelled.diagnostic, "wait equivalence cancellation");
+        EXPECT_EQ(cancelled.features.size(), 2U);
+        EXPECT_EQ(cancelled.totalFeatures, 2U);
+        EXPECT_EQ(cancelled.progress, 1.0);
+        EXPECT_EQ(featureSnapshot(cancelled, "First").state,
+                  App::DocumentRecomputeFeatureState::Cancelled);
+        EXPECT_EQ(featureSnapshot(cancelled, "Second").state,
+                  App::DocumentRecomputeFeatureState::Cancelled);
+        EXPECT_EQ(featureSnapshot(cancelled, "Second").diagnostic,
+                  "wait equivalence cancellation");
+    }
 }

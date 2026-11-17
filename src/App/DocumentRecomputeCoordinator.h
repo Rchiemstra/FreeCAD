@@ -151,6 +151,8 @@ private:
 
     struct Job;
 
+    // Internal wait predicate: callers still receive the complete public snapshot.
+    [[nodiscard]] std::optional<bool> terminalForWait(DocumentRecomputeId id) const;
     void scheduleReady(DocumentRecomputeId id);
     void finalizeIfTerminal(DocumentRecomputeId id);
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> statusLocked(
