@@ -153,7 +153,8 @@ class KeyTests(ShellFixture):
             self.assertEqual(step["depends_on"], [f"freecad-mcp-core-{previous}"])
             self.assertEqual(step["when"], [
                 {"event": ["tag", "manual"], "status": ["success", "failure"]},
-                {"event": "pull_request", "status": ["success", "failure"]}])
+                {"event": ["pull_request", "pull_request_metadata"],
+                 "status": ["success", "failure"]}])
         self.assertTrue(all(dep in steps for step in steps.values()
                             for dep in step.get("depends_on", [])))
 
