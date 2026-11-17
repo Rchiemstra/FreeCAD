@@ -296,26 +296,29 @@ void PP_Fetch_Error_Text()
     }
     else {
         PyFrameObject* frame = PyEval_GetFrame();
-        if(!frame)
-            return;
-        int line = PyFrame_GetLineNumber(frame);
-#if PY_VERSION_HEX < 0x030b0000
-        const char *file = PyUnicode_AsUTF8(frame->f_code->co_filename);
-#else
-        PyCodeObject* code = PyFrame_GetCode(frame);
-        const char *file = code ? PyUnicode_AsUTF8(code->co_filename) : NULL;
-        Py_XDECREF(code);
-#endif
-        if (!file) {
-            snprintf(PP_last_error_trace, sizeof(PP_last_error_trace), "<unknown>(%d)", line);
+        if (!frame) {
+            PP_last_error_trace[0] = '\0';
         }
         else {
-#ifdef FC_OS_WIN32
-            const char *_f = strstr(file, "\\src\\");
+            int line = PyFrame_GetLineNumber(frame);
+#if PY_VERSION_HEX < 0x030b0000
+            const char *file = PyUnicode_AsUTF8(frame->f_code->co_filename);
 #else
-            const char *_f = strstr(file, "/src/");
+            PyCodeObject* code = PyFrame_GetCode(frame);
+            const char *file = code ? PyUnicode_AsUTF8(code->co_filename) : NULL;
+            Py_XDECREF(code);
 #endif
-            snprintf(PP_last_error_trace,sizeof(PP_last_error_trace),"%s(%d)",(_f?_f+5:file),line);
+            if (!file) {
+                snprintf(PP_last_error_trace, sizeof(PP_last_error_trace), "<unknown>(%d)", line);
+            }
+            else {
+#ifdef FC_OS_WIN32
+                const char *_f = strstr(file, "\\src\\");
+#else
+                const char *_f = strstr(file, "/src/");
+#endif
+                snprintf(PP_last_error_trace,sizeof(PP_last_error_trace),"%s(%d)",(_f?_f+5:file),line);
+            }
         }
     }
     Py_XDECREF(pystring);
