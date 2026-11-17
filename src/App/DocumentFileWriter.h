@@ -166,6 +166,9 @@ struct DocumentFileReplacementRequest
     // here must be detected and must leave the substituted entry untouched.
     std::function<void(const std::string&)> afterInstalledDescriptorRelease;
     std::function<void()> afterDisplacedSourceHashBeforeCopy;
+    // Model a filesystem that loses copied timestamp precision. Called after
+    // each metadata roundtrip while the snapshot remains an unpublished copy.
+    std::function<void(const std::string&)> afterDisplacedSnapshotMetadata;
     std::function<void(const std::string&)> beforeDisplacedReservationAttempt;
     DocumentFileWriterTestFault testFault {DocumentFileWriterTestFault::None};
 #endif
@@ -199,9 +202,10 @@ struct APP_DOCUMENTFILEWRITER_EXPORT DocumentFileReplacementResult
     // expected CAS predecessor to a recovery guard does not set this flag.
     bool fileWritten {false};
     std::string destination;
-    // An exact pre-replacement snapshot for BackupPolicy or an exact moved
-    // compare-and-swap guard retained as recovery evidence. A failed CAS may
-    // therefore transfer this lease before replacementCompleted becomes true.
+    // Verified pre-replacement contents for BackupPolicy or an exact moved
+    // compare-and-swap guard retained as recovery evidence. Warnings disclose
+    // any copied modification-time precision loss. A failed CAS may transfer
+    // this lease before replacementCompleted becomes true.
     std::string displacedFile;
     // Keeps the exclusively opened displaced snapshot pinned until backup
     // management has consumed it or the result is released.

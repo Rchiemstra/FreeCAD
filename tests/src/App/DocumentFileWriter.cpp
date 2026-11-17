@@ -11,6 +11,7 @@
  *   version 2 of the License, or (at your option) any later version.      *
  ***************************************************************************/
 
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <cstddef>
@@ -1827,6 +1828,211 @@ TEST_F(DocumentFileWriterTest, DiscardsSnapshotWhenSourceMutatesWithSameSizeAndM
     EXPECT_FALSE(result.warnings.empty());
     EXPECT_EQ(readFile(destination), "new bytes");
 }
+
+#if defined(__linux__)
+namespace
+{
+bool setFractionalBackupTestTime(const fs::path& file, struct stat& info)
+{
+    if (::stat(file.c_str(), &info) != 0) {
+        throw std::system_error(errno, std::generic_category(), "Unable to inspect test file");
+    }
+    constexpr long fractionalNanoseconds = 123456700;
+    const timespec precise[2] {{0, UTIME_OMIT}, {info.st_mtim.tv_sec, fractionalNanoseconds}};
+    if (::utimensat(AT_FDCWD, file.c_str(), precise, 0) != 0
+        || ::stat(file.c_str(), &info) != 0) {
+        throw std::system_error(errno, std::generic_category(), "Unable to set test timestamp");
+    }
+    return info.st_mtim.tv_nsec == fractionalNanoseconds;
+}
+
+struct BackupTestDescriptor
+{
+    int value {-1};
+    ~BackupTestDescriptor()
+    {
+        if (value >= 0) {
+            ::close(value);
+        }
+    }
+};
+}
+
+TEST_F(DocumentFileWriterTest, RoundedBackupTimestampKeepsIndependentVerifiedHistory)
+{
+    const auto destination = path("rounded-backup.FCStd");
+    writeFile(destination, "old bytes");
+    struct stat sourceInfo {};
+    if (!setFractionalBackupTestTime(destination, sourceInfo)) {
+        GTEST_SKIP() << "The test filesystem cannot represent the requested fractional timestamp";
+    }
+    BackupTestDescriptor retainedSource {::open(destination.c_str(), O_RDWR | O_CLOEXEC)};
+    ASSERT_GE(retainedSource.value, 0);
+    int metadataRoundtrips = 0;
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    request.preserveDisplacedFile = true;
+    request.afterDisplacedSnapshotMetadata = [&](const std::string& snapshot) {
+        ++metadataRoundtrips;
+        const timespec times[2] {{0, UTIME_OMIT}, {sourceInfo.st_mtim.tv_sec, 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshot.c_str(), times, 0), 0);
+    };
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_TRUE(result.durabilityVerified);
+    EXPECT_EQ(metadataRoundtrips, 2);
+    ASSERT_FALSE(result.displacedFile.empty());
+    ASSERT_EQ(result.warnings.size(), 1);
+    EXPECT_NE(result.warnings.front().find("reduced modification-time precision"),
+              std::string::npos);
+    struct stat snapshotInfo {};
+    ASSERT_EQ(::stat(result.displacedFile.c_str(), &snapshotInfo), 0);
+    EXPECT_NE(snapshotInfo.st_ino, sourceInfo.st_ino);
+    EXPECT_EQ(snapshotInfo.st_mode, sourceInfo.st_mode);
+    EXPECT_EQ(snapshotInfo.st_mtim.tv_sec, sourceInfo.st_mtim.tv_sec);
+    EXPECT_EQ(snapshotInfo.st_mtim.tv_nsec, 0);
+    EXPECT_EQ(::pwrite(retainedSource.value, "bad bytes", 9, 0), 9);
+    EXPECT_EQ(::fsync(retainedSource.value), 0);
+    EXPECT_EQ(readFile(destination), "new bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
+              "old bytes");
+}
+
+TEST_F(DocumentFileWriterTest, RoundedBackupTimestampStillRejectsSourceMutation)
+{
+    const auto destination = path("rounded-mutated-source.FCStd");
+    writeFile(destination, "aaaaaaaa");
+    struct stat sourceInfo {};
+    if (!setFractionalBackupTestTime(destination, sourceInfo)) {
+        GTEST_SKIP() << "The test filesystem cannot represent the requested fractional timestamp";
+    }
+    int metadataRoundtrips = 0;
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    request.preserveDisplacedFile = true;
+    request.afterDisplacedSnapshotMetadata = [&](const std::string& snapshot) {
+        const timespec rounded[2] {{0, UTIME_OMIT}, {sourceInfo.st_mtim.tv_sec, 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshot.c_str(), rounded, 0), 0);
+        if (++metadataRoundtrips == 2) {
+            writeFile(destination, "bbbbbbbb");
+            const timespec original[2] {sourceInfo.st_atim, sourceInfo.st_mtim};
+            ASSERT_EQ(::utimensat(AT_FDCWD, destination.c_str(), original, 0), 0);
+        }
+    };
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_EQ(readFile(destination), "new bytes");
+    EXPECT_EQ(metadataRoundtrips, 2);
+    EXPECT_TRUE(result.displacedFile.empty());
+    EXPECT_FALSE(result.warnings.empty());
+    for (const auto& entry : fs::directory_iterator(destination.parent_path())) {
+        EXPECT_NE(entry.path().extension(), ".displaced");
+    }
+}
+
+TEST_F(DocumentFileWriterTest, RoundedBackupTimestampRejectsLaterSnapshotMetadataMutation)
+{
+    const auto destination = path("rounded-mutated-snapshot.FCStd");
+    writeFile(destination, "old bytes");
+    struct stat sourceInfo {};
+    if (!setFractionalBackupTestTime(destination, sourceInfo)) {
+        GTEST_SKIP() << "The test filesystem cannot represent the requested fractional timestamp";
+    }
+    std::string snapshotPath;
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    request.preserveDisplacedFile = true;
+    request.afterDisplacedSnapshotMetadata = [&](const std::string& snapshot) {
+        snapshotPath = snapshot;
+        const timespec times[2] {{0, UTIME_OMIT}, {sourceInfo.st_mtim.tv_sec, 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshot.c_str(), times, 0), 0);
+    };
+    request.afterFinalBoundaryValidationBeforeReplace = [&] {
+        const timespec changed[2] {{0, UTIME_OMIT}, {sourceInfo.st_mtim.tv_sec + 1, 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshotPath.c_str(), changed, 0), 0);
+    };
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_TRUE(result.displacedFile.empty());
+    EXPECT_FALSE(result.warnings.empty());
+    // Once verified, the snapshot is retained rather than removed when its
+    // metadata changes. It must not be presented as a valid backup lease.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(snapshotPath)));
+    EXPECT_EQ(readFile(destination), "new bytes");
+}
+
+TEST_F(DocumentFileWriterTest, BackupTimestampMismatchOutsideRoundingIsRejected)
+{
+    const auto destination = path("invalid-backup-timestamp.FCStd");
+    writeFile(destination, "old bytes");
+    struct stat sourceInfo {};
+    ASSERT_EQ(::stat(destination.c_str(), &sourceInfo), 0);
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    request.preserveDisplacedFile = true;
+    request.afterDisplacedSnapshotMetadata = [&](const std::string& snapshot) {
+        const timespec times[2] {{0, UTIME_OMIT}, {sourceInfo.st_mtim.tv_sec - 1, 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshot.c_str(), times, 0), 0);
+    };
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_TRUE(result.displacedFile.empty());
+    EXPECT_FALSE(result.warnings.empty());
+    for (const auto& entry : fs::directory_iterator(destination.parent_path())) {
+        EXPECT_NE(entry.path().extension(), ".displaced");
+    }
+}
+
+TEST_F(DocumentFileWriterTest, BackupTimestampRoundingMustRepeatExactly)
+{
+    const auto destination = path("inconsistent-backup-rounding.FCStd");
+    writeFile(destination, "old bytes");
+    struct stat sourceInfo {};
+    if (!setFractionalBackupTestTime(destination, sourceInfo)) {
+        GTEST_SKIP() << "The test filesystem cannot represent the requested fractional timestamp";
+    }
+    int metadataRoundtrips = 0;
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    request.preserveDisplacedFile = true;
+    request.afterDisplacedSnapshotMetadata = [&](const std::string& snapshot) {
+        ++metadataRoundtrips;
+        const timespec times[2] {
+            {0, UTIME_OMIT},
+            {sourceInfo.st_mtim.tv_sec + (metadataRoundtrips == 2 ? 1 : 0), 0}};
+        ASSERT_EQ(::utimensat(AT_FDCWD, snapshot.c_str(), times, 0), 0);
+    };
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_EQ(metadataRoundtrips, 2);
+    EXPECT_TRUE(result.displacedFile.empty());
+    EXPECT_FALSE(result.warnings.empty());
+    for (const auto& entry : fs::directory_iterator(destination.parent_path())) {
+        EXPECT_NE(entry.path().extension(), ".displaced");
+    }
+}
+#endif
+
 
 TEST_F(DocumentFileWriterTest, SnapshotReservationCollisionNeverAdoptsForeignPath)
 {
