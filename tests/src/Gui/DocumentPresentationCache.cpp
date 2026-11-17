@@ -373,12 +373,12 @@ protected:
     void captureAndApplyBoundary()
     {
         Gui::installDocumentPresentationBoundaryHook();
+        const auto sequenceBefore = guiDocument->presentationCache().committedSequence();
         Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, [&] {
             App::invokeDocumentPresentationBoundary(*document);
         });
         QApplication::sendPostedEvents(QCoreApplication::instance(), QEvent::MetaCall);
-        ASSERT_TRUE(guiDocument->presentationApplyScheduler().hasStagingWork());
-        ASSERT_TRUE(guiDocument->pumpPresentationApply(0).committedRevision);
+        ASSERT_TRUE(Gui::Test::pumpPresentationApplyUntilCommitted(*guiDocument, sequenceBefore));
     }
 
     std::string documentName;

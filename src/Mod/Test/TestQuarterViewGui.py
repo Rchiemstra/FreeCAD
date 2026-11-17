@@ -347,6 +347,12 @@ class TestQuarterViewGui(unittest.TestCase):
         viewport = _gl_viewport(self.window)
         sub = _mdi_subwindow(viewport)
         self.assertIsNotNone(sub, "3D view is not in an MDI subwindow")
+        # No resize may still be held from the setup, or its queued replay
+        # could run before the measurement below.
+        _wait_stable(viewport)
+        Gui.updateGui()
+        coin, framebuffer = _sizes(self.doc.Name, viewport)
+        self.assertEqual(coin, framebuffer, "setup coin=%s fb=%s" % (coin, framebuffer))
         measured = {}
 
         def after_flush():
