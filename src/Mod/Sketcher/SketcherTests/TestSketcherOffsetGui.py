@@ -1315,6 +1315,54 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         FreeCADGui.runCommand("Sketcher_LinkedOffsetDetach", 0)
         self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
 
+    def test_linked_commands_wait_while_document_lane_is_busy(self):
+        # The action update timer tests these commands while the document lane
+        # may recompute the sketch and replace its geometry. While the lane is
+        # busy they must not read the sketch, and they must come back by
+        # themselves once it is idle.
+        import threading
+
+        from Test.GuiRecompute import _left_commit, _pump_gui_until, _retry_while_lane_busy
+
+        relation = self.linked_fixture()
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+        names = ("Refresh", "RefreshAll", "Edit", "Detach")
+        commands = [FreeCADGui.Command.get("Sketcher_LinkedOffset" + name) for name in names]
+        actions = [action for command in commands for action in command.getAction()]
+        self.assertTrue(actions)
+        self.assertTrue(all(command.isActive() for command in commands))
+        geometry = tuple((g.Content, g.Tag) for g in self.sketch.Geometry)
+
+        entered, release = threading.Event(), threading.Event()
+
+        class BlockingProxy:
+            def execute(self, obj):
+                entered.set()
+                if not release.wait(10):
+                    raise RuntimeError("test did not release execution lane")
+
+        blocker = self.doc.addObject("App::FeaturePython", "LaneBlocker")
+        blocker.Proxy = BlockingProxy()
+        handle = _retry_while_lane_busy(lambda: self.doc.recomputeAsync([blocker]), 30)
+        try:
+            _pump_gui_until(entered.is_set, 5)
+            self.assertEqual([command.isActive() for command in commands], [False] * len(names))
+            FreeCADGui.Command.update()
+            _pump_gui_until(lambda: not any(action.isEnabled() for action in actions), 5,
+                            lambda: [action.isEnabled() for action in actions])
+            FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+        finally:
+            release.set()
+            _pump_gui_until(lambda: handle.done() and _left_commit(self.doc), 30, handle.status)
+
+        # No selection or document change follows, yet the commands come back.
+        _pump_gui_until(lambda: all(action.isEnabled() for action in actions), 5,
+                        lambda: [action.isEnabled() for action in actions])
+        self.assertEqual(tuple((g.Content, g.Tag) for g in self.sketch.Geometry), geometry)
+        self.assertEqual(Sketcher.listLinkedOffsets(self.sketch)[0]["id"], relation["id"])
+        self.assertTrue(all(command.isActive() for command in commands))
+
     def test_linked_refit_changed_poles_keeps_tag_id_and_reference(self):
         relation = self.linked_fixture()
         tag = self.sketch.Geometry[1].Tag
