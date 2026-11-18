@@ -476,8 +476,8 @@ void Internal::DocumentExecutionTelemetryTestAccess::reset(
 
 DocumentExecutionTelemetry& DocumentExecutionTelemetry::instance()
 {
-    static DocumentExecutionTelemetry telemetry;
-    return telemetry;
+    static auto* telemetry = new DocumentExecutionTelemetry;
+    return *telemetry;
 }
 
 DocumentExecutionTelemetry::DocumentExecutionTelemetry(std::size_t sampleCapacity)

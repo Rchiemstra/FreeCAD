@@ -117,8 +117,8 @@ struct TerminalArchive
 
 TerminalArchive& getTerminalArchive()
 {
-    static TerminalArchive instance;
-    return instance;
+    static auto* instance = new TerminalArchive;
+    return *instance;
 }
 
 }  // namespace
@@ -160,19 +160,30 @@ std::chrono::milliseconds DocumentExecutionLane::guiSyncAdmissionTimeout() const
 namespace
 {
 
-std::mutex g_laneRegistryMutex;
-std::unordered_map<DocumentInstanceId, std::weak_ptr<DocumentExecutionLane>> g_laneRegistry;
+struct LaneRegistry
+{
+    std::mutex mutex;
+    std::unordered_map<DocumentInstanceId, std::weak_ptr<DocumentExecutionLane>> lanes;
+};
+
+LaneRegistry& getLaneRegistry()
+{
+    static auto* registry = new LaneRegistry;
+    return *registry;
+}
 
 void registerLane(const std::shared_ptr<DocumentExecutionLane>& lane)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    g_laneRegistry[lane->identity().documentInstanceId] = lane;
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    registry.lanes[lane->identity().documentInstanceId] = lane;
 }
 
 void unregisterLane(DocumentInstanceId instanceId)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    g_laneRegistry.erase(instanceId);
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    registry.lanes.erase(instanceId);
 }
 
 bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentCommand& right)
@@ -251,9 +262,10 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::create(
 
 std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::find(DocumentInstanceId instanceId)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    const auto found = g_laneRegistry.find(instanceId);
-    if (found == g_laneRegistry.end()) {
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    const auto found = registry.lanes.find(instanceId);
+    if (found == registry.lanes.end()) {
         return nullptr;
     }
     return found->second.lock();
@@ -273,7 +285,10 @@ DocumentExecutionLane::DocumentExecutionLane(Document& document,
 
 void DocumentExecutionLane::startOwnerThread()
 {
-    _thread = std::thread([this] {
+    // Pin `*this` before spawning so a fast GUI-thread closeDocument() cannot
+    // reset DocumentP::executionLane and destroy `_workAvailable`/`_mutex`
+    // while the owner thread is still running.
+    _thread = std::thread([this, self = shared_from_this()] {
         _ownerThreadId = std::this_thread::get_id();
         _document.bindCollaborationOwnerThread(_ownerThreadId);
         {
@@ -620,6 +635,12 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
     return true;
 }
 
+void DocumentExecutionLane::markOwnerDocumentDestroyed() noexcept
+{
+    std::lock_guard lock(_mutex);
+    _ownerDocumentAlive = false;
+}
+
 void DocumentExecutionLane::requestShutdown(std::string reason)
 {
     {
@@ -658,8 +679,6 @@ void DocumentExecutionLane::detachThread()
 
 void DocumentExecutionLane::threadMain()
 {
-    const auto selfPin = shared_from_this();
-    static_cast<void>(selfPin);
     while (true) {
         {
             std::unique_lock lock(_mutex);
