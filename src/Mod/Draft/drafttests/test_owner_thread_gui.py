@@ -16,6 +16,21 @@ from Test.GuiRecompute import close_document, recompute_document, _pump_gui_unti
 from draftutils import gui_utils, params
 
 
+def _pump_handle_and_settle(doc, handle, timeout_seconds=30):
+    """Wait for an async handle and confirm GUI presentation admission is idle."""
+    _pump_gui_until(lambda: handle.done(), timeout_seconds)
+    admitted_last_poll = False
+
+    def settled():
+        nonlocal admitted_last_poll
+        admitted = Gui.tryRunPresentationCallback(lambda: None, doc)
+        ready = admitted_last_poll and admitted
+        admitted_last_poll = admitted
+        return ready
+
+    _pump_gui_until(settled, timeout_seconds)
+
+
 def _invalid_objects(doc):
     """Describe the invalid objects, so a failure shows their recompute error."""
     invalid = []
@@ -649,7 +664,7 @@ class DraftDeferredArrayPresentation(unittest.TestCase):
             base, array = created[0]
             self.assertIsNone(array.ViewObject.Proxy)
             base_handle = doc.recomputeAsync([base])
-            _pump_gui_until(lambda: base_handle.done(), 30)
+            _pump_handle_and_settle(doc, base_handle, 30)
             self.assertEqual(base_handle.status()["state"], "completed", base_handle.status())
             self.assertNotIn("Invalid", base.State)
             self.assertIsNone(array.ViewObject.Proxy)
@@ -895,7 +910,7 @@ class DraftDeferredArrayPresentation(unittest.TestCase):
             self.assertEqual(len(pending), 1)
             base, array = created[0]
             base_handle = doc.recomputeAsync([base])
-            _pump_gui_until(lambda: base_handle.done(), 30)
+            _pump_handle_and_settle(doc, base_handle, 30)
             self.assertEqual(base_handle.status()["state"], "completed", base_handle.status())
             self.assertNotIn("Invalid", base.State)
             self.assertIn("Touched", array.State)
