@@ -1010,6 +1010,7 @@ void Document::shutdownExecutionLane()
     if (!d->executionLane) {
         return;
     }
+    d->executionLane->markOwnerDocumentDestroyed();
     d->executionLane->requestShutdown("document closing");
     if (d->executionLane->isOwnerThread()) {
         // The lane thread closes the document; it keeps itself alive until

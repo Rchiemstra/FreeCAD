@@ -206,6 +206,8 @@ public:
         DocumentRecomputeId id) const;
     [[nodiscard]] bool cancelCommand(DocumentCommandId id, std::string reason = {});
 
+    /** Mark the owning Document as closing so detached drain skips queued callbacks. */
+    void markOwnerDocumentDestroyed() noexcept;
     /** Request cooperative cancellation of active work and lane shutdown. */
     void requestShutdown(std::string reason = "document execution lane shutdown");
 

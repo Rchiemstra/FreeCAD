@@ -273,7 +273,10 @@ DocumentExecutionLane::DocumentExecutionLane(Document& document,
 
 void DocumentExecutionLane::startOwnerThread()
 {
-    _thread = std::thread([this] {
+    // Pin `*this` before spawning so a fast GUI-thread closeDocument() cannot
+    // reset DocumentP::executionLane and destroy `_workAvailable`/`_mutex`
+    // while the owner thread is still running.
+    _thread = std::thread([this, self = shared_from_this()] {
         _ownerThreadId = std::this_thread::get_id();
         _document.bindCollaborationOwnerThread(_ownerThreadId);
         {
@@ -620,6 +623,12 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
     return true;
 }
 
+void DocumentExecutionLane::markOwnerDocumentDestroyed() noexcept
+{
+    std::lock_guard lock(_mutex);
+    _ownerDocumentAlive = false;
+}
+
 void DocumentExecutionLane::requestShutdown(std::string reason)
 {
     {
@@ -658,8 +667,6 @@ void DocumentExecutionLane::detachThread()
 
 void DocumentExecutionLane::threadMain()
 {
-    const auto selfPin = shared_from_this();
-    static_cast<void>(selfPin);
     while (true) {
         {
             std::unique_lock lock(_mutex);

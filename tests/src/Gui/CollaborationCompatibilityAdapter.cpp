@@ -1009,6 +1009,21 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     EXPECT_FALSE(viewProvider->Visibility.testStatus(App::Property::Hidden));
 }
 
+TEST_F(CollaborationCompatibilityIntegrationTest, rapidHeadlessDocumentCreateCloseDoesNotRaceOwnerThreadPin)
+{
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    for (int iteration = 0; iteration < 64; ++iteration) {
+        const auto otherName = App::GetApplication().getUniqueDocumentName("rapidHeadlessLaneClose");
+        auto* other
+            = App::GetApplication().newDocument(otherName.c_str(), "rapid headless lane close", flags);
+        ASSERT_NE(other, nullptr);
+        ASSERT_TRUE(App::GetApplication().closeDocument(otherName.c_str()));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    QApplication::processEvents();
+}
+
 namespace
 {
 
