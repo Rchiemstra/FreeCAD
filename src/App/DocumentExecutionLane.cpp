@@ -117,8 +117,8 @@ struct TerminalArchive
 
 TerminalArchive& getTerminalArchive()
 {
-    static TerminalArchive instance;
-    return instance;
+    static auto* instance = new TerminalArchive;
+    return *instance;
 }
 
 }  // namespace
@@ -160,19 +160,30 @@ std::chrono::milliseconds DocumentExecutionLane::guiSyncAdmissionTimeout() const
 namespace
 {
 
-std::mutex g_laneRegistryMutex;
-std::unordered_map<DocumentInstanceId, std::weak_ptr<DocumentExecutionLane>> g_laneRegistry;
+struct LaneRegistry
+{
+    std::mutex mutex;
+    std::unordered_map<DocumentInstanceId, std::weak_ptr<DocumentExecutionLane>> lanes;
+};
+
+LaneRegistry& getLaneRegistry()
+{
+    static auto* registry = new LaneRegistry;
+    return *registry;
+}
 
 void registerLane(const std::shared_ptr<DocumentExecutionLane>& lane)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    g_laneRegistry[lane->identity().documentInstanceId] = lane;
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    registry.lanes[lane->identity().documentInstanceId] = lane;
 }
 
 void unregisterLane(DocumentInstanceId instanceId)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    g_laneRegistry.erase(instanceId);
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    registry.lanes.erase(instanceId);
 }
 
 bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentCommand& right)
@@ -251,9 +262,10 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::create(
 
 std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::find(DocumentInstanceId instanceId)
 {
-    std::lock_guard lock(g_laneRegistryMutex);
-    const auto found = g_laneRegistry.find(instanceId);
-    if (found == g_laneRegistry.end()) {
+    auto& registry = getLaneRegistry();
+    std::lock_guard lock(registry.mutex);
+    const auto found = registry.lanes.find(instanceId);
+    if (found == registry.lanes.end()) {
         return nullptr;
     }
     return found->second.lock();
