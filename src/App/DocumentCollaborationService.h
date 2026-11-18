@@ -284,6 +284,7 @@ private:
     [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
     lifetimeGate() const;
 
+    [[nodiscard]] std::optional<EditSession> findSession(const std::string& sessionId) const;
     [[nodiscard]] EditSession requireActiveSession(const std::string& sessionId) const;
     [[nodiscard]] CollaborationEditSnapshot captureSemanticRevisionsOnDocumentThread(
         std::vector<DocumentRevisionKey> keys) const;

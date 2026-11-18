@@ -7,6 +7,7 @@
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentRecomputeCoordinator.h>
+#include <App/DynamicProperty.h>
 #include <App/FeatureTest.h>
 #include <App/MutationClassification.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
@@ -941,4 +942,131 @@ TEST_F(DocumentRecomputeCoordinatorTest, documentsOwnDistinctCoordinators)
     EXPECT_FALSE(other->recomputeCoordinator().hasPendingWork());
 
     App::GetApplication().closeDocument(otherName.c_str());
+}
+
+TEST_F(
+    DocumentRecomputeCoordinatorTest,
+    committingStatusPollingDoesNotBlockDynamicPropertyCreationAcrossRefreshScope
+)
+{
+    auto plan = request({feature("root", {}, _scenarioToken, "Upstream", "committed", {}, {}, true)});
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(std::move(plan));
+    ASSERT_TRUE(_scenario->waitStarted("root"));
+
+    std::atomic<bool> keepPolling {true};
+    std::atomic<int> preparingPolls {0};
+    std::atomic<int> committingPolls {0};
+    {
+        App::LivePresentationRefreshScope refresh;
+        struct PollerGuard
+        {
+            std::shared_ptr<RecomputeScenario> scenario;
+            std::atomic<bool>& running;
+            std::thread thread;
+            ~PollerGuard()
+            {
+                running.store(false, std::memory_order_release);
+                scenario->release("root");
+                if (thread.joinable()) {
+                    thread.join();
+                }
+            }
+        } pollerGuard {_scenario, keepPolling, std::thread([&] {
+                           while (keepPolling.load(std::memory_order_acquire)) {
+                               static_cast<void>(coordinator.poll(id));
+                               const auto snapshot = coordinator.status(id);
+                               if (!snapshot || snapshot->features.empty()) {
+                                   continue;
+                               }
+                               const auto state = snapshot->features.front().state;
+                               if (state == App::DocumentRecomputeFeatureState::Preparing) {
+                                   preparingPolls.fetch_add(1, std::memory_order_release);
+                               }
+                               else if (state == App::DocumentRecomputeFeatureState::Committing) {
+                                   committingPolls.fetch_add(1, std::memory_order_release);
+                               }
+                           }
+                       })};
+
+        auto& probe = object("First");
+        const auto probeDynamicProperty = [&](int& blockedCount) {
+            try {
+                if (probe.getDynamicPropertyByName("TransientProbe") != nullptr) {
+                    static_cast<void>(probe.removeDynamicProperty("TransientProbe"));
+                }
+                if (!probe.addDynamicProperty(
+                        "App::PropertyString",
+                        "TransientProbe",
+                        "Transient",
+                        "",
+                        static_cast<short>(App::Prop_NoPersist | App::Prop_Output | App::Prop_Hidden)
+                    )) {
+                    ++blockedCount;
+                }
+                else {
+                    static_cast<void>(probe.removeDynamicProperty("TransientProbe"));
+                }
+            }
+            catch (...) {
+                ++blockedCount;
+            }
+        };
+
+        int blockedPreparing = 0;
+        const auto preparingDeadline = std::chrono::steady_clock::now() + 10s;
+        while (preparingPolls.load(std::memory_order_acquire) < 50
+               && std::chrono::steady_clock::now() < preparingDeadline) {
+            probeDynamicProperty(blockedPreparing);
+        }
+        EXPECT_GE(preparingPolls.load(std::memory_order_acquire), 50);
+        EXPECT_EQ(blockedPreparing, 0);
+
+        _scenario->release("root");
+        ASSERT_TRUE(_scenario->waitPrepared("root"));
+
+        auto& upstream = object("Upstream");
+        int blockedCommitting = 0;
+        int attemptedProperties = 0;
+        int failedDynamicProperties = 0;
+        const auto committingDeadline = std::chrono::steady_clock::now() + 10s;
+        while (committingPolls.load(std::memory_order_acquire) < 1
+               && std::chrono::steady_clock::now() < committingDeadline) {
+            std::this_thread::yield();
+        }
+        while (committingPolls.load(std::memory_order_acquire) < 300
+               && std::chrono::steady_clock::now() < committingDeadline) {
+            if (attemptedProperties < 64) {
+                const auto propName = "TransientCache" + std::to_string(attemptedProperties++);
+                try {
+                    const App::DynamicPropertySchemaPublicationSuppressor suppressSchemaPublication(
+                        upstream,
+                        propName.c_str()
+                    );
+                    if (!upstream.addDynamicProperty(
+                            "App::PropertyString",
+                            propName.c_str(),
+                            "Transient",
+                            "",
+                            static_cast<short>(App::Prop_NoPersist | App::Prop_Output | App::Prop_Hidden)
+                        )) {
+                        ++failedDynamicProperties;
+                    }
+                }
+                catch (...) {
+                    ++failedDynamicProperties;
+                }
+            }
+            else {
+                probeDynamicProperty(blockedCommitting);
+            }
+        }
+        EXPECT_GE(committingPolls.load(std::memory_order_acquire), 300);
+        EXPECT_EQ(blockedCommitting, 0);
+        EXPECT_EQ(attemptedProperties, 64);
+        EXPECT_EQ(failedDynamicProperties, 0);
+    }
+
+    const auto snapshot = waitTerminal(coordinator, id);
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed);
 }

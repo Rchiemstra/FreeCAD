@@ -494,21 +494,18 @@ std::optional<EditSession> DocumentCollaborationService::sessionStatus(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    bool lifecyclePinned = false;
     {
         std::lock_guard lock(_document.collaborationCommitMutex());
         if (_document.collaborationIdentity().state != DocumentLifecycleState::Live
             || _document.collaborationNotificationsReplaying()) {
             return std::nullopt;
         }
-        _document.beginCollaborationStableReadCapture();
-        lifecyclePinned = true;
     }
-    BOOST_SCOPE_EXIT_ALL(&) {
-        if (lifecyclePinned) {
-            _document.finishCollaborationStableReadCapture();
-        }
-    };
+    return findSession(sessionId);
+}
+
+std::optional<EditSession> DocumentCollaborationService::findSession(const std::string& sessionId) const
+{
     std::lock_guard lock(_sessionMutex);
     const auto found = _sessions.find(sessionId);
     if (found == _sessions.end()) {
@@ -1081,21 +1078,13 @@ DocumentCollaborationService::preparedEditStatus(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    bool lifecyclePinned = false;
     {
         std::lock_guard lock(_document.collaborationCommitMutex());
         if (_document.collaborationIdentity().state != DocumentLifecycleState::Live
             || _document.collaborationNotificationsReplaying()) {
             return std::nullopt;
         }
-        _document.beginCollaborationStableReadCapture();
-        lifecyclePinned = true;
     }
-    BOOST_SCOPE_EXIT_ALL(&) {
-        if (lifecyclePinned) {
-            _document.finishCollaborationStableReadCapture();
-        }
-    };
     {
         std::lock_guard lock(_preparationMutex);
         if (!_pendingDetachedPreparations.contains(executionId)) {
@@ -1436,7 +1425,7 @@ DocumentCommitResult DocumentCollaborationService::commitEditOnDocumentThread(
                                   edit,
                                   "prepared edit targets a stale document lifecycle epoch");
         }
-        const auto session = sessionStatus(sessionId);
+        const auto session = findSession(sessionId);
         if (!session) {
             return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
                                   edit,
@@ -1513,7 +1502,7 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEditOnDocument
                               edit,
                               "prepared recompute targets a stale document lifecycle epoch");
     }
-    const auto session = sessionStatus(sessionId);
+    const auto session = findSession(sessionId);
     if (!session) {
         return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
                               edit,
