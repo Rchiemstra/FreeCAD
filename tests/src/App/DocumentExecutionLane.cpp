@@ -1161,4 +1161,131 @@ obj.touch()
     }
 }
 
+TEST_F(DocumentExecutionLaneTest, DetachedLaneSkipsActiveCommandAfterOwnerDocumentDestroyed)
+{
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    auto handle = doc()->executionHandle();
+
+    struct GateState
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool ownerInDispatch {false};
+        bool releaseOwner {false};
+    };
+    auto gate = std::make_shared<GateState>();
+
+    auto holdFuture = lane->postToOwner([gate] {
+        {
+            std::lock_guard lock(gate->mutex);
+            gate->ownerInDispatch = true;
+        }
+        gate->cv.notify_all();
+        std::unique_lock lock(gate->mutex);
+        gate->cv.wait(lock, [&] { return gate->releaseOwner; });
+    });
+    {
+        std::unique_lock lock(gate->mutex);
+        gate->cv.wait(lock, [&] { return gate->ownerInDispatch; });
+    }
+
+    const auto outcome = handle.trySubmit(makeRecomputeCommand("active-after-owner-destroyed"));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    const auto admittedSnapshot = commandHandle.status();
+    ASSERT_TRUE(admittedSnapshot.recompute.has_value());
+    const auto admissionId = static_cast<App::DocumentRecomputeId>(admittedSnapshot.recompute->id);
+    ASSERT_NE(admissionId, 0U);
+    ASSERT_FALSE(doc()->recomputeCoordinator().status(admissionId).has_value());
+
+    lane->markOwnerDocumentDestroyed();
+    lane->requestShutdown("document closing");
+
+    {
+        std::lock_guard lock(gate->mutex);
+        gate->releaseOwner = true;
+    }
+    gate->cv.notify_all();
+    holdFuture.get();
+    lane->joinThread();
+
+    EXPECT_FALSE(doc()->recomputeCoordinator().status(admissionId).has_value())
+        << "detached lane must not submit active recompute to a destroyed Document";
+    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Cancelled);
+}
+
+TEST_F(DocumentExecutionLaneTest, GuiCloseDocumentSealsLaneAgainstTrySubmitDuringClose)
+{
+    const std::string closeDocName = App::GetApplication().getUniqueDocumentName("lane-gui-close-seal");
+    auto* closeDoc = App::GetApplication().newDocument(closeDocName.c_str(), "testUser");
+    ASSERT_NE(closeDoc, nullptr);
+    auto* lane = closeDoc->executionLane();
+    ASSERT_NE(lane, nullptr);
+    auto handle = closeDoc->executionHandle();
+    const auto weakLane = std::weak_ptr<App::DocumentExecutionLane>(
+        App::DocumentExecutionLane::find(handle.instanceId())
+    );
+    ASSERT_FALSE(weakLane.expired());
+
+    struct GateState
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool ownerInDispatch {false};
+        bool releaseOwner {false};
+    };
+    auto gate = std::make_shared<GateState>();
+
+    auto holdFuture = lane->postToOwner([gate] {
+        {
+            std::lock_guard lock(gate->mutex);
+            gate->ownerInDispatch = true;
+        }
+        gate->cv.notify_all();
+        std::unique_lock lock(gate->mutex);
+        gate->cv.wait(lock, [&] { return gate->releaseOwner; });
+    });
+    {
+        std::unique_lock lock(gate->mutex);
+        gate->cv.wait(lock, [&] { return gate->ownerInDispatch; });
+    }
+
+    bool deleteSignalObserved = false;
+    App::DocumentCommandSubmitOutcome submitOutcome;
+    fastsignals::scoped_connection connection = App::GetApplication().signalDeleteDocument.connect(
+        [&](const App::Document& deletedDoc) {
+            if (closeDocName != deletedDoc.getName()) {
+                return;
+            }
+            deleteSignalObserved = true;
+            App::DocumentCommand cmd;
+            cmd.kind = App::DocumentCommandKind::Recompute;
+            cmd.document = handle.identity();
+            cmd.recompute = App::DocumentCommandRecomputePayload {};
+            cmd.recompute->coalescingKey = "submit-during-gui-close";
+            cmd.recompute->force = true;
+            submitOutcome = handle.trySubmit(std::move(cmd));
+        }
+    );
+
+    {
+        GuiCloseDispatcher dispatcher;
+        ASSERT_TRUE(App::DocumentWouldBlock::isGuiThread());
+        ASSERT_TRUE(App::GetApplication().closeDocument(closeDocName.c_str()));
+    }
+    connection.disconnect();
+
+    {
+        std::lock_guard lock(gate->mutex);
+        gate->releaseOwner = true;
+    }
+    gate->cv.notify_all();
+    holdFuture.get();
+
+    EXPECT_TRUE(deleteSignalObserved);
+    EXPECT_EQ(submitOutcome.result, App::DocumentCommandSubmitResult::Closed)
+        << "trySubmit during Application::closeDocument must be rejected as Closed";
+}
+
 }  // namespace
