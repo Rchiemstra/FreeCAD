@@ -235,6 +235,7 @@ private:
     // The lane's Edit command opens and closes its undo transaction here, so
     // the private native controls stay behind the coordinator.
     friend class DocumentExecutionLane;
+    friend class RecomputeHandle;
     friend class Internal::DocumentCollaborationServiceTestAccess;
     friend class Internal::GenericIsolatedRecomputeAccess;
     // Gui integration tests supply a serialize hook without a production GUI wait.

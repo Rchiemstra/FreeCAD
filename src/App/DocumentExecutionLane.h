@@ -42,6 +42,11 @@ namespace App
 class Document;
 class DocumentExecutionTelemetryCollector;
 
+namespace Internal
+{
+struct CollaborationServiceLifetimeGate;
+}  // namespace Internal
+
 /**
  * Close policy for document execution lanes.
  *
@@ -157,6 +162,8 @@ public:
     void beginMarshalledCloseAdmission() noexcept;
     void endMarshalledCloseAdmission() noexcept;
     [[nodiscard]] bool shutdownRequested() const noexcept;
+    /** True when the lane is closing, shutting down, or its owner document is gone. */
+    [[nodiscard]] bool isClosingOrShuttingDown() const noexcept;
     /** Diagnostic-only: true when the watchdog has marked active work Stalled. */
     [[nodiscard]] bool isWatchdogStalled() const noexcept;
 
@@ -510,6 +517,7 @@ private:
     [[nodiscard]] std::chrono::milliseconds guiSyncAdmissionTimeout() const noexcept;
 
     Document& _document;
+    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _lifetimeGate;
     const DocumentRevisionIdentityBinding _identity;
     std::shared_ptr<DocumentHandle::State> _handleState;
 

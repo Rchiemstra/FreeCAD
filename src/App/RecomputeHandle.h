@@ -16,6 +16,11 @@ namespace App
 class Document;
 class DocumentWeakPtrT;
 
+namespace Internal
+{
+struct CollaborationServiceLifetimeGate;
+}  // namespace Internal
+
 /**
  * Pointer-safe public observation and control handle for one document recompute.
  *
@@ -59,6 +64,7 @@ private:
                             const DocumentRecomputeSnapshot& snapshot);
 
     std::unique_ptr<DocumentWeakPtrT> _document;
+    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _lifetimeGate;
     DocumentRecomputeId _id {0};
 };
 
