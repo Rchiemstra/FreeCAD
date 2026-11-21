@@ -14,7 +14,11 @@ from PySide import QtGui
 
 from SketcherTests.GuiTestCase import SketcherGuiTestCase
 from Test.GuiRecompute import (
-    save_document_as, wait_for_mutation_ready, undo_document, redo_document,
+    _pump_gui_until,
+    save_document_as,
+    wait_for_mutation_ready,
+    undo_document,
+    redo_document,
 )
 
 
@@ -74,10 +78,26 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
             Gui.Selection.clearSelection()
             self.assertTrue(self.sketch.getConstruction(0))
         if command == "accept":
-            boxes = [
-                box for box in Gui.getMainWindow().findChildren(QtGui.QDialogButtonBox)
-                if box.isVisible() and box.button(QtGui.QDialogButtonBox.Ok) is not None
-            ]
+
+            def visible_ok_boxes():
+                return [
+                    box
+                    for box in Gui.getMainWindow().findChildren(QtGui.QDialogButtonBox)
+                    if box.isVisible() and box.button(QtGui.QDialogButtonBox.Ok) is not None
+                ]
+
+            _pump_gui_until(
+                lambda: bool(visible_ok_boxes()),
+                10.0,
+                lambda: {
+                    "boxes": [
+                        (box.isVisible(), box.button(QtGui.QDialogButtonBox.Ok) is not None)
+                        for box in Gui.getMainWindow().findChildren(QtGui.QDialogButtonBox)
+                    ],
+                    "active_dialog": Gui.Control.activeDialog(),
+                },
+            )
+            boxes = visible_ok_boxes()
             self.assertEqual(len(boxes), 1)
             boxes[0].button(QtGui.QDialogButtonBox.Ok).click()
         elif command == "cancel":
@@ -93,11 +113,20 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
             # Wait for operations to settle without asking that work be erased.
             def settled():
                 state = self.doc.getMutationReadiness()
-                return not any(state[key] for key in (
-                    "pending_transaction", "booked_transaction", "transaction_locked",
-                    "recomputing", "pending_removal", "commit_barrier",
-                    "notification_replay", "poisoned",
-                ))
+                return not any(
+                    state[key]
+                    for key in (
+                        "pending_transaction",
+                        "booked_transaction",
+                        "transaction_locked",
+                        "recomputing",
+                        "pending_removal",
+                        "commit_barrier",
+                        "notification_replay",
+                        "poisoned",
+                    )
+                )
+
             self.assertTrue(self.wait_until(settled, timeout_ms=30000))
         else:
             wait_for_mutation_ready(self.doc)
@@ -149,9 +178,11 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
     def persistent_state(self):
         # Persistence includes all coordinates, construction flags, constraint
         # parameters and placement (rather than just list lengths).
-        return (tuple(g.dumpContent() for g in self.sketch.Geometry),
-                tuple(c.Content for c in self.sketch.Constraints),
-                self.sketch.Placement.toMatrix().A)
+        return (
+            tuple(g.dumpContent() for g in self.sketch.Geometry),
+            tuple(c.Content for c in self.sketch.Constraints),
+            self.sketch.Placement.toMatrix().A,
+        )
 
     def assert_edit_undo_redo(self):
         self.assertTrue(self.sketch.getConstruction(0))
@@ -203,8 +234,7 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
 
     def assert_geometry_touched(self):
         # Touched is status bit zero, which getPropertyStatus intentionally omits.
-        match = re.search(r'<Property name="Geometry"[^>]* status="(\d+)"',
-                          self.sketch.Content)
+        match = re.search(r'<Property name="Geometry"[^>]* status="(\d+)"', self.sketch.Content)
         self.assertIsNotNone(match)
         self.assertTrue(int(match.group(1)) & 1)
 
@@ -257,6 +287,7 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
 
     def test_workbench_callback_persistent_edit(self):
         import Show
+
         original = Show.TempoVis.activateWorkbench
         body = self.doc.getObject("Body")
 
@@ -306,6 +337,7 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
 
     def test_cross_document_tempovis(self):
         import Show
+
         other = App.newDocument("SketchEditOther")
         try:
             obj = other.addObject("PartDesign::Feature", "Support")
@@ -333,6 +365,7 @@ class TestSketchEditCleanGui(SketcherGuiTestCase):
 
     def test_cross_document_body_tempovis(self):
         import Show
+
         other = App.newDocument("SketchEditOtherBody")
         try:
             body = other.addObject("PartDesign::Body", "Body")
