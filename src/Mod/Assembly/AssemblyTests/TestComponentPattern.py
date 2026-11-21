@@ -496,6 +496,7 @@ class TestComponentPatternGui(unittest.TestCase):
     def waitForPanel(self, panel):
         import time
         from PySide import QtCore
+        from Test.GuiRecompute import _settle_presentation
 
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -506,6 +507,7 @@ class TestComponentPatternGui(unittest.TestCase):
         self.assertTrue(panel.recomputeHandle.done(), panel.recomputeHandle.status())
         self.assertFalse(getattr(panel, "_pending", False))
         self.flushGui()
+        _settle_presentation(self.doc, 30)
 
     def openPanel(self):
         import FreeCADGui as Gui
