@@ -86,21 +86,7 @@ def recompute_document(document, timeout_seconds: float = 120.0) -> None:
     if FreeCAD.activeDocument() != document:
         FreeCAD.setActiveDocument(document.Name)
 
-    def settle_presentation() -> None:
-        admitted_last_poll = False
-
-        def ready() -> bool:
-            nonlocal admitted_last_poll
-            admitted = FreeCADGui.tryRunPresentationCallback(lambda: None, document)
-            # The owner can finish before a queued GUI presentation retry.
-            # Require admission across GUI polls so the retry gets a turn.
-            settled = admitted_last_poll and admitted
-            admitted_last_poll = admitted
-            return settled
-
-        _pump_gui_until(ready, timeout_seconds, lambda: _readiness_report(document))
-
-    settle_presentation()
+    _settle_presentation(document, timeout_seconds)
     if not document.mustExecute():
         wait_for_mutation_ready(document, timeout_seconds)
         return
@@ -137,7 +123,7 @@ def recompute_document(document, timeout_seconds: float = 120.0) -> None:
         FreeCADGui.updateGui()
         # Presentation callbacks can themselves touch the model. Deliver them
         # before deciding whether another recompute pass is needed.
-        settle_presentation()
+        _settle_presentation(document, timeout_seconds)
         if state == "partial_failure":
             # The caller inspects the failed features; the document cannot
             # become ready while they are invalid.
@@ -145,6 +131,23 @@ def recompute_document(document, timeout_seconds: float = 120.0) -> None:
         if not document.mustExecute():
             break
     wait_for_mutation_ready(document, timeout_seconds)
+
+
+def _settle_presentation(document, timeout_seconds: float = 120.0) -> None:
+    import FreeCADGui
+
+    admitted_last_poll = False
+
+    def ready() -> bool:
+        nonlocal admitted_last_poll
+        admitted = FreeCADGui.tryRunPresentationCallback(lambda: None, document)
+        # The owner can finish before a queued GUI presentation retry.
+        # Require admission across GUI polls so the retry gets a turn.
+        settled = admitted_last_poll and admitted
+        admitted_last_poll = admitted
+        return settled
+
+    _pump_gui_until(ready, timeout_seconds, lambda: _readiness_report(document))
 
 
 def _left_commit(document) -> bool:
@@ -308,6 +311,7 @@ def save_document(document, timeout_seconds: float = 120.0) -> None:
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
     # M7: require Completed, not just done.
     _check_completed(handle, "save")
+    _settle_presentation(document, timeout_seconds)
 
 
 def save_document_as(
@@ -329,6 +333,7 @@ def save_document_as(
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
     # M7: require Completed, not just done.
     _check_completed(handle, "save_as")
+    _settle_presentation(document, timeout_seconds)
 
 
 def undo_document(document, timeout_seconds: float = 120.0) -> None:
@@ -340,6 +345,7 @@ def undo_document(document, timeout_seconds: float = 120.0) -> None:
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
     # M7: require Completed, not just done.
     _check_completed(handle, "undo")
+    _settle_presentation(document, timeout_seconds)
 
 
 def redo_document(document, timeout_seconds: float = 120.0) -> None:
@@ -351,6 +357,7 @@ def redo_document(document, timeout_seconds: float = 120.0) -> None:
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
     # M7: require Completed, not just done.
     _check_completed(handle, "redo")
+    _settle_presentation(document, timeout_seconds)
 
 
 def touch_on_owner_thread(document, obj, timeout_seconds: float = 120.0) -> None:
