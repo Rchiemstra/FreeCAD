@@ -162,11 +162,17 @@ class TestAllowanceProfileGui(unittest.TestCase):
 
     def pocket_dialog_fitting_tolerance(self, accept_immediately, busy_lane=False):
         from PySide import QtCore, QtGui
-        from Test.GuiRecompute import _left_commit, _pump_gui_until, _retry_while_lane_busy
+        from Test.GuiRecompute import (
+            _left_commit,
+            _pump_gui_until,
+            _retry_while_lane_busy,
+            _settle_presentation,
+        )
 
         def settle_recompute():
             handle = _retry_while_lane_busy(self.doc.recomputeAsync, 30)
             _pump_gui_until(lambda: handle.done() and _left_commit(self.doc), 30, handle.status)
+            _settle_presentation(self.doc, 30)
 
         def wait_for_preview(feature):
             # Preview recomputes the feature; its Body stays dirty until accept.
@@ -232,6 +238,7 @@ class TestAllowanceProfileGui(unittest.TestCase):
                 release.set()
                 _pump_gui_until(lambda: handle.done() and _left_commit(self.doc), 30,
                                 handle.status)
+                _settle_presentation(self.doc, 30)
         if not accept_immediately:
             wait_for_preview(pocket)
             settle_recompute()

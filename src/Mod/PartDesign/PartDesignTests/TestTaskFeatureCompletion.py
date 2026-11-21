@@ -11,7 +11,7 @@ import FreeCADGui as Gui
 import Part
 from PySide import QtCore, QtGui
 from Test.GuiRecompute import (
-    _left_commit, _pump_gui_until, _retry_while_lane_busy,
+    _left_commit, _pump_gui_until, _retry_while_lane_busy, _settle_presentation,
     close_document, recompute_document,
 )
 
@@ -55,6 +55,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         doc = doc or self.doc
         h = _retry_while_lane_busy(doc.recomputeAsync, 30)
         _pump_gui_until(lambda: h.done() and _left_commit(doc), 30, h.status)
+        _settle_presentation(doc, 30)
 
     @contextlib.contextmanager
     def busy(self):
@@ -75,6 +76,7 @@ class TestTaskFeatureCompletion(unittest.TestCase):
         finally:
             release.set()
             _pump_gui_until(lambda: h.done() and _left_commit(self.doc), 30, h.status)
+            _settle_presentation(self.doc, 30)
 
     def feature(self, kind):
         if kind in ("Fillet", "Chamfer"):

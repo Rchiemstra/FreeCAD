@@ -105,13 +105,13 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         return closedDocumentSnapshot();
     }
 
+    std::optional<DocumentRecomputeSnapshot> snapshot;
     if (const auto* lane = owner->executionLane()) {
-        if (const auto published = lane->recomputeStatus(_id)) {
-            return *published;
-        }
+        snapshot = lane->recomputeStatus(_id);
     }
-
-    const auto snapshot = owner->recomputeCoordinator().status(_id);
+    else {
+        snapshot = owner->recomputeCoordinator().status(_id);
+    }
     if (!snapshot) {
         DocumentRecomputeSnapshot unavailable;
         unavailable.id = _id;
