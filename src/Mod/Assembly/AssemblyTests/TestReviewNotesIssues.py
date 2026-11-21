@@ -103,9 +103,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         note = self._make_note(["Hello world"])
         self.assertIsNotNone(note, operation)
-        self.assertEqual(
-            note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label)
-        )
+        self.assertEqual(note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label))
         self.assertNotEqual(note.Label, "Hello world", operation)
 
     def test_label_sequence_increments_per_note(self):
@@ -124,7 +122,9 @@ class TestReviewNotesIssues(unittest.TestCase):
         before = note.Label
         self.assertEqual(before, "review_note_1", operation)
         note.LabelText = ["Completely different text"]
-        self.assertEqual(note.Label, before, "{}: Label changed to {!r}".format(operation, note.Label))
+        self.assertEqual(
+            note.Label, before, "{}: Label changed to {!r}".format(operation, note.Label)
+        )
 
     def test_whitespace_text_does_not_blank_label(self):
         operation = "Whitespace-only LabelText does not blank the review_note_N label"
@@ -132,9 +132,7 @@ class TestReviewNotesIssues(unittest.TestCase):
         note = self._make_note(["Keep"])
         self.assertEqual(note.Label, "review_note_1", operation)
         note.LabelText = ["   ", "\t", ""]
-        self.assertEqual(
-            note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label)
-        )
+        self.assertEqual(note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label))
 
     # --- issue 6: note is 1-to-many / supports multiple lines ------------------
 
@@ -199,9 +197,7 @@ class TestReviewNotesIssues(unittest.TestCase):
     def test_select_reference_missing_returns_false_no_throw(self):
         operation = "Select @ref for a missing object returns False without throwing"
         _msg("  Test '{}'".format(operation))
-        ok = CommandReviewNote.select_review_note_reference(
-            self.doc, "NoSuchObject", "Face1"
-        )
+        ok = CommandReviewNote.select_review_note_reference(self.doc, "NoSuchObject", "Face1")
         self.assertFalse(ok, operation)
 
     def test_parse_references_ignores_malformed_at_tokens(self):
@@ -307,6 +303,9 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
                 activated = False
         if not activated:
             _msg("  Warning: Assembly edit mode not active; Add Review Note may be unavailable")
+        # Flush initial MDI subwindow and 3D viewport layout/resize events so
+        # notes created in tests sample the settled viewport worldPerPixel.
+        self._flush()
         _msg("  Temporary GUI document '{}'".format(self.doc.Name))
 
     def tearDown(self):
@@ -348,14 +347,20 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         # test's actual mouse target, independently of that saved GUI state.
         camera = view.getCameraNode()
         camera.height.setValue(100.0)
-        eye_offset = camera.orientation.getValue().multVec(
-            SbVec3f(0, 0, camera.focalDistance.getValue())
-        )
+        focal = float(camera.focalDistance.getValue())
+        if focal < 1.0:
+            focal = 100.0
+            camera.focalDistance.setValue(focal)
+        eye_offset = camera.orientation.getValue().multVec(SbVec3f(0, 0, focal))
         camera.position.setValue(
             world.x + eye_offset[0],
             world.y + eye_offset[1],
             world.z + eye_offset[2],
         )
+        # Keep the clipping frustum bracketing the framed target; an earlier
+        # redraw at the default camera position can leave farDistance < focal.
+        camera.nearDistance.setValue(max(0.1, focal * 0.1))
+        camera.farDistance.setValue(max(focal * 2.0, focal + 200.0))
         self._flush()
         graphics_view = view.graphicsView()
         gl = graphics_view.viewport()
@@ -458,8 +463,11 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
             self.assembly, self.box, sub, picked_point=pick
         )
         return CommandReviewNote.create_review_note(
-            self.assembly, data, list(text_lines),
-            text_offset=offset, open_transaction=False,
+            self.assembly,
+            data,
+            list(text_lines),
+            text_offset=offset,
+            open_transaction=False,
         )
 
     # --- issue 2: Label should be review_note_N --------------------------------
@@ -469,9 +477,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         note = self._make_note(["Hello world"])
         self.assertIsNotNone(note, operation)
-        self.assertEqual(
-            note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label)
-        )
+        self.assertEqual(note.Label, "review_note_1", "{}: got {!r}".format(operation, note.Label))
 
     # --- issues 3+4+5: frame / leader visibility and thickness -----------------
 
@@ -716,7 +722,8 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         self._flush()
         he3 = App.Vector(one.ViewObject.LeaderHalfExtent)
         self.assertGreater(
-            float(he3.y), float(he1.y),
+            float(he3.y),
+            float(he1.y),
             "{}: 3-line halfH={} must exceed 1-line halfH={}".format(operation, he3.y, he1.y),
         )
 
@@ -744,9 +751,12 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
             or any(n.endswith("Face6") for n in list(s.SubElementNames))
             for s in selected
         )
-        self.assertTrue(face_hit, "{}: Face6 not selected; {!r}".format(
-            operation, [(s.Object.Name, list(s.SubElementNames)) for s in selected]
-        ))
+        self.assertTrue(
+            face_hit,
+            "{}: Face6 not selected; {!r}".format(
+                operation, [(s.Object.Name, list(s.SubElementNames)) for s in selected]
+            ),
+        )
         self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
 
         # Repeated link clicks and a later button-free move must not leave the
@@ -849,7 +859,8 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         # The fixed-size raster can be capped or ceil to a partial pixel. Verify
         # that it grows and the leader follows the actual rendered raster.
         self.assertGreater(
-            float(fixed_he.x), float(auto_he.x),
+            float(fixed_he.x),
+            float(auto_he.x),
             "{}: fixed halfW={} must exceed auto halfW={}".format(operation, fixed_he.x, auto_he.x),
         )
         self.assertGreater(fixed_width, 0, operation)
@@ -876,7 +887,8 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         # The fixed-size raster can be capped or ceil to a partial pixel. Verify
         # that it grows and the leader follows the actual rendered raster.
         self.assertGreater(
-            float(fixed_he.y), float(auto_he.y),
+            float(fixed_he.y),
+            float(auto_he.y),
             "{}: fixed halfH={} must exceed auto halfH={}".format(operation, fixed_he.y, auto_he.y),
         )
         self.assertGreater(fixed_height, 0, operation)
@@ -912,14 +924,24 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         rh = int(note.ViewObject.RasterHeight)
         self.assertGreater(rw, 0, operation)
         self.assertGreater(rh, 0, operation)
-        self.assertLessEqual(rw, 4096, "{}: RasterWidth={} must be capped at 4096".format(operation, rw))
-        self.assertLessEqual(rh, 4096, "{}: RasterHeight={} must be capped at 4096".format(operation, rh))
+        self.assertLessEqual(
+            rw, 4096, "{}: RasterWidth={} must be capped at 4096".format(operation, rw)
+        )
+        self.assertLessEqual(
+            rh, 4096, "{}: RasterHeight={} must be capped at 4096".format(operation, rh)
+        )
         # Leader must stay glued to the (clamped) raster: the worldPerPixel implied by
         # leader vs raster must match the uncapped reference (same view/camera).
         he = App.Vector(note.ViewObject.LeaderHalfExtent)
         wp_capped = float(he.x) / (0.5 * rw)
-        self.assertAlmostEqual(wp_capped, wp_ref, places=3,
-            msg="{}: leader detached from raster (wp {} vs ref {})".format(operation, wp_capped, wp_ref))
+        self.assertAlmostEqual(
+            wp_capped,
+            wp_ref,
+            places=3,
+            msg="{}: leader detached from raster (wp {} vs ref {})".format(
+                operation, wp_capped, wp_ref
+            ),
+        )
         self.assertLessEqual(float(he.x), 2500.0, operation)  # <= BoxWidth/2
         self.assertLessEqual(float(he.y), 2500.0, operation)
 
@@ -971,6 +993,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         import FreeCADGui as Gui
         from PySide import QtWidgets
+
         note = self._make_note(["Resize"], offset=App.Vector(40, 0, 0))
         note.ViewObject.BoxWidth = 30.0
         self._flush()
@@ -992,9 +1015,13 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         count_after = int(note.ViewObject.DrawImageCount)
         sw.resize(w, h)  # restore the original geometry
         self._flush()
-        self.assertGreater(count_after, count_before,
+        self.assertGreater(
+            count_after,
+            count_before,
             "{}: DrawImageCount {} not > {} (no resize re-raster)".format(
-                operation, count_after, count_before))
+                operation, count_after, count_before
+            ),
+        )
 
     def test_gui_auto_box_when_zero_uses_text(self):
         operation = "GUI: BoxWidth=0 keeps auto (text-sized) box"
@@ -1008,11 +1035,13 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         self._flush()
         he2 = App.Vector(note.ViewObject.LeaderHalfExtent)
         self.assertLess(
-            abs(float(he2.x) - float(he1.x)), 1e-3,
+            abs(float(he2.x) - float(he1.x)),
+            1e-3,
             "{}: auto halfW changed when BoxWidth=0 ({} vs {})".format(operation, he2.x, he1.x),
         )
         self.assertLess(
-            abs(float(he2.y) - float(he1.y)), 1e-3,
+            abs(float(he2.y) - float(he1.y)),
+            1e-3,
             "{}: auto halfH changed when BoxHeight=0 ({} vs {})".format(operation, he2.y, he1.y),
         )
 
