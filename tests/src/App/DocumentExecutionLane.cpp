@@ -1161,4 +1161,58 @@ obj.touch()
     }
 }
 
+TEST_F(DocumentExecutionLaneTest, NonGuiDispatchRechecksRejectionBeforeQueuePush)
+{
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    ASSERT_FALSE(App::DocumentWouldBlock::isGuiThread());
+
+    struct ShutdownBetweenCheckAndPushCallable
+    {
+        App::DocumentExecutionLane* lane {nullptr};
+        std::shared_ptr<std::atomic<bool>> shutdownTriggered {
+            std::make_shared<std::atomic<bool>>(false)
+        };
+        std::shared_ptr<std::atomic<bool>> invoked {std::make_shared<std::atomic<bool>>(false)};
+
+        explicit ShutdownBetweenCheckAndPushCallable(App::DocumentExecutionLane* laneIn)
+            : lane(laneIn)
+        {}
+
+        ShutdownBetweenCheckAndPushCallable(const ShutdownBetweenCheckAndPushCallable& other)
+            : lane(other.lane)
+            , shutdownTriggered(other.shutdownTriggered)
+            , invoked(other.invoked)
+        {
+            shutdownAfterInitialCheck();
+        }
+
+        ShutdownBetweenCheckAndPushCallable(ShutdownBetweenCheckAndPushCallable&& other) noexcept
+            : lane(other.lane)
+            , shutdownTriggered(std::move(other.shutdownTriggered))
+            , invoked(std::move(other.invoked))
+        {
+            shutdownAfterInitialCheck();
+        }
+
+        void shutdownAfterInitialCheck() const
+        {
+            if (lane && !shutdownTriggered->exchange(true, std::memory_order_acq_rel)) {
+                lane->requestShutdown("lane shut down between initial check and queue push");
+                lane->joinThread();
+            }
+        }
+
+        void operator()() const
+        {
+            invoked->store(true, std::memory_order_release);
+        }
+    };
+
+    ShutdownBetweenCheckAndPushCallable callable(lane);
+    EXPECT_THROW(lane->dispatchToOwner(callable), App::DocumentWouldBlock);
+    EXPECT_TRUE(callable.shutdownTriggered->load(std::memory_order_acquire));
+    EXPECT_FALSE(callable.invoked->load(std::memory_order_acquire));
+}
+
 }  // namespace

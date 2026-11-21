@@ -291,6 +291,15 @@ public:
         if (!onGui) {
             {
                 std::lock_guard lock(_mutex);
+                if (ownerDispatchRejectedLocked()) {
+                    throw DocumentWouldBlock("document execution lane is closing or shutting down");
+                }
+                if (commandBlocksDispatchLocked(allowWhileCommandActive)) {
+                    throw DocumentWouldBlock(
+                        "document execution lane is busy executing model work; use "
+                        "DocumentHandle::trySubmit() instead"
+                    );
+                }
                 _dispatchQueue.push_back(std::move(task));
                 _workAvailable.notify_one();
             }
