@@ -758,6 +758,14 @@ bool Application::closeDocument(const char* name)
     }
     serialized.unlock();
 
+    // Close is irrevocable; drop any queued lane dispatch tasks outside both
+    // collaborationCommitMutex and lane::_mutex so pinned waiters unwind
+    // before the activeAccesses drain below (and captured destructors such as
+    // Python callables do not invert collaborationCommitMutex -> GIL).
+    if (lane) {
+        lane->commitApplicationClose();
+    }
+
     // Do not hold the document serialization mutex, GUI lock, GIL, or any
     // global lock while admitted service calls observe Closing and unwind.
     // The sealed gate prevents a zero-count/new-admission race.

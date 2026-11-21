@@ -391,6 +391,9 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
         }
         return false;
     }
+    if (_activeDispatchCount > 0 && DocumentWouldBlock::isGuiThread() && !isOwnerThread()) {
+        return false;
+    }
     if (_applicationClosing) {
         return false;
     }
@@ -409,6 +412,9 @@ bool DocumentExecutionLane::tryBeginApplicationClose() noexcept
         }
         return false;
     }
+    if (_activeDispatchCount > 0 && DocumentWouldBlock::isGuiThread() && !isOwnerThread()) {
+        return false;
+    }
     if (_applicationClosing) {
         return false;
     }
@@ -418,8 +424,24 @@ bool DocumentExecutionLane::tryBeginApplicationClose() noexcept
 
 void DocumentExecutionLane::cancelApplicationClose() noexcept
 {
-    std::lock_guard lock(_mutex);
-    _applicationClosing = false;
+    {
+        std::lock_guard lock(_mutex);
+        _applicationClosing = false;
+    }
+    _workAvailable.notify_all();
+}
+
+void DocumentExecutionLane::commitApplicationClose() noexcept
+{
+    std::deque<std::function<void(const std::function<void()>&)>> dropped;
+    {
+        std::lock_guard lock(_mutex);
+        _applicationClosing = true;
+        dropped.swap(_dispatchQueue);
+    }
+    // Destroy dropped tasks outside _mutex so their promises break and any
+    // captured destructors (for example LifecyclePin or PyGILStateLocker) run
+    // without holding lane::_mutex.
 }
 
 void DocumentExecutionLane::beginMarshalledCloseAdmission() noexcept
@@ -717,7 +739,8 @@ void DocumentExecutionLane::threadMain()
         {
             std::unique_lock lock(_mutex);
             _workAvailable.wait(lock, [this] {
-                return _shutdownRequested || _active.has_value() || !_dispatchQueue.empty();
+                return _shutdownRequested || _active.has_value()
+                    || (!_dispatchQueue.empty() && (!_applicationClosing || !_ownerDocumentAlive));
             });
         }
 
@@ -761,20 +784,49 @@ void DocumentExecutionLane::threadMain()
 
 void DocumentExecutionLane::drainDispatchQueue()
 {
-    std::vector<std::function<void()>> queue;
-    bool runTasks = false;
-    {
-        std::lock_guard lock(_mutex);
-        queue.swap(_dispatchQueue);
-        runTasks = _ownerDocumentAlive;
-    }
-    if (!runTasks) {
-        // The document is already gone. Drop the tasks so their promises break
-        // instead of running against a deleted Document (M5 / N3).
-        return;
-    }
-    for (auto& task : queue) {
-        task();
+    while (true) {
+        std::function<void(const std::function<void()>&)> task;
+        std::deque<std::function<void(const std::function<void()>&)>> dropped;
+        {
+            std::lock_guard lock(_mutex);
+            if (!_ownerDocumentAlive || (_shutdownRequested && _applicationClosing)) {
+                // The document is already gone. Drop queued tasks outside _mutex
+                // so their promises break instead of running against a deleted
+                // Document (M5 / N3).
+                dropped.swap(_dispatchQueue);
+                return;
+            }
+            if (_applicationClosing || _dispatchQueue.empty()) {
+                return;
+            }
+            task = std::move(_dispatchQueue.front());
+            _dispatchQueue.pop_front();
+            ++_activeDispatchCount;
+        }
+        bool dispatchReleased = false;
+        std::function<void()> finishDispatch = [this, &dispatchReleased] {
+            if (dispatchReleased) {
+                return;
+            }
+            dispatchReleased = true;
+            {
+                std::lock_guard lock(_mutex);
+                --_activeDispatchCount;
+            }
+            _workAvailable.notify_all();
+        };
+        struct ActiveDispatchGuard
+        {
+            const std::function<void()>& finish;
+            ~ActiveDispatchGuard()
+            {
+                finish();
+            }
+        } activeGuard {finishDispatch};
+        {
+            auto current = std::move(task);
+            current(finishDispatch);
+        }
     }
 }
 

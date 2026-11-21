@@ -1228,29 +1228,6 @@ TEST_F(DocumentExecutionLaneTest, GuiCloseDocumentSealsLaneAgainstTrySubmitDurin
     );
     ASSERT_FALSE(weakLane.expired());
 
-    struct GateState
-    {
-        std::mutex mutex;
-        std::condition_variable cv;
-        bool ownerInDispatch {false};
-        bool releaseOwner {false};
-    };
-    auto gate = std::make_shared<GateState>();
-
-    auto holdFuture = lane->postToOwner([gate] {
-        {
-            std::lock_guard lock(gate->mutex);
-            gate->ownerInDispatch = true;
-        }
-        gate->cv.notify_all();
-        std::unique_lock lock(gate->mutex);
-        gate->cv.wait(lock, [&] { return gate->releaseOwner; });
-    });
-    {
-        std::unique_lock lock(gate->mutex);
-        gate->cv.wait(lock, [&] { return gate->ownerInDispatch; });
-    }
-
     bool deleteSignalObserved = false;
     App::DocumentCommandSubmitOutcome submitOutcome;
     fastsignals::scoped_connection connection = App::GetApplication().signalDeleteDocument.connect(
@@ -1276,16 +1253,159 @@ TEST_F(DocumentExecutionLaneTest, GuiCloseDocumentSealsLaneAgainstTrySubmitDurin
     }
     connection.disconnect();
 
-    {
-        std::lock_guard lock(gate->mutex);
-        gate->releaseOwner = true;
-    }
-    gate->cv.notify_all();
-    holdFuture.get();
-
     EXPECT_TRUE(deleteSignalObserved);
     EXPECT_EQ(submitOutcome.result, App::DocumentCommandSubmitResult::Closed)
         << "trySubmit during Application::closeDocument must be rejected as Closed";
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotTouchCoordinatorAfterOwnerDestroyed)
+{
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+
+    App::DocumentRecomputeRequest request;
+    request.coalescingKey = "direct-coordinator-recompute-after-owner-destroyed";
+    const auto recomputeId = doc()->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+
+    App::RecomputeHandle handle(*doc(), recomputeId);
+    ASSERT_EQ(handle.status().state, App::DocumentRecomputeState::Completed);
+
+    lane->markOwnerDocumentDestroyed();
+
+    ASSERT_FALSE(lane->recomputeStatus(recomputeId).has_value());
+    const auto afterDestroyed = handle.status();
+    EXPECT_EQ(afterDestroyed.state, App::DocumentRecomputeState::Cancelled)
+        << "RecomputeHandle::status must not fall back to owner->recomputeCoordinator() "
+           "after lane->recomputeStatus() refused because the owner document is destroyed";
+}
+
+TEST_F(DocumentExecutionLaneTest, GuiCloseDocumentRefusesWhilePostToOwnerTaskIsExecuting)
+{
+    const std::string closeDocName = App::GetApplication().getUniqueDocumentName(
+        "lane-gui-close-during-post"
+    );
+    auto* closeDoc = App::GetApplication().newDocument(closeDocName.c_str(), "testUser");
+    ASSERT_NE(closeDoc, nullptr);
+    auto* lane = closeDoc->executionLane();
+    ASSERT_NE(lane, nullptr);
+
+    struct ActivePostGate
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool postExecuting {false};
+        bool releasePost {false};
+    };
+    auto postGate = std::make_shared<ActivePostGate>();
+
+    auto holdFuture = lane->postToOwner([postGate] {
+        {
+            std::lock_guard lock(postGate->mutex);
+            postGate->postExecuting = true;
+        }
+        postGate->cv.notify_all();
+        std::unique_lock lock(postGate->mutex);
+        postGate->cv.wait(lock, [&] { return postGate->releasePost; });
+    });
+    {
+        std::unique_lock lock(postGate->mutex);
+        postGate->cv.wait(lock, [&] { return postGate->postExecuting; });
+    }
+
+    bool closedWhilePostExecuting = false;
+    {
+        GuiCloseDispatcher dispatcher;
+        ASSERT_TRUE(App::DocumentWouldBlock::isGuiThread());
+        closedWhilePostExecuting = App::GetApplication().closeDocument(closeDocName.c_str());
+    }
+    const bool docStillOpenWhileBusy = App::GetApplication().getDocument(closeDocName.c_str())
+        == closeDoc;
+
+    {
+        std::lock_guard lock(postGate->mutex);
+        postGate->releasePost = true;
+    }
+    postGate->cv.notify_all();
+    holdFuture.get();
+
+    EXPECT_FALSE(closedWhilePostExecuting)
+        << "GUI closeDocument must not destroy the document and detach the lane while a "
+           "postToOwner task is actively executing";
+    EXPECT_TRUE(docStillOpenWhileBusy);
+
+    if (App::GetApplication().getDocument(closeDocName.c_str()) != nullptr) {
+        GuiCloseDispatcher dispatcher;
+        ASSERT_TRUE(App::DocumentWouldBlock::isGuiThread());
+        EXPECT_TRUE(App::GetApplication().closeDocument(closeDocName.c_str()));
+        EXPECT_EQ(App::GetApplication().getDocument(closeDocName.c_str()), nullptr);
+    }
+}
+
+TEST_F(DocumentExecutionLaneTest, DrainDispatchQueueSkipsSubsequentTasksAfterReentrantClose)
+{
+    const std::string closeDocName = App::GetApplication().getUniqueDocumentName(
+        "lane-reentrant-close-batch"
+    );
+    auto* closeDoc = App::GetApplication().newDocument(closeDocName.c_str(), "testUser");
+    ASSERT_NE(closeDoc, nullptr);
+    auto* lane = closeDoc->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto lanePin = lane->shared_from_this();
+
+    struct BatchBlockerGate
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool blockerEntered {false};
+        bool releaseBlocker {false};
+    };
+    auto batchGate = std::make_shared<BatchBlockerGate>();
+
+    auto blockerFuture = lanePin->postToOwner([batchGate] {
+        {
+            std::lock_guard lock(batchGate->mutex);
+            batchGate->blockerEntered = true;
+        }
+        batchGate->cv.notify_all();
+        std::unique_lock lock(batchGate->mutex);
+        batchGate->cv.wait(lock, [&] { return batchGate->releaseBlocker; });
+    });
+    {
+        std::unique_lock lock(batchGate->mutex);
+        batchGate->cv.wait(lock, [&] { return batchGate->blockerEntered; });
+    }
+
+    auto task1Future = lanePin->postToOwner([closeDocName] {
+        return App::GetApplication().closeDocument(closeDocName.c_str());
+    });
+    std::atomic<bool> task2Ran {false};
+    auto task2Future = lanePin->postToOwner([&task2Ran] {
+        task2Ran.store(true, std::memory_order_release);
+    });
+
+    {
+        std::lock_guard lock(batchGate->mutex);
+        batchGate->releaseBlocker = true;
+    }
+    batchGate->cv.notify_all();
+
+    blockerFuture.get();
+    EXPECT_TRUE(task1Future.get());
+    bool task2Dropped = false;
+    try {
+        task2Future.get();
+    }
+    catch (const std::future_error&) {
+        task2Dropped = true;
+    }
+    lanePin->joinThread();
+
+    EXPECT_FALSE(task2Ran.load(std::memory_order_acquire))
+        << "drainDispatchQueue must not execute subsequent queued tasks after a task "
+           "closes the owning document";
+    EXPECT_TRUE(task2Dropped);
+    EXPECT_EQ(App::GetApplication().getDocument(closeDocName.c_str()), nullptr);
 }
 
 }  // namespace

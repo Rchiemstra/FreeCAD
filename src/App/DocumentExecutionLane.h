@@ -151,6 +151,8 @@ public:
     [[nodiscard]] bool tryBeginApplicationClose() noexcept;
     /** Roll back a non-irrevocable tryBeginApplicationClose() claim. */
     void cancelApplicationClose() noexcept;
+    /** Drop queued owner-dispatch tasks once Application::closeDocument() is irrevocable. */
+    void commitApplicationClose() noexcept;
     /** Mark this thread as the marshalled Application::closeDocument caller. */
     void beginMarshalledCloseAdmission() noexcept;
     void endMarshalledCloseAdmission() noexcept;
@@ -172,24 +174,7 @@ public:
     [[nodiscard]] auto postToOwner(Fn&& fn, const bool allowWhileCommandActive = true)
         -> std::future<std::invoke_result_t<Fn>>
     {
-        using Result = std::invoke_result_t<Fn>;
-        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
-        auto promise = std::make_shared<std::promise<Result>>();
-        auto future = promise->get_future();
-        std::function<void()> task = [promise, sharedFn]() {
-            try {
-                if constexpr (std::is_void_v<Result>) {
-                    (*sharedFn)();
-                    promise->set_value();
-                }
-                else {
-                    promise->set_value((*sharedFn)());
-                }
-            }
-            catch (...) {
-                promise->set_exception(std::current_exception());
-            }
-        };
+        auto [future, task] = makeDispatchTask(std::forward<Fn>(fn));
         {
             std::lock_guard lock(_mutex);
             if (ownerDispatchRejectedLocked()) {
@@ -274,27 +259,20 @@ public:
 
         // std::function requires a copyable target; share the promise and
         // callable so the queued lambda is copy-constructible.
-        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
-        auto promise = std::make_shared<std::promise<Result>>();
-        auto future = promise->get_future();
-        std::function<void()> task = [promise, sharedFn]() {
-            try {
-                if constexpr (std::is_void_v<Result>) {
-                    (*sharedFn)();
-                    promise->set_value();
-                }
-                else {
-                    promise->set_value((*sharedFn)());
-                }
-            }
-            catch (...) {
-                promise->set_exception(std::current_exception());
-            }
-        };
+        auto [future, task] = makeDispatchTask(std::forward<Fn>(fn));
 
         if (!onGui) {
             {
                 std::lock_guard lock(_mutex);
+                if (ownerDispatchRejectedLocked()) {
+                    throw DocumentWouldBlock("document execution lane is closing or shutting down");
+                }
+                if (commandBlocksDispatchLocked(allowWhileCommandActive)) {
+                    throw DocumentWouldBlock(
+                        "document execution lane is busy executing model work; use "
+                        "DocumentHandle::trySubmit() instead"
+                    );
+                }
                 _dispatchQueue.push_back(std::move(task));
                 _workAvailable.notify_one();
             }
@@ -389,6 +367,72 @@ private:
     {
         return _shutdownRequested || !_ownerDocumentAlive || _applicationClosing
             || (_active && _active->command.kind == DocumentCommandKind::Close);
+    }
+
+    template<typename Fn>
+    static auto makeDispatchTask(
+        Fn&& fn
+    ) -> std::pair<std::future<std::invoke_result_t<Fn>>, std::function<void(const std::function<void()>&)>>
+    {
+        using Result = std::invoke_result_t<Fn>;
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        std::function<void(const std::function<void()>&)> task =
+            [promise, sharedFn](const std::function<void()>& finishDispatch) mutable {
+                std::exception_ptr failure;
+                if constexpr (std::is_void_v<Result>) {
+                    try {
+                        (*sharedFn)();
+                    }
+                    catch (...) {
+                        failure = std::current_exception();
+                    }
+                    sharedFn.reset();
+                    finishDispatch();
+                    if (failure) {
+                        promise->set_exception(failure);
+                    }
+                    else {
+                        promise->set_value();
+                    }
+                }
+                else if constexpr (std::is_reference_v<Result>) {
+                    std::remove_reference_t<Result>* resultPtr = nullptr;
+                    try {
+                        resultPtr = std::addressof((*sharedFn)());
+                    }
+                    catch (...) {
+                        failure = std::current_exception();
+                    }
+                    sharedFn.reset();
+                    finishDispatch();
+                    if (failure) {
+                        promise->set_exception(failure);
+                    }
+                    else {
+                        promise->set_value(*resultPtr);
+                    }
+                }
+                else {
+                    std::optional<Result> result;
+                    try {
+                        result.emplace((*sharedFn)());
+                    }
+                    catch (...) {
+                        failure = std::current_exception();
+                    }
+                    sharedFn.reset();
+                    finishDispatch();
+                    if (failure) {
+                        promise->set_exception(failure);
+                    }
+                    else {
+                        promise->set_value(std::move(*result));
+                    }
+                }
+            };
+        return {std::move(future), std::move(task)};
     }
 
     /** In-flight command; complete before use in std::optional. */
@@ -489,7 +533,8 @@ private:
     std::deque<DocumentCommandId> _terminalOrder;
     DocumentCommandId _nextCommandId {1};
 
-    std::vector<std::function<void()>> _dispatchQueue;
+    std::deque<std::function<void(const std::function<void()>&)>> _dispatchQueue;
+    std::size_t _activeDispatchCount {0};
 
     std::atomic<bool> _recoverySnapshotOwnerWorkInFlight {false};
 
