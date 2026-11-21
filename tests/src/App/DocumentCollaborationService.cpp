@@ -161,6 +161,13 @@ public:
     {
         return service.commitAtomicCompatibilityTransaction();
     }
+
+    static DocumentCollaborationService::LifecyclePin pinDocumentAccess(
+        const DocumentCollaborationService& service
+    )
+    {
+        return service.pinDocumentAccess();
+    }
 };
 
 class DocumentStructuralCompatibilityTestAccess
@@ -1932,6 +1939,96 @@ TEST_F(DocumentCollaborationServiceTest, callsStartedAfterSealRejectWithoutTouch
     if (closed) {
         _document = nullptr;
     }
+}
+
+TEST_F(DocumentCollaborationServiceTest, closeDropsQueuedDispatchHeldByCollaborationPin)
+{
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto lanePin = lane->shared_from_this();
+
+    HookBarrier blockerBarrier;
+    auto blockerFuture = lanePin->postToOwner([] { HookBarrier::invoke(); });
+    ASSERT_TRUE(blockerBarrier.waitUntilEntered());
+
+    struct WorkerState
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool queued {false};
+    };
+    auto workerState = std::make_shared<WorkerState>();
+    std::atomic<bool> workerTaskRan {false};
+    std::atomic<bool> workerPromiseBroken {false};
+
+    auto workerFuture = std::async(std::launch::async, [&] {
+        auto lifecyclePin = Internal::DocumentCollaborationServiceTestAccess::pinDocumentAccess(
+            _document->collaborationService()
+        );
+        if (!lifecyclePin) {
+            return false;
+        }
+        auto queuedFuture = lanePin->postToOwner([&workerTaskRan] {
+            workerTaskRan.store(true, std::memory_order_release);
+        });
+        {
+            std::lock_guard lock(workerState->mutex);
+            workerState->queued = true;
+        }
+        workerState->cv.notify_all();
+        try {
+            queuedFuture.get();
+        }
+        catch (const std::future_error&) {
+            workerPromiseBroken.store(true, std::memory_order_release);
+        }
+        return true;
+    });
+
+    {
+        std::unique_lock lock(workerState->mutex);
+        ASSERT_TRUE(workerState->cv.wait_for(lock, std::chrono::seconds(2), [&] {
+            return workerState->queued;
+        }));
+    }
+
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive
+    );
+    auto closeFuture = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+
+    const auto closeStatus = closeFuture.wait_for(std::chrono::seconds(2));
+    if (closeStatus != std::future_status::ready) {
+        blockerBarrier.release();
+        lanePin->cancelApplicationClose();
+    }
+
+    const auto blockerStatus = blockerFuture.wait_for(std::chrono::seconds(2));
+    const auto workerStatus = workerFuture.wait_for(std::chrono::seconds(2));
+    const auto finalCloseStatus = closeStatus == std::future_status::ready
+        ? closeStatus
+        : closeFuture.wait_for(std::chrono::seconds(2));
+
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+
+    EXPECT_EQ(closeStatus, std::future_status::ready)
+        << "closeDocument deadlocked waiting for activeAccesses == 0 while a pinned "
+           "worker waited on a parked queued dispatch task";
+    ASSERT_EQ(blockerStatus, std::future_status::ready);
+    ASSERT_EQ(workerStatus, std::future_status::ready);
+    ASSERT_EQ(finalCloseStatus, std::future_status::ready);
+
+    blockerFuture.get();
+    EXPECT_TRUE(workerFuture.get());
+    const bool closed = closeFuture.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+    EXPECT_FALSE(workerTaskRan.load(std::memory_order_acquire));
+    EXPECT_TRUE(workerPromiseBroken.load(std::memory_order_acquire));
 }
 
 TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandleAndStructuredResults)
