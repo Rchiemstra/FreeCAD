@@ -1661,9 +1661,21 @@ class TestCore(AssemblyTestBase):
                 obj.Placement = placement
                 return True
 
-            committed = self.doc.commitCompatibilityMutation(
-                mutate, structural=True, recompute=True
-            )
+            if getattr(App, "GuiUp", False):
+                from concurrent.futures import ThreadPoolExecutor
+                from Test.GuiRecompute import _pump_gui_until
+
+                handle = self.doc.commitCompatibilityMutationAsync(
+                    mutate, structural=True, recompute=True
+                )
+                with ThreadPoolExecutor(max_workers=1) as waiter:
+                    completion = waiter.submit(handle["wait"], 15.0)
+                    _pump_gui_until(completion.done, 20.0)
+                    committed = completion.result()
+            else:
+                committed = self.doc.commitCompatibilityMutation(
+                    mutate, structural=True, recompute=True
+                )
             self.assertTrue(committed["committed"], committed)
         else:
             obj.Placement = placement

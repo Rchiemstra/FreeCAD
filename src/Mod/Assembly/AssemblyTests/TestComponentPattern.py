@@ -593,12 +593,21 @@ class TestComponentPatternGui(unittest.TestCase):
             CommandComponentPattern, "createComponentPattern", side_effect=invalid
         ):
             from PySide import QtWidgets
+            from Test.GuiRecompute import _pump_gui_until
 
-            boxes = [
-                box
-                for box in panel.form.window().findChildren(QtWidgets.QDialogButtonBox)
-                if box.isVisible() and box.button(QtWidgets.QDialogButtonBox.Ok)
-            ]
+            def visible_ok_boxes():
+                return [
+                    box
+                    for box in panel.form.window().findChildren(QtWidgets.QDialogButtonBox)
+                    if box.isVisible() and box.button(QtWidgets.QDialogButtonBox.Ok)
+                ]
+
+            _pump_gui_until(
+                lambda: bool(visible_ok_boxes()),
+                5.0,
+                lambda: "visible OK button box for TaskComponentPattern",
+            )
+            boxes = visible_ok_boxes()
             self.assertEqual(len(boxes), 1)
             boxes[0].button(QtWidgets.QDialogButtonBox.Ok).click()
             self.assertTrue(panel._pending)
