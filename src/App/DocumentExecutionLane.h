@@ -147,6 +147,10 @@ public:
     /** True when idle, or the owner thread is executing Close, or this thread
      *  is the one the active Close command marshalled Application::closeDocument onto. */
     [[nodiscard]] bool permitsApplicationClose() const noexcept;
+    /** Atomically verify close permission and reject further trySubmit/dispatch admissions. */
+    [[nodiscard]] bool tryBeginApplicationClose() noexcept;
+    /** Roll back a non-irrevocable tryBeginApplicationClose() claim. */
+    void cancelApplicationClose() noexcept;
     /** Mark this thread as the marshalled Application::closeDocument caller. */
     void beginMarshalledCloseAdmission() noexcept;
     void endMarshalledCloseAdmission() noexcept;
@@ -383,7 +387,7 @@ private:
     /** Holds _mutex. Reject posts during Close, after the document is gone, and after shutdown. */
     [[nodiscard]] bool ownerDispatchRejectedLocked() const
     {
-        return _shutdownRequested || !_ownerDocumentAlive
+        return _shutdownRequested || !_ownerDocumentAlive || _applicationClosing
             || (_active && _active->command.kind == DocumentCommandKind::Close);
     }
 
@@ -474,6 +478,8 @@ private:
     std::string _shutdownReason;
     /** False once Application::closeDocument has destroyed the document. */
     bool _ownerDocumentAlive {true};
+    /** True while Application::closeDocument has claimed close admission. */
+    bool _applicationClosing {false};
     /** Thread currently inside the Close command's marshalled closeDocument(). */
     std::thread::id _marshalledCloseThread {};
 

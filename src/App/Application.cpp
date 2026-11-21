@@ -709,11 +709,20 @@ bool Application::closeDocument(const char* name)
         return false;
     }
 
-    if (const auto* lane = pos->second->executionLane()) {
-        if (!lane->permitsApplicationClose()) {
+    auto* lane = pos->second->executionLane();
+    bool laneCloseClaimed = false;
+    if (lane) {
+        if (!lane->tryBeginApplicationClose()) {
             return false;
         }
+        laneCloseClaimed = true;
     }
+    BOOST_SCOPE_EXIT_ALL(&)
+    {
+        if (laneCloseClaimed && lane) {
+            lane->cancelApplicationClose();
+        }
+    };
 
     if (atomicPresentationMutationAdmissionHeldFor(*pos->second)) {
         return false;
@@ -726,6 +735,7 @@ bool Application::closeDocument(const char* name)
     }
     // All potentially allocating tombstone work completed before Closing was
     // published. From this point onward close is irrevocable.
+    laneCloseClaimed = false;
     pos->second->setCollaborationRevisionPublicationSuppressed(true);
     const auto& closingIdentity = preparedClose->closingIdentity;
     runIrrevocableCloseStep("Closing revision binding", [&] {

@@ -391,9 +391,35 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
         }
         return false;
     }
+    if (_applicationClosing) {
+        return false;
+    }
     // Application::closeDocument publishes Closing and drains outstanding
     // collaboration admissions; do not reject here while they are still held.
     return true;
+}
+
+bool DocumentExecutionLane::tryBeginApplicationClose() noexcept
+{
+    std::lock_guard lock(_mutex);
+    if (_active) {
+        if (_active->command.kind == DocumentCommandKind::Close
+            && (isOwnerThread() || std::this_thread::get_id() == _marshalledCloseThread)) {
+            return true;
+        }
+        return false;
+    }
+    if (_applicationClosing) {
+        return false;
+    }
+    _applicationClosing = true;
+    return true;
+}
+
+void DocumentExecutionLane::cancelApplicationClose() noexcept
+{
+    std::lock_guard lock(_mutex);
+    _applicationClosing = false;
 }
 
 void DocumentExecutionLane::beginMarshalledCloseAdmission() noexcept
@@ -437,7 +463,7 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
     }
 
     std::lock_guard lock(_mutex);
-    if (_shutdownRequested) {
+    if (_shutdownRequested || !_ownerDocumentAlive || _applicationClosing) {
         outcome.result = DocumentCommandSubmitResult::Closed;
         outcome.diagnostic = _shutdownReason.empty() ? "document execution lane is closed"
                                                      : _shutdownReason;
@@ -598,6 +624,9 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
                 return recomputeSnapshotFromObservation(*snapshot.recompute);
             }
         }
+        if (!_ownerDocumentAlive) {
+            return std::nullopt;
+        }
     }
     return _document.recomputeCoordinator().status(id);
 }
@@ -605,17 +634,19 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
 bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reason)
 {
     std::optional<DocumentRecomputeId> recomputeId;
+    bool ownerAlive = true;
     {
         std::lock_guard lock(_mutex);
         if (!_active || _active->id != id) {
             return false;
         }
         recomputeId = _active->recomputeId;
+        ownerAlive = _ownerDocumentAlive;
     }
     // Record the caller's reason before the lane flag is visible. The owner
     // pump also calls cancel() once it sees that flag, and a generic follow-up
     // must not win the race and become the stored diagnostic.
-    if (recomputeId) {
+    if (recomputeId && ownerAlive) {
         static_cast<void>(_document.recomputeCoordinator().cancel(
             *recomputeId, reason.empty() ? "command cancelled" : reason));
     }
@@ -637,8 +668,11 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
 
 void DocumentExecutionLane::markOwnerDocumentDestroyed() noexcept
 {
-    std::lock_guard lock(_mutex);
-    _ownerDocumentAlive = false;
+    {
+        std::lock_guard lock(_mutex);
+        _ownerDocumentAlive = false;
+    }
+    _workAvailable.notify_all();
 }
 
 void DocumentExecutionLane::requestShutdown(std::string reason)
@@ -691,6 +725,12 @@ void DocumentExecutionLane::threadMain()
 
         std::unique_lock lock(_mutex);
         if (_active) {
+            if (!_ownerDocumentAlive) {
+                std::string reason = _shutdownReason.empty() ? "document closing" : _shutdownReason;
+                lock.unlock();
+                completeActiveCommand(DocumentCommandState::Cancelled, std::move(reason));
+                continue;
+            }
             lock.unlock();
             try {
                 executeActiveCommand();
@@ -742,11 +782,26 @@ void DocumentExecutionLane::executeActiveCommand()
 {
     const auto selfPin = shared_from_this();
     static_cast<void>(selfPin);
-    if (!_active) {
+    std::optional<std::string> ownerDestroyedReason;
+    bool isRecompute = false;
+    {
+        std::lock_guard lock(_mutex);
+        if (!_active) {
+            return;
+        }
+        if (!_ownerDocumentAlive) {
+            ownerDestroyedReason = _shutdownReason.empty() ? "document closing" : _shutdownReason;
+        }
+        else {
+            isRecompute = _active->command.kind == DocumentCommandKind::Recompute;
+        }
+    }
+    if (ownerDestroyedReason) {
+        completeActiveCommand(DocumentCommandState::Cancelled, std::move(*ownerDestroyedReason));
         return;
     }
 
-    if (_active->command.kind != DocumentCommandKind::Recompute) {
+    if (!isRecompute) {
         if (_active->cancelRequested.load(std::memory_order_acquire)) {
             completeActiveCommand(DocumentCommandState::Cancelled, "command cancelled");
             return;
@@ -846,14 +901,26 @@ void DocumentExecutionLane::executeActiveRecompute()
     while (true) {
         drainDispatchQueue();
 
+        std::optional<std::string> cancelReason;
+        bool submitNeeded = false;
         {
             std::lock_guard lock(_mutex);
             if (!_active) {
                 return;
             }
+            if (!_ownerDocumentAlive) {
+                cancelReason = _shutdownReason.empty() ? "document closing" : _shutdownReason;
+            }
+            else {
+                submitNeeded = !_active->recomputeSubmitted;
+            }
+        }
+        if (cancelReason) {
+            completeActiveCommand(DocumentCommandState::Cancelled, std::move(*cancelReason));
+            return;
         }
 
-        if (!_active->recomputeSubmitted) {
+        if (submitNeeded) {
             const auto& coalescingKey = _active->command.recompute
                 ? _active->command.recompute->coalescingKey
                 : std::string {};
@@ -1049,7 +1116,14 @@ void DocumentExecutionLane::executeActiveRecompute()
             return;
         }
 
-        if (_shutdownRequested) {
+        {
+            std::lock_guard lock(_mutex);
+            if (!_ownerDocumentAlive) {
+                cancelReason = _shutdownReason.empty() ? "document closing" : _shutdownReason;
+            }
+        }
+        if (cancelReason) {
+            completeActiveCommand(DocumentCommandState::Cancelled, std::move(*cancelReason));
             return;
         }
 
