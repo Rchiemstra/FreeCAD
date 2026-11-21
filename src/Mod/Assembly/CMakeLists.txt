@@ -77,6 +77,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestIsolateSelectionGui.py
     AssemblyTests/TestCore.py
     AssemblyTests/TestMotionInterference.py
+    AssemblyTests/TestMotionStudyBaseline.py
     AssemblyTests/TestMotionInterferenceGui.py
     AssemblyTests/TestDragFeedbackGui.py
     AssemblyTests/TestExtractComponent.py
