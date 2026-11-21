@@ -32,6 +32,7 @@ struct PreparedScan
     std::vector<InterferenceLeaf> second;
     InterferenceScanOptions options;
     std::vector<std::pair<std::string, std::string>> exclusions;
+    std::string hostId;
     std::string firstOccurrence;
     std::string secondOccurrence;
     Py::Object token;  // Own the cancellation flag through worker completion.
@@ -350,9 +351,12 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
         if (geometry != Py_None && !cached) {
             throw Py::Exception();
         }
-        if (cached && (cached->firstOccurrence != scope.first.occurrencePrefix
-                       || cached->secondOccurrence != scope.second.occurrencePrefix)) {
-            throw Py::ValueError("Geometry must belong to the same occurrence pair");
+        const std::string hostId = std::string(host->getDocument()->getName()) + "#"
+            + host->getNameInDocument();
+        if (cached
+            && (cached->hostId != hostId || cached->firstOccurrence != scope.first.occurrencePrefix
+                || cached->secondOccurrence != scope.second.occurrencePrefix)) {
+            throw Py::ValueError("Geometry must belong to the same host and occurrence pair");
         }
         auto a = cached ? reposeInterferenceLeaves(host, cached->first)
                        : collectInterferenceLeavesUnderPrefix(host, scope.first.occurrencePrefix, true);
@@ -385,6 +389,7 @@ Py::Object scanSelectedPairPy(const Py::Tuple& args, const Py::Dict& keywords, b
         preparedScan->second = std::move(b);
         preparedScan->options = std::move(options);
         preparedScan->exclusions = std::move(exclusions);
+        preparedScan->hostId = hostId;
         preparedScan->firstOccurrence = scope.first.occurrencePrefix;
         preparedScan->secondOccurrence = scope.second.occurrencePrefix;
         preparedScan->token = Py::Object(token);

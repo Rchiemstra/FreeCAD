@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +72,20 @@ struct InterferenceLeaf
     /** Filled once on the worker; reused for face×face enumeration. */
     mutable std::vector<InterferenceCachedFace> cachedFaces;
     mutable bool facesCached = false;
+    /**
+     * Thread-safe per-leaf BRepCheck_Analyzer cache keyed to the exact underlying
+     * TopoDS_TShape (invariant under rigid TopLoc_Location reposes; automatically
+     * invalidated if worldShape is replaced or rebuilt by a non-rigid transform).
+     */
+    struct GeometryValidationCache
+    {
+        std::mutex mutex;
+        Handle(TopoDS_TShape) validatedTShape;
+        bool valid = false;
+        std::string diagnostic;
+    };
+    std::shared_ptr<GeometryValidationCache> geometryValidation
+        = std::make_shared<GeometryValidationCache>();
 };
 
 enum class InterferenceClearanceRuleKind
@@ -259,6 +275,15 @@ struct InterferenceSolidOverride
     Part::InterferenceResult result;
 };
 
+/** Deterministic counters for leaf validation caching (unit tests). */
+struct InterferenceScanStats
+{
+    /** Times BRepCheck_Analyzer actually executed on a leaf. */
+    int geometryAnalyzerRuns = 0;
+    /** Times a leaf reused a cached BRepCheck_Analyzer outcome for its TopoDS_TShape. */
+    int geometryValidationCacheHits = 0;
+};
+
 struct InterferenceScanOptions
 {
     double clearance = 0.0;
@@ -280,6 +305,8 @@ struct InterferenceScanOptions
      * solid-Inconclusive aggregation can be exercised without flaky OCCT failures.
      */
     const InterferenceSolidOverride* solidOverride = nullptr;
+    /** Optional deterministic counters for unit tests (null in production callers). */
+    InterferenceScanStats* scanStats = nullptr;
 };
 
 /**
