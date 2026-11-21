@@ -271,14 +271,15 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::find(DocumentInsta
     return found->second.lock();
 }
 
-DocumentExecutionLane::DocumentExecutionLane(Document& document,
-                                             DocumentRevisionIdentityBinding identity)
+DocumentExecutionLane::DocumentExecutionLane(Document& document, DocumentRevisionIdentityBinding identity)
     : _document(document)
+    , _lifetimeGate(document.collaborationService().lifetimeGate())
     , _identity(identity)
     , _handleState(std::make_shared<DocumentHandle::State>())
-    , _telemetry(DocumentExecutionTelemetry::instance().document(
-          identity.documentInstanceId,
-          identity.lifecycleEpoch))
+    , _telemetry(
+          DocumentExecutionTelemetry::instance()
+              .document(identity.documentInstanceId, identity.lifecycleEpoch)
+      )
 {
     _handleState->identity = identity;
 }
@@ -462,6 +463,12 @@ bool DocumentExecutionLane::shutdownRequested() const noexcept
 {
     std::lock_guard lock(_mutex);
     return _shutdownRequested;
+}
+
+bool DocumentExecutionLane::isClosingOrShuttingDown() const noexcept
+{
+    std::lock_guard lock(_mutex);
+    return ownerDispatchRejectedLocked();
 }
 
 bool DocumentExecutionLane::isWatchdogStalled() const noexcept
@@ -650,7 +657,20 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
             return std::nullopt;
         }
     }
-    return _document.recomputeCoordinator().status(id);
+    // Pin Document lifetime outside _mutex: ~LifecyclePin() acquires _mutex
+    // via notifyCloseAdmissionReleased().
+    const DocumentCollaborationService::LifecyclePin pin(_lifetimeGate);
+    auto* owner = pin.document();
+    if (!owner) {
+        return std::nullopt;
+    }
+    {
+        std::lock_guard lock(_mutex);
+        if (!_ownerDocumentAlive) {
+            return std::nullopt;
+        }
+    }
+    return owner->recomputeCoordinator().status(id);
 }
 
 bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reason)
@@ -669,8 +689,22 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
     // pump also calls cancel() once it sees that flag, and a generic follow-up
     // must not win the race and become the stored diagnostic.
     if (recomputeId && ownerAlive) {
-        static_cast<void>(_document.recomputeCoordinator().cancel(
-            *recomputeId, reason.empty() ? "command cancelled" : reason));
+        // Pin Document lifetime outside _mutex: ~LifecyclePin() acquires _mutex
+        // via notifyCloseAdmissionReleased(), and owner-thread cancel() also
+        // acquires nested LifecyclePins.
+        const DocumentCollaborationService::LifecyclePin pin(_lifetimeGate);
+        auto* owner = pin.document();
+        bool pinnedOwnerAlive = owner != nullptr;
+        if (pinnedOwnerAlive) {
+            std::lock_guard lock(_mutex);
+            pinnedOwnerAlive = _ownerDocumentAlive;
+        }
+        if (pinnedOwnerAlive) {
+            static_cast<void>(owner->recomputeCoordinator().cancel(
+                *recomputeId,
+                reason.empty() ? "command cancelled" : reason
+            ));
+        }
     }
     {
         std::lock_guard lock(_mutex);

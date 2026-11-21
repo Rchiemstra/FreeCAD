@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <Base/Exception.h>
 #include <Base/Interpreter.h>
 
 #include "App/Application.h"
@@ -12,22 +13,29 @@
 #include "App/DocumentExecutionLane.h"
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
+#include "App/DocumentWouldBlock.h"
 #include "App/FeatureTest.h"
 #include "App/Expression.h"
 #include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/PropertyUnits.h"
+#include "App/RecomputeHandle.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
 #include "App/private/PreparedLabelReferenceUpdates.h"
 #include <src/App/InitApplication.h>
 
-#include <memory>
+#include <algorithm>
 #include <atomic>
-#include <mutex>
-#include <condition_variable>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdlib>
 #include <deque>
+#include <filesystem>
 #include <future>
+#include <iostream>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -35,6 +43,27 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
+
+#if defined(__linux__) || defined(__APPLE__)
+# define FREECAD_TEST_HAS_POSIX_ISOLATION 1
+# include <cerrno>
+# include <csignal>
+# include <cstring>
+# include <fcntl.h>
+# include <poll.h>
+# include <spawn.h>
+# include <sys/wait.h>
+# include <unistd.h>
+# if defined(__APPLE__)
+#  include <crt_externs.h>
+#  include <mach-o/dyld.h>
+# else
+extern char** environ;
+# endif
+#else
+# define FREECAD_TEST_HAS_POSIX_ISOLATION 0
+#endif
 
 using namespace App;
 
@@ -2030,6 +2059,1810 @@ TEST_F(DocumentCollaborationServiceTest, closeDropsQueuedDispatchHeldByCollabora
     EXPECT_FALSE(workerTaskRan.load(std::memory_order_acquire));
     EXPECT_TRUE(workerPromiseBroken.load(std::memory_order_acquire));
 }
+
+namespace
+{
+
+constexpr const char* kIsolatedTestModeEnv = "FREECAD_L1C_ISOLATED_MODE";
+
+template<typename Fn>
+class ScopeExit
+{
+public:
+    explicit ScopeExit(Fn fn)
+        : _fn(std::move(fn))
+    {}
+
+    ~ScopeExit()
+    {
+        if (_active) {
+            _fn();
+        }
+    }
+
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+    void runNow()
+    {
+        if (_active) {
+            _active = false;
+            _fn();
+        }
+    }
+
+private:
+    Fn _fn;
+    bool _active {true};
+};
+
+class BoundedHookBarrier
+{
+public:
+    explicit BoundedHookBarrier(std::chrono::milliseconds waitTimeout = std::chrono::seconds(5))
+        : _state(std::make_shared<State>(waitTimeout))
+    {
+        std::lock_guard lock(activeMutex());
+        activeState() = _state;
+    }
+
+    ~BoundedHookBarrier()
+    {
+        deactivate();
+        release();
+    }
+
+    BoundedHookBarrier(const BoundedHookBarrier&) = delete;
+    BoundedHookBarrier& operator=(const BoundedHookBarrier&) = delete;
+
+    static void invoke()
+    {
+        std::shared_ptr<State> state;
+        {
+            std::lock_guard lock(activeMutex());
+            state = activeState();
+        }
+        if (!state) {
+            return;
+        }
+        std::unique_lock lock(state->mutex);
+        state->entered = true;
+        state->changed.notify_all();
+        if (!state->changed.wait_for(lock, state->waitTimeout, [&] { return state->released; })) {
+            state->timedOut = true;
+        }
+    }
+
+    [[nodiscard]] bool waitUntilEntered(std::chrono::milliseconds timeout = std::chrono::seconds(5)) const
+    {
+        std::unique_lock lock(_state->mutex);
+        return _state->changed.wait_for(lock, timeout, [&] { return _state->entered; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard lock(_state->mutex);
+            _state->released = true;
+        }
+        _state->changed.notify_all();
+    }
+
+    void deactivate()
+    {
+        std::lock_guard lock(activeMutex());
+        if (activeState() == _state) {
+            activeState().reset();
+        }
+    }
+
+    [[nodiscard]] bool entered() const
+    {
+        std::lock_guard lock(_state->mutex);
+        return _state->entered;
+    }
+
+    [[nodiscard]] bool timedOut() const
+    {
+        std::lock_guard lock(_state->mutex);
+        return _state->timedOut;
+    }
+
+private:
+    struct State
+    {
+        explicit State(std::chrono::milliseconds timeout)
+            : waitTimeout(timeout)
+        {}
+
+        const std::chrono::milliseconds waitTimeout;
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered {false};
+        bool released {false};
+        bool timedOut {false};
+    };
+
+    static std::mutex& activeMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::shared_ptr<State>& activeState()
+    {
+        static std::shared_ptr<State> state;
+        return state;
+    }
+
+    std::shared_ptr<State> _state;
+};
+
+class ScopedGuiTestDispatcher
+{
+public:
+    ScopedGuiTestDispatcher()
+        : _state(std::make_shared<State>(std::this_thread::get_id()))
+    {
+        {
+            std::lock_guard lock(activeMutex());
+            activeState() = _state;
+        }
+        MainThreadSignalConfig::setHooks(&isMain, &invoke);
+        MainThreadSignalConfig::setServiceHook(&service);
+    }
+
+    ~ScopedGuiTestDispatcher()
+    {
+        MainThreadSignalConfig::setServiceHook(nullptr);
+        MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        {
+            std::lock_guard lock(activeMutex());
+            if (activeState() == _state) {
+                activeState().reset();
+            }
+        }
+        std::deque<std::shared_ptr<Task>> remaining;
+        {
+            std::lock_guard lock(_state->mutex);
+            _state->stopped = true;
+            remaining.swap(_state->tasks);
+        }
+        _state->changed.notify_all();
+        for (const auto& task : remaining) {
+            {
+                std::lock_guard lock(task->mutex);
+                task->done = true;
+            }
+            task->changed.notify_all();
+        }
+    }
+
+    ScopedGuiTestDispatcher(const ScopedGuiTestDispatcher&) = delete;
+    ScopedGuiTestDispatcher& operator=(const ScopedGuiTestDispatcher&) = delete;
+
+    [[nodiscard]] bool invokeTimedOut() const
+    {
+        std::lock_guard lock(_state->mutex);
+        return _state->invokeTimedOut;
+    }
+
+private:
+    struct Task
+    {
+        std::function<void()> callback;
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool done {false};
+    };
+
+    struct State
+    {
+        explicit State(std::thread::id mainThread)
+            : main(mainThread)
+        {}
+
+        const std::thread::id main;
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::deque<std::shared_ptr<Task>> tasks;
+        bool stopped {false};
+        bool invokeTimedOut {false};
+    };
+
+    static std::mutex& activeMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::shared_ptr<State>& activeState()
+    {
+        static std::shared_ptr<State> state;
+        return state;
+    }
+
+    static std::shared_ptr<State> currentState()
+    {
+        std::lock_guard lock(activeMutex());
+        return activeState();
+    }
+
+    static bool isMain()
+    {
+        const auto state = currentState();
+        return state && std::this_thread::get_id() == state->main;
+    }
+
+    static void invoke(std::function<void()>&& callback, const bool blocking)
+    {
+        const auto state = currentState();
+        if (!state || std::this_thread::get_id() == state->main) {
+            callback();
+            return;
+        }
+        auto task = std::make_shared<Task>();
+        task->callback = std::move(callback);
+        {
+            std::lock_guard lock(state->mutex);
+            if (state->stopped) {
+                return;
+            }
+            state->tasks.push_back(task);
+        }
+        state->changed.notify_one();
+        if (!blocking) {
+            return;
+        }
+        std::unique_lock lock(task->mutex);
+        if (!task->changed.wait_for(lock, std::chrono::seconds(5), [&] { return task->done; })) {
+            std::lock_guard stateLock(state->mutex);
+            state->invokeTimedOut = true;
+        }
+    }
+
+    static void service(const std::chrono::milliseconds maxWait)
+    {
+        const auto state = currentState();
+        if (!state || std::this_thread::get_id() != state->main) {
+            return;
+        }
+        std::deque<std::shared_ptr<Task>> ready;
+        {
+            std::unique_lock lock(state->mutex);
+            if (state->tasks.empty() && !state->stopped) {
+                state->changed.wait_for(lock, maxWait, [&] {
+                    return !state->tasks.empty() || state->stopped;
+                });
+            }
+            ready.swap(state->tasks);
+        }
+        for (const auto& task : ready) {
+            ScopeExit markDone([&task] {
+                {
+                    std::lock_guard lock(task->mutex);
+                    task->done = true;
+                }
+                task->changed.notify_all();
+            });
+            MainThreadSignalConfig::BlockingInvokeScope blockingScope;
+            task->callback();
+        }
+    }
+
+    std::shared_ptr<State> _state;
+};
+
+constexpr bool kIsolatedSubprocessSupported = (FREECAD_TEST_HAS_POSIX_ISOLATION != 0);
+
+[[nodiscard]] bool isIsolatedChildMode(const char* expectedMode)
+{
+    if (!kIsolatedSubprocessSupported) {
+        return false;
+    }
+    const char* current = std::getenv(kIsolatedTestModeEnv);
+    return current != nullptr && std::string_view(current) == expectedMode;
+}
+
+[[noreturn]] void terminateIsolatedChildOnTimeout(const std::string& message)
+{
+    std::cerr << message << "\n" << std::flush;
+    std::cout << std::flush;
+#if FREECAD_TEST_HAS_POSIX_ISOLATION
+    ::_exit(2);
+#else
+    // Unreachable: unsupported platforms GTEST_SKIP before entering isolated test bodies.
+    std::abort();
+#endif
+}
+
+struct IsolatedSubprocessResult
+{
+    bool supported {false};
+    bool started {false};
+    bool timedOut {false};
+    bool exitedNormally {false};
+    int exitCode {-1};
+    int termSignal {0};
+    std::string output;
+    std::string startError;
+};
+
+#if FREECAD_TEST_HAS_POSIX_ISOLATION
+[[nodiscard]] std::string resolveCurrentExecutablePath(std::string& error)
+{
+# if defined(__linux__)
+    std::string buffer(1024, '\0');
+    for (;;) {
+        const ssize_t exeLen = ::readlink("/proc/self/exe", buffer.data(), buffer.size());
+        if (exeLen <= 0) {
+            error = "readlink(/proc/self/exe) failed: "
+                + std::string(exeLen < 0 ? std::strerror(errno) : "empty path");
+            return {};
+        }
+        if (static_cast<std::size_t>(exeLen) < buffer.size()) {
+            buffer.resize(static_cast<std::size_t>(exeLen));
+            return buffer;
+        }
+        if (buffer.size() >= (1U << 20)) {
+            error = "readlink(/proc/self/exe) exceeded maximum path buffer size";
+            return {};
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+# elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    ::_NSGetExecutablePath(nullptr, &size);
+    if (size == 0) {
+        error = "_NSGetExecutablePath returned empty buffer size";
+        return {};
+    }
+    std::string buffer(size, '\0');
+    if (::_NSGetExecutablePath(buffer.data(), &size) != 0) {
+        error = "_NSGetExecutablePath failed";
+        return {};
+    }
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(buffer.c_str()), ec);
+    if (!ec && !canonical.empty()) {
+        return canonical.string();
+    }
+    return std::string(buffer.c_str());
+# endif
+}
+
+[[nodiscard]] char** currentProcessEnvironment()
+{
+# if defined(__APPLE__)
+    char*** envPtr = ::_NSGetEnviron();
+    return envPtr != nullptr ? *envPtr : nullptr;
+# else
+    return environ;
+# endif
+}
+
+[[nodiscard]] IsolatedSubprocessResult runIsolatedSubprocess(
+    const std::string& testFilter,
+    const std::string& modeValue,
+    const std::chrono::milliseconds timeout
+)
+{
+    IsolatedSubprocessResult result;
+    result.supported = true;
+
+    std::string exePath = resolveCurrentExecutablePath(result.startError);
+    if (exePath.empty()) {
+        return result;
+    }
+
+    int pipeFds[2] {-1, -1};
+    if (::pipe(pipeFds) != 0) {
+        result.startError = "pipe() failed: " + std::string(std::strerror(errno));
+        return result;
+    }
+    ScopeExit closePipes([&pipeFds] {
+        if (pipeFds[0] >= 0) {
+            ::close(pipeFds[0]);
+            pipeFds[0] = -1;
+        }
+        if (pipeFds[1] >= 0) {
+            ::close(pipeFds[1]);
+            pipeFds[1] = -1;
+        }
+    });
+    static_cast<void>(::fcntl(pipeFds[0], F_SETFD, FD_CLOEXEC));
+    static_cast<void>(::fcntl(pipeFds[1], F_SETFD, FD_CLOEXEC));
+    const int readFlags = ::fcntl(pipeFds[0], F_GETFL, 0);
+    if (readFlags >= 0) {
+        static_cast<void>(::fcntl(pipeFds[0], F_SETFL, readFlags | O_NONBLOCK));
+    }
+
+    posix_spawn_file_actions_t actions;
+    if (const int rc = ::posix_spawn_file_actions_init(&actions); rc != 0) {
+        result.startError = "posix_spawn_file_actions_init failed: " + std::string(std::strerror(rc));
+        return result;
+    }
+    ScopeExit destroyActions([&actions] { ::posix_spawn_file_actions_destroy(&actions); });
+    ::posix_spawn_file_actions_adddup2(&actions, pipeFds[1], STDOUT_FILENO);
+    ::posix_spawn_file_actions_adddup2(&actions, pipeFds[1], STDERR_FILENO);
+    ::posix_spawn_file_actions_addclose(&actions, pipeFds[0]);
+    ::posix_spawn_file_actions_addclose(&actions, pipeFds[1]);
+
+    posix_spawnattr_t attr;
+    if (const int rc = ::posix_spawnattr_init(&attr); rc != 0) {
+        result.startError = "posix_spawnattr_init failed: " + std::string(std::strerror(rc));
+        return result;
+    }
+    ScopeExit destroyAttr([&attr] { ::posix_spawnattr_destroy(&attr); });
+    ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    ::posix_spawnattr_setpgroup(&attr, 0);
+
+    std::string filterArg = "--gtest_filter=" + testFilter;
+    std::string colorArg = "--gtest_color=no";
+    char* argv[] = {exePath.data(), filterArg.data(), colorArg.data(), nullptr};
+
+    const std::string modePrefix = std::string(kIsolatedTestModeEnv) + "=";
+    std::vector<std::string> envStorage;
+    if (char** env = currentProcessEnvironment(); env != nullptr) {
+        for (char** entry = env; *entry != nullptr; ++entry) {
+            std::string item(*entry);
+            if (item.rfind(modePrefix, 0) != 0) {
+                envStorage.push_back(std::move(item));
+            }
+        }
+    }
+    envStorage.push_back(modePrefix + modeValue);
+    std::vector<char*> envp;
+    envp.reserve(envStorage.size() + 1);
+    for (auto& entry : envStorage) {
+        envp.push_back(entry.data());
+    }
+    envp.push_back(nullptr);
+
+    pid_t pid = -1;
+    const int spawnRc = ::posix_spawn(&pid, exePath.c_str(), &actions, &attr, argv, envp.data());
+    ::close(pipeFds[1]);
+    pipeFds[1] = -1;
+    if (spawnRc != 0) {
+        result.startError = "posix_spawn failed: " + std::string(std::strerror(spawnRc));
+        return result;
+    }
+    result.started = true;
+
+    const auto drainPipe = [&](bool& pipeOpen) {
+        char buf[4096];
+        while (pipeOpen) {
+            const ssize_t n = ::read(pipeFds[0], buf, sizeof(buf));
+            if (n > 0) {
+                result.output.append(buf, static_cast<std::size_t>(n));
+            }
+            else if (n == 0) {
+                pipeOpen = false;
+            }
+            else if (errno == EINTR) {
+                continue;
+            }
+            else {
+                break;
+            }
+        }
+    };
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool childReaped = false;
+    bool pipeOpen = true;
+    int status = 0;
+
+    while (!childReaped) {
+        const pid_t waited = ::waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            childReaped = true;
+            break;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            result.timedOut = true;
+            break;
+        }
+        if (pipeOpen) {
+            const auto remainingMs
+                = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+            const int pollMs = static_cast<int>(std::clamp<long long>(remainingMs, 1, 50));
+            pollfd pfd {pipeFds[0], POLLIN, 0};
+            const int prc = ::poll(&pfd, 1, pollMs);
+            if (prc > 0) {
+                drainPipe(pipeOpen);
+            }
+        }
+        else {
+            std::this_thread::yield();
+        }
+    }
+
+    if (!childReaped) {
+        ::kill(-pid, SIGKILL);
+        ::kill(pid, SIGKILL);
+        while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+    }
+    drainPipe(pipeOpen);
+
+    if (WIFEXITED(status)) {
+        result.exitedNormally = true;
+        result.exitCode = WEXITSTATUS(status);
+    }
+    else if (WIFSIGNALED(status)) {
+        result.termSignal = WTERMSIG(status);
+    }
+    return result;
+}
+#else
+[[nodiscard]] IsolatedSubprocessResult runIsolatedSubprocess(
+    const std::string&,
+    const std::string&,
+    const std::chrono::milliseconds
+)
+{
+    IsolatedSubprocessResult result;
+    result.supported = false;
+    result.startError = "isolated subprocess execution is not supported on this platform (requires "
+                        "Linux or macOS)";
+    return result;
+}
+#endif
+
+enum class IsolatedDispatchOutcome
+{
+    RunChildBody,
+    CompletedInParent,
+    UnsupportedPlatform,
+};
+
+template<typename Runner>
+[[nodiscard]] IsolatedDispatchOutcome dispatchIsolatedSubprocessWithRunner(
+    const char* testName,
+    const char* modeValue,
+    const std::chrono::milliseconds timeout,
+    const bool allowChildMode,
+    Runner&& runner,
+    std::string* skipReason = nullptr
+)
+{
+    if (allowChildMode && isIsolatedChildMode(modeValue)) {
+        return IsolatedDispatchOutcome::RunChildBody;
+    }
+    const std::string filter = std::string("DocumentCollaborationServiceTest.") + testName;
+    const auto result = runner(filter, modeValue, timeout);
+    if (!result.supported) {
+        if (skipReason != nullptr) {
+            *skipReason = result.startError.empty()
+                ? "isolated subprocess execution is not supported on this platform"
+                : result.startError;
+        }
+        return IsolatedDispatchOutcome::UnsupportedPlatform;
+    }
+    EXPECT_TRUE(result.started) << "failed to launch isolated subprocess for " << filter << ": "
+                                << result.startError;
+    if (!result.started) {
+        return IsolatedDispatchOutcome::CompletedInParent;
+    }
+    EXPECT_FALSE(result.timedOut) << "isolated subprocess for " << filter << " timed out after "
+                                  << timeout.count() << " ms:\n"
+                                  << result.output;
+    if (result.timedOut) {
+        return IsolatedDispatchOutcome::CompletedInParent;
+    }
+    EXPECT_TRUE(result.exitedNormally) << "isolated subprocess for " << filter
+                                       << " terminated by signal " << result.termSignal << ":\n"
+                                       << result.output;
+    if (result.exitedNormally) {
+        EXPECT_EQ(result.exitCode, 0) << "isolated subprocess for " << filter
+                                      << " failed (exit code " << result.exitCode << "):\n"
+                                      << result.output;
+    }
+    return IsolatedDispatchOutcome::CompletedInParent;
+}
+
+[[nodiscard]] IsolatedDispatchOutcome dispatchIsolatedSubprocess(
+    const char* testName,
+    const char* modeValue,
+    const std::chrono::milliseconds timeout,
+    std::string* skipReason = nullptr
+)
+{
+    return dispatchIsolatedSubprocessWithRunner(
+        testName,
+        modeValue,
+        timeout,
+        kIsolatedSubprocessSupported,
+        &runIsolatedSubprocess,
+        skipReason
+    );
+}
+
+[[nodiscard]] bool closeDocumentBounded(
+    const std::string& docName,
+    const std::chrono::milliseconds timeout,
+    const char* context
+)
+{
+    auto closeFuture = std::async(std::launch::async, [docName] {
+        return App::GetApplication().closeDocument(docName.c_str());
+    });
+    if (closeFuture.wait_for(timeout) != std::future_status::ready) {
+        terminateIsolatedChildOnTimeout(
+            std::string("[") + context + "] closeDocument timed out after "
+            + std::to_string(timeout.count()) + " ms for " + docName
+        );
+    }
+    return closeFuture.get();
+}
+
+}  // namespace
+
+#define RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(testName, modeValue, timeout) \
+    do { \
+        std::string isolatedSkipReason; \
+        const auto isolatedDispatch \
+            = dispatchIsolatedSubprocess(testName, modeValue, timeout, &isolatedSkipReason); \
+        if (isolatedDispatch == IsolatedDispatchOutcome::UnsupportedPlatform) { \
+            GTEST_SKIP() << isolatedSkipReason; \
+        } \
+        if (isolatedDispatch == IsolatedDispatchOutcome::CompletedInParent) { \
+            return; \
+        } \
+    } while (false)
+
+TEST_F(DocumentCollaborationServiceTest, laneRecomputeStatusRejectsAfterLifetimeGateSealed)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "laneRecomputeStatusRejectsAfterLifetimeGateSealed",
+        "laneRecomputeStatusRejectsAfterLifetimeGateSealed",
+        std::chrono::seconds(15)
+    );
+
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto lanePin = lane->shared_from_this();
+
+    DocumentRecomputeRequest request;
+    request.coalescingKey = "lane-recompute-status-after-seal";
+    const auto recomputeId = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+    ASSERT_TRUE(lanePin->recomputeStatus(recomputeId).has_value());
+
+    BoundedHookBarrier afterDrain(std::chrono::seconds(5));
+    ScopeExit restoreHook([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.deactivate();
+        afterDrain.release();
+    });
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+        &BoundedHookBarrier::invoke
+    );
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    ScopeExit releaseBeforeJoin([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.release();
+    });
+
+    const bool drained = afterDrain.waitUntilEntered(std::chrono::seconds(5));
+
+    auto statusFuture = std::async(std::launch::async, [&] {
+        return lanePin->recomputeStatus(recomputeId);
+    });
+    const bool statusReady = statusFuture.wait_for(std::chrono::seconds(5))
+        == std::future_status::ready;
+
+    releaseBeforeJoin.runNow();
+    const bool closeReady = close.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!statusReady || !closeReady) {
+        terminateIsolatedChildOnTimeout(
+            "laneRecomputeStatusRejectsAfterLifetimeGateSealed timed out waiting for worker "
+            "(statusReady="
+            + std::to_string(statusReady) + ", closeReady=" + std::to_string(closeReady) + ")"
+        );
+    }
+
+    EXPECT_TRUE(drained);
+    EXPECT_FALSE(afterDrain.timedOut()) << "post-access-drain hook timed out before release";
+    EXPECT_FALSE(statusFuture.get().has_value())
+        << "DocumentExecutionLane::recomputeStatus must reject after close sealed the "
+           "collaboration lifetime gate";
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, cancelCommandPinsDocumentLifetimeAcrossClose)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "cancelCommandPinsDocumentLifetimeAcrossClose",
+        "cancelCommandPinsDocumentLifetimeAcrossClose",
+        std::chrono::seconds(15)
+    );
+
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto lanePin = lane->shared_from_this();
+
+    struct OwnerGate
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool entered {false};
+        bool release {false};
+        bool waitTimedOut {false};
+    };
+    auto ownerGate = std::make_shared<OwnerGate>();
+    auto blockerFuture = lanePin->postToOwner([ownerGate] {
+        {
+            std::lock_guard lock(ownerGate->mutex);
+            ownerGate->entered = true;
+        }
+        ownerGate->cv.notify_all();
+        std::unique_lock lock(ownerGate->mutex);
+        if (!ownerGate->cv.wait_for(lock, std::chrono::seconds(5), [&] {
+                return ownerGate->release;
+            })) {
+            ownerGate->waitTimedOut = true;
+        }
+    });
+    ScopeExit releaseOwnerGate([ownerGate] {
+        {
+            std::lock_guard lock(ownerGate->mutex);
+            ownerGate->release = true;
+        }
+        ownerGate->cv.notify_all();
+    });
+
+    bool ownerEntered = false;
+    {
+        std::unique_lock lock(ownerGate->mutex);
+        ownerEntered = ownerGate->cv.wait_for(lock, std::chrono::seconds(5), [&] {
+            return ownerGate->entered;
+        });
+    }
+    if (!ownerEntered) {
+        releaseOwnerGate.runNow();
+        if (blockerFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            terminateIsolatedChildOnTimeout(
+                "cancelCommandPinsDocumentLifetimeAcrossClose: owner blocker never entered"
+            );
+        }
+        blockerFuture.get();
+        FAIL() << "owner blocker task did not enter within timeout";
+    }
+
+    auto docHandle = _document->executionHandle();
+    DocumentCommand cmd;
+    cmd.kind = DocumentCommandKind::Recompute;
+    cmd.document = docHandle.identity();
+    cmd.recompute = DocumentCommandRecomputePayload {};
+    cmd.recompute->coalescingKey = "cancel-command-pin-across-close";
+    const auto outcome = docHandle.trySubmit(std::move(cmd));
+    if (outcome.result != DocumentCommandSubmitResult::Accepted) {
+        releaseOwnerGate.runNow();
+        if (blockerFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            terminateIsolatedChildOnTimeout(
+                "cancelCommandPinsDocumentLifetimeAcrossClose: blocker stuck after submit failure"
+            );
+        }
+        blockerFuture.get();
+        FAIL() << "trySubmit did not accept recompute command";
+    }
+    DocumentCommandHandle commandHandle(outcome.commandId, docHandle.identity());
+
+    struct CancelPinState
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::atomic<std::thread::id> targetThread {};
+        bool pinEntered {false};
+        bool releasePin {false};
+        bool pinWaitTimedOut {false};
+        bool cancelFinished {false};
+        bool closeIrrevocable {false};
+    };
+    static std::mutex activeCancelPinMutex;
+    static std::shared_ptr<CancelPinState> activeCancelPinState;
+    auto pinState = std::make_shared<CancelPinState>();
+    {
+        std::lock_guard lock(activeCancelPinMutex);
+        activeCancelPinState = pinState;
+    }
+
+    ScopeExit restoreHooksAndState([pinState] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        {
+            std::lock_guard lock(activeCancelPinMutex);
+            if (activeCancelPinState == pinState) {
+                activeCancelPinState.reset();
+            }
+        }
+        {
+            std::lock_guard lock(pinState->mutex);
+            pinState->releasePin = true;
+        }
+        pinState->cv.notify_all();
+    });
+
+    const auto pinHook = +[]() {
+        std::shared_ptr<CancelPinState> state;
+        {
+            std::lock_guard lock(activeCancelPinMutex);
+            state = activeCancelPinState;
+        }
+        if (!state
+            || std::this_thread::get_id() != state->targetThread.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::unique_lock lock(state->mutex);
+        state->pinEntered = true;
+        state->cv.notify_all();
+        if (!state->cv.wait_for(lock, std::chrono::seconds(5), [&] { return state->releasePin; })) {
+            state->pinWaitTimedOut = true;
+        }
+    };
+    const auto closingHook = +[]() {
+        std::shared_ptr<CancelPinState> state;
+        {
+            std::lock_guard lock(activeCancelPinMutex);
+            state = activeCancelPinState;
+        }
+        if (!state) {
+            return;
+        }
+        {
+            std::lock_guard lock(state->mutex);
+            state->closeIrrevocable = true;
+        }
+        state->cv.notify_all();
+    };
+
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(pinHook);
+    auto cancelFuture = std::async(std::launch::async, [&, pinState] {
+        pinState->targetThread.store(std::this_thread::get_id(), std::memory_order_release);
+        const bool cancelled = commandHandle.cancel("pinned-cancel");
+        {
+            std::lock_guard lock(pinState->mutex);
+            pinState->cancelFinished = true;
+        }
+        pinState->cv.notify_all();
+        return cancelled;
+    });
+    ScopeExit releasePinBeforeCancelJoin([pinState] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        {
+            std::lock_guard lock(pinState->mutex);
+            pinState->releasePin = true;
+        }
+        pinState->cv.notify_all();
+    });
+
+    bool pinWaitSatisfied = false;
+    bool pinEntered = false;
+    {
+        std::unique_lock lock(pinState->mutex);
+        pinWaitSatisfied = pinState->cv.wait_for(lock, std::chrono::seconds(5), [&] {
+            return pinState->pinEntered || pinState->cancelFinished;
+        });
+        pinEntered = pinState->pinEntered;
+    }
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+
+    releaseOwnerGate.runNow();
+    const bool blockerReady = blockerFuture.wait_for(std::chrono::seconds(5))
+        == std::future_status::ready;
+    if (!blockerReady) {
+        releasePinBeforeCancelJoin.runNow();
+        terminateIsolatedChildOnTimeout(
+            "cancelCommandPinsDocumentLifetimeAcrossClose: owner blocker failed to finish"
+        );
+    }
+    blockerFuture.get();
+
+    const auto idleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((!lanePin->isIdle() || !commandHandle.status().terminal())
+           && std::chrono::steady_clock::now() < idleDeadline) {
+        std::this_thread::yield();
+    }
+    const bool laneIdle = lanePin->isIdle();
+
+    bool deleteObservedWhilePinned = false;
+    bool closeIrrevocable = false;
+    bool closed = false;
+    std::atomic<bool> deleteSignaled {false};
+
+    if (pinWaitSatisfied && laneIdle && pinEntered) {
+        fastsignals::scoped_connection deleteConn
+            = App::GetApplication().signalDeleteDocument.connect([&](const Document& doc) {
+                  if (doc.getName() == _documentName) {
+                      deleteSignaled.store(true, std::memory_order_release);
+                  }
+              });
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(closingHook);
+        auto closeFuture = std::async(std::launch::async, [&] {
+            return App::GetApplication().closeDocument(_documentName.c_str());
+        });
+        ScopeExit releasePinBeforeCloseJoin([pinState] {
+            Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+            {
+                std::lock_guard lock(pinState->mutex);
+                pinState->releasePin = true;
+            }
+            pinState->cv.notify_all();
+        });
+
+        {
+            std::unique_lock lock(pinState->mutex);
+            closeIrrevocable = pinState->cv.wait_for(lock, std::chrono::seconds(5), [&] {
+                return pinState->closeIrrevocable;
+            });
+        }
+        deleteObservedWhilePinned = deleteSignaled.load(std::memory_order_acquire);
+
+        releasePinBeforeCloseJoin.runNow();
+
+        const bool cancelReady = cancelFuture.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+        const bool closeReady = closeFuture.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+        if (!cancelReady || !closeReady) {
+            terminateIsolatedChildOnTimeout(
+                "cancelCommandPinsDocumentLifetimeAcrossClose timed out after releasing pin "
+                "(cancelReady="
+                + std::to_string(cancelReady) + ", closeReady=" + std::to_string(closeReady) + ")"
+            );
+        }
+        static_cast<void>(cancelFuture.get());
+        closed = closeFuture.get();
+    }
+    else {
+        releasePinBeforeCancelJoin.runNow();
+        if (cancelFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            terminateIsolatedChildOnTimeout(
+                "cancelCommandPinsDocumentLifetimeAcrossClose: cancelFuture timed out on cleanup"
+            );
+        }
+        static_cast<void>(cancelFuture.get());
+    }
+    restoreHooksAndState.runNow();
+
+    bool ownerGateTimedOut = false;
+    {
+        std::lock_guard lock(ownerGate->mutex);
+        ownerGateTimedOut = ownerGate->waitTimedOut;
+    }
+    bool pinHookTimedOut = false;
+    {
+        std::lock_guard lock(pinState->mutex);
+        pinHookTimedOut = pinState->pinWaitTimedOut;
+    }
+
+    EXPECT_TRUE(pinWaitSatisfied);
+    EXPECT_TRUE(laneIdle);
+    EXPECT_FALSE(ownerGateTimedOut) << "ownerGate wait_for timed out before release";
+    EXPECT_FALSE(pinHookTimedOut) << "pinHook wait_for timed out before release";
+    EXPECT_TRUE(
+        pinEntered
+    ) << "DocumentExecutionLane::cancelCommand must acquire a collaboration LifecyclePin "
+         "before calling _document.recomputeCoordinator().cancel()";
+    if (pinWaitSatisfied && laneIdle && pinEntered) {
+        EXPECT_TRUE(closeIrrevocable);
+        EXPECT_FALSE(deleteObservedWhilePinned)
+            << "closeDocument must wait for cancelCommand's LifecyclePin before deleting Document";
+        EXPECT_TRUE(closed);
+        EXPECT_TRUE(deleteSignaled.load(std::memory_order_acquire));
+        if (closed) {
+            _document = nullptr;
+        }
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeHandleStatusRejectsAfterLifetimeGateSealed)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "recomputeHandleStatusRejectsAfterLifetimeGateSealed",
+        "recomputeHandleStatusRejectsAfterLifetimeGateSealed",
+        std::chrono::seconds(15)
+    );
+
+    DocumentRecomputeRequest request;
+    request.coalescingKey = "recompute-handle-status-after-seal";
+    const auto recomputeId = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+    RecomputeHandle handle(*_document, recomputeId);
+    ASSERT_EQ(handle.status().state, DocumentRecomputeState::Completed);
+
+    BoundedHookBarrier afterDrain(std::chrono::seconds(5));
+    ScopeExit restoreHook([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.deactivate();
+        afterDrain.release();
+    });
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+        &BoundedHookBarrier::invoke
+    );
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    ScopeExit releaseBeforeJoin([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.release();
+    });
+
+    const bool drained = afterDrain.waitUntilEntered(std::chrono::seconds(5));
+
+    auto statusFuture = std::async(std::launch::async, [&] { return handle.status(); });
+    const bool statusReady = statusFuture.wait_for(std::chrono::seconds(5))
+        == std::future_status::ready;
+
+    releaseBeforeJoin.runNow();
+    const bool closeReady = close.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!statusReady || !closeReady) {
+        terminateIsolatedChildOnTimeout(
+            "recomputeHandleStatusRejectsAfterLifetimeGateSealed timed out waiting for worker "
+            "(statusReady="
+            + std::to_string(statusReady) + ", closeReady=" + std::to_string(closeReady) + ")"
+        );
+    }
+
+    EXPECT_TRUE(drained);
+    EXPECT_FALSE(afterDrain.timedOut()) << "post-access-drain hook timed out before release";
+    const auto snapshot = statusFuture.get();
+    EXPECT_EQ(snapshot.state, DocumentRecomputeState::Cancelled)
+        << "RecomputeHandle::status must return closed snapshot once lifetime gate is sealed";
+    EXPECT_EQ(snapshot.diagnostic, "recompute document is no longer live");
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeHandleCancelRejectsAfterLifetimeGateSealed)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "recomputeHandleCancelRejectsAfterLifetimeGateSealed",
+        "recomputeHandleCancelRejectsAfterLifetimeGateSealed",
+        std::chrono::seconds(15)
+    );
+
+    DocumentRecomputeFeatureRequest feature;
+    feature.featureId = "Target";
+    feature.operationId = "recompute-handle-cancel-after-seal";
+    feature.intent = detachedIntent("AfterSeal");
+    feature.provenance = "recompute-handle-cancel-after-seal";
+    DocumentRecomputeRequest request;
+    request.coalescingKey = "recompute-handle-cancel-after-seal";
+    request.features.push_back(std::move(feature));
+    const auto recomputeId = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+    RecomputeHandle handle(*_document, recomputeId);
+    ASSERT_EQ(handle.status().state, DocumentRecomputeState::Running);
+
+    BoundedHookBarrier afterDrain(std::chrono::seconds(5));
+    ScopeExit restoreHook([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.deactivate();
+        afterDrain.release();
+    });
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+        &BoundedHookBarrier::invoke
+    );
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    ScopeExit releaseBeforeJoin([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.release();
+    });
+
+    const bool drained = afterDrain.waitUntilEntered(std::chrono::seconds(5));
+
+    auto cancelFuture = std::async(std::launch::async, [&] { return handle.cancel("after-seal"); });
+    const bool cancelReady = cancelFuture.wait_for(std::chrono::seconds(5))
+        == std::future_status::ready;
+
+    releaseBeforeJoin.runNow();
+    const bool closeReady = close.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!cancelReady || !closeReady) {
+        terminateIsolatedChildOnTimeout(
+            "recomputeHandleCancelRejectsAfterLifetimeGateSealed timed out waiting for worker "
+            "(cancelReady="
+            + std::to_string(cancelReady) + ", closeReady=" + std::to_string(closeReady) + ")"
+        );
+    }
+
+    EXPECT_TRUE(drained);
+    EXPECT_FALSE(afterDrain.timedOut()) << "post-access-drain hook timed out before release";
+    EXPECT_FALSE(cancelFuture.get())
+        << "RecomputeHandle::cancel must return false without touching Document once "
+           "lifetime gate is sealed";
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeHandleWaitReturnsClosedSnapshotAfterLifetimeGateSealed)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "recomputeHandleWaitReturnsClosedSnapshotAfterLifetimeGateSealed",
+        "recomputeHandleWaitReturnsClosedSnapshotAfterLifetimeGateSealed",
+        std::chrono::seconds(15)
+    );
+
+    DocumentRecomputeRequest request;
+    request.coalescingKey = "recompute-handle-wait-after-seal";
+    const auto recomputeId = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+    RecomputeHandle handle(*_document, recomputeId);
+
+    BoundedHookBarrier afterDrain(std::chrono::seconds(5));
+    ScopeExit restoreHook([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.deactivate();
+        afterDrain.release();
+    });
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+        &BoundedHookBarrier::invoke
+    );
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    ScopeExit releaseBeforeJoin([&] {
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+        afterDrain.release();
+    });
+
+    const bool drained = afterDrain.waitUntilEntered(std::chrono::seconds(5));
+
+    struct WaitOutcome
+    {
+        bool threw {false};
+        std::string error;
+        DocumentRecomputeSnapshot snapshot;
+    };
+    auto waitFuture = std::async(std::launch::async, [&] {
+        WaitOutcome outcome;
+        try {
+            outcome.snapshot = handle.wait(std::chrono::milliseconds(100));
+        }
+        catch (const Base::Exception& ex) {
+            outcome.threw = true;
+            outcome.error = ex.what();
+        }
+        catch (const std::exception& ex) {
+            outcome.threw = true;
+            outcome.error = ex.what();
+        }
+        catch (...) {
+            outcome.threw = true;
+            outcome.error = "unknown exception";
+        }
+        return outcome;
+    });
+    const bool waitReady = waitFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+
+    releaseBeforeJoin.runNow();
+    const bool closeReady = close.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!waitReady || !closeReady) {
+        terminateIsolatedChildOnTimeout(
+            "recomputeHandleWaitReturnsClosedSnapshotAfterLifetimeGateSealed timed out waiting "
+            "for worker (waitReady="
+            + std::to_string(waitReady) + ", closeReady=" + std::to_string(closeReady) + ")"
+        );
+    }
+
+    EXPECT_TRUE(drained);
+    EXPECT_FALSE(afterDrain.timedOut()) << "post-access-drain hook timed out before release";
+    const auto outcome = waitFuture.get();
+    EXPECT_FALSE(outcome.threw) << "unexpected exception: " << outcome.error;
+    EXPECT_EQ(outcome.snapshot.state, DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(outcome.snapshot.diagnostic, "recompute document is no longer live");
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, concurrentLaneAndRecomputeHandleAccessesDuringCloseStress)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "concurrentLaneAndRecomputeHandleAccessesDuringCloseStress",
+        "concurrentLaneAndRecomputeHandleAccessesDuringCloseStress",
+        std::chrono::seconds(60)
+    );
+
+    constexpr int kIterations = 50;
+    for (int iter = 0; iter < kIterations; ++iter) {
+        const std::string docName = App::GetApplication().getUniqueDocumentName("l1cStressClose");
+        auto* stressDoc = App::GetApplication().newDocument(docName.c_str(), "Stress");
+        ASSERT_NE(stressDoc, nullptr);
+        auto* lane = stressDoc->executionLane();
+        ASSERT_NE(lane, nullptr);
+        const auto lanePin = lane->shared_from_this();
+
+        DocumentRecomputeRequest request;
+        request.coalescingKey = "l1c-stress-direct";
+        const auto recomputeId = stressDoc->recomputeCoordinator().submit(std::move(request));
+        ASSERT_NE(recomputeId, 0U);
+        RecomputeHandle handle(*stressDoc, recomputeId);
+
+        auto docHandle = stressDoc->executionHandle();
+        DocumentCommand cmd;
+        cmd.kind = DocumentCommandKind::Recompute;
+        cmd.document = docHandle.identity();
+        cmd.recompute = DocumentCommandRecomputePayload {};
+        cmd.recompute->coalescingKey = "l1c-stress-lane";
+        const auto outcome = docHandle.trySubmit(std::move(cmd));
+        ASSERT_EQ(outcome.result, DocumentCommandSubmitResult::Accepted);
+        DocumentCommandHandle commandHandle(outcome.commandId, docHandle.identity());
+
+        struct StartGate
+        {
+            std::mutex mutex;
+            std::condition_variable cv;
+            int ready {0};
+            bool go {false};
+        };
+        auto gate = std::make_shared<StartGate>();
+        const auto waitForGo = [gate] {
+            std::unique_lock lock(gate->mutex);
+            ++gate->ready;
+            gate->cv.notify_all();
+            return gate->cv.wait_for(lock, std::chrono::seconds(5), [&] { return gate->go; });
+        };
+
+        auto statusWorker = std::async(std::launch::async, [&] {
+            if (!waitForGo()) {
+                return false;
+            }
+            for (int i = 0; i < 10; ++i) {
+                if (const auto snap = lanePin->recomputeStatus(recomputeId)) {
+                    if (snap->id != recomputeId) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        });
+        auto cancelWorker = std::async(std::launch::async, [&] {
+            if (!waitForGo()) {
+                return false;
+            }
+            for (int i = 0; i < 10; ++i) {
+                static_cast<void>(commandHandle.cancel("stress-cancel"));
+            }
+            return true;
+        });
+        auto handleWorker = std::async(std::launch::async, [&] {
+            if (!waitForGo()) {
+                return std::string("start gate timeout");
+            }
+            try {
+                const auto s = handle.status();
+                if (s.id != recomputeId) {
+                    return std::string("bad status id");
+                }
+                static_cast<void>(handle.cancel("stress-cancel"));
+                const auto w = handle.wait(std::chrono::milliseconds(50));
+                if (w.id != recomputeId) {
+                    return std::string("bad wait id");
+                }
+            }
+            catch (const Base::Exception& ex) {
+                return std::string(ex.what());
+            }
+            catch (const std::exception& ex) {
+                return std::string(ex.what());
+            }
+            catch (...) {
+                return std::string("unknown exception");
+            }
+            return std::string {};
+        });
+        ScopeExit releaseStartGate([gate] {
+            {
+                std::lock_guard lock(gate->mutex);
+                gate->go = true;
+            }
+            gate->cv.notify_all();
+        });
+
+        bool allReady = false;
+        {
+            std::unique_lock lock(gate->mutex);
+            allReady = gate->cv.wait_for(lock, std::chrono::seconds(5), [&] {
+                return gate->ready == 3;
+            });
+            gate->go = true;
+        }
+        gate->cv.notify_all();
+
+        std::atomic<bool> stopClosing {false};
+        auto closeWorker = std::async(std::launch::async, [&, docName] {
+            bool closed = false;
+            const auto closeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!closed && !stopClosing.load(std::memory_order_acquire)
+                   && std::chrono::steady_clock::now() < closeDeadline) {
+                closed = App::GetApplication().closeDocument(docName.c_str());
+                if (!closed) {
+                    std::this_thread::yield();
+                }
+            }
+            return closed;
+        });
+
+        const bool closeReady = closeWorker.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+        stopClosing.store(true, std::memory_order_release);
+        const bool statusReady = statusWorker.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+        const bool cancelReady = cancelWorker.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+        const bool handleReady = handleWorker.wait_for(std::chrono::seconds(5))
+            == std::future_status::ready;
+
+        if (!closeReady || !statusReady || !cancelReady || !handleReady) {
+            terminateIsolatedChildOnTimeout(
+                "concurrentLaneAndRecomputeHandleAccessesDuringCloseStress iteration "
+                + std::to_string(iter) + " timed out (closeReady=" + std::to_string(closeReady)
+                + ", statusReady=" + std::to_string(statusReady) + ", cancelReady="
+                + std::to_string(cancelReady) + ", handleReady=" + std::to_string(handleReady) + ")"
+            );
+        }
+
+        const bool closed = closeWorker.get();
+        EXPECT_TRUE(allReady) << "iteration " << iter;
+        EXPECT_TRUE(closed) << "iteration " << iter;
+        EXPECT_TRUE(statusWorker.get()) << "iteration " << iter;
+        EXPECT_TRUE(cancelWorker.get()) << "iteration " << iter;
+        const auto handleError = handleWorker.get();
+        EXPECT_TRUE(handleError.empty()) << "iteration " << iter << ": " << handleError;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeHandleWaitRejectsReentrantOwnerClose)
+{
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "recomputeHandleWaitRejectsReentrantOwnerClose",
+        "recomputeHandleWaitRejectsReentrantOwnerClose",
+        std::chrono::seconds(15)
+    );
+
+    // 1. Owner-thread control (headless): wait() runs inline on the lane owner thread,
+    //    which already holds the outer LifecyclePin in accessOwners.
+    {
+        const std::string ownerDocName = App::GetApplication().getUniqueDocumentName(
+            "reentrantWaitOwnerControl"
+        );
+        auto* ownerDoc = App::GetApplication().newDocument(ownerDocName.c_str(), "OwnerControl");
+        ASSERT_NE(ownerDoc, nullptr);
+        auto* ownerLane = ownerDoc->executionLane();
+        ASSERT_NE(ownerLane, nullptr);
+
+        DocumentRecomputeRequest request;
+        request.coalescingKey = "reentrant-owner-close-control";
+        const auto recomputeId = ownerDoc->recomputeCoordinator().submit(std::move(request));
+        ASSERT_NE(recomputeId, 0U);
+        RecomputeHandle handle(*ownerDoc, recomputeId);
+
+        std::atomic<bool> observerEntered {false};
+        std::atomic<bool> observerReturned {false};
+        std::atomic<bool> reentrantCloseResult {true};
+        fastsignals::scoped_connection recomputedConn = ownerDoc->signalRecomputed.connect(
+            [&](const Document& doc, const std::vector<DocumentObject*>&) {
+                if (doc.getName() != ownerDocName) {
+                    return;
+                }
+                observerEntered.store(true, std::memory_order_release);
+                const bool closed = App::GetApplication().closeDocument(ownerDocName.c_str());
+                reentrantCloseResult.store(closed, std::memory_order_release);
+                observerReturned.store(true, std::memory_order_release);
+            }
+        );
+
+        auto ownerWaitFuture = ownerLane->postToOwner([&] {
+            EXPECT_TRUE(ownerDoc->isCollaborationOwnerThread());
+            return handle.wait(std::chrono::seconds(2));
+        });
+        if (ownerWaitFuture.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+            terminateIsolatedChildOnTimeout(
+                "[recomputeHandleWaitRejectsReentrantOwnerClose] DEADLOCK in owner-thread control "
+                "(observerEntered="
+                + std::to_string(observerEntered.load(std::memory_order_acquire)) + ", observerReturned="
+                + std::to_string(observerReturned.load(std::memory_order_acquire)) + ")"
+            );
+        }
+        const auto ownerSnapshot = ownerWaitFuture.get();
+        recomputedConn.disconnect();
+
+        EXPECT_TRUE(observerEntered.load(std::memory_order_acquire));
+        EXPECT_TRUE(observerReturned.load(std::memory_order_acquire));
+        EXPECT_FALSE(reentrantCloseResult.load(std::memory_order_acquire))
+            << "owner-thread control must refuse reentrant close inside signalRecomputed";
+        EXPECT_EQ(ownerSnapshot.id, recomputeId);
+        EXPECT_EQ(ownerSnapshot.state, DocumentRecomputeState::Completed);
+
+        auto closeFuture = std::async(std::launch::async, [ownerDocName] {
+            return App::GetApplication().closeDocument(ownerDocName.c_str());
+        });
+        if (closeFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            terminateIsolatedChildOnTimeout(
+                "[recomputeHandleWaitRejectsReentrantOwnerClose] normal close timed out after "
+                "owner-thread control"
+            );
+        }
+        EXPECT_TRUE(closeFuture.get());
+    }
+
+    // 2. GUI refusal behavior preserved: reentrant close during GUI wait is refused and
+    //    live-document DocumentWouldBlock inside a blocking invoke is preserved.
+    {
+        const std::string guiDocName = App::GetApplication().getUniqueDocumentName(
+            "reentrantWaitGuiRefusal"
+        );
+        auto* guiDoc = App::GetApplication().newDocument(guiDocName.c_str(), "GuiRefusal");
+        ASSERT_NE(guiDoc, nullptr);
+
+        DocumentRecomputeRequest request;
+        request.coalescingKey = "reentrant-owner-close-gui";
+        const auto recomputeId = guiDoc->recomputeCoordinator().submit(std::move(request));
+        ASSERT_NE(recomputeId, 0U);
+        RecomputeHandle handle(*guiDoc, recomputeId);
+
+        std::atomic<bool> observerEntered {false};
+        std::atomic<bool> reentrantCloseResult {true};
+        fastsignals::scoped_connection recomputedConn = guiDoc->signalRecomputed.connect(
+            [&](const Document& doc, const std::vector<DocumentObject*>&) {
+                if (doc.getName() != guiDocName) {
+                    return;
+                }
+                observerEntered.store(true, std::memory_order_release);
+                reentrantCloseResult.store(
+                    App::GetApplication().closeDocument(guiDocName.c_str()),
+                    std::memory_order_release
+                );
+            }
+        );
+
+        {
+            ScopedGuiTestDispatcher guiDispatcher;
+            ASSERT_TRUE(App::DocumentWouldBlock::isGuiThread());
+
+            const auto guiSnapshot = handle.wait(std::chrono::seconds(2));
+            EXPECT_FALSE(guiDispatcher.invokeTimedOut());
+            EXPECT_TRUE(observerEntered.load(std::memory_order_acquire));
+            EXPECT_FALSE(reentrantCloseResult.load(std::memory_order_acquire))
+                << "GUI closeDocument must be refused during RecomputeHandle::wait()";
+            EXPECT_EQ(guiSnapshot.id, recomputeId);
+            EXPECT_EQ(guiSnapshot.state, DocumentRecomputeState::Completed);
+
+            {
+                MainThreadSignalConfig::BlockingInvokeScope blockingScope;
+                EXPECT_THROW(
+                    static_cast<void>(handle.wait(std::chrono::milliseconds(50))),
+                    App::DocumentWouldBlock
+                );
+            }
+
+            recomputedConn.disconnect();
+            EXPECT_TRUE(App::GetApplication().closeDocument(guiDocName.c_str()));
+        }
+    }
+
+    // 3. Off-owner headless regression: signalRecomputed runs synchronously on the lane
+    //    owner thread while the calling thread blocks in dispatchToOwner().
+    ASSERT_FALSE(MainThreadSignalConfig::hasHooks());
+    DocumentRecomputeRequest request;
+    request.coalescingKey = "recompute-handle-wait-reentrant-owner-close";
+    const auto recomputeId = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_NE(recomputeId, 0U);
+    RecomputeHandle handle(*_document, recomputeId);
+
+    std::atomic<bool> observerEntered {false};
+    std::atomic<bool> observerReturned {false};
+    std::atomic<bool> reentrantCloseResult {true};
+    fastsignals::scoped_connection recomputedConn = _document->signalRecomputed.connect(
+        [&](const Document& doc, const std::vector<DocumentObject*>&) {
+            if (doc.getName() != _documentName) {
+                return;
+            }
+            observerEntered.store(true, std::memory_order_release);
+            const bool closed = App::GetApplication().closeDocument(_documentName.c_str());
+            reentrantCloseResult.store(closed, std::memory_order_release);
+            observerReturned.store(true, std::memory_order_release);
+        }
+    );
+
+    auto waitFuture = std::async(std::launch::async, [&] {
+        EXPECT_FALSE(_document->isCollaborationOwnerThread());
+        return handle.wait(std::chrono::seconds(2));
+    });
+    if (waitFuture.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+        terminateIsolatedChildOnTimeout(
+            "[recomputeHandleWaitRejectsReentrantOwnerClose] DEADLOCK: off-owner "
+            "RecomputeHandle::wait() timed out after 3000 ms (observerEntered="
+            + std::to_string(observerEntered.load(std::memory_order_acquire)) + ", observerReturned="
+            + std::to_string(observerReturned.load(std::memory_order_acquire)) + ")"
+        );
+    }
+    const auto snapshot = waitFuture.get();
+    recomputedConn.disconnect();
+
+    EXPECT_TRUE(observerEntered.load(std::memory_order_acquire));
+    EXPECT_TRUE(observerReturned.load(std::memory_order_acquire));
+    EXPECT_FALSE(reentrantCloseResult.load(std::memory_order_acquire))
+        << "reentrant signalRecomputed closeDocument must be refused during off-owner "
+           "RecomputeHandle::wait()";
+    EXPECT_EQ(snapshot.id, recomputeId);
+    EXPECT_EQ(snapshot.state, DocumentRecomputeState::Completed);
+
+    auto closeFuture = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    if (closeFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        terminateIsolatedChildOnTimeout(
+            "[recomputeHandleWaitRejectsReentrantOwnerClose] normal closeDocument timed out "
+            "after off-owner RecomputeHandle::wait()"
+        );
+    }
+    const bool normalClosed = closeFuture.get();
+    EXPECT_TRUE(
+        normalClosed
+    ) << "normal closeDocument must succeed after off-owner RecomputeHandle::wait() finishes";
+    if (normalClosed) {
+        _document = nullptr;
+    }
+}
+
+namespace
+{
+
+void runHarnessHookTimeoutPhase(
+    const std::chrono::milliseconds barrierTimeout,
+    const std::chrono::milliseconds closeWaitTimeout
+)
+{
+    const std::string docName = App::GetApplication().getUniqueDocumentName("harnessHookTimeout");
+    auto* tempDoc = App::GetApplication().newDocument(docName.c_str(), "HookTimeout");
+    ASSERT_NE(tempDoc, nullptr);
+
+    ScopeExit verifyCleanupFinished([&] {
+        // Verify the global post-access-drain hook was restored to nullptr by ScopeExit.
+        BoundedHookBarrier sentinel(std::chrono::milliseconds(100));
+        const std::string secondDocName = App::GetApplication().getUniqueDocumentName(
+            "harnessHookRestored"
+        );
+        auto* secondDoc = App::GetApplication().newDocument(secondDocName.c_str(), "HookRestored");
+        EXPECT_NE(secondDoc, nullptr);
+        if (secondDoc != nullptr) {
+            EXPECT_TRUE(
+                closeDocumentBounded(secondDocName, std::chrono::seconds(5), "harnessHookRestored")
+            );
+        }
+        EXPECT_FALSE(sentinel.entered())
+            << "global post-access-drain hook must be restored after scope exit";
+        if (!sentinel.entered()) {
+            std::cerr << "[harness_probe] CLEANUP_HOOK_VERIFIED_RESTORED=1\n" << std::flush;
+        }
+        std::cerr << "[harness_probe] CLEANUP_FINISHED=1\n" << std::flush;
+    });
+
+    BoundedHookBarrier afterDrain(barrierTimeout);
+    {
+        // Outer guard ensures global hook is cleared and barrier released even if construction
+        // of `close` throws before the inner guard is created.
+        ScopeExit restoreHookOnEarlyExit([&] {
+            Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+            afterDrain.deactivate();
+            afterDrain.release();
+        });
+        Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+            &BoundedHookBarrier::invoke
+        );
+        auto close = std::async(std::launch::async, [docName] {
+            return App::GetApplication().closeDocument(docName.c_str());
+        });
+        // Inner guard (constructed AFTER `close`) runs BEFORE `close.~future()` on normal exit,
+        // early return, fatal ASSERT failure, or exception so the worker is released before
+        // future destruction.
+        ScopeExit releaseGateBeforeFutureJoin([&] {
+            Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+            afterDrain.deactivate();
+            afterDrain.release();
+            std::cerr << "[harness_probe] CLEANUP_GATE_RELEASED=1 CLEANUP_HOOK_RESTORED=1\n"
+                      << std::flush;
+        });
+
+        EXPECT_TRUE(afterDrain.waitUntilEntered(std::chrono::seconds(5)));
+        const auto closeStatus = close.wait_for(closeWaitTimeout);
+        if (closeStatus != std::future_status::ready) {
+            releaseGateBeforeFutureJoin.runNow();
+            if (close.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+                terminateIsolatedChildOnTimeout(
+                    "[harness_probe] close worker remained stuck after releasing controllable gate"
+                );
+            }
+            EXPECT_TRUE(close.get());
+            EXPECT_FALSE(afterDrain.timedOut())
+                << "cleanup must actively release the gate instead of waiting for barrier expiry";
+            ASSERT_EQ(closeStatus, std::future_status::ready)
+                << "[harness_probe] CLOSE_WAIT_TIMED_OUT=1";
+        }
+        EXPECT_TRUE(close.get());
+        EXPECT_TRUE(afterDrain.timedOut())
+            << "unreleased BoundedHookBarrier must expire and report timedOut()";
+    }
+}
+
+}  // namespace
+
+TEST_F(DocumentCollaborationServiceTest, boundedTestHarnessTimeoutReportsFailureAndCleansUp)
+{
+    if (isIsolatedChildMode("harness_timeout_probe")) {
+        std::cerr << "entered harness_timeout_probe\n" << std::flush;
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::unique_lock lock(mutex);
+        cv.wait(lock, [] { return false; });
+        return;
+    }
+    if (isIsolatedChildMode("harness_injected_close_timeout")) {
+        runHarnessHookTimeoutPhase(std::chrono::seconds(30), std::chrono::milliseconds(100));
+        return;
+    }
+    if (isIsolatedChildMode("harness_unsupported_skip_probe")) {
+        std::string skipReason;
+        const auto dispatch = dispatchIsolatedSubprocessWithRunner(
+            "boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+            "harness_unsupported_skip_probe",
+            std::chrono::seconds(5),
+            false,
+            [](const std::string&, const std::string&, const std::chrono::milliseconds) {
+                IsolatedSubprocessResult unsupported;
+                unsupported.supported = false;
+                unsupported.startError
+                    = "simulated unsupported platform: isolated subprocess unavailable";
+                return unsupported;
+            },
+            &skipReason
+        );
+        if (dispatch == IsolatedDispatchOutcome::UnsupportedPlatform) {
+            GTEST_SKIP() << skipReason;
+        }
+        std::cerr << "UNEXPECTED_BODY_ENTRY=1\n" << std::flush;
+        FAIL() << "unsupported isolation branch must GTEST_SKIP before entering test body";
+    }
+
+    // Wrap the entire probe (hook-expiry, injected-failure, uninterruptible-timeout,
+    // unsupported-skip verification, and health checks) inside parent subprocess isolation,
+    // explicitly GTEST_SKIPping on platforms without safe isolation support.
+    RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS(
+        "boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+        "boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+        std::chrono::seconds(30)
+    );
+
+    // 1. BoundedHookBarrier timeout path: an unreleased hook wait expires within its bound,
+    //    sets timedOut() for explicit failure reporting, allows close to join cleanly, and
+    //    ScopeExit restores the global hook before destroying state.
+    runHarnessHookTimeoutPhase(std::chrono::milliseconds(100), std::chrono::seconds(5));
+
+    // 2. Injected close-timeout / fatal-assertion cleanup regression: close is still parked in
+    //    afterDrain when close.wait_for expires. Cleanup must release the controllable gate and
+    //    restore the global hook before joining close, reporting explicit failure within the
+    //    parent deadline.
+    {
+        const auto injected = runIsolatedSubprocess(
+            "DocumentCollaborationServiceTest.boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+            "harness_injected_close_timeout",
+            std::chrono::seconds(3)
+        );
+        ASSERT_TRUE(injected.supported);
+        ASSERT_TRUE(injected.started) << injected.startError;
+        EXPECT_FALSE(injected.timedOut)
+            << "injected close-timeout assertion hung during cleanup instead of releasing "
+               "gate before future destruction; output:\n"
+            << injected.output;
+        EXPECT_TRUE(injected.exitedNormally)
+            << "injected close-timeout child terminated abnormally (signal " << injected.termSignal
+            << "); output:\n"
+            << injected.output;
+        if (injected.exitedNormally) {
+            EXPECT_EQ(injected.exitCode, 1)
+                << "injected close-timeout child must exit with explicit gtest failure; "
+                   "output:\n"
+                << injected.output;
+        }
+        EXPECT_NE(injected.output.find("CLOSE_WAIT_TIMED_OUT=1"), std::string::npos)
+            << "injected close-timeout child must report explicit close-wait failure; output:\n"
+            << injected.output;
+        EXPECT_NE(injected.output.find("CLEANUP_GATE_RELEASED=1"), std::string::npos)
+            << "injected close-timeout child must release controllable gate during cleanup; "
+               "output:\n"
+            << injected.output;
+        EXPECT_NE(injected.output.find("CLEANUP_HOOK_RESTORED=1"), std::string::npos)
+            << "injected close-timeout child must restore global hook during cleanup; output:\n"
+            << injected.output;
+        EXPECT_NE(injected.output.find("CLEANUP_HOOK_VERIFIED_RESTORED=1"), std::string::npos)
+            << "injected close-timeout child must verify hook restoration after cleanup; "
+               "output:\n"
+            << injected.output;
+        EXPECT_NE(injected.output.find("CLEANUP_FINISHED=1"), std::string::npos)
+            << "injected close-timeout child must finish cleanup before exiting; output:\n"
+            << injected.output;
+    }
+
+    // 3. Isolated subprocess timeout path: a genuinely uninterruptible wait in the child is
+    //    bounded, terminated, and reaped by the parent without leaving blocked threads alive.
+    {
+        const auto result = runIsolatedSubprocess(
+            "DocumentCollaborationServiceTest.boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+            "harness_timeout_probe",
+            std::chrono::seconds(2)
+        );
+        ASSERT_TRUE(result.supported);
+        ASSERT_TRUE(result.started) << result.startError;
+        EXPECT_TRUE(result.timedOut)
+            << "isolated timeout probe must report timedOut=true; output:\n"
+            << result.output;
+        EXPECT_NE(result.output.find("entered harness_timeout_probe"), std::string::npos)
+            << "isolated child must have entered the blocked state before timeout; output:\n"
+            << result.output;
+
+        const std::string postProbeDocName = App::GetApplication().getUniqueDocumentName(
+            "harnessPostProbeHealthy"
+        );
+        auto* postProbeDoc = App::GetApplication().newDocument(postProbeDocName.c_str(), "PostProbe");
+        ASSERT_NE(postProbeDoc, nullptr);
+        EXPECT_TRUE(
+            closeDocumentBounded(postProbeDocName, std::chrono::seconds(5), "harnessPostProbeHealthy")
+        );
+    }
+
+    // 4. Unsupported-platform branch verification: when runIsolatedSubprocess reports
+    //    supported=false, dispatch returns UnsupportedPlatform and the test explicitly
+    //    GTEST_SKIPs before entering the risky test body.
+    {
+        const auto skipped = runIsolatedSubprocess(
+            "DocumentCollaborationServiceTest.boundedTestHarnessTimeoutReportsFailureAndCleansUp",
+            "harness_unsupported_skip_probe",
+            std::chrono::seconds(5)
+        );
+        ASSERT_TRUE(skipped.supported);
+        ASSERT_TRUE(skipped.started) << skipped.startError;
+        EXPECT_FALSE(skipped.timedOut) << skipped.output;
+        EXPECT_TRUE(skipped.exitedNormally) << skipped.output;
+        if (skipped.exitedNormally) {
+            EXPECT_EQ(skipped.exitCode, 0) << skipped.output;
+        }
+        EXPECT_NE(skipped.output.find("SKIPPED"), std::string::npos)
+            << "unsupported platform branch must emit GTEST_SKIP; output:\n"
+            << skipped.output;
+        EXPECT_NE(
+            skipped.output.find("simulated unsupported platform: isolated subprocess unavailable"),
+            std::string::npos
+        ) << "unsupported platform branch must report skip reason; output:\n"
+          << skipped.output;
+        EXPECT_EQ(skipped.output.find("UNEXPECTED_BODY_ENTRY=1"), std::string::npos)
+            << "unsupported platform branch must never enter the risky test body; output:\n"
+            << skipped.output;
+    }
+}
+
+#undef RUN_OR_SKIP_IN_ISOLATED_SUBPROCESS
 
 TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandleAndStructuredResults)
 {

@@ -3,6 +3,7 @@
 #include "RecomputeHandle.h"
 
 #include "Document.h"
+#include "DocumentCollaborationService.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentObserver.h"
 #include "DocumentWouldBlock.h"
@@ -11,6 +12,7 @@
 #include <QEventLoop>
 
 #include <algorithm>
+#include <future>
 #include <thread>
 #include <utility>
 
@@ -64,6 +66,7 @@ const char* documentRecomputeFeatureStateName(
 
 RecomputeHandle::RecomputeHandle(Document& document, const DocumentRecomputeId id)
     : _document(std::make_unique<DocumentWeakPtrT>(&document))
+    , _lifetimeGate(document.collaborationService().lifetimeGate())
     , _id(id)
 {}
 
@@ -100,7 +103,8 @@ void RecomputeHandle::finalizeIfTerminal(
 
 DocumentRecomputeSnapshot RecomputeHandle::status()
 {
-    auto* owner = document();
+    const DocumentCollaborationService::LifecyclePin pin(_lifetimeGate);
+    auto* owner = pin.document();
     if (!owner) {
         return closedDocumentSnapshot();
     }
@@ -129,7 +133,8 @@ bool RecomputeHandle::poll()
 
 bool RecomputeHandle::cancel(std::string reason)
 {
-    auto* owner = document();
+    const DocumentCollaborationService::LifecyclePin pin(_lifetimeGate);
+    auto* owner = pin.document();
     if (!owner) {
         return false;
     }
@@ -142,26 +147,37 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
     const auto boundedTimeout = std::max(timeout, 0ms);
     const auto deadline = std::chrono::steady_clock::now() + boundedTimeout;
 
-    auto* owner = document();
+    const DocumentCollaborationService::LifecyclePin pin(_lifetimeGate);
+    auto* owner = pin.document();
     if (!owner) {
         return closedDocumentSnapshot();
     }
     // With an execution lane a GUI-thread wait hops to the owner and waits
     // without running the Qt event loop (DocumentExecutionLane::dispatchToOwner());
     // without one, waitOnOwner() would pump Qt on the GUI thread.
-    if (!owner->executionLane()) {
+    auto* lane = owner->executionLane();
+    if (!lane) {
         DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
     }
 
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
+        // Register executing-thread admission on the lane owner thread so
+        // synchronous callbacks during poll/finalization (e.g. headless
+        // signalRecomputed -> closeDocument) are refused instead of deadlocking
+        // on the caller's outer LifecyclePin.
+        const DocumentCollaborationService::LifecyclePin ownerPin(_lifetimeGate);
+        auto* pinnedOwner = ownerPin.document();
+        if (!pinnedOwner) {
+            return closedDocumentSnapshot();
+        }
         while (true) {
             // Pump coordinator work on the owner thread only inside wait().
-            static_cast<void>(owner->recomputeCoordinator().poll(_id));
-            auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
+            static_cast<void>(pinnedOwner->recomputeCoordinator().poll(_id));
+            auto coordinatorSnapshot = pinnedOwner->recomputeCoordinator().status(_id);
             if (!coordinatorSnapshot) {
                 return closedDocumentSnapshot();
             }
-            finalizeIfTerminal(*owner, *coordinatorSnapshot);
+            finalizeIfTerminal(*pinnedOwner, *coordinatorSnapshot);
             const auto snapshot = status();
             if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
                 return snapshot;
@@ -172,8 +188,20 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
             std::this_thread::sleep_for(2ms);
         }
     };
-    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        return owner->executionLane()->dispatchToOwner(waitOnOwner, true, true);
+    if (lane && !owner->isCollaborationOwnerThread()) {
+        try {
+            return lane->dispatchToOwner(waitOnOwner, true, true);
+        }
+        catch (const std::future_error&) {
+            return closedDocumentSnapshot();
+        }
+        catch (const DocumentWouldBlock&) {
+            if (lane->isClosingOrShuttingDown()
+                || !DocumentCollaborationService::LifecyclePin(_lifetimeGate)) {
+                return closedDocumentSnapshot();
+            }
+            throw;
+        }
     }
     return waitOnOwner();
 }
