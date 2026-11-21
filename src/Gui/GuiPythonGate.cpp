@@ -173,11 +173,12 @@ private:
 
     std::mutex _mutex;
     std::condition_variable _cv;
-    std::thread _thread;
     bool _busy {false};
     bool _shutdown {false};
     bool _probeReady {false};
     bool _probeResult {false};
+    // Declared last so all state members are initialized before the constructor starts the thread.
+    std::thread _thread;
 };
 
 GilProbeService& gilProbeService()
