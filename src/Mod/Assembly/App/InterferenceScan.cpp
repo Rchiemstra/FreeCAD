@@ -15,6 +15,7 @@
 # include <iterator>
 # include <set>
 # include <sstream>
+# include <unordered_map>
 # include <unordered_set>
 #endif
 
@@ -458,11 +459,27 @@ TopoDS_Shape resolveWorldShape(
     return extract(occurrenceSubName);
 }
 
+bool isValidTransformMatrix(const Base::Matrix4D& matrix)
+{
+    for (unsigned short row = 0; row < 4; ++row) {
+        for (unsigned short col = 0; col < 4; ++col) {
+            if (!std::isfinite(matrix[row][col])) {
+                return false;
+            }
+        }
+    }
+    const double det = matrix.determinant();
+    return std::isfinite(det) && std::abs(det) > 1e-12;
+}
+
 Base::Matrix4D resolveWorldTransform(
     const App::DocumentObject* root,
     const std::string& subName
 )
 {
+    if (!root || subName.empty()) {
+        throw Base::ValueError("Cannot resolve occurrence world transform without root and subname");
+    }
     Base::Matrix4D world;
     auto* owner = root->getSubObject(subName.c_str(), nullptr, &world);
     if (!owner) {
@@ -471,6 +488,9 @@ Base::Matrix4D resolveWorldTransform(
     // getSubObject's matrix stops at the occurrence. Include the terminal
     // link's private scale / LinkTransform and linked-definition placements.
     owner->getLinkedObject(true, &world, false);
+    if (!isValidTransformMatrix(world)) {
+        throw Base::ValueError("Resolved occurrence world transform is invalid or singular");
+    }
     return world;
 }
 
@@ -582,7 +602,32 @@ bool tryMakeLeaf(
     leaf.displayPath = display;
     leaf.sourceId = objectKey(resolveSourceDefinition(occurrence));
     leaf.worldShape = shape;
-    leaf.worldTransform = resolveWorldTransform(root, subName);
+    leaf.visible = visible;
+    try {
+        leaf.worldTransform = resolveWorldTransform(root, subName);
+    }
+    catch (const Base::Exception& exc) {
+        leaf.worldShape = TopoDS_Shape();
+        leaf.shapeValid = false;
+        leaf.diagnostic = exc.what();
+        leaves.push_back(std::move(leaf));
+        return true;
+    }
+    catch (const Standard_Failure& exc) {
+        leaf.worldShape = TopoDS_Shape();
+        leaf.shapeValid = false;
+        leaf.diagnostic = exc.GetMessageString() ? exc.GetMessageString()
+                                                 : "OCCT failure resolving world transform";
+        leaves.push_back(std::move(leaf));
+        return true;
+    }
+    catch (...) {
+        leaf.worldShape = TopoDS_Shape();
+        leaf.shapeValid = false;
+        leaf.diagnostic = "Unknown failure resolving world transform";
+        leaves.push_back(std::move(leaf));
+        return true;
+    }
     try {
         leaf.worldBoundBox = shapeBoundBox(shape);
     }
@@ -1613,18 +1658,91 @@ std::vector<InterferenceLeaf> reposeInterferenceLeaves(
     const std::vector<InterferenceLeaf>& ownedLeaves
 )
 {
-    auto leaves = ownedLeaves;
-    for (auto& leaf : leaves) {
-        const auto current = resolveWorldTransform(root, leaf.occurrenceSubName);
-        auto inverse = leaf.worldTransform;
-        inverse.inverse();
-        Part::TopoShape shape(leaf.worldShape);
-        shape.transformShape(current * inverse, false, true);
-        leaf.worldShape = shape.getShape();
-        leaf.worldTransform = current;
-        leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
+    auto markInvalid = [](InterferenceLeaf& leaf, const std::string& reason) {
+        leaf.shapeValid = false;
+        leaf.worldShape = TopoDS_Shape();
+        leaf.worldBoundBox = Base::BoundBox3d();
         leaf.cachedFaces.clear();
         leaf.facesCached = false;
+        if (leaf.diagnostic.empty()) {
+            leaf.diagnostic = reason;
+        }
+    };
+
+    auto leaves = ownedLeaves;
+    for (auto& leaf : leaves) {
+        leaf.cachedFaces.clear();
+        leaf.facesCached = false;
+        if (!leaf.shapeValid) {
+            if (leaf.diagnostic.empty()) {
+                leaf.diagnostic = "Invalid leaf geometry";
+            }
+            continue;
+        }
+        if (leaf.worldShape.IsNull()) {
+            markInvalid(leaf, "Null world shape");
+            continue;
+        }
+        const Handle(TopoDS_TShape) oldTShape = leaf.worldShape.TShape();
+        if (leaf.geometryValidation && !oldTShape.IsNull()) {
+            std::lock_guard<std::mutex> lock(leaf.geometryValidation->mutex);
+            if (leaf.geometryValidation->validatedTShape == oldTShape
+                && !leaf.geometryValidation->valid) {
+                leaf.shapeValid = false;
+                leaf.diagnostic = leaf.geometryValidation->diagnostic.empty()
+                    ? "BRepCheck_Analyzer reported invalid geometry"
+                    : leaf.geometryValidation->diagnostic;
+                continue;
+            }
+        }
+        if (!isValidTransformMatrix(leaf.worldTransform)) {
+            markInvalid(leaf, "Stored leaf world transform is invalid or singular");
+            continue;
+        }
+        try {
+            const auto current = resolveWorldTransform(root, leaf.occurrenceSubName);
+            auto inverse = leaf.worldTransform;
+            inverse.inverse();
+            if (!isValidTransformMatrix(inverse)) {
+                markInvalid(leaf, "Failed to invert leaf world transform");
+                continue;
+            }
+            Part::TopoShape shape(leaf.worldShape);
+            shape.transformShape(current * inverse, false, true);
+            const TopoDS_Shape transformed = shape.getShape();
+            if (transformed.IsNull()) {
+                markInvalid(leaf, "Reposed world shape is null");
+                continue;
+            }
+            const Base::BoundBox3d bounds = shapeBoundBox(transformed);
+            if (!bounds.IsValid()) {
+                markInvalid(leaf, "Missing or invalid reposed world bounds");
+                continue;
+            }
+            leaf.worldShape = transformed;
+            leaf.worldTransform = current;
+            leaf.worldBoundBox = bounds;
+            // Non-rigid transforms create a new TShape; detach the cache so re-validation
+            // runs on the new topology without clobbering the template leaf's cached result.
+            if (leaf.worldShape.TShape() != oldTShape) {
+                leaf.geometryValidation = std::make_shared<InterferenceLeaf::GeometryValidationCache>();
+            }
+        }
+        catch (const Base::Exception& exc) {
+            markInvalid(leaf, exc.what());
+        }
+        catch (const Standard_Failure& exc) {
+            markInvalid(
+                leaf,
+                exc.GetMessageString() ? exc.GetMessageString() : "OCCT failure reposing leaf"
+            );
+        }
+        catch (const std::exception& exc) {
+            markInvalid(leaf, exc.what());
+        }
+        catch (...) {
+            markInvalid(leaf, "Unknown failure reposing leaf");
+        }
     }
     return leaves;
 }
@@ -1915,6 +2033,8 @@ void validateOwnedLeafGeometry(
     const InterferenceScanOptions& options
 )
 {
+    // Within a single scan, all leaves stay alive and pin their TopoDS_TShape handles.
+    std::unordered_map<const TopoDS_TShape*, std::pair<bool, std::string>> scanLocalValidated;
     for (std::size_t i = 0; i < leaves.size(); ++i) {
         if (isCancelled(options)) {
             result.cancelled = true;
@@ -1961,11 +2081,42 @@ void validateOwnedLeafGeometry(
             result.counts.invalidInputs += 1;
             continue;
         }
-        try {
-            BRepCheck_Analyzer analyzer(leaf.worldShape);
-            if (!analyzer.IsValid()) {
+
+        const Handle(TopoDS_TShape) currentTShape = leaf.worldShape.TShape();
+        bool cacheHit = false;
+        bool cachedValid = false;
+        std::string cachedDiagnostic;
+        if (leaf.geometryValidation && !currentTShape.IsNull()) {
+            std::lock_guard<std::mutex> lock(leaf.geometryValidation->mutex);
+            if (leaf.geometryValidation->validatedTShape == currentTShape) {
+                cacheHit = true;
+                cachedValid = leaf.geometryValidation->valid;
+                cachedDiagnostic = leaf.geometryValidation->diagnostic;
+            }
+        }
+        if (!cacheHit && !currentTShape.IsNull()) {
+            const auto found = scanLocalValidated.find(currentTShape.get());
+            if (found != scanLocalValidated.end()) {
+                cacheHit = true;
+                cachedValid = found->second.first;
+                cachedDiagnostic = found->second.second;
+                if (leaf.geometryValidation) {
+                    std::lock_guard<std::mutex> lock(leaf.geometryValidation->mutex);
+                    leaf.geometryValidation->validatedTShape = currentTShape;
+                    leaf.geometryValidation->valid = cachedValid;
+                    leaf.geometryValidation->diagnostic = cachedDiagnostic;
+                }
+            }
+        }
+        if (cacheHit) {
+            if (options.scanStats) {
+                options.scanStats->geometryValidationCacheHits += 1;
+            }
+            if (!cachedValid) {
                 leaf.shapeValid = false;
-                leaf.diagnostic = "BRepCheck_Analyzer reported invalid geometry";
+                leaf.diagnostic = cachedDiagnostic.empty()
+                    ? "BRepCheck_Analyzer reported invalid geometry"
+                    : cachedDiagnostic;
                 InterferenceComponentIssue issue;
                 issue.kind = InterferenceComponentIssue::Kind::InvalidLeaf;
                 issue.leafIndex = i;
@@ -1973,21 +2124,41 @@ void validateOwnedLeafGeometry(
                 result.componentIssues.push_back(issue);
                 result.counts.invalidInputs += 1;
             }
+            continue;
+        }
+
+        if (options.scanStats) {
+            options.scanStats->geometryAnalyzerRuns += 1;
+        }
+        bool isValid = false;
+        std::string diag;
+        try {
+            BRepCheck_Analyzer analyzer(leaf.worldShape);
+            if (analyzer.IsValid()) {
+                isValid = true;
+            }
+            else {
+                diag = "BRepCheck_Analyzer reported invalid geometry";
+            }
         }
         catch (const Standard_Failure& exc) {
-            leaf.shapeValid = false;
-            leaf.diagnostic =
-                exc.GetMessageString() ? exc.GetMessageString() : "BRepCheck_Analyzer failed";
-            InterferenceComponentIssue issue;
-            issue.kind = InterferenceComponentIssue::Kind::InvalidLeaf;
-            issue.leafIndex = i;
-            issue.diagnostic = leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
+            diag = exc.GetMessageString() ? exc.GetMessageString() : "BRepCheck_Analyzer failed";
         }
         catch (...) {
+            diag = "Unknown failure validating leaf geometry";
+        }
+        if (!currentTShape.IsNull()) {
+            scanLocalValidated.emplace(currentTShape.get(), std::make_pair(isValid, diag));
+            if (leaf.geometryValidation) {
+                std::lock_guard<std::mutex> lock(leaf.geometryValidation->mutex);
+                leaf.geometryValidation->validatedTShape = currentTShape;
+                leaf.geometryValidation->valid = isValid;
+                leaf.geometryValidation->diagnostic = diag;
+            }
+        }
+        if (!isValid) {
             leaf.shapeValid = false;
-            leaf.diagnostic = "Unknown failure validating leaf geometry";
+            leaf.diagnostic = diag;
             InterferenceComponentIssue issue;
             issue.kind = InterferenceComponentIssue::Kind::InvalidLeaf;
             issue.leafIndex = i;

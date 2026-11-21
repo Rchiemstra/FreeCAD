@@ -10,6 +10,8 @@
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
 #include <atomic>
 #include <cmath>
@@ -5571,4 +5573,266 @@ TEST_F(InterferenceScanTest, badClearanceSheetsAvoidHostLeafCollection)
     EXPECT_EQ(stats.hostLeafCollectionPasses, 0);
     EXPECT_EQ(stats.structuralOccurrenceTraversalPasses, 0);
     EXPECT_EQ(stats.leafShapeExtractions, 0);
+}
+
+TEST_F(InterferenceScanTest, reposeGuardsInvalidLeafInsteadOfThrowingOrContinuing)
+{
+    auto* box = makeBox(_doc, "ReposeBadBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    _assembly->addObject(box);
+    _doc->recompute();
+
+    Assembly::InterferenceLeaf invalidNull;
+    invalidNull.occurrenceSubName = "ReposeBadBox.";
+    invalidNull.displayPath = "ReposeBadBox";
+    invalidNull.sourceId = objectSourceId(box);
+    invalidNull.shapeValid = false;
+    invalidNull.diagnostic = "upstream bad shape";
+
+    Assembly::InterferenceLeaf invalidNonNull
+        = makeLeaf("ReposeBadBox.", objectSourceId(box).c_str(), gp_Pnt(0, 0, 0));
+    invalidNonNull.shapeValid = false;
+    invalidNonNull.diagnostic = "already invalid shape";
+    const Base::BoundBox3d originalBox = invalidNonNull.worldBoundBox;
+
+    box->Placement.setValue(Base::Placement(Base::Vector3d(25, 0, 0), Base::Rotation()));
+    _doc->recompute();
+
+    std::vector<Assembly::InterferenceLeaf> reposed;
+    EXPECT_NO_THROW({
+        reposed = Assembly::reposeInterferenceLeaves(_assembly, {invalidNull, invalidNonNull});
+    });
+    ASSERT_EQ(reposed.size(), 2u);
+    EXPECT_FALSE(reposed[0].shapeValid);
+    EXPECT_EQ(reposed[0].diagnostic, "upstream bad shape");
+    EXPECT_FALSE(reposed[1].shapeValid);
+    EXPECT_EQ(reposed[1].diagnostic, "already invalid shape");
+    EXPECT_NEAR(reposed[1].worldBoundBox.MinX, originalBox.MinX, 1e-6);
+
+    auto validOther = makeLeaf("ValidOther.", "srcOther", gp_Pnt(100, 0, 0));
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(reposed, {validOther}, {});
+    EXPECT_FALSE(result.complete);
+    EXPECT_EQ(result.counts.invalidInputs, 2);
+    ASSERT_EQ(result.componentIssues.size(), 2u);
+    EXPECT_EQ(result.componentIssues[0].kind, Assembly::InterferenceComponentIssue::Kind::InvalidLeaf);
+    EXPECT_EQ(result.componentIssues[0].diagnostic, "upstream bad shape");
+    EXPECT_EQ(result.componentIssues[1].kind, Assembly::InterferenceComponentIssue::Kind::InvalidLeaf);
+    EXPECT_EQ(result.componentIssues[1].diagnostic, "already invalid shape");
+}
+
+TEST_F(InterferenceScanTest, reposeGuardsFailedResolveWorldTransformAndReportsInvalidLeaf)
+{
+    auto* boxA = makeBox(_doc, "ReposeVanished", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* boxB = makeBox(_doc, "ReposeStatic", Base::Vector3d(50, 0, 0), 10, 10, 10);
+    _assembly->addObject(boxA);
+    _assembly->addObject(boxB);
+    _doc->recompute();
+
+    auto leavesA = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "ReposeVanished.", true);
+    auto leavesB = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "ReposeStatic.", true);
+    ASSERT_EQ(leavesA.size(), 1u);
+    ASSERT_EQ(leavesB.size(), 1u);
+
+    _doc->removeObject("ReposeVanished");
+    _doc->recompute();
+
+    std::vector<Assembly::InterferenceLeaf> reposedA;
+    EXPECT_NO_THROW({ reposedA = Assembly::reposeInterferenceLeaves(_assembly, leavesA); });
+    ASSERT_EQ(reposedA.size(), 1u);
+    EXPECT_FALSE(reposedA[0].shapeValid);
+    EXPECT_TRUE(reposedA[0].worldShape.IsNull());
+    EXPECT_FALSE(reposedA[0].diagnostic.empty());
+
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(reposedA, leavesB, {});
+    EXPECT_FALSE(result.complete);
+    EXPECT_EQ(result.counts.invalidInputs, 1);
+    ASSERT_EQ(result.componentIssues.size(), 1u);
+    EXPECT_EQ(result.componentIssues[0].kind, Assembly::InterferenceComponentIssue::Kind::InvalidLeaf);
+    EXPECT_FALSE(result.componentIssues[0].diagnostic.empty());
+}
+
+TEST_F(InterferenceScanTest, geometryValidationCacheRunsAnalyzerOncePerLeafAcrossPairsAndReposes)
+{
+    auto* boxA = makeBox(_doc, "CacheBoxA", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* boxB = makeBox(_doc, "CacheBoxB", Base::Vector3d(5, 0, 0), 10, 10, 10);
+    auto* boxC = makeBox(_doc, "CacheBoxC", Base::Vector3d(10, 0, 0), 10, 10, 10);
+    _assembly->addObject(boxA);
+    _assembly->addObject(boxB);
+    _assembly->addObject(boxC);
+    _doc->recompute();
+
+    auto leaves = Assembly::collectInterferenceLeaves(_assembly, false);
+    ASSERT_EQ(leaves.size(), 3u);
+
+    Assembly::InterferenceScanStats stats1;
+    Assembly::InterferenceScanOptions options;
+    options.scanStats = &stats1;
+    auto scan1 = Assembly::runInterferenceScan(leaves, options);
+    ASSERT_TRUE(scan1.complete);
+    EXPECT_EQ(stats1.geometryAnalyzerRuns, 3);
+    EXPECT_EQ(stats1.geometryValidationCacheHits, 0);
+
+    boxA->Placement.setValue(Base::Placement(Base::Vector3d(0, 2, 0), Base::Rotation()));
+    _doc->recompute();
+    auto reposed1 = Assembly::reposeInterferenceLeaves(_assembly, leaves);
+
+    Assembly::InterferenceScanStats stats2;
+    options.scanStats = &stats2;
+    auto scan2 = Assembly::runInterferenceScan(reposed1, options);
+    ASSERT_TRUE(scan2.complete);
+    EXPECT_EQ(stats2.geometryAnalyzerRuns, 0);
+    EXPECT_EQ(stats2.geometryValidationCacheHits, 3);
+
+    boxA->Placement.setValue(Base::Placement(Base::Vector3d(0, 50, 0), Base::Rotation()));
+    _doc->recompute();
+    auto reposed2 = Assembly::reposeInterferenceLeaves(_assembly, leaves);
+
+    Assembly::InterferenceScanStats stats3;
+    options.scanStats = &stats3;
+    auto scan3 = Assembly::runInterferenceScan(reposed2, options);
+    ASSERT_TRUE(scan3.complete);
+    EXPECT_EQ(stats3.geometryAnalyzerRuns, 0);
+    EXPECT_EQ(stats3.geometryValidationCacheHits, 3);
+}
+
+TEST_F(InterferenceScanTest, geometryValidationCacheInvalidatesOnShapeChangeAndNonRigidScale)
+{
+    auto leafA = makeLeaf("InvA.", "srcA", gp_Pnt(0, 0, 0), 10, 10, 10);
+    auto leafB = makeLeaf("InvB.", "srcB", gp_Pnt(30, 0, 0), 10, 10, 10);
+
+    Assembly::InterferenceScanStats stats1;
+    Assembly::InterferenceScanOptions options;
+    options.scanStats = &stats1;
+    auto scan1 = Assembly::runInterferenceScan({leafA, leafB}, options);
+    ASSERT_TRUE(scan1.complete);
+    EXPECT_EQ(stats1.geometryAnalyzerRuns, 2);
+    EXPECT_EQ(stats1.geometryValidationCacheHits, 0);
+
+    Assembly::InterferenceScanStats stats2;
+    options.scanStats = &stats2;
+    auto scan2 = Assembly::runInterferenceScan({leafA, leafB}, options);
+    ASSERT_TRUE(scan2.complete);
+    EXPECT_EQ(stats2.geometryAnalyzerRuns, 0);
+    EXPECT_EQ(stats2.geometryValidationCacheHits, 2);
+
+    // Replace leafA's shape (new TopoDS_TShape); leafA must re-validate while leafB stays cached.
+    leafA.worldShape = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 12, 10, 10).Shape();
+    leafA.worldBoundBox = Base::BoundBox3d(0, 0, 0, 12, 10, 10);
+
+    Assembly::InterferenceScanStats stats3;
+    options.scanStats = &stats3;
+    auto scan3 = Assembly::runInterferenceScan({leafA, leafB}, options);
+    ASSERT_TRUE(scan3.complete);
+    EXPECT_EQ(stats3.geometryAnalyzerRuns, 1);
+    EXPECT_EQ(stats3.geometryValidationCacheHits, 1);
+
+    // Non-rigid scale during repose builds a new TShape and must invalidate the cache.
+    auto* srcBox = makeBox(_doc, "ScaleSrc", Base::Vector3d(0, 0, 0), 4, 4, 4);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "ScaleLink"));
+    link->setLink(-1, srcBox);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    auto linkLeaves = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "ScaleLink.", true);
+    ASSERT_EQ(linkLeaves.size(), 1u);
+
+    Assembly::InterferenceScanStats scaleStats1;
+    options.scanStats = &scaleStats1;
+    auto scaleScan1 = Assembly::runInterferenceScanBetweenLeafSets(linkLeaves, {leafB}, options);
+    ASSERT_TRUE(scaleScan1.complete);
+    EXPECT_EQ(scaleStats1.geometryAnalyzerRuns, 1);
+    EXPECT_EQ(scaleStats1.geometryValidationCacheHits, 1);
+
+    link->Scale.setValue(2.0);
+    _doc->recompute();
+    auto scaledLeaves = Assembly::reposeInterferenceLeaves(_assembly, linkLeaves);
+    ASSERT_EQ(scaledLeaves.size(), 1u);
+    EXPECT_TRUE(scaledLeaves[0].shapeValid);
+
+    Assembly::InterferenceScanStats scaleStats2;
+    options.scanStats = &scaleStats2;
+    auto scaleScan2 = Assembly::runInterferenceScanBetweenLeafSets(scaledLeaves, {leafB}, options);
+    ASSERT_TRUE(scaleScan2.complete);
+    EXPECT_EQ(scaleStats2.geometryAnalyzerRuns, 1);
+    EXPECT_EQ(scaleStats2.geometryValidationCacheHits, 1);
+}
+
+TEST_F(InterferenceScanTest, geometryValidationCacheRemembersInvalidLeafWithoutRerunningAnalyzer)
+{
+    const TopoDS_Solid boxSolid = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Solid();
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(boxSolid, TopAbs_FACE, faces);
+    ASSERT_GE(faces.Extent(), 2);
+
+    BRep_Builder builder;
+    TopoDS_Shell openShell;
+    builder.MakeShell(openShell);
+    for (int i = 1; i < faces.Extent(); ++i) {
+        builder.Add(openShell, faces(i));
+    }
+    TopoDS_Solid malformed;
+    builder.MakeSolid(malformed);
+    builder.Add(malformed, openShell);
+
+    auto* hostBox = makeBox(_doc, "InvalidCacheHost", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    _assembly->addObject(hostBox);
+    _doc->recompute();
+
+    Assembly::InterferenceLeaf badLeaf;
+    badLeaf.occurrenceSubName = "InvalidCacheHost.";
+    badLeaf.displayPath = "InvalidCacheHost";
+    badLeaf.sourceId = objectSourceId(hostBox);
+    badLeaf.worldShape = malformed;
+    badLeaf.worldBoundBox = Base::BoundBox3d(0, 0, 0, 10, 10, 10);
+    badLeaf.shapeValid = true;
+    badLeaf.visible = true;
+
+    auto okLeaf = makeLeaf("ValidPeer.", "srcPeer", gp_Pnt(50, 0, 0), 10, 10, 10);
+
+    Assembly::InterferenceScanStats stats1;
+    Assembly::InterferenceScanOptions options;
+    options.scanStats = &stats1;
+    auto scan1 = Assembly::runInterferenceScan({badLeaf, okLeaf}, options);
+    EXPECT_FALSE(scan1.complete);
+    EXPECT_EQ(scan1.counts.invalidInputs, 1);
+    EXPECT_EQ(stats1.geometryAnalyzerRuns, 2);
+    EXPECT_EQ(stats1.geometryValidationCacheHits, 0);
+
+    // Second scan on the same leaves reuses the cached invalid result without re-running analyzer.
+    Assembly::InterferenceScanStats stats2;
+    options.scanStats = &stats2;
+    auto scan2 = Assembly::runInterferenceScan({badLeaf, okLeaf}, options);
+    EXPECT_FALSE(scan2.complete);
+    EXPECT_EQ(scan2.counts.invalidInputs, 1);
+    EXPECT_EQ(stats2.geometryAnalyzerRuns, 0);
+    EXPECT_EQ(stats2.geometryValidationCacheHits, 2);
+
+    // Reposing the pre-scan template leaf sees the cached invalid outcome and refuses to transform.
+    auto reposed = Assembly::reposeInterferenceLeaves(_assembly, {badLeaf});
+    ASSERT_EQ(reposed.size(), 1u);
+    EXPECT_FALSE(reposed[0].shapeValid);
+    EXPECT_FALSE(reposed[0].diagnostic.empty());
+}
+
+TEST_F(InterferenceScanTest, reposeGuardsSingularWorldTransformAndReportsInvalidLeaf)
+{
+    auto* box = makeBox(_doc, "SingularBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    _assembly->addObject(box);
+    _doc->recompute();
+
+    auto leaves = Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "SingularBox.", true);
+    ASSERT_EQ(leaves.size(), 1u);
+    leaves[0].worldTransform
+        = Base::Matrix4D(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+
+    std::vector<Assembly::InterferenceLeaf> reposed;
+    EXPECT_NO_THROW({ reposed = Assembly::reposeInterferenceLeaves(_assembly, leaves); });
+    ASSERT_EQ(reposed.size(), 1u);
+    EXPECT_FALSE(reposed[0].shapeValid);
+    EXPECT_TRUE(reposed[0].worldShape.IsNull());
+    EXPECT_FALSE(reposed[0].diagnostic.empty());
+
+    auto other = makeLeaf("SingularOther.", "srcOther", gp_Pnt(50, 0, 0));
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(reposed, {other}, {});
+    EXPECT_FALSE(result.complete);
+    EXPECT_EQ(result.counts.invalidInputs, 1);
 }
