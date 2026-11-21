@@ -34,6 +34,7 @@
 #include <map>
 #include <list>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <string>
 #include <memory>
@@ -269,6 +270,16 @@ struct DocumentP
     std::atomic<unsigned int> collaborationStableNotificationDepth {0};
     std::atomic<unsigned int> collaborationRecomputeTeardownDepth {0};
     std::recursive_mutex collaborationCommitMutex;
+    // Serializes commit-barrier graph/dependency mutations (exclusive lock)
+    // against concurrent getMutationReadiness() -> mustExecute() readers (shared lock)
+    // without contending on collaborationCommitMutex or refusing concurrent readers.
+    mutable std::shared_mutex documentGraphMutex;
+    std::atomic<unsigned int> documentGraphWritePending {0};
+    std::atomic<std::thread::id> documentGraphWriteOwner {};
+    // Leaf mutex guarding activeUndoTransaction, mUndoTransactions, mRedoTransactions,
+    // mUndoMap, mRedoMap, and Transaction::Name against concurrent GUI/readiness reads.
+    // Never hold across Transaction::apply(), Transaction deletion, or signal emission.
+    mutable std::mutex transactionHistoryMutex;
     std::thread::id collaborationOwnerThread {std::this_thread::get_id()};
     std::array<char, 1024> collaborationCommitPoisonDiagnostic {};
     std::bitset<32> StatusBits;
