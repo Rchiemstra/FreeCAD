@@ -62,7 +62,7 @@ class _FakeSel:
         self.PickedPoints = list(picks or [])
 
 
-class TestReviewNotes(unittest.TestCase):
+class _ReviewNotesTestBase(unittest.TestCase):
     def setUp(self):
         doc_name = self.__class__.__name__
         if App.ActiveDocument:
@@ -84,6 +84,9 @@ class TestReviewNotes(unittest.TestCase):
 
     def tearDown(self):
         _close_document(self.doc.Name)
+
+
+class TestReviewNotes(_ReviewNotesTestBase):
 
     def _make_joint(self):
         box2 = self.assembly.newObject("Part::Box", "Box2")
@@ -367,9 +370,7 @@ class TestReviewNotes(unittest.TestCase):
         expected = nested.Placement.multVec(inner.Placement.multVec(note.LocalAnchor))
         self.assertTrue(
             note.BasePosition.isEqual(expected, 1e-5),
-            "{} after rotate: got {} expected {}".format(
-                operation, note.BasePosition, expected
-            ),
+            "{} after rotate: got {} expected {}".format(operation, note.BasePosition, expected),
         )
 
     def test_joint_note_follows_nested_container_placement(self):
@@ -591,14 +592,10 @@ class TestReviewNotes(unittest.TestCase):
         self.assertEqual(refs[1]["obj_name"], "Box", operation)
         self.assertEqual(refs[1]["sub_name"], "", operation)
 
-        obj, sub = CommandReviewNote.resolve_review_note_reference(
-            self.doc, "Box", "Face6"
-        )
+        obj, sub = CommandReviewNote.resolve_review_note_reference(self.doc, "Box", "Face6")
         self.assertEqual(obj, self.box, operation)
         self.assertEqual(sub, "Face6", operation)
-        missing, _sub = CommandReviewNote.resolve_review_note_reference(
-            self.doc, "NoSuch", "Face1"
-        )
+        missing, _sub = CommandReviewNote.resolve_review_note_reference(self.doc, "NoSuch", "Face1")
         self.assertIsNone(missing, operation)
 
         data = CommandReviewNote.normalize_review_note_target(
@@ -668,7 +665,9 @@ class TestReviewNotes(unittest.TestCase):
         self.assertTrue(all(s.startswith("Box.") for s in faces), operation)
 
         after_dot = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "Box.")
-        self.assertTrue(any(s == "Box.Face1" or s.startswith("Box.Face") for s in after_dot), operation)
+        self.assertTrue(
+            any(s == "Box.Face1" or s.startswith("Box.Face") for s in after_dot), operation
+        )
 
         long_path = "AssemblyCase.MidA.MidB.RightPocket.Face12"
         shortened = CommandReviewNote.ellipsis_review_note_at_path(long_path, 32)
@@ -683,9 +682,7 @@ class TestReviewNotes(unittest.TestCase):
             "Box.Face1",
             operation,
         )
-        inserted = CommandReviewNote.apply_review_note_at_completion(
-            "See @As", 7, long_path
-        )
+        inserted = CommandReviewNote.apply_review_note_at_completion("See @As", 7, long_path)
         self.assertEqual(inserted, "See @" + long_path, operation)
         self.assertNotIn("…", inserted, operation)
 
@@ -696,9 +693,7 @@ class TestReviewNotes(unittest.TestCase):
             operation,
         )
         self.assertEqual(
-            CommandReviewNote.review_note_at_path_from_selection(
-                self.assembly, "Box.Face6"
-            ),
+            CommandReviewNote.review_note_at_path_from_selection(self.assembly, "Box.Face6"),
             "Assembly.Box.Face6",
             operation,
         )
@@ -850,7 +845,9 @@ class TestReviewNotes(unittest.TestCase):
             msg="{} diagonal must stay on the ray toward base".format(operation),
         )
         # Pure vertical / opposite / near-zero offsets.
-        up = CommandReviewNote.review_note_auto_boundary_endpoint(App.Vector(0, 40, 0), half_w, half_h)
+        up = CommandReviewNote.review_note_auto_boundary_endpoint(
+            App.Vector(0, 40, 0), half_w, half_h
+        )
         self.assertAlmostEqual(up.x, 0.0, places=5, msg=operation)
         self.assertAlmostEqual(up.y, 40.0 - half_h, places=5, msg=operation)
         left = CommandReviewNote.review_note_auto_boundary_endpoint(
@@ -872,18 +869,12 @@ class TestReviewNotes(unittest.TestCase):
         # --- Positive control: on-border endpoint with modest half-extents ---
         text_ok = App.Vector(40, 0, 0)
         half_ok = App.Vector(2.0, 1.5, 0.0)
-        end_ok = CommandReviewNote.review_note_auto_boundary_endpoint(
-            text_ok, half_ok.x, half_ok.y
-        )
-        ok, reason = CommandReviewNote.review_note_leader_glue_status(
-            text_ok, end_ok, half_ok
-        )
+        end_ok = CommandReviewNote.review_note_auto_boundary_endpoint(text_ok, half_ok.x, half_ok.y)
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(text_ok, end_ok, half_ok)
         self.assertTrue(ok, "{} positive control failed: {}".format(operation, reason))
 
         # --- Negative: collapsed onto text center ---
-        ok, reason = CommandReviewNote.review_note_leader_glue_status(
-            text_ok, text_ok, half_ok
-        )
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(text_ok, text_ok, half_ok)
         self.assertFalse(ok, "{} must reject collapsed leader".format(operation))
         self.assertIn("collapsed", reason, operation)
 
@@ -923,9 +914,7 @@ class TestReviewNotes(unittest.TestCase):
         new_text = App.Vector(-10.18, 10.16, -3.26)
         stuck_end = App.Vector(-22.64, -15.15, 2.41)
         self.assertTrue(
-            CommandReviewNote.review_note_leader_is_stuck_after_move(
-                old_end, new_text, stuck_end
-            ),
+            CommandReviewNote.review_note_leader_is_stuck_after_move(old_end, new_text, stuck_end),
             "{} must detect stuck pre-move LeaderEnd".format(operation),
         )
         # Same geometry after a proper re-glue must not be flagged stuck.
@@ -933,9 +922,7 @@ class TestReviewNotes(unittest.TestCase):
             new_text, half_ok.x, half_ok.y
         )
         self.assertFalse(
-            CommandReviewNote.review_note_leader_is_stuck_after_move(
-                old_end, new_text, glued_end
-            ),
+            CommandReviewNote.review_note_leader_is_stuck_after_move(old_end, new_text, glued_end),
             "{} re-glued endpoint must not look stuck".format(operation),
         )
         ok, reason = CommandReviewNote.review_note_leader_glue_status(
@@ -952,9 +939,7 @@ class TestReviewNotes(unittest.TestCase):
             App.Vector(-9.19, 9.13, -3.08),
             half_small,
         )
-        self.assertFalse(
-            ok, "{} must reject stale LeaderEnd after second move".format(operation)
-        )
+        self.assertFalse(ok, "{} must reject stale LeaderEnd after second move".format(operation))
         self.assertIn("detached", reason, operation)
 
     # --- Attachment correctness regressions -----------------------------
@@ -968,9 +953,7 @@ class TestReviewNotes(unittest.TestCase):
             "{} owning Assembly".format(operation),
         )
         self.assertIsNone(
-            CommandReviewNote.normalize_review_note_target(
-                self.assembly, self.assembly, "Face1"
-            ),
+            CommandReviewNote.normalize_review_note_target(self.assembly, self.assembly, "Face1"),
             "{} Assembly face".format(operation),
         )
         # Assembly-rooted subpath into a child component must still resolve.
@@ -994,9 +977,7 @@ class TestReviewNotes(unittest.TestCase):
             )
 
         self.assertIsNone(
-            CommandReviewNote.normalize_review_note_target(
-                self.assembly, self.jointgroup, ""
-            ),
+            CommandReviewNote.normalize_review_note_target(self.assembly, self.jointgroup, ""),
             "{} JointGroup".format(operation),
         )
 
@@ -1013,21 +994,15 @@ class TestReviewNotes(unittest.TestCase):
 
         # Malformed / unsupported subpaths.
         self.assertIsNone(
-            CommandReviewNote.normalize_review_note_target(
-                self.assembly, self.box, "Solid1"
-            ),
+            CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "Solid1"),
             "{} Solid1".format(operation),
         )
         self.assertIsNone(
-            CommandReviewNote.normalize_review_note_target(
-                self.assembly, self.box, "Face"
-            ),
+            CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "Face"),
             "{} Face without index".format(operation),
         )
         self.assertIsNone(
-            CommandReviewNote.normalize_review_note_target(
-                self.assembly, self.box, "Face6.Extra"
-            ),
+            CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "Face6.Extra"),
             "{} malformed Face6.Extra".format(operation),
         )
 
@@ -1175,9 +1150,7 @@ class TestReviewNotes(unittest.TestCase):
         operation = "World pick on translated/rotated nested Assembly"
         _msg("  Test '{}'".format(operation))
 
-        self.assembly.Placement = App.Placement(
-            App.Vector(100, 0, 0), App.Rotation(0, 90, 0)
-        )
+        self.assembly.Placement = App.Placement(App.Vector(100, 0, 0), App.Rotation(0, 90, 0))
         nested = self.assembly.newObject("Assembly::AssemblyObject", "Nested")
         nested.Placement = App.Placement(App.Vector(10, 20, 30), App.Rotation(0, 0, 45))
         inner = nested.newObject("Part::Box", "InnerBox")
@@ -1366,9 +1339,7 @@ class TestReviewNotes(unittest.TestCase):
             camera_direction=App.Vector(0, 0, -1),
             camera_up=App.Vector(0, 1, 0),
         )
-        self.assembly.Placement = App.Placement(
-            App.Vector(0, 0, 0), App.Rotation(90, 0, 0)
-        )
+        self.assembly.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(90, 0, 0))
         rotated_offset = CommandReviewNote._initial_text_offset(
             self.assembly,
             data,
@@ -1507,7 +1478,9 @@ class TestReviewNotes(unittest.TestCase):
         )
         self.assertIsNotNone(note, operation)
         self.assertEqual(note.getOwnerPart(), owner, operation)
-        self.assertIsNone(note.getAssembly(), "{} plain Part has no AssemblyObject".format(operation))
+        self.assertIsNone(
+            note.getAssembly(), "{} plain Part has no AssemblyObject".format(operation)
+        )
         groups = [o for o in owner.Group if o.TypeId == "Assembly::ReviewNoteGroup"]
         self.assertEqual(len(groups), 1, operation)
         self.assertIn(note, groups[0].Group, operation)
@@ -1548,9 +1521,7 @@ class TestReviewNotes(unittest.TestCase):
         data = CommandReviewNote.normalize_review_note_target(
             asm, box, "", picked_point=App.Vector(1, 2, 3)
         )
-        CommandReviewNote.create_review_note(
-            asm, data, ["Undo create"], open_transaction=False
-        )
+        CommandReviewNote.create_review_note(asm, data, ["Undo create"], open_transaction=False)
         self.doc.commitTransaction()
 
         self.doc.undo()
@@ -1762,26 +1733,6 @@ class TestReviewNotes(unittest.TestCase):
             "{}: got {} expected {}".format(operation, note.BasePosition, expected),
         )
 
-    def test_visibility_undo_redo(self):
-        operation = "Visibility undo/redo"
-        _msg("  Test '{}'".format(operation))
-        data = CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "")
-        note = CommandReviewNote.create_review_note(
-            self.assembly, data, ["Vis"], open_transaction=False
-        )
-        if not note.ViewObject:
-            self.skipTest("ViewObject unavailable in this FreeCADCmd config")
-
-        self.assertTrue(note.ViewObject.Visibility, operation)
-        self.doc.openTransaction("Hide note")
-        note.ViewObject.Visibility = False
-        self.doc.commitTransaction()
-        self.assertFalse(note.ViewObject.Visibility, operation)
-        self.doc.undo()
-        self.assertTrue(note.ViewObject.Visibility, operation)
-        self.doc.redo()
-        self.assertFalse(note.ViewObject.Visibility, operation)
-
     def test_note_target_deletion_redo(self):
         operation = "Note and target deletion redo"
         _msg("  Test '{}'".format(operation))
@@ -1936,6 +1887,28 @@ class TestReviewNotes(unittest.TestCase):
                 os.remove(path)
             except OSError:
                 pass
+
+
+@unittest.skipUnless(App.GuiUp, "GUI tests require FreeCAD GUI mode")
+class TestReviewNotesVisibilityGui(_ReviewNotesTestBase):
+    def test_visibility_undo_redo(self):
+        operation = "Visibility undo/redo"
+        _msg("  Test '{}'".format(operation))
+        data = CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "")
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Vis"], open_transaction=False
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+
+        self.assertTrue(note.ViewObject.Visibility, operation)
+        self.doc.openTransaction("Hide note")
+        note.ViewObject.Visibility = False
+        self.doc.commitTransaction()
+        self.assertFalse(note.ViewObject.Visibility, operation)
+        self.doc.undo()
+        self.assertTrue(note.ViewObject.Visibility, operation)
+        self.doc.redo()
+        self.assertFalse(note.ViewObject.Visibility, operation)
 
 
 class TestReviewNotesGui(unittest.TestCase):
@@ -2220,7 +2193,9 @@ class TestReviewNotesGui(unittest.TestCase):
             asm2,
             "{} must switch active Assembly to the selection owner".format(operation),
         )
-        self.assertEqual(_subs(), before2, "{} sibling activation preserves selection".format(operation))
+        self.assertEqual(
+            _subs(), before2, "{} sibling activation preserves selection".format(operation)
+        )
 
     def test_gui_double_click_edit_visibility_icons_leader(self):
         operation = "Double-click edit, visibility, icons, leader"
@@ -2313,8 +2288,12 @@ class TestReviewNotesGui(unittest.TestCase):
         # GeoFeatureGroup auto-adds subgroup children into Assembly.Group, so notes
         # inherit the Assembly transform via Assembly.claimChildren3D (assembly-local
         # BasePosition/TextPosition stay correct under non-identity Assembly placement).
-        self.assertIn(note, self.assembly.Group, "{}: note missing from Assembly.Group".format(operation))
-        self.assertIn(note, group.Group, "{}: note missing from Review Notes group".format(operation))
+        self.assertIn(
+            note, self.assembly.Group, "{}: note missing from Assembly.Group".format(operation)
+        )
+        self.assertIn(
+            note, group.Group, "{}: note missing from Review Notes group".format(operation)
+        )
         self.assertIsNotNone(self.assembly.ViewObject, operation)
         self.assertTrue(
             hasattr(self.assembly.ViewObject, "claimChildren3D"),
@@ -2345,7 +2324,9 @@ class TestReviewNotesGui(unittest.TestCase):
             recorded.clear()
             wb.ContextMenu("View")
             flat = [c for _s, cmds in recorded for c in cmds]
-            self.assertIn("Assembly_AddReviewNote", flat, "{} View Add flat={!r}".format(operation, flat))
+            self.assertIn(
+                "Assembly_AddReviewNote", flat, "{} View Add flat={!r}".format(operation, flat)
+            )
 
             data = CommandReviewNote.normalize_review_note_target(
                 self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
@@ -2662,7 +2643,9 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertAlmostEqual(end0.x, text0.x - he0.x, places=2, msg=operation)
         self.assertAlmostEqual(end0.y, text0.y, places=2, msg=operation)
         # Half-extent must track the real image, not the old 0.5 mm floor.
-        self.assertGreater(he0.x, 0.5 + 1e-3, "{} halfW must exceed legacy 0.5 floor".format(operation))
+        self.assertGreater(
+            he0.x, 0.5 + 1e-3, "{} halfW must exceed legacy 0.5 floor".format(operation)
+        )
 
         note.TextPosition = App.Vector(60, 10, 0)
         _assert_end_on_border("after TextPosition")
@@ -2853,18 +2836,14 @@ class TestReviewNotesGui(unittest.TestCase):
                 end = App.Vector(vo.LeaderEnd)
                 half = App.Vector(vo.LeaderHalfExtent)
                 # At the TextPosition notification, LeaderEnd must already match.
-                ok, reason = CommandReviewNote.review_note_leader_glue_status(
-                    text, end, half
-                )
+                ok, reason = CommandReviewNote.review_note_leader_glue_status(text, end, half)
                 sample = (text, end, half, reason)
                 if frames:
                     prev_text, prev_end = frames[-1][0], frames[-1][1]
                     if CommandReviewNote.review_note_drag_frame_has_stale_leader(
                         prev_text, prev_end, text, end
                     ):
-                        stale_frames.append(
-                            (prev_text, prev_end, text, end, "stale_vs_prev")
-                        )
+                        stale_frames.append((prev_text, prev_end, text, end, "stale_vs_prev"))
                 frames.append(sample)
                 if not ok:
                     ungleaned.append(sample)
@@ -2915,12 +2894,8 @@ class TestReviewNotesGui(unittest.TestCase):
                         prev_text, prev_end, text, end
                     ):
                         if not text.isEqual(prev_text, 1e-4):
-                            stale_frames.append(
-                                (prev_text, prev_end, text, end, "post_flush")
-                            )
-                ok, reason = CommandReviewNote.review_note_leader_glue_status(
-                    text, end, half
-                )
+                            stale_frames.append((prev_text, prev_end, text, end, "post_flush"))
+                ok, reason = CommandReviewNote.review_note_leader_glue_status(text, end, half)
                 self.assertTrue(
                     ok,
                     "{} post-flush[{}] {}".format(operation, i, reason),
@@ -3040,7 +3015,11 @@ class TestReviewNotesGui(unittest.TestCase):
             else:
                 pos = cam.position.getValue()
                 for i in range(12):
-                    z = pos[2] * (1.1 + 0.05 * (i % 3)) if abs(pos[2]) > 1e-3 else pos[2] + 50.0 * (i + 1)
+                    z = (
+                        pos[2] * (1.1 + 0.05 * (i % 3))
+                        if abs(pos[2]) > 1e-3
+                        else pos[2] + 50.0 * (i + 1)
+                    )
                     cam.position.setValue(pos[0], pos[1], z)
                     end = _leader()
                     samples.append(end)
@@ -3165,15 +3144,11 @@ class TestReviewNotesGui(unittest.TestCase):
         # Negative check on the live note: the pre-move endpoint must look stuck
         # relative to the new text (proves the detector would catch the jsonl bug).
         self.assertTrue(
-            CommandReviewNote.review_note_leader_is_stuck_after_move(
-                end_a, pos_b, end_a
-            ),
+            CommandReviewNote.review_note_leader_is_stuck_after_move(end_a, pos_b, end_a),
             "{} synthetic stuck(end_a) must be detected after move".format(operation),
         )
         self.assertFalse(
-            CommandReviewNote.review_note_leader_is_stuck_after_move(
-                end_a, pos_b, end_b
-            ),
+            CommandReviewNote.review_note_leader_is_stuck_after_move(end_a, pos_b, end_b),
             "{} live LeaderEnd after move must not be stuck".format(operation),
         )
         bad_ok, bad_reason = CommandReviewNote.review_note_leader_glue_status(
@@ -3181,9 +3156,7 @@ class TestReviewNotesGui(unittest.TestCase):
         )
         self.assertFalse(
             bad_ok,
-            "{} pre-move LeaderEnd at new text must fail glue ({})".format(
-                operation, bad_reason
-            ),
+            "{} pre-move LeaderEnd at new text must fail glue ({})".format(operation, bad_reason),
         )
         # Must not remain stuck on the pre-move endpoint while text is elsewhere.
         self.assertGreater(
@@ -3204,17 +3177,13 @@ class TestReviewNotesGui(unittest.TestCase):
                 base_h = float(cam.height.getValue())
                 for i in range(16):
                     cam.height.setValue(base_h * (0.7 + 0.08 * (i % 5)))
-                    cam.orientation.setValue(
-                        coin.SbRotation(coin.SbVec3f(0.2, 1, 0.1), 0.15 * i)
-                    )
+                    cam.orientation.setValue(coin.SbRotation(coin.SbVec3f(0.2, 1, 0.1), 0.15 * i))
                     _assert_glued("orbit[{}]".format(i))
             else:
                 pos = cam.position.getValue()
                 for i in range(16):
                     cam.position.setValue(pos[0], pos[1], pos[2] + 20.0 * (i + 1))
-                    cam.orientation.setValue(
-                        coin.SbRotation(coin.SbVec3f(0, 1, 0), 0.2 * i)
-                    )
+                    cam.orientation.setValue(coin.SbRotation(coin.SbVec3f(0, 1, 0), 0.2 * i))
                     _assert_glued("orbit[{}]".format(i))
         except Exception as exc:
             self.fail("{} camera orbit failed: {}".format(operation, exc))
@@ -3227,9 +3196,7 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertFalse(end_c.isEqual(end_b, 1e-3), operation)
         # Negative: resurrecting end_a against pos_c must fail both detectors.
         self.assertTrue(
-            CommandReviewNote.review_note_leader_is_stuck_after_move(
-                end_a, pos_c, end_a
-            ),
+            CommandReviewNote.review_note_leader_is_stuck_after_move(end_a, pos_c, end_a),
             operation,
         )
         resurrect_ok, resurrect_reason = CommandReviewNote.review_note_leader_glue_status(
@@ -3252,9 +3219,7 @@ class TestReviewNotesGui(unittest.TestCase):
         # Build a narrow popup like the note dialog completer.
         narrow_w = 180
         model = QtGui.QStandardItemModel()
-        CommandReviewNote.fill_review_note_at_suggestion_model(
-            model, [long_path, short_path]
-        )
+        CommandReviewNote.fill_review_note_at_suggestion_model(model, [long_path, short_path])
         self.assertEqual(model.rowCount(), 2, operation)
 
         idx0 = model.index(0, 0)
@@ -3275,9 +3240,7 @@ class TestReviewNotesGui(unittest.TestCase):
             pass
 
         fm = view.fontMetrics()
-        painted = CommandReviewNote.ellipsis_review_note_at_path_for_width(
-            long_path, fm, narrow_w
-        )
+        painted = CommandReviewNote.ellipsis_review_note_at_path_for_width(long_path, fm, narrow_w)
         self.assertIn("…", painted, operation)
         self.assertTrue(painted.startswith("AssemblyCase"), operation)
         self.assertTrue(
@@ -3485,9 +3448,7 @@ class TestReviewNotesGui(unittest.TestCase):
         except Exception:
             pass
         text2 = task.edit.toPlainText()
-        path2 = CommandReviewNote.review_note_at_path_from_selection(
-            self.assembly, "Box2.Face6"
-        )
+        path2 = CommandReviewNote.review_note_at_path_from_selection(self.assembly, "Box2.Face6")
         self.assertIn("@" + path2, text2, "{} text={!r}".format(operation, text2))
         self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
 
@@ -3753,9 +3714,7 @@ class TestReviewNotesGui(unittest.TestCase):
             half_before = App.Vector(view_object.LeaderHalfExtent)
             camera = Gui.ActiveDocument.ActiveView.getCameraNode()
             old_orientation = camera.orientation.getValue()
-            projection_field = (
-                camera.height if hasattr(camera, "height") else camera.heightAngle
-            )
+            projection_field = camera.height if hasattr(camera, "height") else camera.heightAngle
             old_projection = float(projection_field.getValue())
             try:
                 camera.orientation.setValue(
@@ -3768,8 +3727,7 @@ class TestReviewNotesGui(unittest.TestCase):
                 end_after = App.Vector(view_object.LeaderEnd)
                 half_after = App.Vector(view_object.LeaderHalfExtent)
                 self.assertFalse(
-                    end_after.isEqual(end_before, 1e-6)
-                    and half_after.isEqual(half_before, 1e-6),
+                    end_after.isEqual(end_before, 1e-6) and half_after.isEqual(half_before, 1e-6),
                     operation,
                 )
                 state = self.doc.getFileChangeState()
@@ -3971,9 +3929,7 @@ class TestReviewNotesGui(unittest.TestCase):
         world0 = base + text0
         # Dock widths vary across the full workbench suite. Center the actual
         # annotation so both the press and the complete drag fit this viewport.
-        eye_offset = cam.orientation.getValue().multVec(
-            SbVec3f(0, 0, cam.focalDistance.getValue())
-        )
+        eye_offset = cam.orientation.getValue().multVec(SbVec3f(0, 0, cam.focalDistance.getValue()))
         cam.position.setValue(
             world0.x + eye_offset[0],
             world0.y + eye_offset[1],
@@ -3999,9 +3955,7 @@ class TestReviewNotesGui(unittest.TestCase):
         class _Obs:
             def slotChangedObject(self, obj, prop):
                 if obj is note and prop == "TextPosition":
-                    finish_samples.append(
-                        (App.Vector(note.TextPosition), App.Vector(vo.LeaderEnd))
-                    )
+                    finish_samples.append((App.Vector(note.TextPosition), App.Vector(vo.LeaderEnd)))
 
         def _send_mouse(etype, x, y, button, buttons):
             local = QtCore.QPoint(int(x), int(y))

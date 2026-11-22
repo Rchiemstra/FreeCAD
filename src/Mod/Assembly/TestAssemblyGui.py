@@ -8,6 +8,13 @@ import FreeCAD as App
 
 from AssemblyTests.TestComponentPattern import TestComponentPatternGui
 from AssemblyTests.TestExtractComponent import TestExtractComponentGui
+from AssemblyTests.TestCommandCreateView import TestCommandCreateView
+from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
+from AssemblyTests.TestCore import TestCoreGui
+from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOriginGui
+from AssemblyTests.TestPreferencesImport import TestPreferencesImportGui
+from AssemblyTests.TestReviewNotes import TestReviewNotesVisibilityGui
+from AssemblyTests.TestSimulationExport import TestSimulationExport
 from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
 from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, TestDragFeedbackGui
 from AssemblyTests.TestReviewNotes import TestReviewNotesGui
@@ -22,6 +29,13 @@ __all__ = [
     "TestComponentPatternGui",
     "TestDragFeedbackGui",
     "TestExtractComponentGui",
+    "TestCommandCreateView",
+    "TestCommandInsertLink",
+    "TestCoreGui",
+    "TestOverlayIconsAndOriginGui",
+    "TestPreferencesImportGui",
+    "TestReviewNotesVisibilityGui",
+    "TestSimulationExport",
     "TestJointEditorSwitch",
     "TestMotionInterferenceGui",
     "TestReviewNotesGui",

@@ -14,22 +14,6 @@ if App.GuiUp:
 
 
 class TestPreferencesImport(unittest.TestCase):
-    @unittest.skipUnless(App.GuiUp, "requires the FreeCAD GUI")
-    def test_assembly_workbench_initializes_with_cached_generic_preferences(self):
-        conflicting_module = types.ModuleType("Preferences")
-        previous_module = sys.modules.get("Preferences")
-        previous_workbench = Gui.activeWorkbench().name()
-        sys.modules["Preferences"] = conflicting_module
-        try:
-            Gui.activateWorkbench("AssemblyWorkbench")
-            self.assertEqual(Gui.activeWorkbench().name(), "AssemblyWorkbench")
-        finally:
-            Gui.activateWorkbench(previous_workbench)
-            if previous_module is None:
-                sys.modules.pop("Preferences", None)
-            else:
-                sys.modules["Preferences"] = previous_module
-
     def test_unique_module_ignores_cached_generic_preferences(self):
         conflicting_module = types.ModuleType("Preferences")
         previous_module = sys.modules.get("Preferences")
@@ -40,6 +24,24 @@ class TestPreferencesImport(unittest.TestCase):
             self.assertTrue(hasattr(assembly_preferences, "PreferencesPage"))
             self.assertTrue(hasattr(assembly_preferences, "preferences"))
         finally:
+            if previous_module is None:
+                sys.modules.pop("Preferences", None)
+            else:
+                sys.modules["Preferences"] = previous_module
+
+
+@unittest.skipUnless(App.GuiUp, "requires the FreeCAD GUI")
+class TestPreferencesImportGui(unittest.TestCase):
+    def test_assembly_workbench_initializes_with_cached_generic_preferences(self):
+        conflicting_module = types.ModuleType("Preferences")
+        previous_module = sys.modules.get("Preferences")
+        previous_workbench = Gui.activeWorkbench().name()
+        sys.modules["Preferences"] = conflicting_module
+        try:
+            Gui.activateWorkbench("AssemblyWorkbench")
+            self.assertEqual(Gui.activeWorkbench().name(), "AssemblyWorkbench")
+        finally:
+            Gui.activateWorkbench(previous_workbench)
             if previous_module is None:
                 sys.modules.pop("Preferences", None)
             else:
