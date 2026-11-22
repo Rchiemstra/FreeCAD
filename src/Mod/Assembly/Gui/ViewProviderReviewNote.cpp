@@ -1313,10 +1313,18 @@ void ViewProviderReviewNote::ensureViewportResizeObserver()
 {
     QWidget* gl = nullptr;
     if (const Gui::View3DInventorViewer* viewer = getActiveViewer()) {
-        gl = viewer->getGLWidget();
+        if (viewer->getSoRenderManager()) {
+            gl = viewer->getGLWidget();
+        }
     }
-    // Already installed on this exact widget (or there is no widget yet). QPointer
-    // auto-clears if the previous widget was destroyed, so a stale pointer reads null.
+    // No active viewer/GL widget (headless, teardown, or the active document has no 3D
+    // view): keep any filter on a still-live widget, since nothing reinstalls it before
+    // the next data change. QPointer and Qt drop it when the widget or observer dies.
+    if (!gl) {
+        return;
+    }
+    // Already installed on this exact widget. QPointer auto-clears if the previous
+    // widget was destroyed (before any address reuse), so a stale pointer reads null.
     if (gl == attachedGlWidget.data() && resizeObserver) {
         return;
     }
@@ -1327,9 +1335,7 @@ void ViewProviderReviewNote::ensureViewportResizeObserver()
     if (!resizeObserver) {
         resizeObserver = new ResizeObserver(this);
     }
-    if (gl) {
-        gl->installEventFilter(resizeObserver);
-    }
+    gl->installEventFilter(resizeObserver);
     attachedGlWidget = gl;
 }
 
@@ -1362,6 +1368,13 @@ bool ViewProviderReviewNote::ResizeObserver::eventFilter(QObject* /*watched*/, Q
 
 void ViewProviderReviewNote::ensureCameraSensor()
 {
+    // P2: always sync the GL-widget resize observer (viewport resize changes
+    // worldPerPixel without touching the camera node, so fixed-mm boxes
+    // re-rasterize and auto-sized notes refresh leader half-extents/endpoint),
+    // even when the camera pointer is unchanged (e.g. after GL-widget
+    // replacement) or viewer/camera lookup is temporarily absent.
+    ensureViewportResizeObserver();
+
     const Gui::View3DInventorViewer* viewer = getActiveViewer();
     if (!viewer || !viewer->getSoRenderManager()) {
         return;
@@ -1386,10 +1399,6 @@ void ViewProviderReviewNote::ensureCameraSensor()
     }
     cameraSensor->attach(camera);
     attachedCamera = camera;
-    // P2: also watch the GL widget for viewport resize (changes worldPerPixel but
-    // not the camera node), so fixed-mm boxes re-rasterize and auto-sized notes
-    // refresh their leader half-extents/endpoint on view resize.
-    ensureViewportResizeObserver();
 }
 
 void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
@@ -1411,15 +1420,18 @@ void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* se
         return;
     }
     that->attachedCamera = nullptr;
-    // Camera was replaced (e.g. ortho ↔ perspective); reattach to the new one.
+    // Camera was replaced (e.g. ortho ↔ perspective, or 3D view replacement);
+    // reattach to the new camera and keep the GL-widget resize observer in sync.
     auto* nodeSensor = static_cast<SoNodeSensor*>(sensor);
     const Gui::View3DInventorViewer* viewer = that->getActiveViewer();
     if (viewer && viewer->getSoRenderManager()) {
         if (SoCamera* camera = viewer->getSoRenderManager()->getCamera()) {
             nodeSensor->attach(camera);
             that->attachedCamera = camera;
+            that->ensureViewportResizeObserver();
             that->scheduleVisualFrame();
             return;
         }
     }
+    that->ensureViewportResizeObserver();
 }

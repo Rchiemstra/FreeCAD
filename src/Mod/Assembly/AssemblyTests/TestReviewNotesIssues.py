@@ -1257,6 +1257,445 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
                 sw.resize(orig_w, orig_h)
             self._flush()
 
+    def _find_view_mdi_subwindow(self, view):
+        from PySide import QtWidgets
+
+        widget = view.graphicsView()
+        while widget is not None:
+            if isinstance(widget, QtWidgets.QMdiSubWindow):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _measure_note_world_per_pixel(self, view, camera, note, operation):
+        from pivy import coin
+
+        vp_w, vp_h = view.getSize()
+        self.assertGreater(vp_w, 0, operation + ": non-positive viewport width")
+        self.assertGreater(vp_h, 0, operation + ": non-positive viewport height")
+        aspect = float(vp_w) / float(vp_h)
+        vol = camera.getViewVolume(aspect)
+        text_local = App.Vector(note.BasePosition) + App.Vector(note.TextPosition)
+        text_world = self.assembly.getGlobalPlacement().multVec(text_local)
+        scale = float(
+            vol.getWorldToScreenScale(coin.SbVec3f(text_world.x, text_world.y, text_world.z), 1.0)
+        )
+        return int(vp_w), int(vp_h), scale / float(vp_w)
+
+    @staticmethod
+    def _camera_snapshot(camera):
+        pos_v = camera.position.getValue()
+        pos = (float(pos_v[0]), float(pos_v[1]), float(pos_v[2]))
+        rot = tuple(float(v) for v in camera.orientation.getValue().getValue())
+        proj = (
+            ("ortho", float(camera.height.getValue()))
+            if hasattr(camera, "height")
+            else ("persp", float(camera.heightAngle.getValue()))
+        )
+        clip = (
+            float(camera.nearDistance.getValue()),
+            float(camera.farDistance.getValue()),
+            float(camera.focalDistance.getValue()),
+            float(camera.aspectRatio.getValue()),
+        )
+        return pos, rot, proj, clip
+
+    @staticmethod
+    def _pump_until(predicate, timeout_s=2.0):
+        import time
+        from PySide import QtCore, QtWidgets
+
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 20)
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return bool(predicate())
+
+    def _setup_enclosed_auto_note(self, operation):
+        import FreeCADGui as Gui
+
+        # Enclose the note strictly inside the assembly's 3D bounding box so
+        # Coin's auto-clipping pass does not shift near/far planes on resize
+        # and inadvertently fire cameraSensor to mask a missing resize observer.
+        enclosure = self.assembly.newObject("Part::Box", "ResizeEnclosure")
+        enclosure.Length = 120
+        enclosure.Width = 120
+        enclosure.Height = 120
+        self.doc.recompute()
+
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation + ": no active 3D view")
+        camera = view.getCameraNode()
+        self.assertIsNotNone(camera, operation + ": no active camera")
+        if hasattr(camera, "height"):
+            camera.height.setValue(100.0)
+        camera.position.setValue(60.0, 60.0, 220.0)
+        self._flush()
+
+        note = self._make_note(
+            ["Auto resize", "second line"],
+            sub="",
+            pick=App.Vector(30, 60, 60),
+            offset=App.Vector(25, 0, 0),
+        )
+        self._flush()
+        vo = note.ViewObject
+        self.assertIsNotNone(vo, operation)
+        self.assertEqual(float(vo.BoxWidth), 0.0, operation + ": expected auto BoxWidth")
+        self.assertEqual(float(vo.BoxHeight), 0.0, operation + ": expected auto BoxHeight")
+        self.assertGreater(int(vo.RasterWidth), 0, operation + ": non-positive RasterWidth")
+        self.assertGreater(int(vo.RasterHeight), 0, operation + ": non-positive RasterHeight")
+        self.assertGreater(int(vo.DrawImageCount), 0, operation + ": expected initial raster")
+        he_init = App.Vector(vo.LeaderHalfExtent)
+        self.assertGreater(float(he_init.x), 0.0, operation + ": non-positive initial halfW")
+        self.assertGreater(float(he_init.y), 0.0, operation + ": non-positive initial halfH")
+        return view, note, vo
+
+    def _assert_auto_note_tracks_subwindow_resize(
+        self, view, camera, note, sw, expected_gl_marker, operation
+    ):
+        vo = note.ViewObject
+        raster_w = int(vo.RasterWidth)
+        raster_h = int(vo.RasterHeight)
+        draw_count_before = int(vo.DrawImageCount)
+        he_before = App.Vector(vo.LeaderHalfExtent)
+        end_before = App.Vector(vo.LeaderEnd)
+
+        vp_w_before, vp_h_before, wpp_before = self._measure_note_world_per_pixel(
+            view, camera, note, operation
+        )
+        cam_before = self._camera_snapshot(camera)
+        expected_w_before = 0.5 * raster_w * wpp_before
+        expected_h_before = 0.5 * raster_h * wpp_before
+        self.assertLessEqual(
+            abs(float(he_before.x) - expected_w_before),
+            max(1e-4, 1e-4 * expected_w_before),
+            "{}: settled pre-resize halfW={} != expected {} (wpp={})".format(
+                operation, he_before.x, expected_w_before, wpp_before
+            ),
+        )
+        self.assertLessEqual(
+            abs(float(he_before.y) - expected_h_before),
+            max(1e-4, 1e-4 * expected_h_before),
+            "{}: settled pre-resize halfH={} != expected {} (wpp={})".format(
+                operation, he_before.y, expected_h_before, wpp_before
+            ),
+        )
+
+        orig_w = sw.width()
+        orig_h = sw.height()
+        orig_geom = sw.geometry()
+        was_maximized = sw.isMaximized()
+        new_w = orig_w - 140 if orig_w >= 560 else orig_w + 140
+        new_h = orig_h - 140 if orig_h >= 460 else orig_h + 140
+
+        try:
+            sw.resize(new_w, new_h)
+            self._flush()
+
+            gl_now = view.graphicsView().viewport()
+            self.assertIsNotNone(gl_now, operation + ": missing GL widget after resize")
+            self.assertEqual(
+                gl_now.objectName(),
+                expected_gl_marker,
+                operation + ": resized widget is not the replacement GL widget",
+            )
+
+            vp_w_after, vp_h_after, wpp_after = self._measure_note_world_per_pixel(
+                view, camera, note, operation
+            )
+            self.assertNotEqual(
+                vp_w_after,
+                vp_w_before,
+                "{}: viewport width did not change ({} -> {})".format(
+                    operation, vp_w_before, vp_w_after
+                ),
+            )
+            self.assertNotEqual(
+                vp_h_after,
+                vp_h_before,
+                "{}: viewport height did not change ({} -> {})".format(
+                    operation, vp_h_before, vp_h_after
+                ),
+            )
+            self.assertEqual(
+                self._camera_snapshot(camera),
+                cam_before,
+                operation + ": camera mutated during viewport resize",
+            )
+            self.assertGreater(
+                abs(wpp_after - wpp_before),
+                1e-2 * max(wpp_before, wpp_after),
+                "{}: worldPerPixel barely changed ({} -> {})".format(
+                    operation, wpp_before, wpp_after
+                ),
+            )
+
+            # Auto-sized note must not re-rasterize on viewport resize.
+            self.assertEqual(
+                int(vo.DrawImageCount),
+                draw_count_before,
+                "{}: auto-sized note unexpectedly re-rasterized ({} -> {})".format(
+                    operation, draw_count_before, int(vo.DrawImageCount)
+                ),
+            )
+            self.assertEqual(int(vo.RasterWidth), raster_w, operation)
+            self.assertEqual(int(vo.RasterHeight), raster_h, operation)
+
+            # LeaderHalfExtent must follow the measured new worldPerPixel on both axes.
+            he_after = App.Vector(vo.LeaderHalfExtent)
+            expected_w_after = 0.5 * raster_w * wpp_after
+            expected_h_after = 0.5 * raster_h * wpp_after
+            tol_w = max(1e-4, 1e-4 * expected_w_after)
+            tol_h = max(1e-4, 1e-4 * expected_h_after)
+            self.assertLessEqual(
+                abs(float(he_after.x) - expected_w_after),
+                tol_w,
+                "{}: stale halfW={} expected={} (before={} vp={}x{}->{}x{} wpp={}->{})".format(
+                    operation,
+                    he_after.x,
+                    expected_w_after,
+                    he_before.x,
+                    vp_w_before,
+                    vp_h_before,
+                    vp_w_after,
+                    vp_h_after,
+                    wpp_before,
+                    wpp_after,
+                ),
+            )
+            self.assertLessEqual(
+                abs(float(he_after.y) - expected_h_after),
+                tol_h,
+                "{}: stale halfH={} expected={} (before={} vp={}x{}->{}x{} wpp={}->{})".format(
+                    operation,
+                    he_after.y,
+                    expected_h_after,
+                    he_before.y,
+                    vp_w_before,
+                    vp_h_before,
+                    vp_w_after,
+                    vp_h_after,
+                    wpp_before,
+                    wpp_after,
+                ),
+            )
+
+            # LeaderEnd must also track the updated billboard border.
+            end_after = App.Vector(vo.LeaderEnd)
+            right, up = CommandReviewNote.review_note_camera_billboard_axes(camera)
+            expected_end_after = CommandReviewNote.review_note_expected_billboard_leader_end(
+                note.TextPosition, expected_w_after, expected_h_after, right, up
+            )
+            end_tol = max(1e-3, 1e-3 * math.hypot(expected_w_after, expected_h_after))
+            self.assertLessEqual(
+                (end_after - expected_end_after).Length,
+                end_tol,
+                "{}: LeaderEnd={} does not match resized border {} (before={})".format(
+                    operation, end_after, expected_end_after, end_before
+                ),
+            )
+            self.assertFalse(
+                end_after.isEqual(end_before, 1e-4),
+                "{}: LeaderEnd stayed at pre-resize value {}".format(operation, end_after),
+            )
+        finally:
+            if was_maximized:
+                sw.showMaximized()
+            else:
+                sw.setGeometry(orig_geom)
+            if sw.width() != orig_w or sw.height() != orig_h:
+                sw.resize(orig_w, orig_h)
+            self._flush()
+
+    def test_gui_viewport_resize_after_gl_widget_replacement(self):
+        operation = "GUI: viewport resize updates auto-sized note after GL-widget replacement"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtCore
+
+        view, note, vo = self._setup_enclosed_auto_note(operation)
+        camera = view.getCameraNode()
+        self.assertIsNotNone(camera, operation + ": no active camera")
+        graphics_view = view.graphicsView()
+        self.assertIsNotNone(graphics_view, operation + ": missing QGraphicsView")
+        sw = self._find_view_mdi_subwindow(view)
+        self.assertIsNotNone(sw, operation + ": no active MDI subwindow")
+
+        gl_before = graphics_view.viewport()
+        self.assertIsNotNone(gl_before, operation + ": missing initial GL widget")
+        self.assertTrue(
+            gl_before.inherits("QOpenGLWidget"),
+            operation + ": initial viewport is not a QOpenGLWidget",
+        )
+        old_marker = "ReviewNoteOldGLWidgetInPlace"
+        new_marker = "ReviewNoteNewGLWidgetInPlace"
+        gl_before.setObjectName(old_marker)
+        old_gl_destroyed = []
+        gl_before.destroyed.connect(lambda *_args: old_gl_destroyed.append(True))
+
+        # Replace CustomGLWidget in-place via QuarterWidget::replaceViewport()
+        # (QuarterWidget.h:201 / QuarterWidget.cpp:315-324), keeping the same
+        # View3DInventor, View3DInventorViewer, SoCamera*, and ViewProviderReviewNote.
+        invoked = QtCore.QMetaObject.invokeMethod(
+            graphics_view,
+            "replaceViewport",
+            QtCore.Qt.DirectConnection,
+        )
+        self.assertTrue(
+            invoked,
+            "{}: could not invoke QuarterWidget::replaceViewport on {}".format(
+                operation, graphics_view.metaObject().className()
+            ),
+        )
+        self.assertTrue(
+            self._pump_until(lambda: bool(old_gl_destroyed)),
+            operation + ": previous GL widget was not destroyed by replaceViewport()",
+        )
+        self._flush()
+
+        gl_after = graphics_view.viewport()
+        self.assertIsNotNone(gl_after, operation + ": missing replacement GL widget")
+        self.assertIsNot(
+            gl_after,
+            gl_before,
+            operation + ": viewport() returned the original Python widget wrapper",
+        )
+        self.assertTrue(
+            gl_after.inherits("QOpenGLWidget"),
+            operation + ": replacement viewport is not a QOpenGLWidget",
+        )
+        self.assertNotEqual(
+            gl_after.objectName(),
+            old_marker,
+            operation + ": replacement GL widget retained the old widget marker",
+        )
+        gl_after.setObjectName(new_marker)
+
+        # Verify view, Coin camera pointer, and ViewProviderReviewNote stayed alive.
+        self.assertIs(
+            Gui.ActiveDocument.ActiveView,
+            view,
+            operation + ": active 3D view changed during replaceViewport()",
+        )
+        self.assertEqual(
+            view.getCameraNode(),
+            camera,
+            operation + ": SoCamera pointer changed during replaceViewport()",
+        )
+        self.assertIs(
+            note.ViewObject,
+            vo,
+            operation + ": ViewProviderReviewNote was recreated",
+        )
+
+        # Trigger the normal ensure/reattach path while SoCamera* is unchanged
+        # (updateData(TextPosition) -> ensureCameraSensor() -> refreshLeader()).
+        # Pre-fix, ensureCameraSensor() returns early at
+        # (camera == attachedCamera && cameraSensor) without reinstalling
+        # ResizeObserver on gl_after.
+        note.TextPosition = App.Vector(26, 0, 0)
+        self._flush()
+
+        self._assert_auto_note_tracks_subwindow_resize(
+            view, camera, note, sw, new_marker, operation
+        )
+
+    def test_gui_viewport_resize_after_view_replacement(self):
+        operation = "GUI: viewport resize updates auto-sized note after 3D view replacement"
+        _msg("  Test '{}'".format(operation))
+        import gc
+        import FreeCADGui as Gui
+        from PySide import QtCore, QtWidgets
+
+        view1, note, vo = self._setup_enclosed_auto_note(operation)
+        sw1 = self._find_view_mdi_subwindow(view1)
+        self.assertIsNotNone(sw1, operation + ": no initial MDI subwindow")
+
+        gl1 = view1.graphicsView().viewport()
+        self.assertIsNotNone(gl1, operation + ": missing initial GL widget")
+        self.assertTrue(
+            gl1.inherits("QOpenGLWidget"),
+            operation + ": initial viewport is not a QOpenGLWidget",
+        )
+        old_marker = "ReviewNoteOldViewGLWidget"
+        new_marker = "ReviewNoteReplacementViewGLWidget"
+        gl1.setObjectName(old_marker)
+        old_gl_destroyed = []
+        gl1.destroyed.connect(lambda *_args: old_gl_destroyed.append(True))
+
+        # Ensure no Python SWIG reference retains view1's SoCamera* (getCameraNode()
+        # refs the Coin camera), so closing view1 drops its refcount to 0 and fires
+        # ViewProviderReviewNote::cameraSensorDeleteCallback() synchronously.
+        gc.collect()
+
+        # Create a second 3D view for the same document (reusing the existing
+        # ViewProviderReviewNote) and close the first view so cameraSensorDeleteCallback()
+        # reattaches cameraSensor to view2's camera while gl1 is torn down.
+        view2 = Gui.getDocument(self.doc.Name).createView("Gui::View3DInventor")
+        self.assertIsNotNone(view2, operation + ": createView returned None")
+        self.assertIsNot(view2, view1, operation + ": createView returned original view")
+        sw2 = self._find_view_mdi_subwindow(view2)
+        self.assertIsNotNone(sw2, operation + ": no MDI subwindow for replacement view")
+        mdi = Gui.getMainWindow().findChild(QtWidgets.QMdiArea)
+        if mdi is not None:
+            mdi.setActiveSubWindow(sw2)
+
+        # Drain DeferredDelete before pumping Coin's delay queue so cam1 dies while
+        # view2 is active, exercising cameraSensorDeleteCallback() -> reattach to cam2.
+        sw1.close()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        self.assertTrue(
+            self._pump_until(lambda: bool(old_gl_destroyed)),
+            operation + ": original 3D view GL widget was not destroyed on close",
+        )
+        self._flush()
+
+        self.assertIs(
+            Gui.ActiveDocument.ActiveView,
+            view2,
+            operation + ": replacement 3D view is not active",
+        )
+        self.assertIs(
+            note.ViewObject,
+            vo,
+            operation + ": ViewProviderReviewNote was recreated",
+        )
+        gl2 = view2.graphicsView().viewport()
+        self.assertIsNotNone(gl2, operation + ": missing replacement view GL widget")
+        self.assertIsNot(
+            gl2,
+            gl1,
+            operation + ": replacement view reused the original GL widget wrapper",
+        )
+        self.assertTrue(
+            gl2.inherits("QOpenGLWidget"),
+            operation + ": replacement view viewport is not a QOpenGLWidget",
+        )
+        self.assertNotEqual(
+            gl2.objectName(),
+            old_marker,
+            operation + ": replacement view GL widget retained old widget marker",
+        )
+        gl2.setObjectName(new_marker)
+
+        camera2 = view2.getCameraNode()
+        self.assertIsNotNone(camera2, operation + ": missing replacement view camera")
+
+        # Settle the note on view2 via a normal ensure/refresh path
+        # (updateData(TextPosition) -> ensureCameraSensor() -> refreshLeader()).
+        # On pre-fix code, cameraSensorDeleteCallback() already set attachedCamera
+        # to camera2 without installing ResizeObserver, so ensureCameraSensor()
+        # returns early at the unchanged-camera check and gl2 stays unobserved.
+        note.TextPosition = App.Vector(26, 0, 0)
+        self._flush()
+
+        self._assert_auto_note_tracks_subwindow_resize(
+            view2, camera2, note, sw2, new_marker, operation
+        )
+
     def test_gui_auto_box_when_zero_uses_text(self):
         operation = "GUI: BoxWidth=0 keeps auto (text-sized) box"
         _msg("  Test '{}'".format(operation))

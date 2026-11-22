@@ -107,11 +107,7 @@ public:
     static double perimeterParam(const Base::Vector3d& offset, double halfW, double halfH);
 
     /// Nearest point on the label rectangle border along the line toward the base.
-    static Base::Vector3d autoBoundaryEndpoint(
-        const Base::Vector3d& textPos,
-        double halfW,
-        double halfH
-    );
+    static Base::Vector3d autoBoundaryEndpoint(const Base::Vector3d& textPos, double halfW, double halfH);
 
 protected:
     void onChanged(const App::Property* prop) override;
@@ -122,8 +118,9 @@ protected:
     void setLeaderCoords(const Base::Vector3d& textPosition) override;
 
 private:
-    /// P2: Qt event filter that watches the 3D-view GL widget for QEvent::Resize and
-    /// re-schedules a visual frame so a fixed-mm box re-rasterizes at the new zoom.
+    /// P2: Qt event filter that watches the active 3D-view GL widget for QEvent::Resize
+    /// and schedules a coalesced visual frame so fixed-mm boxes re-rasterize and
+    /// auto-sized notes refresh leader half-extents/endpoints at the new viewport scale.
     /// Nested so it can reach the private scheduleVisualFrame().
     class ResizeObserver;
     friend class ResizeObserver;
@@ -155,15 +152,21 @@ private:
     void onLabelDragFinished(const DragState& state) override;
 
     BillboardFrame currentBillboardFrame(const Base::Vector3d& textPosition) const;
-    Base::Vector3d billboardOffsetToLocal(const Base::Vector3d& uvOffset, const BillboardFrame& frame)
-        const;
+    Base::Vector3d billboardOffsetToLocal(
+        const Base::Vector3d& uvOffset,
+        const BillboardFrame& frame
+    ) const;
     Base::Vector3d worldToAnnotationDirection(const Base::Vector3d& worldDir) const;
     Base::Vector3d textPositionWorld(const Base::Vector3d& textPosition) const;
     bool screenWorldPerPixel(const Base::Vector3d& textWorld, double& worldPerPixel) const;
     void ensureCameraSensor();
     void detachCameraSensor();
-    /// P2: viewport resize changes worldPerPixel (Coin has no viewport-region sensor),
-    /// so a fixed-mm box must re-rasterize. Installs a Qt event filter on the viewer GL widget.
+    /// P2: viewport resize changes worldPerPixel without modifying the Coin camera node
+    /// (Coin has no viewport-region sensor), so fixed-mm boxes must re-rasterize and
+    /// auto-sized notes must refresh leader half-extents/endpoints. Idempotently installs
+    /// or moves the owned ResizeObserver event filter onto the active viewer's GL widget
+    /// (and removes it from the previously watched live widget when the widget changes;
+    /// with no active GL widget it keeps the current filter).
     void ensureViewportResizeObserver();
     void detachViewportResizeObserver();
     void detachFrameSensor();
@@ -175,10 +178,13 @@ private:
     std::vector<RefHit> refHits;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
-    /// P2: Qt event filter on the viewer GL widget (viewport-resize -> re-raster).
+    /// P2: owned Qt event filter (parentless QObject deleted in detachViewportResizeObserver)
+    /// installed on attachedGlWidget so viewport resizes refresh fixed-mm rasters and
+    /// auto-sized leader half-extents/endpoints.
     ResizeObserver* resizeObserver = nullptr;
-    /// P2: held via QPointer so it auto-clears if Qt destroys the GL widget before
-    /// the view provider (avoids a dangling pointer in detachViewportResizeObserver).
+    /// P2: guarded weak pointer to the watched GL widget. Auto-clears if Qt destroys or
+    /// replaces the GL widget before the view provider, preventing dangling dereferences
+    /// and allowing ensureViewportResizeObserver() to reinstall resizeObserver on the new widget.
     QPointer<QWidget> attachedGlWidget;
     /// Coalesced visual refresh. SoOneShotSensor (not SoIdleSensor) so Quarter's
     /// processDelayQueue(false) still runs it. Priority is redrawPri-1 (lower
@@ -203,10 +209,14 @@ private:
     static const char* FrameLineStyleEnums[];
 };
 
-/// P2: Qt event filter on the 3D-view GL widget. Viewport resize changes
-/// worldPerPixel but not the Coin camera node, so without this the fixed-mm box
-/// stays stale until the next camera change. On QEvent::Resize it re-schedules a
-/// visual frame (which re-rasterizes when hasFixedSize()).
+/// P2: Qt event filter installed on the active 3D-view GL widget and owned by
+/// ViewProviderReviewNote (constructed with parent=nullptr so replacing or destroying
+/// the GL widget does not destroy the observer; deleted in detachViewportResizeObserver).
+/// Viewport resize changes worldPerPixel without touching the Coin camera node, so
+/// without this both fixed-mm box rasters and auto-sized leader half-extents/endpoints
+/// stay stale until the next camera or property change. On QEvent::Resize it schedules
+/// a coalesced visual frame (flushScheduledVisualFrame re-rasterizes when hasFixedSize()
+/// and refreshes leader geometry in both fixed-mm and auto-size modes).
 class AssemblyGuiExport ViewProviderReviewNote::ResizeObserver: public QObject
 {
     Q_OBJECT
