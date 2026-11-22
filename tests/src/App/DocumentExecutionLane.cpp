@@ -17,19 +17,25 @@
 #include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Base/Interpreter.h>
+#include <Base/Tools.h>
 #include <src/App/InitApplication.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <deque>
+#include <future>
 #include <optional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <stop_token>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 
@@ -797,26 +803,108 @@ TEST_F(DocumentExecutionLaneTest, CloseHandleStaysCompletedAfterLaneGone)
     EXPECT_EQ(terminal.kind, App::DocumentCommandKind::Close);
 }
 
-// M5: Shutdown drains the dispatch queue and does not hang.
-TEST_F(DocumentExecutionLaneTest, ShutdownDoesNotHang)
+// M5: Work admitted before shutdown completes while the document stays alive.
+TEST(DocumentExecutionLaneShutdownDeathTest, ShutdownDoesNotHang)
 {
-    auto* lane = doc()->executionLane();
-    ASSERT_NE(lane, nullptr);
+    // Re-exec rather than fork any existing application threads. Create the
+    // document only in the child so a stuck shutdown cannot hang parent teardown.
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+    ASSERT_EXIT(
+        ([] {
+            tests::initApplication();
+            std::promise<void> watchdog;
+            std::thread([done = watchdog.get_future()] {
+                if (done.wait_for(3s) != std::future_status::ready) {
+                    std::fputs("owner thread did not exit within the shutdown deadline\n", stderr);
+                    std::_Exit(2);
+                }
+            }).detach();
 
-    // Post some dispatch work that will be in the queue.
-    std::atomic<int> counter {0};
-    for (int i = 0; i < 4; ++i) {
-        lane->dispatchToOwner([&counter] { counter.fetch_add(1, std::memory_order_relaxed); });
-    }
+            const auto checkShutdown = [] {
+                const auto name = App::GetApplication().getUniqueDocumentName("lane-shutdown");
+                auto* document = App::GetApplication().newDocument(name.c_str(), "testUser");
+                ASSERT_NE(document, nullptr);
+                auto* lane = document->executionLane();
+                ASSERT_NE(lane, nullptr);
 
-    // Request shutdown; lane must drain and exit quickly.
-    lane->requestShutdown("test shutdown");
+                auto entered = std::make_shared<std::promise<void>>();
+                auto ownerEntered = entered->get_future();
+                std::promise<void> releaseOwner;
+                bool released = false;
+                Base::ScopeGuard releaseOnFailure([&] {
+                    if (!released) {
+                        releaseOwner.set_value();
+                    }
+                });
+                auto blocker = lane->postToOwner(
+                    [entered, release = releaseOwner.get_future()] {
+                        entered->set_value();
+                        release.wait();
+                    });
+                ASSERT_EQ(ownerEntered.wait_for(3s), std::future_status::ready);
 
-    const auto deadline = std::chrono::steady_clock::now() + 3s;
-    while (!lane->shutdownRequested() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(5ms);
-    }
-    EXPECT_TRUE(lane->shutdownRequested());
+                auto counter = std::make_shared<std::atomic<int>>(0);
+                std::array<std::future<int>, 4> queued;
+                for (int i = 0; i < 4; ++i) {
+                    queued[i] = lane->postToOwner([counter, i] {
+                        counter->fetch_add(1, std::memory_order_relaxed);
+                        if (i == 2) {
+                            throw std::runtime_error("queued dispatch failure");
+                        }
+                        return i;
+                    });
+                }
+                EXPECT_EQ(blocker.wait_for(0s), std::future_status::timeout);
+                for (auto& future : queued) {
+                    EXPECT_EQ(future.wait_for(0s), std::future_status::timeout);
+                }
+
+                lane->requestShutdown("test shutdown with outstanding dispatches");
+                for (auto& future : queued) {
+                    EXPECT_EQ(future.wait_for(0s), std::future_status::timeout);
+                }
+                EXPECT_THROW(
+                    static_cast<void>(lane->postToOwner([counter] {
+                        counter->fetch_add(100, std::memory_order_relaxed);
+                    })),
+                    App::DocumentWouldBlock);
+
+                releaseOwner.set_value();
+                released = true;
+                // Returning from join proves actual thread exit. The child
+                // watchdog bounds this wait, including a broken shutdown loop.
+                lane->joinThread();
+
+                const auto blockerStatus = blocker.wait_for(0s);
+                EXPECT_EQ(blockerStatus, std::future_status::ready);
+                if (blockerStatus == std::future_status::ready) {
+                    EXPECT_NO_THROW(blocker.get());
+                }
+                for (int i = 0; i < 4; ++i) {
+                    SCOPED_TRACE(i);
+                    const auto status = queued[i].wait_for(0s);
+                    EXPECT_EQ(status, std::future_status::ready);
+                    if (status != std::future_status::ready) {
+                        continue;
+                    }
+                    if (i == 2) {
+                        EXPECT_THROW(queued[i].get(), std::runtime_error);
+                    }
+                    else {
+                        int value = -1;
+                        EXPECT_NO_THROW(value = queued[i].get());
+                        EXPECT_EQ(value, i);
+                    }
+                }
+                EXPECT_EQ(counter->load(std::memory_order_relaxed), 4);
+            };
+            checkShutdown();
+            // Fatal assertions return from checkShutdown after releasing the
+            // owner. Never enter child fixture teardown on a failing path.
+            std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+        }()),
+        ::testing::ExitedWithCode(0),
+        "");
 }
 
 std::string dumpIntegerProperty(const long value)
