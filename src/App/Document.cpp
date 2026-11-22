@@ -1753,12 +1753,23 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
-    GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationHistoryChanged = false;
     d->collaborationUnrecordedDocumentChange = false;
-    d->collaborationBoundaryStickyTokens = {d->fileChangeTokens.model.sticky,
-                                            d->fileChangeTokens.appearance.sticky,
-                                            d->fileChangeTokens.compatibility.sticky};
+    d->collaborationBoundaryStickyTokens = {
+        d->fileChangeTokens.model.sticky,
+        d->fileChangeTokens.appearance.sticky,
+        d->fileChangeTokens.compatibility.sticky
+    };
+    d->documentGraphWritePending.fetch_add(1, std::memory_order_acq_rel);
+    try {
+        d->documentGraphMutex.lock();
+    }
+    catch (...) {
+        d->documentGraphWritePending.fetch_sub(1, std::memory_order_release);
+        throw;
+    }
+    d->documentGraphWriteOwner.store(std::this_thread::get_id(), std::memory_order_release);
+    GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationCommitNotificationBarrier = true;
     d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
 }
@@ -1808,6 +1819,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             d->collaborationParkedRedoMap.clear();
         }
         else {
+            std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
             mRedoTransactions.swap(d->collaborationParkedRedos);
             mRedoMap.swap(d->collaborationParkedRedoMap);
         }
@@ -1844,6 +1856,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationImportDeferralActive = false;
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationCommitNotificationBarrier = false;
+    d->documentGraphWriteOwner.store(std::thread::id {}, std::memory_order_release);
+    d->documentGraphMutex.unlock();
+    d->documentGraphWritePending.fetch_sub(1, std::memory_order_release);
     d->collaborationBoundaryObjectOrder.clear();
     d->collaborationBoundaryPendingRemove.clear();
     d->collaborationBoundaryObjectIdentities.clear();
@@ -2274,11 +2289,20 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     // and before the stable notification can allow the document to be closed.
     retiringTransaction.reset();
     d->collaborationReplayingNotifications.store(false, std::memory_order_release);
-    if (mUndoTransactions.size() > d->UndoMaxStackSize) {
-        discardTransactionFileState(mUndoTransactions.front()->getID());
-        mUndoMap.erase(mUndoTransactions.front()->getID());
-        delete mUndoTransactions.front();
-        mUndoTransactions.pop_front();
+    Transaction* evictedUndo = nullptr;
+    int evictedUndoId = 0;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+            evictedUndo = mUndoTransactions.front();
+            evictedUndoId = evictedUndo->getID();
+            mUndoMap.erase(evictedUndoId);
+            mUndoTransactions.pop_front();
+        }
+    }
+    if (evictedUndo) {
+        discardTransactionFileState(evictedUndoId);
+        delete evictedUndo;
     }
     d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
     emitBecameStable();
@@ -2696,23 +2720,33 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
         return false;
     }
     // redo
-    d->activeUndoTransaction = new Transaction(mUndoTransactions.back()->getID());
-    d->activeUndoTransaction->Name = mUndoTransactions.back()->Name;
+    Transaction* currentUndo = mUndoTransactions.back();
+    auto* pendingRedo = new Transaction(currentUndo->getID());
+    pendingRedo->Name = currentUndo->Name;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        d->activeUndoTransaction = pendingRedo;
+    }
 
     {
         Base::FlagToggler<bool> flag(d->undoing);
         // applying the undo
-        mUndoTransactions.back()->apply(*this, false);
+        currentUndo->apply(*this, false);
 
-        // save the redo
-        mRedoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
-        mRedoTransactions.push_back(d->activeUndoTransaction);
-        d->activeUndoTransaction = nullptr;
-        d->bookedTransaction = 0;
+        // save the redo and unlink the applied undo before deleting it
+        Transaction* retiredUndo = nullptr;
+        {
+            std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+            mRedoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
+            mRedoTransactions.push_back(d->activeUndoTransaction);
+            d->activeUndoTransaction = nullptr;
+            d->bookedTransaction = 0;
 
-        mUndoMap.erase(mUndoTransactions.back()->getID());
-        delete mUndoTransactions.back();
-        mUndoTransactions.pop_back();
+            retiredUndo = mUndoTransactions.back();
+            mUndoMap.erase(retiredUndo->getID());
+            mUndoTransactions.pop_back();
+        }
+        delete retiredUndo;
     }
 
     for (const auto& obj : d->objectArray) {
@@ -2775,22 +2809,32 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
     if (mRedoTransactions.empty()) { return false; }
 
     // undo
-    d->activeUndoTransaction = new Transaction(mRedoTransactions.back()->getID());
-    d->activeUndoTransaction->Name = mRedoTransactions.back()->Name;
+    Transaction* currentRedo = mRedoTransactions.back();
+    auto* pendingUndo = new Transaction(currentRedo->getID());
+    pendingUndo->Name = currentRedo->Name;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        d->activeUndoTransaction = pendingUndo;
+    }
 
     // do the redo
     {
         Base::FlagToggler<bool> flag(d->undoing);
-        mRedoTransactions.back()->apply(*this, true);
+        currentRedo->apply(*this, true);
 
-        mUndoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
-        mUndoTransactions.push_back(d->activeUndoTransaction);
-        d->activeUndoTransaction = nullptr;
-        d->bookedTransaction = 0;
+        Transaction* retiredRedo = nullptr;
+        {
+            std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+            mUndoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
+            mUndoTransactions.push_back(d->activeUndoTransaction);
+            d->activeUndoTransaction = nullptr;
+            d->bookedTransaction = 0;
 
-        mRedoMap.erase(mRedoTransactions.back()->getID());
-        delete mRedoTransactions.back();
-        mRedoTransactions.pop_back();
+            retiredRedo = mRedoTransactions.back();
+            mRedoMap.erase(retiredRedo->getID());
+            mRedoTransactions.pop_back();
+        }
+        delete retiredRedo;
     }
 
     for (const auto& obj : d->objectArray) {
@@ -2884,12 +2928,11 @@ bool Document::isPerformingTransaction() const
 std::vector<std::string> Document::getAvailableUndoNames() const
 {
     std::vector<std::string> vList;
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     if (d->activeUndoTransaction) {
         vList.push_back(d->activeUndoTransaction->Name);
     }
-    for (auto It = mUndoTransactions.rbegin();
-         It != mUndoTransactions.rend();
-         ++It) {
+    for (auto It = mUndoTransactions.rbegin(); It != mUndoTransactions.rend(); ++It) {
         vList.push_back((*It)->Name);
     }
     return vList;
@@ -2898,8 +2941,8 @@ std::vector<std::string> Document::getAvailableUndoNames() const
 bool Document::undoStackRecordsProperty(const TransactionalObject* object,
                                         const char* propertyName) const
 {
-    if (d->activeUndoTransaction
-        && d->activeUndoTransaction->recordsProperty(object, propertyName)) {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+    if (d->activeUndoTransaction && d->activeUndoTransaction->recordsProperty(object, propertyName)) {
         return true;
     }
     for (const Transaction* transaction : mUndoTransactions) {
@@ -2913,6 +2956,7 @@ bool Document::undoStackRecordsProperty(const TransactionalObject* object,
 std::vector<std::string> Document::getAvailableRedoNames() const
 {
     std::vector<std::string> vList;
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     for (auto It = mRedoTransactions.rbegin();
          It != mRedoTransactions.rend();
          ++It) {
@@ -3002,14 +3046,18 @@ int Document::_openTransaction(
     // When id == 0, this creates a new id
     // for instance, when there is no global transaction
     // from the application to stick to
-    d->activeUndoTransaction = new Transaction(id);
-    d->activeTransactionFileChanges.reset();
+    auto* newTransaction = new Transaction(id);
     if (name.empty()) {
         name = "<empty>";
     }
-    d->activeUndoTransaction->Name = name;
-    mUndoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
-    id = d->activeUndoTransaction->getID();
+    newTransaction->Name = name;
+    id = newTransaction->getID();
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        d->activeUndoTransaction = newTransaction;
+        mUndoMap[id] = newTransaction;
+    }
+    d->activeTransactionFileChanges.reset();
 
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationBoundaryTransactionId = id;
@@ -3037,6 +3085,7 @@ int Document::_openTransaction(
 void Document::renameTransaction(const std::string& name, const int id) const
 {
     ensureCollaborationTransactionControlAllowed();
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     if (!name.empty() && d->activeUndoTransaction && d->activeUndoTransaction->getID() == id) {
         if (boost::starts_with(d->activeUndoTransaction->Name, "-> ")) {
             d->activeUndoTransaction->Name.resize(3);
@@ -3279,28 +3328,31 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 // branch instead and discard the nested commit's undo records
                 // outright rather than fold them into the caller's.
                 if (d->parkedNestedTransaction) {
-                    // The records move to the parent, so the notifications
-                    // that name them follow.
-                    mUndoMap.erase(id);
-                    discardTransactionFileState(id);
-                    retargetCollaborationTransactionNotifications(
-                        d->activeUndoTransaction, d->parkedNestedTransaction);
                     const bool retainCancelledObjects =
                         d->collaborationCommitNotificationBarrier;
                     if (retainCancelledObjects && d->collaborationPreparedUndoSlot.empty()) {
-                        throw Base::RuntimeError(
-                            "collaboration commit finalization was not prepared");
+                        throw Base::RuntimeError("collaboration commit finalization was not prepared");
                     }
-                    d->activeUndoTransaction->mergeInto(
-                        *d->parkedNestedTransaction, retainCancelledObjects);
-                    if (retainCancelledObjects && !d->activeUndoTransaction->isEmpty()) {
+                    Transaction* active = nullptr;
+                    {
+                        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                        active = d->activeUndoTransaction;
+                        d->activeUndoTransaction = nullptr;
+                        mUndoMap.erase(id);
+                    }
+                    // The records move to the parent, so the notifications
+                    // that name them follow.
+                    discardTransactionFileState(id);
+                    retargetCollaborationTransactionNotifications(active, d->parkedNestedTransaction);
+                    active->mergeInto(*d->parkedNestedTransaction, retainCancelledObjects);
+                    if (retainCancelledObjects && !active->isEmpty()) {
                         // Only cancelled removals remain in the nested record.
                         // Retire them with the same owner as a non-history
                         // recompute, after deletion replay has cleared the GUI.
-                        d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                        d->collaborationPreparedUndoSlot.front() = active;
                     }
                     else {
-                        delete d->activeUndoTransaction;
+                        delete active;
                     }
                 }
                 else if (!d->activeUndoTransaction->isEmpty()) {
@@ -3311,27 +3363,33 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                     // it under the booked id precisely so that
                     // activeUndoTransaction->getID() == bookedTransaction
                     // holds again once the guard restores it.
-                    assert(d->activeUndoTransaction->getID()
-                           == d->parkedNestedBookedTransaction);
+                    assert(d->activeUndoTransaction->getID() == d->parkedNestedBookedTransaction);
+                    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
                     d->parkedNestedTransaction = d->activeUndoTransaction;
+                    d->activeUndoTransaction = nullptr;
                 }
                 else {
                     // Nothing was recorded. Adopting an empty transaction
                     // would defeat openTransaction()'s laziness and push an
                     // empty undo entry, so retire it and leave the caller
                     // with the bare booking it arrived with.
-                    retargetCollaborationTransactionNotifications(
-                        d->activeUndoTransaction, nullptr);
-                    mUndoMap.erase(id);
+                    Transaction* active = nullptr;
+                    {
+                        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                        active = d->activeUndoTransaction;
+                        d->activeUndoTransaction = nullptr;
+                        mUndoMap.erase(id);
+                    }
+                    retargetCollaborationTransactionNotifications(active, nullptr);
                     discardTransactionFileState(id);
-                    delete d->activeUndoTransaction;
+                    delete active;
                 }
-                d->activeUndoTransaction = nullptr;
             }
-            else if (!retainUndoHistory
-                     || (d->collaborationCommitNotificationBarrier
-                         && d->activeUndoTransaction->isEmpty()
-                         && !d->transactionFileChanges.contains(id))) {
+            else if (
+                !retainUndoHistory
+                || (d->collaborationCommitNotificationBarrier && d->activeUndoTransaction->isEmpty()
+                    && !d->transactionFileChanges.contains(id))
+            ) {
                 // Redo restoration is decided at boundary finalization, using
                 // the mutation ledger as well as native transaction records.
                 // Native compatibility commits eagerly create a transaction,
@@ -3340,49 +3398,66 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 // The transaction does not enter undo history. Keep deferred
                 // records from naming it after its undo-map registration is
                 // removed, whether it retires now or after replay.
-                retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
-                                                              nullptr);
-                mUndoMap.erase(id);
+                if (d->collaborationCommitNotificationBarrier
+                    && d->collaborationPreparedUndoSlot.empty()) {
+                    throw Base::RuntimeError("collaboration commit finalization was not prepared");
+                }
+                Transaction* active = nullptr;
+                {
+                    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                    active = d->activeUndoTransaction;
+                    d->activeUndoTransaction = nullptr;
+                    mUndoMap.erase(id);
+                }
+                retargetCollaborationTransactionNotifications(active, nullptr);
                 discardTransactionFileState(id);
                 if (d->collaborationCommitNotificationBarrier) {
-                    if (d->collaborationPreparedUndoSlot.empty()) {
-                        throw Base::RuntimeError(
-                            "collaboration commit finalization was not prepared");
-                    }
                     // Recompute does not retain undo history. Keep its retiring
                     // transaction in the prepared slot until deletion replay has
                     // cleared Selection and the GUI's view providers instead of
                     // destroying its removed objects here.
-                    d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                    d->collaborationPreparedUndoSlot.front() = active;
                 }
                 else {
-                    delete d->activeUndoTransaction;
+                    delete active;
                 }
-                d->activeUndoTransaction = nullptr;
             }
             else if (d->collaborationCommitNotificationBarrier) {
                 if (d->collaborationPreparedUndoSlot.empty()) {
-                    throw Base::RuntimeError(
-                        "collaboration commit finalization was not prepared");
+                    throw Base::RuntimeError("collaboration commit finalization was not prepared");
                 }
+                std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
                 d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
-                mUndoTransactions.splice(mUndoTransactions.end(),
-                                         d->collaborationPreparedUndoSlot,
-                                         d->collaborationPreparedUndoSlot.begin());
+                mUndoTransactions.splice(
+                    mUndoTransactions.end(),
+                    d->collaborationPreparedUndoSlot,
+                    d->collaborationPreparedUndoSlot.begin()
+                );
                 d->activeUndoTransaction = nullptr;
             }
             else {
+                std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
                 mUndoTransactions.push_back(d->activeUndoTransaction);
                 d->activeUndoTransaction = nullptr;
             }
 
             // check the stack for the limits
-            if (retainUndoHistory && !d->collaborationCommitNotificationBarrier
-                && mUndoTransactions.size() > d->UndoMaxStackSize) {
-                discardTransactionFileState(mUndoTransactions.front()->getID());
-                mUndoMap.erase(mUndoTransactions.front()->getID());
-                delete mUndoTransactions.front();
-                mUndoTransactions.pop_front();
+            if (retainUndoHistory && !d->collaborationCommitNotificationBarrier) {
+                Transaction* evictedUndo = nullptr;
+                int evictedUndoId = 0;
+                {
+                    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                    if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+                        evictedUndo = mUndoTransactions.front();
+                        evictedUndoId = evictedUndo->getID();
+                        mUndoMap.erase(evictedUndoId);
+                        mUndoTransactions.pop_front();
+                    }
+                }
+                if (evictedUndo) {
+                    discardTransactionFileState(evictedUndoId);
+                    delete evictedUndo;
+                }
             }
             if (d->collaborationCommitNotificationBarrier) {
                 d->collaborationDeferredNotifications.push_back(
@@ -3462,11 +3537,17 @@ void Document::_abortTransaction()
             d->activeUndoTransaction->apply(*this, false);
 
             // destroy the undo
-            const int transactionId = d->activeUndoTransaction->getID();
-            mUndoMap.erase(transactionId);
+            Transaction* abortedTransaction = nullptr;
+            int transactionId = 0;
+            {
+                std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                abortedTransaction = d->activeUndoTransaction;
+                transactionId = abortedTransaction->getID();
+                mUndoMap.erase(transactionId);
+                d->activeUndoTransaction = nullptr;
+            }
             discardTransactionFileState(transactionId);
-            delete d->activeUndoTransaction;
-            d->activeUndoTransaction = nullptr;
+            delete abortedTransaction;
             if (transactionFileChanges) {
                 d->fileChangeTokens.model.transactional = transactionFileChanges->before.model;
                 d->fileChangeTokens.appearance.transactional =
@@ -3593,10 +3674,13 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
         }
     }
 
-    mUndoMap.erase(transactionId);
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        mUndoMap.erase(transactionId);
+        d->activeUndoTransaction = nullptr;
+    }
     discardTransactionFileState(transactionId);
     delete transaction;
-    d->activeUndoTransaction = nullptr;
     d->bookedTransaction = 0;
     d->activeTransactionFileChanges.reset();
 
@@ -3686,11 +3770,13 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
 
 bool Document::hasPendingTransaction() const
 {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     return d->activeUndoTransaction != nullptr;
 }
 
 int Document::getTransactionID(const bool undo, unsigned pos) const
 {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     if (undo) {
         if (d->activeUndoTransaction) {
             if (pos == 0) {
@@ -3702,14 +3788,16 @@ int Document::getTransactionID(const bool undo, unsigned pos) const
             return 0;
         }
         auto rit = mUndoTransactions.rbegin();
-        for (; pos != 0U; ++rit, --pos) {}
+        for (; pos != 0U; ++rit, --pos) {
+        }
         return (*rit)->getID();
     }
     if (pos >= mRedoTransactions.size()) {
         return 0;
     }
     auto rit = mRedoTransactions.rbegin();
-    for (; pos != 0U; ++rit, --pos) {}
+    for (; pos != 0U; ++rit, --pos) {
+    }
     return (*rit)->getID();
 }
 int Document::getBookedTransactionID() const
@@ -3718,6 +3806,7 @@ int Document::getBookedTransactionID() const
 }
 bool Document::isTransactionEmpty() const
 {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     return !d->activeUndoTransaction;
         // Transactions are now only created when there are actual changes.
         // Empty transaction is now significant for marking external changes. It
@@ -3725,7 +3814,6 @@ bool Document::isTransactionEmpty() const
         // trigger undo/redo there.
 
         // return d->activeUndoTransaction->isEmpty();
-
 }
 
 static std::vector<DocumentRevisionPublicationRequest>
@@ -3784,18 +3872,22 @@ void Document::clearCompatibilityTransactionHistoryImpl()
         _commitTransaction(true);
     }
 
-    mUndoMap.clear();
-
     // When cleaning up the undo stack we must delete the transactions from front
     // to back because a document object can appear in several transactions but
     // once removed from the document the object can never ever appear in any later
     // transaction. Since the document object may be also deleted when the transaction
     // is deleted we must make sure not access an object once it's destroyed. Thus, we
     // go from front to back and not the other way round.
-    while (!mUndoTransactions.empty()) {
-        discardTransactionFileState(mUndoTransactions.front()->getID());
-        delete mUndoTransactions.front();
-        mUndoTransactions.pop_front();
+    std::list<Transaction*> retiredUndos;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        mUndoMap.clear();
+        retiredUndos.splice(retiredUndos.end(), mUndoTransactions);
+    }
+    while (!retiredUndos.empty()) {
+        discardTransactionFileState(retiredUndos.front()->getID());
+        delete retiredUndos.front();
+        retiredUndos.pop_front();
     }
     // while (!mUndoTransactions.empty()) {
     //     delete mUndoTransactions.back();
@@ -3818,6 +3910,7 @@ void Document::abortApplicationTransactionThroughCoordinator()
 
 int Document::getAvailableUndos(const int id) const
 {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     if (id != 0) {
         const auto it = mUndoMap.find(id);
         if (it == mUndoMap.end()) {
@@ -3845,6 +3938,7 @@ int Document::getAvailableUndos(const int id) const
 
 int Document::getAvailableRedos(const int id) const
 {
+    std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
     if (id != 0) {
         const auto it = mRedoMap.find(id);
         if (it == mRedoMap.end()) {
@@ -5468,23 +5562,47 @@ bool Document::canWriteRecoverySnapshot() const
 DocumentMutationReadiness Document::getMutationReadiness() const
 {
     DocumentMutationReadiness readiness;
+    const bool ownedByCurrentThread = d->documentGraphWriteOwner.load(std::memory_order_acquire)
+        == std::this_thread::get_id();
+    std::shared_lock<std::shared_mutex> graphReadLock(d->documentGraphMutex, std::defer_lock);
+    if (!ownedByCurrentThread) {
+        while (!graphReadLock.try_lock()) {
+            if (d->documentGraphWritePending.load(std::memory_order_acquire) != 0) {
+                readiness.commitBarrier = true;
+                readiness.notificationReplay = d->collaborationReplayingNotifications.load(
+                    std::memory_order_acquire
+                );
+                readiness.recomputing
+                    = d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0;
+                readiness.pendingRemoval = d->pendingRemovalProcessing.load(std::memory_order_acquire);
+                readiness.ready = false;
+                readiness.diagnostic = readiness.notificationReplay
+                    ? "Committed notifications are being replayed"
+                    : "A native commit is being prepared";
+                return readiness;
+            }
+            std::this_thread::yield();
+        }
+    }
     readiness.pendingTransaction = hasPendingTransaction();
     readiness.bookedTransaction = d->bookedTransaction;
     readiness.transactionLocked = isTransactionLocked();
     readiness.recomputing = testStatus(Document::Recomputing)
         || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0;
-    readiness.mustExecute = mustExecute();
-    readiness.pendingRemoval =
-        d->pendingRemovalProcessing.load(std::memory_order_acquire)
+    readiness.pendingRemoval = d->pendingRemovalProcessing.load(std::memory_order_acquire)
         || !d->pendingRemove.empty();
     readiness.commitBarrier = d->collaborationCommitNotificationBarrier;
     readiness.notificationReplay = d->collaborationReplayingNotifications;
     readiness.poisoned = d->collaborationCommitPoisoned;
     readiness.quarantined = readiness.poisoned;
+    const bool performingTransaction = isPerformingTransaction();
+    const bool blockedFromGraphInspection = readiness.recomputing || readiness.commitBarrier
+        || readiness.notificationReplay || performingTransaction;
+    readiness.mustExecute = blockedFromGraphInspection ? false : mustExecute();
     readiness.ready = !readiness.pendingTransaction && readiness.bookedTransaction == 0
-        && !readiness.transactionLocked && !readiness.recomputing && !readiness.commitBarrier
-        && !readiness.notificationReplay && !readiness.poisoned && !readiness.mustExecute
-        && !readiness.pendingRemoval;
+        && !performingTransaction && !readiness.transactionLocked && !readiness.recomputing
+        && !readiness.commitBarrier && !readiness.notificationReplay && !readiness.poisoned
+        && !readiness.mustExecute && !readiness.pendingRemoval;
 
     if (readiness.poisoned) {
         readiness.diagnostic = d->collaborationCommitPoisonDiagnostic.data();
@@ -5495,7 +5613,7 @@ DocumentMutationReadiness Document::getMutationReadiness() const
     else if (readiness.notificationReplay) {
         readiness.diagnostic = "Committed notifications are being replayed";
     }
-    else if (readiness.pendingTransaction || readiness.bookedTransaction != 0) {
+    else if (readiness.pendingTransaction || readiness.bookedTransaction != 0 || performingTransaction) {
         readiness.diagnostic = "A document transaction is active";
     }
     else if (readiness.transactionLocked) {
@@ -6817,8 +6935,11 @@ bool Document::parkTransactionForNestedCommit()
     if (!d->activeUndoTransaction && d->bookedTransaction == 0) {
         return false;
     }
-    d->parkedNestedTransaction = d->activeUndoTransaction;
-    d->activeUndoTransaction = nullptr;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        d->parkedNestedTransaction = d->activeUndoTransaction;
+        d->activeUndoTransaction = nullptr;
+    }
     d->parkedNestedBookedTransaction = d->bookedTransaction;
     d->bookedTransaction = 0;
     // The nested commit's own _openTransaction() unconditionally resets
@@ -6842,9 +6963,13 @@ void Document::restoreParkedTransactionAfterNestedCommit() noexcept
         return;
     }
     d->nestedCommitParked = false;  // no re-entry into the fold below
-    Transaction* stray = d->activeUndoTransaction;
-    d->activeUndoTransaction = d->parkedNestedTransaction;
-    d->parkedNestedTransaction = nullptr;
+    Transaction* stray = nullptr;
+    {
+        std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+        stray = d->activeUndoTransaction;
+        d->activeUndoTransaction = d->parkedNestedTransaction;
+        d->parkedNestedTransaction = nullptr;
+    }
     d->bookedTransaction = d->parkedNestedBookedTransaction;
     d->parkedNestedBookedTransaction = 0;
 
@@ -6854,7 +6979,10 @@ void Document::restoreParkedTransactionAfterNestedCommit() noexcept
         if (d->activeUndoTransaction) {
             retargetCollaborationTransactionNotifications(stray, d->activeUndoTransaction);
             stray->mergeInto(*d->activeUndoTransaction);
-            mUndoMap.erase(stray->getID());
+            {
+                std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                mUndoMap.erase(stray->getID());
+            }
             discardTransactionFileState(stray->getID());
             delete stray;
         }
@@ -6864,6 +6992,7 @@ void Document::restoreParkedTransactionAfterNestedCommit() noexcept
             // recorded nothing at all. Either way it can become the
             // caller's transaction without breaking the invariant that
             // activeUndoTransaction->getID() == bookedTransaction.
+            std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
             d->activeUndoTransaction = stray;
         }
         else {
@@ -6876,7 +7005,10 @@ void Document::restoreParkedTransactionAfterNestedCommit() noexcept
             // it as its own step rather than strand its records.
             FC_WARN("nested commit left a transaction with an unbookable id");
             const int booked = d->bookedTransaction;
-            d->activeUndoTransaction = stray;
+            {
+                std::lock_guard<std::mutex> historyLock(d->transactionHistoryMutex);
+                d->activeUndoTransaction = stray;
+            }
             _commitTransaction(false);  // parked flag already cleared
             d->bookedTransaction = booked;  // _commitTransaction zeroes it
         }
@@ -9385,10 +9517,13 @@ void PreparedLabelReferenceUpdates::clearRedos(Document& document,
     // Detach first: recursive group invalidation may come back to this member.
     // No allocations or public transaction callbacks after durable commitment.
     std::list<Transaction*> retired;
-    retired.splice(retired.end(), document.mRedoTransactions);
-    retired.splice(retired.end(), document.d->collaborationParkedRedos);
-    document.mRedoMap.clear();
-    document.d->collaborationParkedRedoMap.clear();
+    {
+        std::lock_guard<std::mutex> historyLock(document.d->transactionHistoryMutex);
+        retired.splice(retired.end(), document.mRedoTransactions);
+        retired.splice(retired.end(), document.d->collaborationParkedRedos);
+        document.mRedoMap.clear();
+        document.d->collaborationParkedRedoMap.clear();
+    }
     for (auto* transaction : retired) {
         const int id = transaction->getID();
         const auto found = document.d->historyGroups.find(id);
@@ -9472,6 +9607,7 @@ void PreparedLabelReferenceUpdates::preserveRedo(Document& document)
         context->state->admitRedoHistory(document);
     }
     if (!document.d->collaborationRedoHistoryParked) {
+        std::lock_guard<std::mutex> historyLock(document.d->transactionHistoryMutex);
         document.d->collaborationParkedRedos.splice(
             document.d->collaborationParkedRedos.end(), document.mRedoTransactions);
         document.d->collaborationParkedRedoMap.swap(document.mRedoMap);
