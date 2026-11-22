@@ -40,7 +40,7 @@ def _msg(text, end="\n"):
     App.Console.PrintMessage(text + end)
 
 
-class TestOverlayIconsAndOrigin(unittest.TestCase):
+class _OverlayIconsAndOriginTestBase(unittest.TestCase):
     def setUp(self):
         doc_name = self.__class__.__name__
         if App.ActiveDocument:
@@ -68,6 +68,8 @@ class TestOverlayIconsAndOrigin(unittest.TestCase):
         self.assertIn(origin, self.assembly.Group)
         return origin
 
+
+class TestOverlayIconsAndOrigin(_OverlayIconsAndOriginTestBase):
     def test_getOverlayIcons_no_assembly(self):
         """getOverlayIcons must not AttributeError when getAssembly() returns None."""
         operation = "getOverlayIcons with no assembly"
@@ -102,7 +104,9 @@ class TestOverlayIconsAndOrigin(unittest.TestCase):
         connected = self.assembly.isPartConnected(box)
         self.assertIsInstance(connected, bool, "'{}' failed".format(operation))
 
-    @unittest.skipIf(not App.GuiUp, "GUI tests require FreeCAD GUI mode")
+
+@unittest.skipIf(not App.GuiUp, "GUI tests require FreeCAD GUI mode")
+class TestOverlayIconsAndOriginGui(_OverlayIconsAndOriginTestBase):
     def test_claimChildren_origin_not_duplicated(self):
         """claimChildren must claim Origin only once when Origin is also in Group."""
         operation = "claimChildren Origin dedupe"

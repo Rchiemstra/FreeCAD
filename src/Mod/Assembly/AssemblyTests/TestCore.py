@@ -784,71 +784,6 @@ class TestCore(AssemblyTestBase):
         finally:
             JointObject.App = original_app
 
-    def test_api_joint_provider_is_attached_after_native_gui_publication(self):
-        """Native compatibility replay publishes a deferred joint ViewObject."""
-        if not App.GuiUp:
-            self.skipTest("requires a native GUI document publication")
-
-        first = self.assembly.newObject("Part::Box", "DeferredProviderFirst")
-        second = self.assembly.newObject("Part::Box", "DeferredProviderSecond")
-        self.doc.recompute()
-        self.assertFalse(self.doc.mustExecute())
-        created = []
-        from PySide import QtCore
-
-        observed = []
-        gui_thread = QtCore.QCoreApplication.instance().thread()
-
-        class Inspector(QtCore.QObject):
-            inspect = QtCore.Signal(object)
-
-            def __init__(self):
-                super().__init__()
-                self.inspect.connect(self.check, QtCore.Qt.BlockingQueuedConnection)
-
-            @QtCore.Slot(object)
-            def check(self, joint):
-                # The owner is paused inside the mutation, before publication.
-                # Read the native provider on the GUI thread, where absence is
-                # meaningful, rather than guiViewObject's off-thread fallback.
-                observed.append((QtCore.QThread.currentThread() == gui_thread, joint.ViewObject))
-
-        inspector = Inspector()
-
-        def create_joint():
-            joint = Assembly.createJoint(
-                self.assembly,
-                "Fixed",
-                Assembly.makeJointReference(first, "Face6", "Vertex7"),
-                Assembly.makeJointReference(second, "Face6", "Vertex7"),
-                solve=False,
-                presolve=False,
-                recompute=False,
-            )
-            inspector.inspect.emit(joint)
-            created.append(joint)
-            return True
-
-        from concurrent.futures import ThreadPoolExecutor
-        from Test.GuiRecompute import _pump_gui_until
-
-        handle = self.doc.commitCompatibilityMutationAsync(
-            create_joint, structural=True, recompute=False
-        )
-        # Waiting off the GUI thread lets native publication replay on it.
-        with ThreadPoolExecutor(max_workers=1) as waiter:
-            completion = waiter.submit(handle["wait"], 15.0)
-            _pump_gui_until(completion.done, 20.0)
-            result = completion.result()
-        self.assertTrue(result.get("committed"), result)
-        self.assertEqual(observed, [(True, None)])
-        joint = created[0]
-        self.assertIsNotNone(joint.ViewObject)
-        self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
-        self.assertTrue(
-            joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython")
-        )
-
     def test_api_solve_false_does_not_move_component(self):
         """Create a joint without forcing a solve."""
         operation = "Create Joint through API without solve"
@@ -1941,6 +1876,71 @@ class TestCore(AssemblyTestBase):
 
     def test_link_array_joint_on_point_pattern(self):
         self._check_pattern_array_joint("Point")
+
+
+@unittest.skipUnless(App.GuiUp, "requires a native GUI document publication")
+class TestCoreGui(AssemblyTestBase):
+    def test_api_joint_provider_is_attached_after_native_gui_publication(self):
+        """Native compatibility replay publishes a deferred joint ViewObject."""
+        first = self.assembly.newObject("Part::Box", "DeferredProviderFirst")
+        second = self.assembly.newObject("Part::Box", "DeferredProviderSecond")
+        self.doc.recompute()
+        self.assertFalse(self.doc.mustExecute())
+        created = []
+        from PySide import QtCore
+
+        observed = []
+        gui_thread = QtCore.QCoreApplication.instance().thread()
+
+        class Inspector(QtCore.QObject):
+            inspect = QtCore.Signal(object)
+
+            def __init__(self):
+                super().__init__()
+                self.inspect.connect(self.check, QtCore.Qt.BlockingQueuedConnection)
+
+            @QtCore.Slot(object)
+            def check(self, joint):
+                # The owner is paused inside the mutation, before publication.
+                # Read the native provider on the GUI thread, where absence is
+                # meaningful, rather than guiViewObject's off-thread fallback.
+                observed.append((QtCore.QThread.currentThread() == gui_thread, joint.ViewObject))
+
+        inspector = Inspector()
+
+        def create_joint():
+            joint = Assembly.createJoint(
+                self.assembly,
+                "Fixed",
+                Assembly.makeJointReference(first, "Face6", "Vertex7"),
+                Assembly.makeJointReference(second, "Face6", "Vertex7"),
+                solve=False,
+                presolve=False,
+                recompute=False,
+            )
+            inspector.inspect.emit(joint)
+            created.append(joint)
+            return True
+
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = self.doc.commitCompatibilityMutationAsync(
+            create_joint, structural=True, recompute=False
+        )
+        # Waiting off the GUI thread lets native publication replay on it.
+        with ThreadPoolExecutor(max_workers=1) as waiter:
+            completion = waiter.submit(handle["wait"], 15.0)
+            _pump_gui_until(completion.done, 20.0)
+            result = completion.result()
+        self.assertTrue(result.get("committed"), result)
+        self.assertEqual(observed, [(True, None)])
+        joint = created[0]
+        self.assertIsNotNone(joint.ViewObject)
+        self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
+        self.assertTrue(
+            joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython")
+        )
 
 
 def _shape_circle(obj, element):

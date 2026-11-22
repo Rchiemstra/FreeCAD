@@ -62,7 +62,7 @@ class _FakeSel:
         self.PickedPoints = list(picks or [])
 
 
-class TestReviewNotes(unittest.TestCase):
+class _ReviewNotesTestBase(unittest.TestCase):
     def setUp(self):
         doc_name = self.__class__.__name__
         if App.ActiveDocument:
@@ -84,6 +84,9 @@ class TestReviewNotes(unittest.TestCase):
 
     def tearDown(self):
         _close_document(self.doc.Name)
+
+
+class TestReviewNotes(_ReviewNotesTestBase):
 
     def _make_joint(self):
         box2 = self.assembly.newObject("Part::Box", "Box2")
@@ -1730,26 +1733,6 @@ class TestReviewNotes(unittest.TestCase):
             "{}: got {} expected {}".format(operation, note.BasePosition, expected),
         )
 
-    def test_visibility_undo_redo(self):
-        operation = "Visibility undo/redo"
-        _msg("  Test '{}'".format(operation))
-        data = CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "")
-        note = CommandReviewNote.create_review_note(
-            self.assembly, data, ["Vis"], open_transaction=False
-        )
-        if not note.ViewObject:
-            self.skipTest("ViewObject unavailable in this FreeCADCmd config")
-
-        self.assertTrue(note.ViewObject.Visibility, operation)
-        self.doc.openTransaction("Hide note")
-        note.ViewObject.Visibility = False
-        self.doc.commitTransaction()
-        self.assertFalse(note.ViewObject.Visibility, operation)
-        self.doc.undo()
-        self.assertTrue(note.ViewObject.Visibility, operation)
-        self.doc.redo()
-        self.assertFalse(note.ViewObject.Visibility, operation)
-
     def test_note_target_deletion_redo(self):
         operation = "Note and target deletion redo"
         _msg("  Test '{}'".format(operation))
@@ -1904,6 +1887,28 @@ class TestReviewNotes(unittest.TestCase):
                 os.remove(path)
             except OSError:
                 pass
+
+
+@unittest.skipUnless(App.GuiUp, "GUI tests require FreeCAD GUI mode")
+class TestReviewNotesVisibilityGui(_ReviewNotesTestBase):
+    def test_visibility_undo_redo(self):
+        operation = "Visibility undo/redo"
+        _msg("  Test '{}'".format(operation))
+        data = CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "")
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Vis"], open_transaction=False
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+
+        self.assertTrue(note.ViewObject.Visibility, operation)
+        self.doc.openTransaction("Hide note")
+        note.ViewObject.Visibility = False
+        self.doc.commitTransaction()
+        self.assertFalse(note.ViewObject.Visibility, operation)
+        self.doc.undo()
+        self.assertTrue(note.ViewObject.Visibility, operation)
+        self.doc.redo()
+        self.assertFalse(note.ViewObject.Visibility, operation)
 
 
 class TestReviewNotesGui(unittest.TestCase):

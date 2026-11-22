@@ -27,16 +27,23 @@ from AssemblyTests.TestIsolateSelectionGui import TestIsolateSelectionGui
 from AssemblyTests.TestComponentPattern import TestComponentPattern, TestComponentPatternGui
 
 from AssemblyTests.TestExtractComponent import TestExtractComponent, TestExtractComponentGui
-from AssemblyTests.TestCore import TestCore
+from AssemblyTests.TestCore import TestCore, TestCoreGui
 from AssemblyTests.TestMotionInterference import TestMotionInterference, TestMotionSweep
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
 from AssemblyTests.TestCommandCreateView import TestCommandCreateView
 from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
-from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
+from AssemblyTests.TestOverlayIconsAndOrigin import (
+    TestOverlayIconsAndOrigin,
+    TestOverlayIconsAndOriginGui,
+)
 from AssemblyTests.TestWebotsExport import TestWebotsExport
-from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
+from AssemblyTests.TestReviewNotes import (
+    TestReviewNotes,
+    TestReviewNotesGui,
+    TestReviewNotesVisibilityGui,
+)
 from AssemblyTests.TestSimulationExport import TestSimulationExport
-from AssemblyTests.TestPreferencesImport import TestPreferencesImport
+from AssemblyTests.TestPreferencesImport import TestPreferencesImport, TestPreferencesImportGui
 from AssemblyTests.TestReviewNotesIssues import (
     TestReviewNotesIssues,
     TestReviewNotesGuiIssues,
@@ -44,17 +51,21 @@ from AssemblyTests.TestReviewNotesIssues import (
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
+True if TestCoreGui else False
 True if TestMotionInterference else False
 True if TestMotionSweep else False
 True if TestCommandInsertLink else False
 True if TestCommandCreateView else False
 True if TestCrossBodyDatumStaleness else False
 True if TestOverlayIconsAndOrigin else False
+True if TestOverlayIconsAndOriginGui else False
 True if TestWebotsExport else False
 True if TestReviewNotes else False
 True if TestReviewNotesGui else False
+True if TestReviewNotesVisibilityGui else False
 True if TestSimulationExport else False
 True if TestPreferencesImport else False
+True if TestPreferencesImportGui else False
 True if TestReviewNotesIssues else False
 True if TestReviewNotesGuiIssues else False
 True if TestIsolateSelectionGui else False
