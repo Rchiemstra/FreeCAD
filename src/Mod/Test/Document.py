@@ -3090,6 +3090,21 @@ class MultiDocumentUndo(unittest.TestCase):
         FreeCAD.closeDocument("Doc2")
 
 
+def _commit_compatibility_mutation(doc, callback, **kwargs):
+    if getattr(FreeCAD, "GuiUp", False):
+        from concurrent.futures import ThreadPoolExecutor
+        from Test.GuiRecompute import _pump_gui_until
+
+        handle = doc.commitCompatibilityMutationAsync(callback, **kwargs)
+        if isinstance(handle, dict) and callable(handle.get("wait")):
+            with ThreadPoolExecutor(max_workers=1) as waiter:
+                completion = waiter.submit(handle["wait"], 15.0)
+                _pump_gui_until(completion.done, 20.0)
+                return completion.result()
+        return handle
+    return doc.commitCompatibilityMutation(callback, **kwargs)
+
+
 class DocumentCompatibilityReplacementCases(unittest.TestCase):
     """Structural compatibility mutations that replace an object.
 
@@ -3111,7 +3126,7 @@ class DocumentCompatibilityReplacementCases(unittest.TestCase):
         FreeCAD.closeDocument(self.doc.Name)
 
     def commit(self, callback):
-        return self.doc.commitCompatibilityMutation(callback, structural=True)
+        return _commit_compatibility_mutation(self.doc, callback, structural=True)
 
     def testInPlaceUpdateCommits(self):
         def update():
@@ -3188,17 +3203,22 @@ class DocumentLifecycleDuringCommit(unittest.TestCase):
         before = set(FreeCAD.listDocuments())
         for operation, call in calls.items():
             with self.subTest(operation=operation):
+
                 def attempt():
                     with self.assertRaisesRegex(Exception, "document lifecycle.*unavailable"):
                         call()
-                result = self.doc.commitCompatibilityMutation(
-                    attempt, structural=True, recompute=False)
+
+                result = _commit_compatibility_mutation(
+                    self.doc, attempt, structural=True, recompute=False
+                )
                 self.assertTrue(result["committed"], result)
                 self.assertEqual(set(FreeCAD.listDocuments()), before)
 
                 def normalChange():
                     self.doc.addObject("App::FeaturePython", "After_" + operation)
-                result = self.doc.commitCompatibilityMutation(
-                    normalChange, structural=True, recompute=False)
+
+                result = _commit_compatibility_mutation(
+                    self.doc, normalChange, structural=True, recompute=False
+                )
                 self.assertTrue(result["committed"], result)
                 self.assertIsNotNone(self.doc.getObject("After_" + operation))
