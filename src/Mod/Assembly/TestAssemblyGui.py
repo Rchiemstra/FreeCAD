@@ -6,6 +6,7 @@ collected by the GUI integration runner."""
 import sys
 import FreeCAD as App
 
+from AssemblyTests.TestComponentPattern import TestComponentPatternGui
 from AssemblyTests.TestExtractComponent import TestExtractComponentGui
 from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
 from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, TestDragFeedbackGui
@@ -16,6 +17,7 @@ if App.ConfigGet("TestCase").startswith("TestAssemblyGui"):
     sys.stdout = sys.__stdout__
 
 __all__ = [
+    "TestComponentPatternGui",
     "TestDragFeedbackGui",
     "TestExtractComponentGui",
     "TestJointEditorSwitch",
