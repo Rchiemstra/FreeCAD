@@ -6,6 +6,7 @@
 
 #include <FCGlobal.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -21,6 +22,11 @@ namespace App
 
 class DocumentCollaborationService;
 class RecomputeHandle;
+
+namespace Internal
+{
+class DocumentRecomputeCoordinatorTestAccess;
+}
 
 using DocumentRecomputeId = std::uint64_t;
 
@@ -145,6 +151,15 @@ public:
 private:
     friend class RecomputeHandle;
     friend class DocumentExecutionLane;
+    friend class Internal::DocumentRecomputeCoordinatorTestAccess;
+
+    // Null in production. Observe the actual lock at the ID access without
+    // acquiring it; tests must not re-enter the coordinator from this hook.
+    using IdAllocationTestHook = void (*)(
+        const DocumentRecomputeCoordinator&,
+        const std::unique_lock<std::mutex>&,
+        DocumentRecomputeId);
+    static std::atomic<IdAllocationTestHook> _idAllocationTestHook;
 
     /** Reserve one coordinator id before owner-thread submit binds a job. */
     [[nodiscard]] DocumentRecomputeId reserveAdmissionId();

@@ -6,10 +6,15 @@
 #include <App/CollaborativeOperation.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
+#include <App/DocumentCommand.h>
+#include <App/DocumentCommandHandle.h>
+#include <App/DocumentExecutionLane.h>
+#include <App/DocumentHandle.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/DynamicProperty.h>
 #include <App/FeatureTest.h>
 #include <App/MutationClassification.h>
+#include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
@@ -31,6 +36,47 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace App::Internal
+{
+
+class DocumentRecomputeCoordinatorTestAccess
+{
+public:
+    static void checkAllocationLock(
+        const DocumentRecomputeCoordinator& coordinator,
+        const std::unique_lock<std::mutex>& lock,
+        const DocumentRecomputeId admissionId)
+    {
+        EXPECT_EQ(lock.mutex(), &coordinator._stateMutex);
+        EXPECT_TRUE(lock.owns_lock()) << "ID allocation must own the state mutex";
+        (admissionId == 0 ? defaultAllocations : reservedBindings)
+            .fetch_add(1, std::memory_order_relaxed);
+    }
+
+    class CheckAllocationLocks
+    {
+    public:
+        CheckAllocationLocks()
+        {
+            defaultAllocations.store(0, std::memory_order_relaxed);
+            reservedBindings.store(0, std::memory_order_relaxed);
+            DocumentRecomputeCoordinator::_idAllocationTestHook.store(
+                &checkAllocationLock, std::memory_order_release);
+        }
+
+        ~CheckAllocationLocks()
+        {
+            DocumentRecomputeCoordinator::_idAllocationTestHook.store(
+                nullptr, std::memory_order_release);
+        }
+    };
+
+    static inline std::atomic<std::size_t> defaultAllocations {0};
+    static inline std::atomic<std::size_t> reservedBindings {0};
+};
+
+}  // namespace App::Internal
 
 namespace
 {
@@ -1069,4 +1115,232 @@ TEST_F(
 
     const auto snapshot = waitTerminal(coordinator, id);
     EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed);
+}
+
+TEST_F(
+    DocumentRecomputeCoordinatorTest,
+    ownerDispatchSubmitAndConcurrentAdmissionAllocateDistinctPlanIds
+)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    auto executionHandle = _document->executionHandle();
+    using Access = App::Internal::DocumentRecomputeCoordinatorTestAccess;
+    Access::CheckAllocationLocks checkAllocationLocks;
+
+    // The hook observes the real lock immediately before _nextId is accessed.
+    // It never acquires that mutex, so removing allocation protection fails
+    // its owns_lock assertion regardless of how the two threads are scheduled.
+    const auto initialIds = lane->postToOwner([&] {
+        const auto baselineId = coordinator.submit({});
+        const auto explicitId = baselineId + 10U;
+        EXPECT_EQ(coordinator.submit({}, explicitId), explicitId);
+        EXPECT_THROW(static_cast<void>(coordinator.submit({}, explicitId)),
+                     std::invalid_argument);
+        const auto nextId = coordinator.submit({});
+        EXPECT_EQ(nextId, explicitId + 1U);
+        return std::vector<App::DocumentRecomputeId> {baselineId, explicitId, nextId};
+    }).get();
+    std::set<App::DocumentRecomputeId> allocatedIds(initialIds.begin(), initialIds.end());
+    ASSERT_EQ(allocatedIds.size(), 3U);
+
+    const auto waitLane = [](App::DocumentCommandHandle& handle) {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        auto snapshot = handle.status();
+        while (!snapshot.terminal() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
+            snapshot = handle.status();
+        }
+        return snapshot;
+    };
+
+    struct DispatchState
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool submitted {false};
+        bool release {false};
+        bool timedOut {false};
+        App::DocumentRecomputeId id {0};
+    };
+
+    // Complete both plans, cancel the admitted command before binding, then
+    // cancel only the dispatch plan. No simultaneous-start stress oracle.
+    constexpr int rounds = 3;
+    for (int round = 0; round < rounds; ++round) {
+        const std::string featureId = "dispatch-feature-" + std::to_string(round);
+        const std::string beforeLabel = "First-before-" + std::to_string(round);
+        const std::string afterLabel = "First-after-" + std::to_string(round);
+        auto state = std::make_shared<DispatchState>();
+        std::future<void> ownerFuture;
+        std::optional<App::DocumentCommandHandle> commandHandle;
+
+        struct Cleanup
+        {
+            std::shared_ptr<DispatchState> state;
+            std::shared_ptr<RecomputeScenario> scenario;
+            std::string featureId;
+            std::future<void>& ownerFuture;
+            std::optional<App::DocumentCommandHandle>& commandHandle;
+            App::DocumentExecutionLane& lane;
+            App::DocumentRecomputeCoordinator& coordinator;
+            decltype(waitLane)& waitCommand;
+
+            ~Cleanup()
+            {
+                // Release every test wait before any get()/join, including
+                // fatal assertions before admission or before task startup.
+                {
+                    std::lock_guard lock(state->mutex);
+                    state->release = true;
+                }
+                state->cv.notify_all();
+                scenario->release(featureId);
+                if (ownerFuture.valid()) {
+                    try {
+                        ownerFuture.get();
+                    }
+                    catch (...) {
+                    }
+                }
+                if (commandHandle) {
+                    try {
+                        static_cast<void>(commandHandle->cancel("test cleanup"));
+                        static_cast<void>(waitCommand(*commandHandle));
+                    }
+                    catch (...) {
+                    }
+                }
+                // Independent coordinator work is not pumped by the lane's
+                // command loop. Cancel and drain it explicitly on the owner.
+                try {
+                    lane.postToOwner([this] {
+                        if (state->id != 0) {
+                            static_cast<void>(coordinator.cancel(state->id, "test cleanup"));
+                            static_cast<void>(waitTerminal(coordinator, state->id));
+                        }
+                    }).get();
+                }
+                catch (...) {
+                }
+            }
+        } cleanup {state, _scenario, featureId, ownerFuture, commandHandle,
+                   *lane, coordinator, waitLane};
+
+        auto plan = request(
+            {feature(featureId, {}, _scenarioToken, "First", afterLabel, {}, {}, true)},
+            "dispatch-plan-" + std::to_string(round));
+        ownerFuture = lane->postToOwner(
+            [&, state, plan = std::move(plan), beforeLabel]() mutable {
+                object("First").Label.setValue(beforeLabel);
+                object("Second").touch();
+                state->id = coordinator.submit(std::move(plan));
+                std::unique_lock lock(state->mutex);
+                state->submitted = true;
+                state->cv.notify_all();
+                state->timedOut = !state->cv.wait_for(lock, 5s, [&] { return state->release; });
+            });
+        {
+            std::unique_lock lock(state->mutex);
+            ASSERT_TRUE(state->cv.wait_for(lock, 5s, [&] { return state->submitted; }));
+        }
+
+        // The owner is still inside the ordinary dispatch, with no active
+        // command. Admission runs on this other thread while dispatch is held.
+        App::DocumentCommand command;
+        command.kind = App::DocumentCommandKind::Recompute;
+        command.document = executionHandle.identity();
+        command.recompute.emplace();
+        command.recompute->coalescingKey = "admission-overlap-" + std::to_string(round);
+        command.recompute->featureIds = {"Second"};
+        command.recompute->force = true;
+        const auto outcome = executionHandle.trySubmit(std::move(command));
+        if (outcome.result == App::DocumentCommandSubmitResult::Accepted) {
+            commandHandle.emplace(outcome.commandId, executionHandle.identity());
+        }
+        ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted)
+            << outcome.diagnostic;
+        ASSERT_NE(outcome.commandId, 0U);
+        const auto admitted = commandHandle->status();
+        ASSERT_TRUE(admitted.recompute.has_value());
+        const auto admissionId = static_cast<App::DocumentRecomputeId>(admitted.recompute->id);
+        EXPECT_GT(admissionId, 0U);
+        EXPECT_NE(state->id, admissionId);
+        EXPECT_TRUE(allocatedIds.insert(state->id).second);
+        EXPECT_TRUE(allocatedIds.insert(admissionId).second);
+
+        const auto dispatchBeforeBinding = coordinator.status(state->id);
+        ASSERT_TRUE(dispatchBeforeBinding.has_value());
+        ASSERT_EQ(dispatchBeforeBinding->features.size(), 1U);
+        EXPECT_EQ(dispatchBeforeBinding->features.front().featureId, featureId);
+        EXPECT_EQ(dispatchBeforeBinding->state, App::DocumentRecomputeState::Running);
+        EXPECT_FALSE(coordinator.status(admissionId).has_value());
+        if (round == 1) {
+            // There is deliberately no coordinator job for admissionId yet.
+            // cancelCommand records the lane flag even when coordinator.cancel
+            // returns false; binding still creates the job before pump cancels.
+            EXPECT_TRUE(commandHandle->cancel("cancel admitted command only"));
+            const auto unaffected = coordinator.status(state->id);
+            ASSERT_TRUE(unaffected.has_value());
+            EXPECT_EQ(unaffected->state, App::DocumentRecomputeState::Running);
+        }
+        {
+            std::lock_guard lock(state->mutex);
+            state->release = true;
+        }
+        state->cv.notify_all();
+        ownerFuture.get();
+        EXPECT_FALSE(state->timedOut);
+        ASSERT_TRUE(_scenario->waitStarted(featureId));
+        const auto terminalCommand = waitLane(*commandHandle);
+        ASSERT_TRUE(terminalCommand.terminal()) << terminalCommand.diagnostic;
+        ASSERT_TRUE(terminalCommand.recompute.has_value());
+        EXPECT_EQ(terminalCommand.recompute->id, admissionId);
+
+        // Prebinding cancellation does not bypass submission on this source
+        // base. Verify existence before inspecting the reserved job's features.
+        const auto admittedJob = coordinator.status(admissionId);
+        ASSERT_TRUE(admittedJob.has_value());
+        EXPECT_EQ(admittedJob->id, admissionId);
+        ASSERT_EQ(admittedJob->features.size(), 1U);
+        EXPECT_EQ(admittedJob->features.front().featureId, "Second");
+        const auto expectedCommandState = round == 1
+            ? App::DocumentCommandState::Cancelled : App::DocumentCommandState::Completed;
+        const auto expectedJobState = round == 1
+            ? App::DocumentRecomputeState::Cancelled : App::DocumentRecomputeState::Completed;
+        EXPECT_EQ(terminalCommand.state, expectedCommandState) << terminalCommand.diagnostic;
+        EXPECT_EQ(admittedJob->state, expectedJobState);
+
+        App::RecomputeHandle dispatchHandle(*_document, state->id);
+        const auto heldDispatch = dispatchHandle.status();
+        EXPECT_EQ(heldDispatch.id, state->id);
+        EXPECT_EQ(heldDispatch.state, App::DocumentRecomputeState::Running);
+        ASSERT_EQ(heldDispatch.features.size(), 1U);
+        EXPECT_EQ(heldDispatch.features.front().featureId, featureId);
+        EXPECT_EQ(lane->postToOwner([&] { return object("First").Label.getStrValue(); }).get(),
+                  beforeLabel);
+        if (round == 2) {
+            EXPECT_TRUE(dispatchHandle.cancel("cancel dispatch plan only"));
+        }
+        _scenario->release(featureId);
+        const auto settled = lane->postToOwner([&] {
+            return waitTerminal(coordinator, state->id);
+        }).get();
+        EXPECT_EQ(settled.state, round == 2 ? App::DocumentRecomputeState::Cancelled
+                                          : App::DocumentRecomputeState::Completed);
+        EXPECT_EQ(lane->postToOwner([&] { return object("First").Label.getStrValue(); }).get(),
+                  round == 2 ? beforeLabel : afterLabel);
+        const auto unaffectedAdmission = coordinator.status(admissionId);
+        ASSERT_TRUE(unaffectedAdmission.has_value());
+        EXPECT_EQ(unaffectedAdmission->state, expectedJobState);
+    }
+
+    EXPECT_EQ(allocatedIds.size(), 9U);
+    const auto finalId = lane->postToOwner([&] { return coordinator.submit({}); }).get();
+    EXPECT_EQ(finalId, initialIds.back() + 7U);
+    EXPECT_TRUE(allocatedIds.insert(finalId).second);
+    EXPECT_EQ(allocatedIds.size(), 10U);
+    EXPECT_EQ(Access::defaultAllocations.load(std::memory_order_relaxed), 6U);
+    EXPECT_EQ(Access::reservedBindings.load(std::memory_order_relaxed), 4U);
 }
