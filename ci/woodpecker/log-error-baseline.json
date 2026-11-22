@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "description": "Per-module baseline counts of known CI log error/warning signatures. Entries are plain integers (exact baseline; counts below pass with a ratchet note) or {\"max\", \"observed\", \"reason\"} objects for timing-dependent counts (fail only above max; note only at 0 when the entry can be removed).",
+  "modules": {
+    "AssemblyTests.TestIsolateSelectionGui": {
+      "Coin warning in SbRotation::setValue(): Quarternion has zero length => undefined rotation.": 204,
+      "Coin warning in SoDelayQueueSensor::unschedule(): tried to unschedule a sensor which is not scheduled": {
+        "max": 35,
+        "observed": "963: 28, 969: 29, 970: 28",
+        "reason": "The sensor is or is not scheduled depending on event-loop timing."
+      }
+    },
+    "SketcherTests.TestConstraintCommandsGui.TestConstraintCommandsGui": {
+      "Unhandled Base::Exception caught in GUIApplication::notify.": 1
+    },
+    "SketcherTests.TestSketcherOffsetGui.TestSketcherOffsetGui": {
+      "ControlSingleton::closeDialog: Cannot close dialog of nullptr document": 72,
+      "Unhandled Base::Exception caught in GUIApplication::notify.": 2
+    },
+    "TestArchGui": {
+      "Coin error in SoGroup::removeChild(): tried to remove non-existent child 0x<ADDR> (Separator)": 150,
+      "Coin error in SoGroup::removeChild(): tried to remove non-existent child 0x<ADDR> (Switch)": 16,
+      "Coin warning in SoEventCallback::removeEventCallback(): tried to remove non-existent callback function": 16,
+      "ControlSingleton::closeDialog: Cannot close dialog of nullptr document": 5
+    },
+    "TestAssemblyGui": {
+      "Coin warning in SbRotation::setValue(): Quarternion has zero length => undefined rotation.": 750,
+      "Coin warning in SoDelayQueueSensor::unschedule(): tried to unschedule a sensor which is not scheduled": {
+        "max": 42,
+        "observed": "963: 35, 969: 33, 970: 34",
+        "reason": "The sensor is or is not scheduled depending on event-loop timing."
+      },
+      "Coin warning in SoGLLazyElement::sendDiffuseByIndex(): index 1 out of bounds [0, 0] in node 0x<ADDR>: <noname> (this warning will only be printed once, but there might be more errors)": 1,
+      "ControlSingleton::closeDialog: Cannot close dialog of nullptr document": 1,
+      "QObject::killTimer: Timers cannot be stopped from another thread": 12,
+      "QObject::startTimer: Timers cannot be started from another thread": 24
+    },
+    "TestDraftGui": {
+      "Coin error in SoGroup::removeChild(): tried to remove non-existent child 0x<ADDR> (Separator)": 74,
+      "Coin error in SoGroup::removeChild(): tried to remove non-existent child 0x<ADDR> (Switch)": 134
+    },
+    "TestPartDesignGui": {
+      "Coin warning in SbRotation::setValue(): Quarternion has zero length => undefined rotation.": 80
+    },
+    "TestSketcherGui": {
+      "ControlSingleton::closeDialog: Cannot close dialog of nullptr document": 74,
+      "Unhandled Base::Exception caught in GUIApplication::notify.": 3
+    },
+    "TestSpreadsheetWindowGui": {
+      "QWidget::setWindowModified: The window title does not contain a '[*]' placeholder": 1
+    },
+    "femtest": {
+      "VTK ERR| vtkCompositeDataPipeline (0x<ADDR>): Algorithm vtkXMLMultiBlockDataReader(0x<ADDR>) returned failure for request: vtkInformation (0x<ADDR>)": 3,
+      "VTK ERR| vtkSmoothPolyDataFilter (0x<ADDR>): No data to smooth!": 2,
+      "VTK ERR| vtkXMLDataParser (0x<ADDR>): Error parsing XML in stream at line 1, column 0, byte index 0: syntax error": 1,
+      "VTK ERR| vtkXMLMultiBlockDataReader (0x<ADDR>): Error opening file /tmp/<TMP>": 6,
+      "VTK ERR| vtkXMLMultiBlockDataReader (0x<ADDR>): Error parsing input file.  ReadXMLInformation aborting.": 1,
+      "VTK WARN| vtkUnstructuredGrid (0x<ADDR>): Attempted to ShallowCopy from null.": 4
+    }
+  }
+}
