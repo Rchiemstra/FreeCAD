@@ -9,6 +9,8 @@ import FreeCAD as App
 from AssemblyTests.TestExtractComponent import TestExtractComponentGui
 from AssemblyTests.TestJointEditorSwitch import TestJointEditorSwitch
 from AssemblyTests.TestMotionInterferenceGui import TestMotionInterferenceGui, TestDragFeedbackGui
+from AssemblyTests.TestReviewNotes import TestReviewNotesGui
+from AssemblyTests.TestReviewNotesIssues import TestReviewNotesGuiIssues
 
 # Report-view redirection hides the command-line summary from CI. This entry
 # point is also importable in the interactive test workbench.
@@ -20,4 +22,6 @@ __all__ = [
     "TestExtractComponentGui",
     "TestJointEditorSwitch",
     "TestMotionInterferenceGui",
+    "TestReviewNotesGui",
+    "TestReviewNotesGuiIssues",
 ]
