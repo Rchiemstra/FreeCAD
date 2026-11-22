@@ -216,15 +216,14 @@ Qt::PenStyle qtPenStyle(long style)
 
 PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNote, Gui::ViewProviderAnnotationLabel)
 
-const char* ViewProviderReviewNote::LeaderLineStyleEnums[] =
-    {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
-const char* ViewProviderReviewNote::FrameLineStyleEnums[] =
-    {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
+const char* ViewProviderReviewNote::LeaderLineStyleEnums[]
+    = {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
+const char* ViewProviderReviewNote::FrameLineStyleEnums[]
+    = {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
 
 ViewProviderReviewNote::ViewProviderReviewNote()
 {
-    static const App::PropertyFloatConstraint::Constraints lineWidthRange =
-        {0.5F, 64.0F, 0.5F};
+    static const App::PropertyFloatConstraint::Constraints lineWidthRange = {0.5F, 64.0F, 0.5F};
 
     ADD_PROPERTY_TYPE(
         LeaderEnd,
@@ -286,13 +285,7 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         "Leader line thickness in pixels"
     );
     LeaderWidth.setConstraints(&lineWidthRange);
-    ADD_PROPERTY_TYPE(
-        LeaderLineStyle,
-        (0L),
-        "ReviewNote Lines",
-        App::Prop_None,
-        "Leader line pattern"
-    );
+    ADD_PROPERTY_TYPE(LeaderLineStyle, (0L), "ReviewNote Lines", App::Prop_None, "Leader line pattern");
     LeaderLineStyle.setEnums(LeaderLineStyleEnums);
     ADD_PROPERTY_TYPE(
         FrameColor,
@@ -309,13 +302,7 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         "Text-box border thickness in pixels"
     );
     FrameWidth.setConstraints(&lineWidthRange);
-    ADD_PROPERTY_TYPE(
-        FrameLineStyle,
-        (0L),
-        "ReviewNote Lines",
-        App::Prop_None,
-        "Text-box border pattern"
-    );
+    ADD_PROPERTY_TYPE(FrameLineStyle, (0L), "ReviewNote Lines", App::Prop_None, "Text-box border pattern");
     FrameLineStyle.setEnums(FrameLineStyleEnums);
     ADD_PROPERTY_TYPE(
         RasterWidth,
@@ -384,9 +371,8 @@ bool ViewProviderReviewNote::doubleClicked()
     std::string obj_name = getObject()->getNameInDocument();
     std::string doc_name = getObject()->getDocument()->getName();
 
-    std::string pythonCommand =
-        "import CommandReviewNote\n"
-        "obj = App.getDocument('"
+    std::string pythonCommand = "import CommandReviewNote\n"
+                                "obj = App.getDocument('"
         + doc_name + "').getObject('" + obj_name
         + "')\n"
           "CommandReviewNote.edit_review_note(obj)\n";
@@ -534,9 +520,7 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
         && applyingVisualFrame && attachedCamera) {
         --ReviewNoteTestHarness::injectNestedCamera;
         const SbRotation cur = attachedCamera->orientation.getValue();
-        attachedCamera->orientation.setValue(
-            cur * SbRotation(SbVec3f(0.2f, 0.9f, 0.1f), 0.45f)
-        );
+        attachedCamera->orientation.setValue(cur * SbRotation(SbVec3f(0.2f, 0.9f, 0.1f), 0.45f));
     }
 #endif
 
@@ -752,11 +736,7 @@ Base::Vector3d ViewProviderReviewNote::perimeterOffset(double port, double halfW
     return offset;
 }
 
-double ViewProviderReviewNote::perimeterParam(
-    const Base::Vector3d& offset,
-    double halfW,
-    double halfH
-)
+double ViewProviderReviewNote::perimeterParam(const Base::Vector3d& offset, double halfW, double halfH)
 {
     const double w = std::max(1e-6, halfW);
     const double h = std::max(1e-6, halfH);
@@ -934,8 +914,8 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
         hasLastHalfExtent = true;
         if (const Gui::View3DInventorViewer* viewer = getActiveViewer()) {
             if (viewer->getSoRenderManager()) {
-                const SbVec2s vpSize =
-                    viewer->getSoRenderManager()->getViewportRegion().getViewportSizePixels();
+                const SbVec2s vpSize
+                    = viewer->getSoRenderManager()->getViewportRegion().getViewportSizePixels();
                 if (vpSize[0] > 0) {
                     lastViewportWidthPx = vpSize[0];
                 }
@@ -1080,11 +1060,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
     const int xOffset = (targetW - autoW) / 2;
     const int yOffset = (targetH - autoH) / 2;
 
-    QImage image(
-        targetW,
-        targetH,
-        QImage::Format_ARGB32_Premultiplied
-    );
+    QImage image(targetW, targetH, QImage::Format_ARGB32_Premultiplied);
     // P1: if allocation failed (e.g. huge requested dims before clamping took effect
     // on some path), fall back to the auto text-sized box instead of feeding a null
     // QImage into BitmapFactory::convert (which would overflow/divide-by-zero).
@@ -1101,22 +1077,12 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         frameColor.setRgbF(frame.r, frame.g, frame.b);
         const qreal frameWidth = std::clamp<qreal>(FrameWidth.getValue(), 0.5, 64.0);
         painter.setPen(
-            QPen(
-                frameColor,
-                frameWidth,
-                qtPenStyle(FrameLineStyle.getValue()),
-                Qt::RoundCap,
-                Qt::RoundJoin
-            )
+            QPen(frameColor, frameWidth, qtPenStyle(FrameLineStyle.getValue()), Qt::RoundCap, Qt::RoundJoin)
         );
         painter.setBrush(QBrush(brush, Qt::SolidPattern));
-        const QRectF rectangle = QRectF(image.rect())
-                                     .adjusted(
-                                         frameWidth / 2.0,
-                                         frameWidth / 2.0,
-                                         -frameWidth / 2.0,
-                                         -frameWidth / 2.0
-                                     );
+        const QRectF rectangle
+            = QRectF(image.rect())
+                  .adjusted(frameWidth / 2.0, frameWidth / 2.0, -frameWidth / 2.0, -frameWidth / 2.0);
         painter.drawRoundedRect(rectangle, CornerRadius, CornerRadius);
     }
 
@@ -1142,9 +1108,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
             const size_t start = static_cast<size_t>(match.position());
             const size_t mlen = static_cast<size_t>(match.length());
             if (start > cursor) {
-                const QString plain = QString::fromUtf8(
-                    utf8.substr(cursor, start - cursor).c_str()
-                );
+                const QString plain = QString::fromUtf8(utf8.substr(cursor, start - cursor).c_str());
                 painter.setPen(front);
                 painter.drawText(x, baselineY, plain);
                 x += Gui::QtTools::horizontalAdvance(fm, plain);
@@ -1168,9 +1132,8 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
             }
             if (refHits.empty()) {
                 const std::string rect = std::to_string(hit.pixelRect.x()) + ","
-                    + std::to_string(hit.pixelRect.y()) + ","
-                    + std::to_string(hit.pixelRect.width()) + ","
-                    + std::to_string(hit.pixelRect.height());
+                    + std::to_string(hit.pixelRect.y()) + "," + std::to_string(hit.pixelRect.width())
+                    + "," + std::to_string(hit.pixelRect.height());
                 FirstLinkHitRect.setValue(rect);
             }
             refHits.push_back(hit);
@@ -1253,10 +1216,7 @@ bool ViewProviderReviewNote::hitTestReference(SoDragger* drag, RefHit& out) cons
     return false;
 }
 
-void ViewProviderReviewNote::selectReference(
-    const RefHit& hit,
-    const QPoint& pressPosition
-) const
+void ViewProviderReviewNote::selectReference(const RefHit& hit, const QPoint& pressPosition) const
 {
     auto* note = getObject<Assembly::ReviewNote>();
     if (!note || !note->getDocument()) {
@@ -1274,13 +1234,8 @@ void ViewProviderReviewNote::selectReference(
     // callback. Observe the matching Qt release and defer the target selection
     // one event-loop turn so the ordinary scene pick cannot overwrite it.
     if (auto* app = QApplication::instance()) {
-        auto* selector = new ReferenceReleaseSelector(
-            documentName,
-            objectName,
-            subName,
-            pressPosition,
-            app
-        );
+        auto* selector
+            = new ReferenceReleaseSelector(documentName, objectName, subName, pressPosition, app);
         app->installEventFilter(selector);
     }
 }
@@ -1304,10 +1259,7 @@ void ViewProviderReviewNote::onLabelClicked(const DragState&)
         return;
     }
     Gui::Selection().clearSelection();
-    Gui::Selection().addSelection(
-        note->getDocument()->getName(),
-        note->getNameInDocument()
-    );
+    Gui::Selection().addSelection(note->getDocument()->getName(), note->getNameInDocument());
 }
 
 void ViewProviderReviewNote::updateLeaderAppearance()
