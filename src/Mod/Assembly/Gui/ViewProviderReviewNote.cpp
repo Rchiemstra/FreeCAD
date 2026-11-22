@@ -1350,10 +1350,11 @@ void ViewProviderReviewNote::detachViewportResizeObserver()
 
 bool ViewProviderReviewNote::ResizeObserver::eventFilter(QObject* /*watched*/, QEvent* event)
 {
-    // P2: viewport resize changes worldPerPixel; re-rasterize a fixed-mm box so the
-    // visible box and leader stay glued. Auto-size notes are viewport-independent
-    // and need no re-raster, so skip the schedule to avoid needless work.
-    if (event->type() == QEvent::Resize && vp && vp->hasFixedSize()) {
+    // P2: viewport resize changes worldPerPixel (without touching the camera node).
+    // Schedule a coalesced visual frame for both fixed-mm and auto-sized notes:
+    // flushScheduledVisualFrame() re-rasterizes fixed-mm boxes and skips drawImage
+    // for auto-sized notes, refreshing LeaderHalfExtent and LeaderEnd in both cases.
+    if (event->type() == QEvent::Resize && vp) {
         vp->scheduleVisualFrame();
     }
     return false;  // never consume the event
@@ -1386,7 +1387,8 @@ void ViewProviderReviewNote::ensureCameraSensor()
     cameraSensor->attach(camera);
     attachedCamera = camera;
     // P2: also watch the GL widget for viewport resize (changes worldPerPixel but
-    // not the camera node), so a fixed-mm box re-rasterizes on view resize.
+    // not the camera node), so fixed-mm boxes re-rasterize and auto-sized notes
+    // refresh their leader half-extents/endpoint on view resize.
     ensureViewportResizeObserver();
 }
 

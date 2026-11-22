@@ -1023,6 +1023,240 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
             ),
         )
 
+    def test_gui_viewport_resize_updates_auto_box_half_extent(self):
+        operation = "GUI: viewport resize updates auto-sized LeaderHalfExtent without re-raster"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtWidgets
+        from pivy import coin
+
+        # Enclose the note strictly inside the assembly's 3D bounding box so
+        # Coin's auto-clipping pass does not shift near/far planes on resize
+        # and accidentally trigger the camera sensor to mask the resize bug.
+        enclosure = self.assembly.newObject("Part::Box", "ResizeEnclosure")
+        enclosure.Length = 120
+        enclosure.Width = 120
+        enclosure.Height = 120
+        self.doc.recompute()
+
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation + ": no active 3D view")
+        camera = view.getCameraNode()
+        self.assertIsNotNone(camera, operation + ": no active camera")
+        if hasattr(camera, "height"):
+            camera.height.setValue(100.0)
+        camera.position.setValue(60.0, 60.0, 220.0)
+        self._flush()
+
+        note = self._make_note(
+            ["Auto resize", "second line"],
+            sub="",
+            pick=App.Vector(30, 60, 60),
+            offset=App.Vector(25, 0, 0),
+        )
+        self._flush()
+        vo = note.ViewObject
+        self.assertIsNotNone(vo, operation)
+        self.assertEqual(float(vo.BoxWidth), 0.0, operation + ": expected auto BoxWidth")
+        self.assertEqual(float(vo.BoxHeight), 0.0, operation + ": expected auto BoxHeight")
+
+        raster_w = int(vo.RasterWidth)
+        raster_h = int(vo.RasterHeight)
+        draw_count_before = int(vo.DrawImageCount)
+        he_before = App.Vector(vo.LeaderHalfExtent)
+        end_before = App.Vector(vo.LeaderEnd)
+        self.assertGreater(raster_w, 0, operation + ": non-positive RasterWidth")
+        self.assertGreater(raster_h, 0, operation + ": non-positive RasterHeight")
+        self.assertGreater(draw_count_before, 0, operation + ": expected initial raster")
+        self.assertGreater(float(he_before.x), 0.0, operation + ": non-positive initial halfW")
+        self.assertGreater(float(he_before.y), 0.0, operation + ": non-positive initial halfH")
+
+        def _measure_world_per_pixel():
+            vp_w, vp_h = view.getSize()
+            self.assertGreater(vp_w, 0, operation + ": non-positive viewport width")
+            self.assertGreater(vp_h, 0, operation + ": non-positive viewport height")
+            aspect = float(vp_w) / float(vp_h)
+            vol = camera.getViewVolume(aspect)
+            text_local = App.Vector(note.BasePosition) + App.Vector(note.TextPosition)
+            text_world = self.assembly.getGlobalPlacement().multVec(text_local)
+            scale = float(
+                vol.getWorldToScreenScale(
+                    coin.SbVec3f(text_world.x, text_world.y, text_world.z), 1.0
+                )
+            )
+            return int(vp_w), int(vp_h), scale / float(vp_w)
+
+        def _camera_snapshot():
+            pos_v = camera.position.getValue()
+            pos = (float(pos_v[0]), float(pos_v[1]), float(pos_v[2]))
+            rot = tuple(float(v) for v in camera.orientation.getValue().getValue())
+            proj = (
+                ("ortho", float(camera.height.getValue()))
+                if hasattr(camera, "height")
+                else ("persp", float(camera.heightAngle.getValue()))
+            )
+            clip = (
+                float(camera.nearDistance.getValue()),
+                float(camera.farDistance.getValue()),
+                float(camera.focalDistance.getValue()),
+                float(camera.aspectRatio.getValue()),
+            )
+            return pos, rot, proj, clip
+
+        vp_w_before, vp_h_before, wpp_before = _measure_world_per_pixel()
+        cam_before = _camera_snapshot()
+        expected_w_before = 0.5 * raster_w * wpp_before
+        expected_h_before = 0.5 * raster_h * wpp_before
+        self.assertLessEqual(
+            abs(float(he_before.x) - expected_w_before),
+            max(1e-4, 1e-4 * expected_w_before),
+            "{}: settled initial halfW={} != expected {} (wpp={})".format(
+                operation, he_before.x, expected_w_before, wpp_before
+            ),
+        )
+        self.assertLessEqual(
+            abs(float(he_before.y) - expected_h_before),
+            max(1e-4, 1e-4 * expected_h_before),
+            "{}: settled initial halfH={} != expected {} (wpp={})".format(
+                operation, he_before.y, expected_h_before, wpp_before
+            ),
+        )
+
+        # Locate the active 3D view's MDI subwindow and resize it without mutating
+        # the camera or any note property.
+        sw = None
+        widget = view.graphicsView()
+        while widget is not None:
+            if isinstance(widget, QtWidgets.QMdiSubWindow):
+                sw = widget
+                break
+            widget = widget.parentWidget()
+        if sw is None:
+            main = Gui.getMainWindow()
+            mdi = main.findChild(QtWidgets.QMdiArea)
+            if mdi is not None:
+                sw = mdi.activeSubWindow()
+                if sw is None:
+                    subs = mdi.subWindowList()
+                    sw = subs[0] if subs else None
+        self.assertIsNotNone(sw, operation + ": no active MDI subwindow to resize")
+
+        orig_w = sw.width()
+        orig_h = sw.height()
+        orig_geom = sw.geometry()
+        was_maximized = sw.isMaximized()
+        new_w = orig_w - 140 if orig_w >= 460 else orig_w + 140
+        new_h = orig_h - 140 if orig_h >= 380 else orig_h + 140
+
+        try:
+            sw.resize(new_w, new_h)
+            self._flush()
+
+            vp_w_after, vp_h_after, wpp_after = _measure_world_per_pixel()
+            self.assertNotEqual(
+                vp_w_after,
+                vp_w_before,
+                "{}: viewport width did not change ({} -> {})".format(
+                    operation, vp_w_before, vp_w_after
+                ),
+            )
+            self.assertNotEqual(
+                vp_h_after,
+                vp_h_before,
+                "{}: viewport height did not change ({} -> {})".format(
+                    operation, vp_h_before, vp_h_after
+                ),
+            )
+            self.assertEqual(
+                _camera_snapshot(),
+                cam_before,
+                operation + ": camera mutated during viewport resize",
+            )
+            self.assertGreater(
+                abs(wpp_after - wpp_before),
+                1e-2 * max(wpp_before, wpp_after),
+                "{}: worldPerPixel barely changed ({} -> {})".format(
+                    operation, wpp_before, wpp_after
+                ),
+            )
+
+            # Auto-sized note must not re-rasterize on viewport resize.
+            self.assertEqual(
+                int(vo.DrawImageCount),
+                draw_count_before,
+                "{}: auto-sized note unexpectedly re-rasterized ({} -> {})".format(
+                    operation, draw_count_before, int(vo.DrawImageCount)
+                ),
+            )
+            self.assertEqual(int(vo.RasterWidth), raster_w, operation)
+            self.assertEqual(int(vo.RasterHeight), raster_h, operation)
+
+            # LeaderHalfExtent must follow the measured new worldPerPixel on both axes.
+            he_after = App.Vector(vo.LeaderHalfExtent)
+            expected_w_after = 0.5 * raster_w * wpp_after
+            expected_h_after = 0.5 * raster_h * wpp_after
+            tol_w = max(1e-4, 1e-4 * expected_w_after)
+            tol_h = max(1e-4, 1e-4 * expected_h_after)
+            self.assertLessEqual(
+                abs(float(he_after.x) - expected_w_after),
+                tol_w,
+                "{}: stale halfW={} expected={} (before={} vp={}x{}->{}x{} wpp={}->{})".format(
+                    operation,
+                    he_after.x,
+                    expected_w_after,
+                    he_before.x,
+                    vp_w_before,
+                    vp_h_before,
+                    vp_w_after,
+                    vp_h_after,
+                    wpp_before,
+                    wpp_after,
+                ),
+            )
+            self.assertLessEqual(
+                abs(float(he_after.y) - expected_h_after),
+                tol_h,
+                "{}: stale halfH={} expected={} (before={} vp={}x{}->{}x{} wpp={}->{})".format(
+                    operation,
+                    he_after.y,
+                    expected_h_after,
+                    he_before.y,
+                    vp_w_before,
+                    vp_h_before,
+                    vp_w_after,
+                    vp_h_after,
+                    wpp_before,
+                    wpp_after,
+                ),
+            )
+
+            # LeaderEnd must also track the updated billboard border.
+            end_after = App.Vector(vo.LeaderEnd)
+            right, up = CommandReviewNote.review_note_camera_billboard_axes(camera)
+            expected_end_after = CommandReviewNote.review_note_expected_billboard_leader_end(
+                note.TextPosition, expected_w_after, expected_h_after, right, up
+            )
+            end_tol = max(1e-3, 1e-3 * math.hypot(expected_w_after, expected_h_after))
+            self.assertLessEqual(
+                (end_after - expected_end_after).Length,
+                end_tol,
+                "{}: LeaderEnd={} does not match resized border {} (before={})".format(
+                    operation, end_after, expected_end_after, end_before
+                ),
+            )
+            self.assertFalse(
+                end_after.isEqual(end_before, 1e-4),
+                "{}: LeaderEnd stayed at pre-resize value {}".format(operation, end_after),
+            )
+        finally:
+            if was_maximized:
+                sw.showMaximized()
+            else:
+                sw.setGeometry(orig_geom)
+            if sw.width() != orig_w or sw.height() != orig_h:
+                sw.resize(orig_w, orig_h)
+            self._flush()
+
     def test_gui_auto_box_when_zero_uses_text(self):
         operation = "GUI: BoxWidth=0 keeps auto (text-sized) box"
         _msg("  Test '{}'".format(operation))
