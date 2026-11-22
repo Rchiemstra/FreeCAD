@@ -27,7 +27,11 @@
 #include <Gui/GuiPythonGate.h>
 #include <fastsignals/signal.h>
 #include <CXX/Objects.hxx>
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -61,6 +65,15 @@ public:
     static void installValueEventHandler();
 
 private:
+    struct DeferConnectTag {};
+    DocumentObserverPython(const Py::Object& obj, DeferConnectTag);
+
+    void connectDirectSlots();
+    void connectRegisteredSlots(std::uint64_t registrationId);
+    void deactivate() noexcept;
+    void disconnectSlots() noexcept;
+    Py::Object callableForEventKind(std::string_view eventKind) const;
+    static void deliverDeferredValueEvent(const GuiPythonObserverValueEvent& event);
     void deliverValueEvent(const GuiPythonObserverValueEvent& event);
     /** Checks if a new document was created */
     void slotCreatedDocument(const Gui::Document& Doc);
@@ -87,7 +100,10 @@ private:
 
 private:
     Py::Object inst;
-    static std::vector<DocumentObserverPython*> _instances;
+    // Pure-C++ registration active flag shared with registered fastsignals slots
+    // so copied or in-flight signal invocations never own Python-bearing state
+    // outside an active GIL scope.
+    std::shared_ptr<std::atomic<bool>> activeFlag;
 
     using Connection = struct PythonObject
     {
