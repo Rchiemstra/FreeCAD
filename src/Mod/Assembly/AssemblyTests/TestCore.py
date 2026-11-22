@@ -567,9 +567,7 @@ class TestCore(AssemblyTestBase):
             Assembly.createJoint(self.assembly, "InvalidType", ref1, ref2, recompute=False)
 
         with self.assertRaises(Assembly.JointCreationError):
-            Assembly.createJoint(
-                self.assembly, "Fixed", [box1, ["Face6"]], ref2, recompute=False
-            )
+            Assembly.createJoint(self.assembly, "Fixed", [box1, ["Face6"]], ref2, recompute=False)
 
         with self.assertRaises(Assembly.JointCreationError):
             Assembly.makeJointReference(box1, "Face6?")
@@ -655,6 +653,7 @@ class TestCore(AssemblyTestBase):
 
     def test_joint_migration_allows_deferred_view_object(self):
         """A GUI replay may create the document object before its view object."""
+
         class DeferredJoint:
             ViewObject = None
 
@@ -680,6 +679,7 @@ class TestCore(AssemblyTestBase):
 
     def test_joint_deferred_view_provider_is_attached_on_recompute(self):
         """A delayed GUI object receives the joint provider and suppressible extension."""
+
         class DeferredViewObject:
             def __init__(self):
                 self.Proxy = None
@@ -701,12 +701,11 @@ class TestCore(AssemblyTestBase):
             JointObject.App = original_app
 
         self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
-        self.assertIn(
-            "Gui::ViewProviderSuppressibleExtensionPython", joint.ViewObject.extensions
-        )
+        self.assertIn("Gui::ViewProviderSuppressibleExtensionPython", joint.ViewObject.extensions)
 
     def test_joint_deferred_view_provider_observes_gui_replay(self):
         """The GUI observer installs the provider when native replay creates it."""
+
         class DeferredViewObject:
             def __init__(self, obj):
                 self.Object = obj
@@ -721,9 +720,7 @@ class TestCore(AssemblyTestBase):
 
         document = SimpleNamespace(Name="DeferredViewProviderDocument")
         joint = SimpleNamespace(Document=document, Name="Joint", ViewObject=None)
-        gui = SimpleNamespace(
-            addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock()
-        )
+        gui = SimpleNamespace(addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock())
         original_app = JointObject.App
         original_gui = getattr(JointObject, "Gui", None)
         original_observer = JointObject._deferred_joint_view_provider_observer
@@ -756,9 +753,7 @@ class TestCore(AssemblyTestBase):
         """A failed creation removes its replay request before its name is reused."""
         document = SimpleNamespace(Name="DeferredCancellationDocument")
         joint = SimpleNamespace(Document=document, Name="Joint", ViewObject=None)
-        gui = SimpleNamespace(
-            addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock()
-        )
+        gui = SimpleNamespace(addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock())
         original_app = JointObject.App
         original_gui = getattr(JointObject, "Gui", None)
         JointObject.App = SimpleNamespace(GuiUp=True)
@@ -1116,11 +1111,14 @@ class TestCore(AssemblyTestBase):
         lid.Placement.Base = App.Vector(30, 0, 0)
         self.doc.recompute()
         Assembly.createGroundedJoint(self.assembly, base, recompute=False)
-        refs = (Assembly.makeJointReference(base, "Face1"),
-                Assembly.makeJointReference(lid, "Face1"))
+        refs = (
+            Assembly.makeJointReference(base, "Face1"),
+            Assembly.makeJointReference(lid, "Face1"),
+        )
         Assembly.createJoint(self.assembly, "Fixed", *refs, solve=True)
-        joint = Assembly.createJoint(self.assembly, "Distance", *refs,
-                                     Distance=distance, solve=False, presolve=False)
+        joint = Assembly.createJoint(
+            self.assembly, "Distance", *refs, Distance=distance, solve=False, presolve=False
+        )
         return joint
 
     def test_api_satisfied_fixed_distance_solves(self):
@@ -1131,8 +1129,11 @@ class TestCore(AssemblyTestBase):
     def test_api_contradictory_fixed_distance_fails(self):
         joint = self._fixed_distance_fixture(100)
         status = self.assembly.solve(False)
-        details = [(j.Name, j.JointType, UtilsAssembly.jointRelationError(j))
-                   for j in self.assembly.Joints if hasattr(j, "JointType")]
+        details = [
+            (j.Name, j.JointType, UtilsAssembly.jointRelationError(j))
+            for j in self.assembly.Joints
+            if hasattr(j, "JointType")
+        ]
         self.assertEqual(status, -3, (UtilsAssembly.__file__, details))
         self.assertTrue(UtilsAssembly.violatedJointLabels(self.assembly))
 
@@ -1157,7 +1158,9 @@ class TestCore(AssemblyTestBase):
         self._fixed_distance_fixture(0)
         validators = (
             patch.dict("sys.modules", {"UtilsAssembly": None}),
-            patch("UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")),
+            patch(
+                "UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")
+            ),
             patch("UtilsAssembly.violatedJointLabels", return_value=None),
         )
         for validator in validators:
@@ -1169,9 +1172,11 @@ class TestCore(AssemblyTestBase):
         # Include joint connector placements, link elements, and touched states.
         return {
             obj.Name: (
-                {name: tuple(getattr(obj, name).toMatrix().A)
-                 for name in obj.PropertiesList
-                 if obj.getTypeIdOfProperty(name) == "App::PropertyPlacement"},
+                {
+                    name: tuple(getattr(obj, name).toMatrix().A)
+                    for name in obj.PropertiesList
+                    if obj.getTypeIdOfProperty(name) == "App::PropertyPlacement"
+                },
                 list(obj.State),
             )
             for obj in self.doc.Objects
@@ -1202,8 +1207,9 @@ class TestCore(AssemblyTestBase):
         self._placement_solve_fixture()
         self._displace_solve_lid()
         before = self._solve_placement_snapshot()
-        with patch("UtilsAssembly.violatedJointLabels",
-                   side_effect=RuntimeError("C2 validator")) as validator:
+        with patch(
+            "UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C2 validator")
+        ) as validator:
             self.assertEqual(self.assembly.solve(False), -7)
             validator.assert_called_once()
         self.assertEqual(self._solve_placement_snapshot(), before)
@@ -1263,7 +1269,9 @@ class TestCore(AssemblyTestBase):
             self.doc.saveAs(os.path.join(directory, "grounding.FCStd"))
             with patch("UtilsAssembly.violatedJointLabels", return_value=None):
                 self.assertEqual(self.assembly.solve(False), -7)
-            self.assertEqual(len([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")]), 1)
+            self.assertEqual(
+                len([o for o in self.jointgroup.Group if hasattr(o, "ObjectToGround")]), 1
+            )
             self.assertTrue(self.doc.hasPendingFileChanges())
 
     def test_rejected_solve_tracks_grounding_deletion(self):
@@ -1300,7 +1308,9 @@ class TestCore(AssemblyTestBase):
             joint("Slider", ground, rack, axis if kind == "RackPinion" else App.Rotation())
             joint("Revolute", ground, pinion, App.Rotation())
             coupling = joint(kind, pinion, rack, App.Rotation())
-            coupling.Placement2 = App.Placement(App.Vector(), axis) if kind == "RackPinion" else App.Placement()
+            coupling.Placement2 = (
+                App.Placement(App.Vector(), axis) if kind == "RackPinion" else App.Placement()
+            )
             coupling.Distance = 10
         references = (coupling.Reference1, coupling.Reference2)
         before = self._solve_placement_snapshot()
@@ -1385,7 +1395,9 @@ class TestCore(AssemblyTestBase):
 
     def test_explicit_solve_clears_recompute_validation_error(self):
         self._fixed_distance_fixture(0)
-        with patch("UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")):
+        with patch(
+            "UtilsAssembly.violatedJointLabels", side_effect=RuntimeError("C1 validator error")
+        ):
             self._recompute_solve_failure("validation could not run")
             self.assertEqual(self.assembly.solve(False), -7)
             self.assertIn("Invalid", self.assembly.State)
@@ -1408,10 +1420,19 @@ class TestCore(AssemblyTestBase):
         carrier_ref = Assembly.makeJointReference(carrier, "Face1")
         refs = [Assembly.makeJointReference(gear, "Face1") for gear in gears]
         for ref in refs:
-            Assembly.createJoint(self.assembly, "Revolute", carrier_ref, ref,
-                                 solve=False, recompute=False)
-        joint = Assembly.createJoint(self.assembly, "Gears", *refs, Distance=10, Distance2=0,
-                                     solve=False, presolve=False, recompute=False)
+            Assembly.createJoint(
+                self.assembly, "Revolute", carrier_ref, ref, solve=False, recompute=False
+            )
+        joint = Assembly.createJoint(
+            self.assembly,
+            "Gears",
+            *refs,
+            Distance=10,
+            Distance2=0,
+            solve=False,
+            presolve=False,
+            recompute=False,
+        )
         # A zero gear radius makes MbD throw, exercising SolverFailure (-1).
         self.assertEqual(self.assembly.solve(False), -1)
         self._recompute_solve_failure("Assembly solver failed")
@@ -1544,9 +1565,7 @@ class TestCore(AssemblyTestBase):
                     recompute=False,
                 )
                 status = self.assembly.solve(False)
-                alignment = abs(
-                    _plane_normal(base, "Face6").dot(_plane_normal(lid, "Face6"))
-                )
+                alignment = abs(_plane_normal(base, "Face6").dot(_plane_normal(lid, "Face6")))
                 self.assertEqual(status, 0, joint_type)
                 if joint_type == "Parallel":
                     self.assertGreater(alignment, limit, alignment)
