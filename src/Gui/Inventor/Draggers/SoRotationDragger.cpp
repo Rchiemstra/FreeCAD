@@ -344,7 +344,7 @@ SoRotationDraggerContainer::SoRotationDraggerContainer()
     FC_ADD_CATALOG_ENTRY(transform, SoTransform, draggerSwitch);
     FC_ADD_CATALOG_ENTRY(dragger, SoRotationDragger, draggerSwitch);
 
-    SO_KIT_ADD_FIELD(rotation, (0, 0, 0, 0));
+    SO_KIT_ADD_FIELD(rotation, (0, 0, 0, 1));
     SO_KIT_ADD_FIELD(color, (0, 0, 0));
     SO_KIT_ADD_FIELD(translation, (0, 0, 0));
     SO_KIT_ADD_FIELD(visible, (1));
