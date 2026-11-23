@@ -77,6 +77,8 @@ protected:
     {
         return feature.Mesh.getValue().getKernel().GetFacet(0).GetNormal().z;
     }
+    // Covers fixture construction, all Python calls, and feature destruction.
+    Base::PyGILStateLocker gil;
     ThrowingFeature feature;
     PyObject* binding {nullptr};
 };
