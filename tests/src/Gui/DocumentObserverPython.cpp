@@ -665,23 +665,40 @@ TEST_F(
 
     // Exception reporting intentionally retains the traceback for debugging.
     // Its completed callback frame owns `self` independently of the C++
-    // wrapper. Clear only the identified, completed callback frames of this
-    // test's exception, then verify no observer or callable reference remains.
-    // The traceback object and its other frames remain available for debugging.
+    // wrapper. Inspecting f_locals above can materialize a dict that itself
+    // retains self on CPython versions with cached frame-locals dictionaries.
+    // Clear that exact callback frame and its materialized dict, then verify no
+    // observer or callable reference remains. Other frames and the traceback
+    // object remain available for debugging.
     bool aReleased = false;
     bool tracebackPreserved = false;
+    std::string aReferrerKinds;
     {
         Base::PyGILStateLocker gil;
         ASSERT_TRUE(runScript(
+            "def clear_callback_frame(frame):\n"
+            "    frame_locals = frame.f_locals\n"
+            "    frame.clear()\n"
+            "    if isinstance(frame_locals, dict):\n"
+            "        frame_locals.clear()\n"
             "for callback_frame in callback_frames:\n"
-            "    callback_frame.clear()\n"
+            "    clear_callback_frame(callback_frame)\n"
             "gc.collect()\n"
             "a_released = (weak_a() is None)\n"
+            "def referrer_kinds(ref):\n"
+            "    target = ref()\n"
+            "    if target is None:\n"
+            "        return ''\n"
+            "    return ', '.join(sorted(\n"
+            "        'dict[self]' if isinstance(item, dict) and item.get('self') is target\n"
+            "        else type(item).__name__ for item in gc.get_referrers(target)))\n"
+            "a_referrer_kinds = '' if a_released else referrer_kinds(weak_a)\n"
             "traceback_preserved = (getattr(sys, 'last_traceback', None) is reported_traceback)\n"));
         aReleased = static_cast<bool>(Py::Boolean(_ns->getItem("a_released")));
+        aReferrerKinds = static_cast<std::string>(Py::String(_ns->getItem("a_referrer_kinds")));
         tracebackPreserved = static_cast<bool>(Py::Boolean(_ns->getItem("traceback_preserved")));
     }
-    EXPECT_TRUE(aReleased);
+    EXPECT_TRUE(aReleased) << "GC-visible referrer kinds: " << aReferrerKinds;
     EXPECT_TRUE(tracebackPreserved);
 
     // Event 2: D, re-registered B, and finalizer-added F receive Event 2; removed
