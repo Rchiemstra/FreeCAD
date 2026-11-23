@@ -102,6 +102,8 @@ AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
 [[nodiscard]] AppExport std::optional<DocumentCommandSnapshot>
 findTerminalCommandSnapshot(DocumentInstanceId instanceId,
                             DocumentCommandId commandId) noexcept;
+AppExport DocumentCommandRecomputeId findTerminalRecomputeIdForReturn(
+    DocumentInstanceId instanceId, DocumentCommandId commandId) noexcept;
 
 /** RAII marker for GUI dispatch wait-loop pumping (GilTryLock deadlock avoidance). */
 class AppExport DocumentExecutionLaneGuiDispatchPumpScope final
@@ -198,6 +200,7 @@ public:
     }
 
     [[nodiscard]] DocumentCommandSnapshot commandStatus(DocumentCommandId id) const;
+    [[nodiscard]] DocumentCommandRecomputeId recomputeIdForReturn(DocumentCommandId id) const noexcept;
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> recomputeStatus(
         DocumentRecomputeId id) const;
     [[nodiscard]] bool cancelCommand(DocumentCommandId id, std::string reason = {});

@@ -123,7 +123,7 @@ class AppExport DocumentCommandHandle
 public:
     DocumentCommandHandle() = default;
     explicit DocumentCommandHandle(DocumentCommandId id,
-                                   DocumentRevisionIdentityBinding document);
+                                   DocumentRevisionIdentityBinding document) noexcept;
 
     DocumentCommandHandle(const DocumentCommandHandle&) = default;
     DocumentCommandHandle& operator=(const DocumentCommandHandle&) = default;
@@ -137,6 +137,9 @@ public:
 
     /** Read-only observation that cannot advance execution or acquire locks. */
     [[nodiscard]] DocumentCommandSnapshot status() const;
+
+    // Same lookup as status(), without copying the potentially allocating snapshot.
+    [[nodiscard]] DocumentCommandRecomputeId recomputeIdForReturn() const noexcept;
 
     /** Cooperative cancellation request; safe even when the owner thread is stalled. */
     [[nodiscard]] bool cancel(std::string reason = "command cancelled by caller");

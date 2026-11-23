@@ -98,6 +98,20 @@ struct TerminalArchive
         }
     }
 
+    DocumentCommandRecomputeId recomputeId(DocumentInstanceId instanceId, DocumentCommandId commandId) const
+    {
+        std::lock_guard lock(mutex);
+        const auto it = perInstance.find(instanceId);
+        if (it != perInstance.end()) {
+            for (const auto& entry : it->second) {
+                if (entry.commandId == commandId) {
+                    return entry.snapshot.recompute ? entry.snapshot.recompute->id : 0;
+                }
+            }
+        }
+        return 0;
+    }
+
     std::optional<DocumentCommandSnapshot> find(DocumentInstanceId instanceId,
                                                  DocumentCommandId commandId) const
     {
@@ -133,6 +147,13 @@ findTerminalCommandSnapshot(DocumentInstanceId instanceId,
     catch (...) {
         return std::nullopt;
     }
+}
+
+DocumentCommandRecomputeId findTerminalRecomputeIdForReturn(
+    DocumentInstanceId instanceId, DocumentCommandId commandId) noexcept
+{
+    try { return getTerminalArchive().recomputeId(instanceId, commandId); }
+    catch (...) { return 0; }
 }
 
 DocumentExecutionClosePolicy::UnresponsiveLaneAction
@@ -630,6 +651,22 @@ DocumentCommandSnapshot DocumentExecutionLane::commandStatus(DocumentCommandId i
     unavailable.state = DocumentCommandState::Failed;
     unavailable.diagnostic = "command is not known to the execution lane";
     return unavailable;
+}
+
+DocumentCommandRecomputeId DocumentExecutionLane::recomputeIdForReturn(DocumentCommandId id) const noexcept
+{
+    try {
+        std::lock_guard lock(_mutex);
+        if (_active && _active->id == id) {
+            return _active->snapshot.recompute ? _active->snapshot.recompute->id : 0;
+        }
+        const auto found = _terminalSnapshots.find(id);
+        if (found != _terminalSnapshots.end() && found->second.recompute) {
+            return found->second.recompute->id;
+        }
+    }
+    catch (...) {}
+    return 0;
 }
 
 std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(

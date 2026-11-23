@@ -198,21 +198,56 @@ std::string buildRecomputeCoalescingKey(const std::vector<DocumentObject*>& obje
     return key;
 }
 
-PyObject* makeAcceptedCommandHandle(Document& document, const DocumentCommandSubmitOutcome& outcome)
+// Allocate the wrapper and its native storage before the lane can accept work.
+class PythonCommandAdmission
 {
-    if (!outcome.accepted()) {
-        raiseSubmitOutcome(outcome);
-    }
-    const auto identity = document.executionHandle().identity();
-    return makeDocumentCommandHandlePy(DocumentCommandHandle(outcome.commandId, identity));
-}
+public:
+    explicit PythonCommandAdmission(DocumentHandle execution)
+        : execution(std::move(execution)), identityValue(this->execution.identity()),
+          wrapper(allocate(), true) {}
 
-PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind)
+    PyObject* submit(DocumentCommand command)
+    {
+        const auto outcome = execution.trySubmit(std::move(command));
+        if (!outcome.accepted()) {
+            raiseSubmitOutcome(outcome);
+        }
+        setDocumentCommandHandlePy(wrapper.ptr(), DocumentCommandHandle(outcome.commandId, identityValue));
+        return Py::new_reference_to(wrapper);
+    }
+
+private:
+    static PyObject* allocate()
+    {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (Internal::consumeCompatibilityReceiptFaultForTesting(
+                Internal::CompatibilityReceiptFault::CommandHandleAllocation)) {
+            throw std::bad_alloc();
+        }
+#endif
+        return makeDocumentCommandHandlePy(DocumentCommandHandle());
+    }
+    DocumentHandle execution;
+    DocumentRevisionIdentityBinding identityValue;
+    Py::Object wrapper;
+};
+
+static_assert(std::is_nothrow_constructible_v<DocumentCommandHandle,
+              DocumentCommandId, DocumentRevisionIdentityBinding>);
+static_assert(std::is_nothrow_move_assignable_v<DocumentCommandHandle>);
+
+PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind,
+                              bool notifyClose = false)
 {
+    auto execution = document.executionHandle();
     DocumentCommand command;
     command.kind = kind;
-    command.document = document.executionHandle().identity();
-    return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
+    command.document = execution.identity();
+    PythonCommandAdmission admission(std::move(execution));
+    if (notifyClose) {
+        GetApplication().signalBeforeCloseDocumentAdmission(document);
+    }
+    return admission.submit(std::move(command));
 }
 
 // The synchronous Python API stays usable on the GUI thread: with an execution
@@ -226,6 +261,26 @@ void throwIfGuiThreadWithoutLane(const Document& document,
     if (!document.executionLane()) {
         DocumentWouldBlock::throwIfGuiThread(syncApi, asyncApi);
     }
+}
+
+PyObject* makeRecomputeHandlePyForAdmission(Document& document)
+{
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeHandleAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    auto value = std::make_unique<RecomputeHandle>(document, 0);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputePythonWrapperAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    auto* wrapper = new RecomputeHandlePy(value.get());
+    value.release();
+    return wrapper;
 }
 
 PyObject* submitRecomputeCommand(Document& document,
@@ -247,19 +302,36 @@ PyObject* submitRecomputeCommand(Document& document,
         }
     }
 
-    const auto outcome = document.executionHandle().trySubmit(std::move(command));
+    auto execution = document.executionHandle();
+    const auto identity = execution.identity();
+    Py::Object recomputeWrapper(makeRecomputeHandlePyForAdmission(document), true);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeCommandHandleAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    Py::Object commandWrapper(makeDocumentCommandHandlePy(DocumentCommandHandle()), true);
+    const auto outcome = execution.trySubmit(std::move(command));
     if (!outcome.accepted()) {
         raiseSubmitOutcome(outcome);
     }
 
-    const auto identity = document.executionHandle().identity();
     const DocumentCommandHandle commandHandle(outcome.commandId, identity);
-    const auto snapshot = commandHandle.status();
-    if (snapshot.recompute && snapshot.recompute->id != 0) {
-        return new RecomputeHandlePy(
-            new RecomputeHandle(document, static_cast<DocumentRecomputeId>(snapshot.recompute->id)));
+    auto recomputeId = commandHandle.recomputeIdForReturn();
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeReturnFallback)) {
+        recomputeId = 0;
     }
-    return makeDocumentCommandHandlePy(commandHandle);
+#endif
+    if (recomputeId != 0) {
+        static_cast<RecomputeHandlePy*>(recomputeWrapper.ptr())->getRecomputeHandlePtr()
+            ->bindAdmissionId(static_cast<DocumentRecomputeId>(recomputeId));
+        return Py::new_reference_to(recomputeWrapper);
+    }
+    setDocumentCommandHandlePy(commandWrapper.ptr(), commandHandle);
+    return Py::new_reference_to(commandWrapper);
 }
 
 const char* saveDispositionName(const DocumentSaveDisposition disposition)
@@ -902,7 +974,7 @@ PyObject* DocumentPy::saveAsync(PyObject* args)
             }
         }
 
-        return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
+        return PythonCommandAdmission(document.executionHandle()).submit(std::move(command));
     }
     PY_CATCH;
 }
@@ -1847,9 +1919,7 @@ PyObject* DocumentPy::commitEditAsync(PyObject* args)
             raiseUnsupportedSubmit(
                 "prepared edit cannot be encoded as a pointer-free document command");
         }
-        return makeAcceptedCommandHandle(
-            *getDocumentPtr(),
-            getDocumentPtr()->executionHandle().trySubmit(std::move(*command)));
+        return PythonCommandAdmission(getDocumentPtr()->executionHandle()).submit(std::move(*command));
     }
     PY_CATCH;
 }
@@ -2497,14 +2567,9 @@ PyObject* DocumentPy::closeAsync(PyObject* args)
         if (!getDocumentPtr()->executionLane()) {
             DocumentWouldBlock::throwIfGuiThread("FreeCAD.closeDocument()", "Document.closeAsync()");
         }
-        if (DocumentWouldBlock::isGuiThread()) {
-            // Completed recovery IO can still retain its GUI lifecycle pin
-            // until the executor polls completion. Cancel before Close is
-            // admitted, just as synchronous Python close does. Running IO
-            // retains its own pin and keeps admission Busy until it retires.
-            GetApplication().signalBeforeCloseDocumentAdmission(*getDocumentPtr());
-        }
-        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close);
+        // The existing GUI recovery notification still precedes admission.
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close,
+                                   DocumentWouldBlock::isGuiThread());
     }
     PY_CATCH;
 }
@@ -2668,8 +2733,11 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
             return submitRecomputeCommand(
                 *getDocumentPtr(), objs, Base::asBoolean(force), options);
         }
+        Py::Object wrapper(makeRecomputeHandlePyForAdmission(*getDocumentPtr()), true);
         auto handle = getDocumentPtr()->recomputeAsync(objs, Base::asBoolean(force), options);
-        return new RecomputeHandlePy(handle.release());
+        static_cast<RecomputeHandlePy*>(wrapper.ptr())->getRecomputeHandlePtr()
+            ->bindAdmissionId(handle->id());
+        return Py::new_reference_to(wrapper);
     }
     PY_CATCH;
 }

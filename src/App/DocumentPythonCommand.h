@@ -12,13 +12,16 @@ namespace App
 {
 
 AppExport PyObject* makeDocumentCommandHandlePy(const DocumentCommandHandle& handle);
+AppExport void setDocumentCommandHandlePy(PyObject* wrapper, DocumentCommandHandle handle) noexcept;
 
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 namespace Internal {
 enum class CompatibilityReceiptFault {
     None, CompatibilityFutureAllocation, CompatibilityStateAllocation,
     CompatibilityCapsuleAllocation, CompatibilityCallableAllocation,
-    CompatibilityDictionaryAllocation, CompatibilityResultConversion
+    CompatibilityDictionaryAllocation, CompatibilityResultConversion, CommandHandleAllocation,
+    RecomputeHandleAllocation, RecomputePythonWrapperAllocation,
+    RecomputeCommandHandleAllocation, RecomputeReturnFallback
 };
 using CompatibilityWaitHook = void (*)() noexcept;
 AppExport void setCompatibilityWaitHookForTesting(CompatibilityWaitHook hook) noexcept;
