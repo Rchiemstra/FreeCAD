@@ -38,6 +38,8 @@ add_executable(Gui_tests_run
         OverlayTitleBarDrag.cpp
         DocumentExecutionWaitTestHelpers.cpp
         GuiPythonGate.cpp
+        # Repeated gate/observer runs must cover hooks cleared with Gui alive.
+        DocumentObserverPython.cpp
         UpdateGuiThread.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp

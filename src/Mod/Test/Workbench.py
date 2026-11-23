@@ -25,6 +25,8 @@
 
 import FreeCAD, FreeCADGui, os, unittest
 import tempfile
+import subprocess
+import time
 
 from PySide import QtWidgets, QtCore
 from PySide.QtWidgets import QApplication
@@ -128,15 +130,148 @@ class TestNavigationStyle(unittest.TestCase):
         self.Doc = FreeCAD.newDocument("CreateTest")
         self.View = FreeCADGui.getDocument(self.Doc).ActiveView
 
+    def test00ViewerNoArgMethodBeforeAndAfterVarargs(self):
+        viewer = self.View.getViewer()
+        self.assertFalse(viewer.isSpinning())
+        with self.assertRaises(TypeError):
+            viewer.isSpinning(True)
+        self.assertIsNotNone(viewer.getNavigationStyle())
+        self.assertFalse(viewer.isSpinning())
+
+    def test01ViewerDispatchOrdersInFreshProcesses(self):
+        # The handler caches are process-wide. Each child starts a fresh
+        # interpreter so the two access orders exercise independent caches.
+        marker = "FREECAD_TEST_VIEWER_DISPATCH_ORDER"
+        order = os.environ.get(marker)
+        if order:
+            viewer = self.View.getViewer()
+            if order == "noargs-first":
+                self.assertFalse(viewer.isSpinning())
+                self.assertIsNotNone(viewer.getNavigationStyle())
+            elif order == "varargs-first":
+                self.assertIsNotNone(viewer.getNavigationStyle())
+                self.assertFalse(viewer.isSpinning())
+            else:
+                self.fail("unexpected dispatcher test order")
+            with self.assertRaises(TypeError):
+                viewer.isSpinning(True)
+            with self.assertRaises(ValueError):
+                viewer.setPickRadius(-1)
+            with self.assertRaises(TypeError):
+                viewer.renderToImage(unknown=True)
+            image = viewer.renderToImage(width=32, height=24, samples=0)
+            self.assertFalse(image.isNull())
+            self.assertEqual((image.width(), image.height()), (32, 24))
+            self.assertFalse(viewer.isSpinning())
+            return
+
+        for order in ("noargs-first", "varargs-first"):
+            with self.subTest(order=order):
+                environment = os.environ.copy()
+                environment[marker] = order
+                with tempfile.TemporaryDirectory(prefix="freecad-viewer-order-") as home:
+                    environment["FREECAD_USER_HOME"] = home
+                    result = subprocess.run(
+                        [QtCore.QCoreApplication.applicationFilePath(), "-t",
+                         "Workbench.TestNavigationStyle.test01ViewerDispatchOrdersInFreshProcesses"],
+                        env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, timeout=60, check=False,
+                    )
+                output = result.stdout
+                self.assertEqual(result.returncode, 0, output)
+                self.assertIn("Ran 1 test in ", output)
+                self.assertIn("\nOK\n", output)
+                self.assertNotIn("skipped=", output.lower())
+                # Preserve all child diagnostics for the outer CI log gate.
+                for line in output.splitlines():
+                    print("viewer-dispatch-child: " + line)
+
+    def testSavedViewerMethodsRejectDestroyedView(self):
+        from Test.GuiRecompute import close_document
+
+        document = FreeCAD.newDocument("SavedViewerMethodLifetime")
+        try:
+            gui_document = FreeCADGui.getDocument(document)
+            view = gui_document.ActiveView
+            viewer = view.getViewer()
+            widget = view.graphicsView()
+            destroyed = []
+            widget.destroyed.connect(lambda *_args: destroyed.append(True))
+
+            noargs = viewer.isSpinning
+            varargs = viewer.getNavigationStyle
+            keywords = viewer.renderToImage
+            self.assertFalse(noargs())
+            self.assertIsNotNone(varargs())
+            with self.assertRaises(TypeError):
+                keywords(unknown=True)
+
+            close_document(document)
+            deadline = time.monotonic() + 10.0
+            while not destroyed and time.monotonic() < deadline:
+                QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+                QtWidgets.QApplication.processEvents()
+                time.sleep(0.01)
+            self.assertTrue(destroyed, "viewer QObject was not destroyed")
+            for method, args, kw in ((noargs, (), {}),
+                                     (varargs, (), {}),
+                                     (keywords, (), {"width": 32, "height": 24})):
+                with self.subTest(method=method.__name__):
+                    with self.assertRaisesRegex(RuntimeError, "deleted viewer"):
+                        method(*args, **kw)
+        finally:
+            # close_document is idempotent if the normal close already finished.
+            close_document(document)
+
     def testInvalidStyle(self):
-        self.View.setNavigationType("App::Extension")
-        self.assertNotEqual(self.View.getNavigationType(), "App::Extension")
+        # Coin deliberately reports this invalid call as a debug warning.
+        # Exercise it in a child FreeCAD process so the warning can be
+        # asserted precisely without being confused with unexpected warnings
+        # from the rest of this registered GUI suite.
+        marker = "FREECAD_TEST_INVALID_NAVIGATION_CHILD"
+        if os.environ.get(marker) == "1":
+            original = self.View.getNavigationType()
+            self.View.setNavigationType("App::Extension")
+            self.assertEqual(self.View.getNavigationType(), original)
+            return
+
+        environment = os.environ.copy()
+        environment[marker] = "1"
+        with tempfile.TemporaryDirectory(prefix="freecad-nav-warning-") as home:
+            environment["FREECAD_USER_HOME"] = home
+            result = subprocess.run(
+                [QtCore.QCoreApplication.applicationFilePath(), "-t",
+                 "Workbench.TestNavigationStyle.testInvalidStyle"],
+                env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=60, check=False,
+            )
+        output = result.stdout
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Ran 1 test in ", output)
+        self.assertIn("\nOK\n", output)
+        self.assertNotIn("skipped=", output.lower())
+        diagnostics = [line for line in output.splitlines()
+                       if "Coin warning" in line or "Coin error" in line]
+        expected = ("Coin warning in View3DInventorViewer::setNavigationType(): "
+                    "Navigation object must be of type NavigationStyle.")
+        if FreeCAD.ConfigGet("Debug") == "1":
+            self.assertEqual(diagnostics, [expected], output)
+        else:
+            self.assertEqual(diagnostics, [], output)
+        # Relay all other output so the enclosing CI log gate still sees any
+        # unexpected Qt, VTK, Coin or FreeCAD diagnostics from the child.
+        for line in output.splitlines():
+            if line != expected:
+                print("navigation-negative-child: " + line)
 
     def testOrientationLockBlocksProgrammaticOrientationChanges(self):
         viewer = self.View.getViewer()
         navigation = viewer.getNavigationStyle()
+        self.View.setAnimationEnabled(False)
         initial = self.View.getCameraOrientation()
-        target = (0.0, 0.70710678, 0.0, 0.70710678)
+        target_rotation = initial.multiply(FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 90))
+        self.assertFalse(target_rotation.isSame(initial, 1e-6))
+        target = target_rotation.Q
 
         navigation.setOrientationLocked(True)
         self.View.setViewDirection((1.0, 0.0, 0.0))
@@ -180,10 +315,12 @@ class TestNavigationStyle(unittest.TestCase):
         styles = [style for style in self.View.listNavigationTypes() if style != current]
 
         self.assertTrue(styles)
+        self.assertNotIn("Gui::NavigationStateChart", styles)
         navigation.setRotationEnabled(False)
         navigation.setOrientationLocked(True)
 
         self.View.setNavigationType(styles[0])
+        self.assertEqual(self.View.getNavigationType(), styles[0])
         navigation = viewer.getNavigationStyle()
 
         self.assertFalse(navigation.isRotationEnabled())
