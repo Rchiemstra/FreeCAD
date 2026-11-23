@@ -5,7 +5,7 @@
 # KDE Neon Qt6/PySide6 apt repo and installs the full FreeCAD build dependency
 # set (Qt6, OCCT, Python3.12 dev, Boost, VTK, PCL, Eigen, Xerces, etc.)
 # plus build-essential, ccache, ninja, cmake and xvfb. On top of that it adds
-# clang-format, python3-pip and git which the CI steps need but the apt script
+# clang, clang-format, python3-pip and git which the CI steps need but the apt script
 # does not pull in.
 #
 # This is the image every FreeCAD-track build/test step runs in, AND the base for
@@ -43,6 +43,7 @@ RUN /tmp/install-apt-packages.sh \
     && rm -rf /var/lib/apt/lists/*
 
 # Extra tools the CI steps need that the apt script does not pull in:
+#   clang        - independent C++ compiler check
 #   clang-format - C++ formatting check
 #   python3-pip  - MCP editable install + pytest in the MCP child image
 #   git          - changed-files detection in lint/build steps
@@ -57,6 +58,7 @@ RUN /tmp/install-apt-packages.sh \
 #                  installed version lacks that API.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+         clang \
          clang-format \
          python3-pip \
          python3-yaml \
