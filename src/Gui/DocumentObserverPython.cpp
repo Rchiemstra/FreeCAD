@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 #include <Base/Interpreter.h>
+#include <Python.h>
 
 #include "Application.h"
 #include "Document.h"
@@ -32,11 +33,16 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 
 using namespace Gui;
@@ -46,97 +52,50 @@ namespace
 
 thread_local void (*beforeDeferredIdentityCopyForTest)() = nullptr;
 
-std::string nextObserverToken()
+struct ObserverEntry
 {
-    static std::atomic<std::uint64_t> nextId {1};
-    auto id = nextId.load(std::memory_order_relaxed);
-    do {
-        if (id == std::numeric_limits<std::uint64_t>::max()) {
-            throw std::overflow_error("GUI observer registration identities exhausted");
-        }
-    } while (!nextId.compare_exchange_weak(
-        id, id + 1, std::memory_order_relaxed, std::memory_order_relaxed));
-    return std::string("gui-observer-") + std::to_string(id);
+    std::uint64_t id {0};
+    std::shared_ptr<DocumentObserverPython> observer;
+};
+
+struct ObserverRegistry
+{
+    std::uint64_t nextId {1};
+    std::vector<ObserverEntry> entries;
+};
+
+// All accesses to observerRegistry() are serialized by the Python GIL:
+// - addObserver() and removeObserver() hold Base::PyGILStateLocker.
+// - deliverDeferredValueEvent() is invoked by GuiPythonGate::pumpQueuedCallbacks()
+//   under its existing GilTryLock scope and verifies PyGILState_Check().
+// - Registered fastsignals slots look up entries only inside GuiPythonGate::tryAdmit()'s
+//   admitted callback, which runs under GilTryLock's existing GIL scope.
+//
+// No iterator or reference into registry.entries may be held across any Python
+// execution (__getattr__, __eq__, Base::pyCall, or Py_DECREF/__del__), because
+// Python code may re-entrantly mutate the registry or temporarily release the GIL.
+//
+// Intentional process-lifetime storage: observers never explicitly removed
+// before Base::Interpreter().finalize() / Py_Finalize() remain allocated for
+// process lifetime so post-finalization C++ static destruction never calls
+// ~Py::Object() / Py_DECREF on a finalized interpreter (matching the historical
+// raw-pointer _instances vector).
+ObserverRegistry& observerRegistry()
+{
+    static auto* registry = new ObserverRegistry;
+    return *registry;
 }
 
-}  // namespace
-
-std::vector<DocumentObserverPython*> DocumentObserverPython::_instances;
-
-void DocumentObserverPython::addObserver(const Py::Object& obj)
+// Precondition: Py_IsInitialized() && PyGILState_Check().
+std::shared_ptr<DocumentObserverPython> findRegisteredObserver(const std::uint64_t registrationId)
 {
-    _instances.push_back(new DocumentObserverPython(obj));
+    auto& registry = observerRegistry();
+    const auto it = std::find_if(
+        registry.entries.begin(),
+        registry.entries.end(),
+        [registrationId](const ObserverEntry& entry) { return entry.id == registrationId; });
+    return (it != registry.entries.end()) ? it->observer : nullptr;
 }
-
-void DocumentObserverPython::removeObserver(const Py::Object& obj)
-{
-    DocumentObserverPython* obs = nullptr;
-    for (std::vector<DocumentObserverPython*>::iterator it = _instances.begin();
-         it != _instances.end();
-         ++it) {
-        if ((*it)->inst == obj) {
-            obs = *it;
-            _instances.erase(it);
-            break;
-        }
-    }
-
-    delete obs;
-}
-
-DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
-    : inst(obj)
-    , observerToken(nextObserverToken())
-{
-    // Each copied signal callable owns its token. The static slots only use
-    // observer inside the immediate Python callback; deferred admission never
-    // dereferences a registration that removal may already have destroyed.
-    // NOLINTBEGIN
-#define FC_PY_ELEMENT_ARG1(_name1, _name2) \
-    do { \
-        FC_PY_GetCallable(obj.ptr(), "slot" #_name1, py##_name1.py); \
-        if (!py##_name1.py.isNone()) \
-            py##_name1.slot = Application::Instance->signal##_name2.connect( \
-                [this, token = observerToken](const auto& value, const auto&...) { \
-                    slot##_name1(this, token, value); \
-                } \
-            ); \
-    } while (0);
-
-#define FC_PY_ELEMENT_ARG2(_name1, _name2) \
-    do { \
-        FC_PY_GetCallable(obj.ptr(), "slot" #_name1, py##_name1.py); \
-        if (!py##_name1.py.isNone()) \
-            py##_name1.slot = Application::Instance->signal##_name2.connect( \
-                [this, token = observerToken](const auto& value, const auto& property) { \
-                    slot##_name1(this, token, value, property); \
-                } \
-            ); \
-    } while (0);
-
-    FC_PY_ELEMENT_ARG1(CreatedDocument, NewDocument)
-    FC_PY_ELEMENT_ARG1(DeletedDocument, DeleteDocument)
-    FC_PY_ELEMENT_ARG1(RelabelDocument, RelabelDocument)
-    FC_PY_ELEMENT_ARG1(RenameDocument, RenameDocument)
-    FC_PY_ELEMENT_ARG1(ActivateDocument, ActiveDocument)
-    FC_PY_ELEMENT_ARG1(CreatedObject, NewObject)
-    FC_PY_ELEMENT_ARG1(DeletedObject, DeletedObject)
-    FC_PY_ELEMENT_ARG2(BeforeChangeObject, BeforeChangeObject)
-    FC_PY_ELEMENT_ARG2(ChangedObject, ChangedObject)
-    FC_PY_ELEMENT_ARG1(InEdit, InEdit)
-    FC_PY_ELEMENT_ARG1(ResetEdit, ResetEdit)
-    // NOLINTEND
-}
-
-DocumentObserverPython::~DocumentObserverPython() = default;
-
-void DocumentObserverPython::setBeforeDeferredIdentityCopyForTest(void (*hook)())
-{
-    beforeDeferredIdentityCopyForTest = hook;
-}
-
-namespace
-{
 
 std::string escapeJsonString(std::string_view value)
 {
@@ -174,6 +133,15 @@ std::string jsonStringField(const std::string& payloadJson, const char* key)
     return value;
 }
 
+std::string makeDocumentPayloadJson(const Gui::Document& doc)
+{
+    std::string documentName;
+    if (const auto* appDocument = doc.getDocument()) {
+        documentName = appDocument->getName();
+    }
+    return std::string(R"({"document":")") + escapeJsonString(documentName) + R"("})";
+}
+
 std::string makeObjectPayloadJson(const Gui::ViewProvider& view)
 {
     std::string documentName;
@@ -190,18 +158,96 @@ std::string makeObjectPayloadJson(const Gui::ViewProvider& view)
         + escapeJsonString(objectName) + R"("})";
 }
 
+std::string makePropertyPayloadJson(const Gui::ViewProvider& view, const char* propName)
+{
+    const std::string payload = makeObjectPayloadJson(view);
+    return payload.substr(0, payload.size() - 1) + R"(,"property":")" + escapeJsonString(propName)
+        + R"("})";
+}
+
+void invokeDocumentSlot(const Py::Object& slotCallable, const Gui::Document& doc)
+{
+    try {
+        const Py::Object callable = slotCallable;
+        if (callable.isNone()) {
+            return;
+        }
+        Py::Tuple args(1);
+        args.setItem(0, Py::asObject(const_cast<Gui::Document&>(doc).getPyObject()));
+        Base::pyCall(callable.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
+        e.reportException();
+    }
+}
+
+void invokeObjectSlot(const Py::Object& slotCallable, const Gui::ViewProvider& obj)
+{
+    try {
+        const Py::Object callable = slotCallable;
+        if (callable.isNone()) {
+            return;
+        }
+        Py::Tuple args(1);
+        args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(obj).getPyObject()));
+        Base::pyCall(callable.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
+        e.reportException();
+    }
+}
+
+void invokePropertySlot(
+    const Py::Object& slotCallable,
+    const Gui::ViewProvider& obj,
+    const char* propName)
+{
+    try {
+        const Py::Object callable = slotCallable;
+        if (callable.isNone()) {
+            return;
+        }
+        Py::Tuple args(2);
+        args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(obj).getPyObject()));
+        args.setItem(1, Py::String(propName));
+        Base::pyCall(callable.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
+        e.reportException();
+    }
+}
+
+void invokeEditSlot(const Py::Object& slotCallable, const Gui::ViewProviderDocumentObject& obj)
+{
+    try {
+        const Py::Object callable = slotCallable;
+        if (callable.isNone()) {
+            return;
+        }
+        Py::Tuple args(1);
+        args.setItem(
+            0,
+            Py::asObject(const_cast<Gui::ViewProviderDocumentObject&>(obj).getPyObject()));
+        Base::pyCall(callable.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
+        e.reportException();
+    }
+}
+
 template<typename Fn>
-void admitObserverDelivery(
-    Fn&& fn,
-    const std::string& observerToken,
-    const char* eventKind,
-    const std::string& payloadJson)
+void admitObserverDelivery(Fn&& fn, const char* eventKind, const std::string& payloadJson,
+                           const std::string& observerToken = {})
 {
     const auto outcome = GuiPythonGate::tryAdmit(
         GuiPythonGateCallbackKind::ObserverDelivery,
         std::forward<Fn>(fn));
     if (outcome.queued()) {
-        if (beforeDeferredIdentityCopyForTest) {
+        if (!observerToken.empty() && beforeDeferredIdentityCopyForTest) {
             beforeDeferredIdentityCopyForTest();
         }
         GuiPythonObserverValueEvent event;
@@ -212,26 +258,483 @@ void admitObserverDelivery(
     }
 }
 
+template<typename Fn>
+void admitRegisteredObserverDelivery(
+    const std::uint64_t registrationId,
+    Fn&& fn,
+    const char* eventKind,
+    const std::string& payloadJson)
+{
+    admitObserverDelivery(
+        [registrationId, &fn]() {
+            if (!Py_IsInitialized() || !PyGILState_Check()) {
+                return;
+            }
+            std::shared_ptr<DocumentObserverPython> observer =
+                findRegisteredObserver(registrationId);
+            if (!observer) {
+                return;
+            }
+            fn(*observer);
+            // `observer` drops here before returning from GuiPythonGate::tryAdmit(),
+            // so even on self-removal every Py::Object member is released inside
+            // tryAdmit()'s existing GilTryLock scope.
+        },
+        eventKind,
+        payloadJson,
+        std::to_string(registrationId));
+}
+
 }  // namespace
+
+void DocumentObserverPython::addObserver(const Py::Object& obj)
+{
+    if (!Py_IsInitialized()) {
+        return;
+    }
+    Base::PyGILStateLocker lock;
+
+    std::shared_ptr<DocumentObserverPython> observer(
+        new DocumentObserverPython(obj, DeferConnectTag {}));
+
+    auto& registry = observerRegistry();
+    // Reserve capacity before connecting slots so appending the new entry
+    // cannot throw or trigger observer destruction mid-mutation.
+    registry.entries.reserve(registry.entries.size() + 1);
+    if (registry.nextId == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("GUI observer registration identities exhausted");
+    }
+    const std::uint64_t id = registry.nextId++;
+    observer->connectRegisteredSlots(id);
+    registry.entries.push_back(ObserverEntry {id, std::move(observer)});
+}
+
+void DocumentObserverPython::removeObserver(const Py::Object& obj)
+{
+    if (!Py_IsInitialized()) {
+        return;
+    }
+    Base::PyGILStateLocker lock;
+
+    auto& registry = observerRegistry();
+    // Snapshot entries before Python equality (__eq__), which may re-entrantly
+    // mutate registry.entries or temporarily release the GIL.
+    std::vector<ObserverEntry> snapshot = registry.entries;
+
+    std::uint64_t matchedId = 0;
+    for (const auto& entry : snapshot) {
+        if (entry.observer->inst == obj) {
+            matchedId = entry.id;
+            break;
+        }
+    }
+    // Release snapshot references before searching/erasing registry.entries so
+    // any Python __del__ finalizer for an entry already removed during __eq__
+    // runs with no registry iterators held.
+    snapshot.clear();
+
+    if (matchedId == 0) {
+        return;
+    }
+
+    std::shared_ptr<DocumentObserverPython> removed;
+    const auto it = std::find_if(
+        registry.entries.begin(),
+        registry.entries.end(),
+        [matchedId](const ObserverEntry& entry) { return entry.id == matchedId; });
+    if (it != registry.entries.end()) {
+        // Move the shared_ptr out before vector::erase so erase never invokes
+        // ~DocumentObserverPython() or Python finalizers while shifting elements.
+        removed = std::move(it->observer);
+        removed->deactivate();
+        registry.entries.erase(it);
+    }
+
+    if (removed) {
+        removed->disconnectSlots();
+    }
+    // `removed` drops here under the active GIL with registry.entries already
+    // updated and all slots disconnected.
+}
+
+DocumentObserverPython::DocumentObserverPython(const Py::Object& obj, DeferConnectTag)
+    : inst(obj)
+{
+    // NOLINTBEGIN
+#define FC_PY_GET_SLOT_CALLABLE(_name) \
+    FC_PY_GetCallable(obj.ptr(), "slot" #_name, py##_name.py)
+
+    FC_PY_GET_SLOT_CALLABLE(CreatedDocument);
+    FC_PY_GET_SLOT_CALLABLE(DeletedDocument);
+    FC_PY_GET_SLOT_CALLABLE(RelabelDocument);
+    FC_PY_GET_SLOT_CALLABLE(RenameDocument);
+    FC_PY_GET_SLOT_CALLABLE(ActivateDocument);
+    FC_PY_GET_SLOT_CALLABLE(CreatedObject);
+    FC_PY_GET_SLOT_CALLABLE(DeletedObject);
+    FC_PY_GET_SLOT_CALLABLE(BeforeChangeObject);
+    FC_PY_GET_SLOT_CALLABLE(ChangedObject);
+    FC_PY_GET_SLOT_CALLABLE(InEdit);
+    FC_PY_GET_SLOT_CALLABLE(ResetEdit);
+#undef FC_PY_GET_SLOT_CALLABLE
+    // NOLINTEND
+}
+
+DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
+    : DocumentObserverPython(obj, DeferConnectTag {})
+{
+    connectDirectSlots();
+}
+
+DocumentObserverPython::~DocumentObserverPython()
+{
+    deactivate();
+    disconnectSlots();
+}
+
+void DocumentObserverPython::connectDirectSlots()
+{
+    if (!Application::Instance) {
+        return;
+    }
+    auto* app = Application::Instance;
+    if (!pyCreatedDocument.py.isNone()) {
+        pyCreatedDocument.slot = app->signalNewDocument.connect(
+            [this](const Gui::Document& doc, bool) { slotCreatedDocument(doc); });
+    }
+    if (!pyDeletedDocument.py.isNone()) {
+        pyDeletedDocument.slot = app->signalDeleteDocument.connect(
+            [this](const Gui::Document& doc) { slotDeletedDocument(doc); });
+    }
+    if (!pyRelabelDocument.py.isNone()) {
+        pyRelabelDocument.slot = app->signalRelabelDocument.connect(
+            [this](const Gui::Document& doc) { slotRelabelDocument(doc); });
+    }
+    if (!pyRenameDocument.py.isNone()) {
+        pyRenameDocument.slot = app->signalRenameDocument.connect(
+            [this](const Gui::Document& doc) { slotRenameDocument(doc); });
+    }
+    if (!pyActivateDocument.py.isNone()) {
+        pyActivateDocument.slot = app->signalActiveDocument.connect(
+            [this](const Gui::Document& doc) { slotActivateDocument(doc); });
+    }
+    if (!pyCreatedObject.py.isNone()) {
+        pyCreatedObject.slot = app->signalNewObject.connect(
+            [this](const Gui::ViewProvider& view) { slotCreatedObject(view); });
+    }
+    if (!pyDeletedObject.py.isNone()) {
+        pyDeletedObject.slot = app->signalDeletedObject.connect(
+            [this](const Gui::ViewProvider& view) { slotDeletedObject(view); });
+    }
+    if (!pyBeforeChangeObject.py.isNone()) {
+        pyBeforeChangeObject.slot = app->signalBeforeChangeObject.connect(
+            [this](const Gui::ViewProvider& view, const App::Property& prop) {
+                slotBeforeChangeObject(view, prop);
+            });
+    }
+    if (!pyChangedObject.py.isNone()) {
+        pyChangedObject.slot = app->signalChangedObject.connect(
+            [this](const Gui::ViewProvider& view, const App::Property& prop) {
+                slotChangedObject(view, prop);
+            });
+    }
+    if (!pyInEdit.py.isNone()) {
+        pyInEdit.slot = app->signalInEdit.connect(
+            [this](const Gui::ViewProviderDocumentObject& view) { slotInEdit(view); });
+    }
+    if (!pyResetEdit.py.isNone()) {
+        pyResetEdit.slot = app->signalResetEdit.connect(
+            [this](const Gui::ViewProviderDocumentObject& view) { slotResetEdit(view); });
+    }
+}
+
+void DocumentObserverPython::connectRegisteredSlots(const std::uint64_t registrationId)
+{
+    activeFlag = std::make_shared<std::atomic<bool>>(true);
+    if (!Application::Instance) {
+        return;
+    }
+    auto* app = Application::Instance;
+    const auto flag = activeFlag;
+
+    if (!pyCreatedDocument.py.isNone()) {
+        pyCreatedDocument.slot = app->signalNewDocument.connect(
+            [registrationId, flag](const Gui::Document& doc, bool) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&doc](DocumentObserverPython& self) {
+                        invokeDocumentSlot(self.pyCreatedDocument.py, doc);
+                    },
+                    "CreatedDocument",
+                    makeDocumentPayloadJson(doc));
+            });
+    }
+    if (!pyDeletedDocument.py.isNone()) {
+        pyDeletedDocument.slot = app->signalDeleteDocument.connect(
+            [registrationId, flag](const Gui::Document& doc) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&doc](DocumentObserverPython& self) {
+                        invokeDocumentSlot(self.pyDeletedDocument.py, doc);
+                    },
+                    "DeletedDocument",
+                    makeDocumentPayloadJson(doc));
+            });
+    }
+    if (!pyRelabelDocument.py.isNone()) {
+        pyRelabelDocument.slot = app->signalRelabelDocument.connect(
+            [registrationId, flag](const Gui::Document& doc) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&doc](DocumentObserverPython& self) {
+                        invokeDocumentSlot(self.pyRelabelDocument.py, doc);
+                    },
+                    "RelabelDocument",
+                    makeDocumentPayloadJson(doc));
+            });
+    }
+    if (!pyRenameDocument.py.isNone()) {
+        pyRenameDocument.slot = app->signalRenameDocument.connect(
+            [registrationId, flag](const Gui::Document& doc) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&doc](DocumentObserverPython& self) {
+                        invokeDocumentSlot(self.pyRenameDocument.py, doc);
+                    },
+                    "RenameDocument",
+                    makeDocumentPayloadJson(doc));
+            });
+    }
+    if (!pyActivateDocument.py.isNone()) {
+        pyActivateDocument.slot = app->signalActiveDocument.connect(
+            [registrationId, flag](const Gui::Document& doc) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&doc](DocumentObserverPython& self) {
+                        invokeDocumentSlot(self.pyActivateDocument.py, doc);
+                    },
+                    "ActivateDocument",
+                    makeDocumentPayloadJson(doc));
+            });
+    }
+    if (!pyCreatedObject.py.isNone()) {
+        pyCreatedObject.slot = app->signalNewObject.connect(
+            [registrationId, flag](const Gui::ViewProvider& view) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view](DocumentObserverPython& self) {
+                        invokeObjectSlot(self.pyCreatedObject.py, view);
+                    },
+                    "CreatedObject",
+                    makeObjectPayloadJson(view));
+            });
+    }
+    if (!pyDeletedObject.py.isNone()) {
+        pyDeletedObject.slot = app->signalDeletedObject.connect(
+            [registrationId, flag](const Gui::ViewProvider& view) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view](DocumentObserverPython& self) {
+                        invokeObjectSlot(self.pyDeletedObject.py, view);
+                    },
+                    "DeletedObject",
+                    makeObjectPayloadJson(view));
+            });
+    }
+    if (!pyBeforeChangeObject.py.isNone()) {
+        pyBeforeChangeObject.slot = app->signalBeforeChangeObject.connect(
+            [registrationId, flag](const Gui::ViewProvider& view, const App::Property& prop) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                const char* propName = view.getPropertyName(&prop);
+                if (!propName) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view, propName](DocumentObserverPython& self) {
+                        invokePropertySlot(self.pyBeforeChangeObject.py, view, propName);
+                    },
+                    "BeforeChangeObject",
+                    makePropertyPayloadJson(view, propName));
+            });
+    }
+    if (!pyChangedObject.py.isNone()) {
+        pyChangedObject.slot = app->signalChangedObject.connect(
+            [registrationId, flag](const Gui::ViewProvider& view, const App::Property& prop) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                const char* propName = view.getPropertyName(&prop);
+                if (!propName) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view, propName](DocumentObserverPython& self) {
+                        invokePropertySlot(self.pyChangedObject.py, view, propName);
+                    },
+                    "ChangedObject",
+                    makePropertyPayloadJson(view, propName));
+            });
+    }
+    if (!pyInEdit.py.isNone()) {
+        pyInEdit.slot = app->signalInEdit.connect(
+            [registrationId, flag](const Gui::ViewProviderDocumentObject& view) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view](DocumentObserverPython& self) {
+                        invokeEditSlot(self.pyInEdit.py, view);
+                    },
+                    "InEdit",
+                    makeObjectPayloadJson(view));
+            });
+    }
+    if (!pyResetEdit.py.isNone()) {
+        pyResetEdit.slot = app->signalResetEdit.connect(
+            [registrationId, flag](const Gui::ViewProviderDocumentObject& view) {
+                if (!flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                admitRegisteredObserverDelivery(
+                    registrationId,
+                    [&view](DocumentObserverPython& self) {
+                        invokeEditSlot(self.pyResetEdit.py, view);
+                    },
+                    "ResetEdit",
+                    makeObjectPayloadJson(view));
+            });
+    }
+}
+
+void DocumentObserverPython::deactivate() noexcept
+{
+    if (activeFlag) {
+        activeFlag->store(false, std::memory_order_release);
+    }
+}
+
+void DocumentObserverPython::disconnectSlots() noexcept
+{
+    pyCreatedDocument.slot.disconnect();
+    pyDeletedDocument.slot.disconnect();
+    pyRelabelDocument.slot.disconnect();
+    pyRenameDocument.slot.disconnect();
+    pyActivateDocument.slot.disconnect();
+    pyCreatedObject.slot.disconnect();
+    pyDeletedObject.slot.disconnect();
+    pyBeforeChangeObject.slot.disconnect();
+    pyChangedObject.slot.disconnect();
+    pyInEdit.slot.disconnect();
+    pyResetEdit.slot.disconnect();
+}
+
+Py::Object DocumentObserverPython::callableForEventKind(std::string_view eventKind) const
+{
+    if (eventKind == "CreatedDocument") {
+        return pyCreatedDocument.py;
+    }
+    if (eventKind == "DeletedDocument") {
+        return pyDeletedDocument.py;
+    }
+    if (eventKind == "RelabelDocument") {
+        return pyRelabelDocument.py;
+    }
+    if (eventKind == "RenameDocument") {
+        return pyRenameDocument.py;
+    }
+    if (eventKind == "ActivateDocument") {
+        return pyActivateDocument.py;
+    }
+    if (eventKind == "CreatedObject") {
+        return pyCreatedObject.py;
+    }
+    if (eventKind == "DeletedObject") {
+        return pyDeletedObject.py;
+    }
+    if (eventKind == "BeforeChangeObject") {
+        return pyBeforeChangeObject.py;
+    }
+    if (eventKind == "ChangedObject") {
+        return pyChangedObject.py;
+    }
+    if (eventKind == "InEdit") {
+        return pyInEdit.py;
+    }
+    if (eventKind == "ResetEdit") {
+        return pyResetEdit.py;
+    }
+    return Py::None();
+}
+
+void DocumentObserverPython::setBeforeDeferredIdentityCopyForTest(void (*hook)())
+{
+    beforeDeferredIdentityCopyForTest = hook;
+}
+
+std::string DocumentObserverPython::observerTokenForTest(PyObject* object)
+{
+    // Test-only access, called with the GIL held and without Python equality.
+    for (const auto& entry : observerRegistry().entries) {
+        if (entry.observer->inst.ptr() == object) return std::to_string(entry.id);
+    }
+    return {};
+}
 
 void DocumentObserverPython::installValueEventHandler()
 {
     GuiPythonGate::setObserverValueEventHandler(
-        [](const GuiPythonObserverValueEvent& event) {
-            if (event.observerToken.empty()) {
-                return;
-            }
-            DocumentObserverPython* recipient = nullptr;
-            for (auto* observer : _instances) {
-                if (observer && observer->observerToken == event.observerToken) {
-                    recipient = observer;
-                    break;
-                }
-            }
-            if (recipient) {
-                recipient->deliverValueEvent(event);
-            }
+        &DocumentObserverPython::deliverDeferredValueEvent);
+}
+
+void DocumentObserverPython::deliverDeferredValueEvent(const GuiPythonObserverValueEvent& event)
+{
+    // GuiPythonGate::pumpQueuedCallbacks() acquires the GIL via GilTryLock
+    // before invoking this handler. Require Python initialized and GIL held so
+    // observerRegistry() is never read without GIL serialization and this path
+    // never blocks the GUI thread waiting for the GIL.
+    if (!Py_IsInitialized() || !PyGILState_Check()) {
+        return;
+    }
+
+    if (event.observerToken.empty()) {
+        return;
+    }
+    auto& registry = observerRegistry();
+    const auto it = std::find_if(registry.entries.begin(), registry.entries.end(),
+        [&event](const ObserverEntry& entry) {
+            return std::to_string(entry.id) == event.observerToken;
         });
+    if (it == registry.entries.end()) {
+        return;
+    }
+    // Retain the recipient across Python callbacks, but no vector iterator.
+    std::shared_ptr<DocumentObserverPython> observer = it->observer;
+    observer->deliverValueEvent(event);
 }
 
 void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent& event)
@@ -250,27 +753,18 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
     }
 
     Base::PyGILStateLocker lock;
+    const Py::Object callable = callableForEventKind(event.eventKind);
+    if (callable.isNone()) {
+        return;
+    }
+
     try {
         if (event.eventKind == "CreatedDocument" || event.eventKind == "DeletedDocument"
             || event.eventKind == "RelabelDocument" || event.eventKind == "RenameDocument"
             || event.eventKind == "ActivateDocument") {
             Py::Tuple args(1);
             args.setItem(0, Py::asObject(guiDocument->getPyObject()));
-            if (event.eventKind == "CreatedDocument") {
-                Base::pyCall(pyCreatedDocument.ptr(), args.ptr());
-            }
-            else if (event.eventKind == "DeletedDocument") {
-                Base::pyCall(pyDeletedDocument.ptr(), args.ptr());
-            }
-            else if (event.eventKind == "RelabelDocument") {
-                Base::pyCall(pyRelabelDocument.ptr(), args.ptr());
-            }
-            else if (event.eventKind == "RenameDocument") {
-                Base::pyCall(pyRenameDocument.ptr(), args.ptr());
-            }
-            else {
-                Base::pyCall(pyActivateDocument.ptr(), args.ptr());
-            }
+            Base::pyCall(callable.ptr(), args.ptr());
             return;
         }
 
@@ -290,12 +784,7 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
         if (event.eventKind == "CreatedObject" || event.eventKind == "DeletedObject") {
             Py::Tuple args(1);
             args.setItem(0, Py::asObject(viewProvider->getPyObject()));
-            if (event.eventKind == "CreatedObject") {
-                Base::pyCall(pyCreatedObject.ptr(), args.ptr());
-            }
-            else {
-                Base::pyCall(pyDeletedObject.ptr(), args.ptr());
-            }
+            Base::pyCall(callable.ptr(), args.ptr());
             return;
         }
 
@@ -307,12 +796,7 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
             Py::Tuple args(2);
             args.setItem(0, Py::asObject(viewProvider->getPyObject()));
             args.setItem(1, Py::String(propertyName));
-            if (event.eventKind == "BeforeChangeObject") {
-                Base::pyCall(pyBeforeChangeObject.ptr(), args.ptr());
-            }
-            else {
-                Base::pyCall(pyChangedObject.ptr(), args.ptr());
-            }
+            Base::pyCall(callable.ptr(), args.ptr());
             return;
         }
 
@@ -323,12 +807,7 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
             }
             Py::Tuple args(1);
             args.setItem(0, Py::asObject(objectView->getPyObject()));
-            if (event.eventKind == "InEdit") {
-                Base::pyCall(pyInEdit.ptr(), args.ptr());
-            }
-            else {
-                Base::pyCall(pyResetEdit.ptr(), args.ptr());
-            }
+            Base::pyCall(callable.ptr(), args.ptr());
         }
     }
     catch (Py::Exception&) {
@@ -337,264 +816,102 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
     }
 }
 
-void DocumentObserverPython::slotCreatedDocument(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::Document& Doc)
+void DocumentObserverPython::slotCreatedDocument(const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [observer, &Doc] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(observer->pyCreatedDocument.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Doc] { invokeDocumentSlot(pyCreatedDocument.py, Doc); },
         "CreatedDocument",
-        std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
+        makeDocumentPayloadJson(Doc));
 }
 
-void DocumentObserverPython::slotDeletedDocument(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::Document& Doc)
+void DocumentObserverPython::slotDeletedDocument(const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [observer, &Doc] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(observer->pyDeletedDocument.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Doc] { invokeDocumentSlot(pyDeletedDocument.py, Doc); },
         "DeletedDocument",
-        std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
+        makeDocumentPayloadJson(Doc));
 }
 
-void DocumentObserverPython::slotRelabelDocument(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::Document& Doc)
+void DocumentObserverPython::slotRelabelDocument(const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [observer, &Doc] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(observer->pyRelabelDocument.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Doc] { invokeDocumentSlot(pyRelabelDocument.py, Doc); },
         "RelabelDocument",
-        std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
+        makeDocumentPayloadJson(Doc));
 }
 
-void DocumentObserverPython::slotRenameDocument(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::Document& Doc)
+void DocumentObserverPython::slotRenameDocument(const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [observer, &Doc] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(observer->pyRenameDocument.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Doc] { invokeDocumentSlot(pyRenameDocument.py, Doc); },
         "RenameDocument",
-        std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
+        makeDocumentPayloadJson(Doc));
 }
 
-void DocumentObserverPython::slotActivateDocument(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::Document& Doc)
+void DocumentObserverPython::slotActivateDocument(const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [observer, &Doc] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(observer->pyActivateDocument.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Doc] { invokeDocumentSlot(pyActivateDocument.py, Doc); },
         "ActivateDocument",
-        std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
+        makeDocumentPayloadJson(Doc));
 }
 
-void DocumentObserverPython::slotCreatedObject(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::ViewProvider& Obj)
+void DocumentObserverPython::slotCreatedObject(const Gui::ViewProvider& Obj)
 {
     admitObserverDelivery(
-        [observer, &Obj] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                Base::pyCall(observer->pyCreatedObject.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj] { invokeObjectSlot(pyCreatedObject.py, Obj); },
         "CreatedObject",
         makeObjectPayloadJson(Obj));
 }
 
-void DocumentObserverPython::slotDeletedObject(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::ViewProvider& Obj)
+void DocumentObserverPython::slotDeletedObject(const Gui::ViewProvider& Obj)
 {
     admitObserverDelivery(
-        [observer, &Obj] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                Base::pyCall(observer->pyDeletedObject.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj] { invokeObjectSlot(pyDeletedObject.py, Obj); },
         "DeletedObject",
         makeObjectPayloadJson(Obj));
 }
 
 void DocumentObserverPython::slotBeforeChangeObject(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
     const Gui::ViewProvider& Obj,
-    const App::Property& Prop
-)
+    const App::Property& Prop)
 {
-    const char* prop_name = Obj.getPropertyName(&Prop);
-    if (!prop_name) {
+    const char* propName = Obj.getPropertyName(&Prop);
+    if (!propName) {
         return;
     }
-    const std::string payload = makeObjectPayloadJson(Obj);
     admitObserverDelivery(
-        [observer, &Obj, prop_name] {
-            try {
-                Py::Tuple args(2);
-                args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                args.setItem(1, Py::String(prop_name));
-                Base::pyCall(observer->pyBeforeChangeObject.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj, propName] { invokePropertySlot(pyBeforeChangeObject.py, Obj, propName); },
         "BeforeChangeObject",
-        payload.substr(0, payload.size() - 1) + R"(,"property":")" + escapeJsonString(prop_name)
-            + R"("})");
+        makePropertyPayloadJson(Obj, propName));
 }
 
 void DocumentObserverPython::slotChangedObject(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::ViewProvider& Obj, const App::Property& Prop)
+    const Gui::ViewProvider& Obj,
+    const App::Property& Prop)
 {
-    const char* prop_name = Obj.getPropertyName(&Prop);
-    if (!prop_name) {
+    const char* propName = Obj.getPropertyName(&Prop);
+    if (!propName) {
         return;
     }
-    const std::string payload = makeObjectPayloadJson(Obj);
     admitObserverDelivery(
-        [observer, &Obj, prop_name] {
-            try {
-                Py::Tuple args(2);
-                args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                args.setItem(1, Py::String(prop_name));
-                Base::pyCall(observer->pyChangedObject.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj, propName] { invokePropertySlot(pyChangedObject.py, Obj, propName); },
         "ChangedObject",
-        payload.substr(0, payload.size() - 1) + R"(,"property":")" + escapeJsonString(prop_name)
-            + R"("})");
+        makePropertyPayloadJson(Obj, propName));
 }
 
-void DocumentObserverPython::slotInEdit(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::ViewProviderDocumentObject& Obj)
+void DocumentObserverPython::slotInEdit(const Gui::ViewProviderDocumentObject& Obj)
 {
     admitObserverDelivery(
-        [observer, &Obj] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(
-                    0,
-                    Py::asObject(const_cast<Gui::ViewProviderDocumentObject&>(Obj).getPyObject()));
-                Base::pyCall(observer->pyInEdit.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj] { invokeEditSlot(pyInEdit.py, Obj); },
         "InEdit",
         makeObjectPayloadJson(Obj));
 }
 
-void DocumentObserverPython::slotResetEdit(
-    DocumentObserverPython* observer,
-    const std::string& observerToken,
-    const Gui::ViewProviderDocumentObject& Obj)
+void DocumentObserverPython::slotResetEdit(const Gui::ViewProviderDocumentObject& Obj)
 {
     admitObserverDelivery(
-        [observer, &Obj] {
-            try {
-                Py::Tuple args(1);
-                args.setItem(
-                    0,
-                    Py::asObject(const_cast<Gui::ViewProviderDocumentObject&>(Obj).getPyObject()));
-                Base::pyCall(observer->pyResetEdit.ptr(), args.ptr());
-            }
-            catch (Py::Exception&) {
-                Base::PyException e;
-                e.reportException();
-            }
-        },
-        observerToken,
+        [this, &Obj] { invokeEditSlot(pyResetEdit.py, Obj); },
         "ResetEdit",
         makeObjectPayloadJson(Obj));
 }

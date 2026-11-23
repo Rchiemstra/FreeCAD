@@ -781,6 +781,19 @@ TEST_F(DeferredDocumentObserverDeliveryTest,
     EXPECT_TRUE(observer.stringListAttr("relabeled").empty());
 }
 
+TEST_F(DeferredDocumentObserverDeliveryTest, MissingAndUnknownRecipientsAreDropped)
+{
+    ScopedPythonGuiObserver observer(_fullObserverClass);
+    Gui::GuiPythonObserverValueEvent missing;
+    missing.eventKind = "RelabelDocument";
+    missing.payloadJson = std::string(R"({"document":")") + _documentName + R"("})";
+    Gui::GuiPythonGate::enqueueObserverValueEvent(missing);
+    missing.observerToken = "not-a-registration";
+    Gui::GuiPythonGate::enqueueObserverValueEvent(std::move(missing));
+    EXPECT_GE(pumpDeferredObserverEvents(2), 2U);
+    EXPECT_TRUE(observer.stringListAttr("relabeled").empty());
+}
+
 TEST_F(DeferredDocumentObserverDeliveryTest, CopiedInvocationOwnsIdentityAfterRemoval)
 {
     ScopedPythonGuiObserver retired(_fullObserverClass);

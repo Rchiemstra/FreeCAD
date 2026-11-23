@@ -27,7 +27,11 @@
 #include <Gui/GuiPythonGate.h>
 #include <fastsignals/signal.h>
 #include <CXX/Objects.hxx>
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -61,71 +65,49 @@ public:
     static void installValueEventHandler();
 
 private:
-    // Narrow thread-local seam: tests pause a real deferred signal invocation
-    // before it copies the identity owned by the connected callable.
     friend class DocumentObserverPythonTestAccess;
+    friend class DocumentObserverPythonLifetimeTestAccess;
     static void setBeforeDeferredIdentityCopyForTest(void (*hook)());
+    static std::string observerTokenForTest(PyObject* object);
+    struct DeferConnectTag {};
+    DocumentObserverPython(const Py::Object& obj, DeferConnectTag);
+
+    void connectDirectSlots();
+    void connectRegisteredSlots(std::uint64_t registrationId);
+    void deactivate() noexcept;
+    void disconnectSlots() noexcept;
+    Py::Object callableForEventKind(std::string_view eventKind) const;
+    static void deliverDeferredValueEvent(const GuiPythonObserverValueEvent& event);
     void deliverValueEvent(const GuiPythonObserverValueEvent& event);
     /** Checks if a new document was created */
-    static void slotCreatedDocument(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::Document& Doc);
+    void slotCreatedDocument(const Gui::Document& Doc);
     /** Checks if the given document is about to be closed */
-    static void slotDeletedDocument(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::Document& Doc);
+    void slotDeletedDocument(const Gui::Document& Doc);
     /** Checks if the given document is relabeled */
-    static void slotRelabelDocument(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::Document& Doc);
+    void slotRelabelDocument(const Gui::Document& Doc);
     /** Checks if the given document is renamed */
-    static void slotRenameDocument(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::Document& Doc);
+    void slotRenameDocument(const Gui::Document& Doc);
     /** Checks if the given document is activated */
-    static void slotActivateDocument(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::Document& Doc);
+    void slotActivateDocument(const Gui::Document& Doc);
     /** Checks if a new object was added. */
-    static void slotCreatedObject(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProvider& Obj);
+    void slotCreatedObject(const Gui::ViewProvider& Obj);
     /** Checks if the given object is about to be removed. */
-    static void slotDeletedObject(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProvider& Obj);
+    void slotDeletedObject(const Gui::ViewProvider& Obj);
     /** The property of an observed object has changed */
-    static void slotBeforeChangeObject(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProvider& Obj, const App::Property& Prop);
+    void slotBeforeChangeObject(const Gui::ViewProvider& Obj, const App::Property& Prop);
     /** The property of an observed object has changed */
-    static void slotChangedObject(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProvider& Obj, const App::Property& Prop);
+    void slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop);
     /** The object was set into edit mode */
-    static void slotInEdit(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProviderDocumentObject& Obj);
+    void slotInEdit(const Gui::ViewProviderDocumentObject& Obj);
     /** The has left edit mode */
-    static void slotResetEdit(
-        DocumentObserverPython* observer,
-        const std::string& observerToken,
-        const Gui::ViewProviderDocumentObject& Obj);
+    void slotResetEdit(const Gui::ViewProviderDocumentObject& Obj);
 
 private:
     Py::Object inst;
-    const std::string observerToken;
-    static std::vector<DocumentObserverPython*> _instances;
+    // Pure-C++ registration active flag shared with registered fastsignals slots
+    // so copied or in-flight signal invocations never own Python-bearing state
+    // outside an active GIL scope.
+    std::shared_ptr<std::atomic<bool>> activeFlag;
 
     using Connection = struct PythonObject
     {

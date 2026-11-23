@@ -1353,6 +1353,79 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         self.assertGreater(float(he_init.y), 0.0, operation + ": non-positive initial halfH")
         return view, note, vo
 
+    def _wait_for_replacement_view_render(self, view, camera, note, operation):
+        """Require a real replacement-view frame and settled enclosure clipping."""
+        from PySide import QtCore
+        from pivy import coin
+
+        enclosure = self.doc.getObject("ResizeEnclosure")
+        self.assertIsNotNone(enclosure, operation + ": missing resize enclosure")
+        self.assertTrue(enclosure.ViewObject.Visibility, operation + ": enclosure is hidden")
+        graph = view.getSceneGraph()
+        search = coin.SoSearchAction()
+        search.setNode(enclosure.ViewObject.RootNode)
+        search.setInterest(coin.SoSearchAction.FIRST)
+        search.setSearchingAll(True)
+        search.apply(graph)
+        self.assertIsNotNone(search.getPath(), operation + ": enclosure missing from replacement scene")
+
+        viewport = view.graphicsView().viewport()
+        self.assertIsNotNone(viewport, operation + ": missing replacement viewport")
+        pose_before = self._camera_snapshot(camera)
+        placement = enclosure.getGlobalPlacement()
+        corners = [placement.multVec(App.Vector(x, y, z))
+                   for x in (0.0, float(enclosure.Length.Value))
+                   for y in (0.0, float(enclosure.Width.Value))
+                   for z in (0.0, float(enclosure.Height.Value))]
+
+        class PaintProbe(QtCore.QObject):
+            def __init__(self):
+                super().__init__()
+                self.count = 0
+
+            def eventFilter(self, watched, event):
+                if watched is viewport and event.type() == QtCore.QEvent.Paint:
+                    self.count += 1
+                return False
+
+        probe = PaintProbe()
+        viewport.installEventFilter(probe)
+        try:
+            view.redraw()  # Requests a frame; the FPS limiter may defer it.
+
+            def ready():
+                if not probe.count or not viewport.isVisible():
+                    return False
+                eye = camera.position.getValue()
+                direction = camera.orientation.getValue().multVec(coin.SbVec3f(0, 0, -1))
+                depths = [sum((point[i] - float(eye[i])) * float(direction[i])
+                              for i in range(3)) for point in corners]
+                closest, farthest = min(depths), max(depths)
+                margin = max(1e-3, (farthest - closest) * 1e-5)
+                near = float(camera.nearDistance.getValue())
+                far = float(camera.farDistance.getValue())
+                if closest <= margin or not (0 < near < closest - margin and far > farthest + margin):
+                    return False
+                _, _, world_per_pixel = self._measure_note_world_per_pixel(view, camera, note, operation)
+                half = App.Vector(note.ViewObject.LeaderHalfExtent)
+                expected_w = 0.5 * int(note.ViewObject.RasterWidth) * world_per_pixel
+                expected_h = 0.5 * int(note.ViewObject.RasterHeight) * world_per_pixel
+                return (abs(float(half.x) - expected_w) <= max(1e-4, 1e-4 * expected_w)
+                        and abs(float(half.y) - expected_h) <= max(1e-4, 1e-4 * expected_h))
+
+            self.assertTrue(
+                self._pump_until(ready),
+                "{}: replacement view did not render and settle enclosure clipping and leader "
+                "(paint events={}, camera={})".format(operation, probe.count, self._camera_snapshot(camera)),
+            )
+        finally:
+            viewport.removeEventFilter(probe)
+        # Clipping may settle during the first real frame. Framing and camera
+        # projection must remain fixed throughout this preparation.
+        pose_after = self._camera_snapshot(camera)
+        self.assertEqual(pose_after[:3], pose_before[:3], operation + ": replacement camera pose changed")
+        self.assertEqual(pose_after[3][2:], pose_before[3][2:], operation + ": replacement camera parameters changed")
+
     def _assert_auto_note_tracks_subwindow_resize(
         self, view, camera, note, sw, expected_gl_marker, operation
     ):
@@ -1692,6 +1765,7 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         note.TextPosition = App.Vector(26, 0, 0)
         self._flush()
 
+        self._wait_for_replacement_view_render(view2, camera2, note, operation)
         self._assert_auto_note_tracks_subwindow_resize(
             view2, camera2, note, sw2, new_marker, operation
         )
