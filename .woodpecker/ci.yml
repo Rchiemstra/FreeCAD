@@ -20,16 +20,16 @@
 # the same registry's host-published loopback endpoint, 127.0.0.1:5001. Docker
 # treats 127.0.0.0/8 as an insecure-local registry, avoiding per-daemon LAN-IP
 # insecure-registry config while still keeping pulls auth-free):
-#   127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295
+#   127.0.0.1:5001/freecad-ci-deps:24.04-80e76dad4e51
 #       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
 #       (Qt6/OCCT/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
-#       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
+#       + clang + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
 #       (build context = package/ubuntu/, so the context is tiny). Used by every
 #       FreeCAD-track BUILD/test step (configure, debug-build, unit, integration,
 #       e2e, release-linux) and as the base for the MCP image. The early lint and
 #       Pixi lock checks use small public images instead.
-#   127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
-#       FROM registry-freecad:5000/freecad-ci-deps:24.04-81547b6a5295 during kaniko builds + COPY (pyproject.toml
+#   127.0.0.1:5001/freecad-ci-mcp:24.04-03c0058aadb7
+#       FROM registry-freecad:5000/freecad-ci-deps:24.04-80e76dad4e51 during kaniko builds + COPY (pyproject.toml
 #       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
 #       Qt6/OCCT/libpython3.12 as the deps image -> ABI-compatible with the
 #       build/debug FreeCAD tree, and FreeCADCmd's embedded python3.12 is the SAME
@@ -54,7 +54,7 @@
 #   registry endpoint in insecure-registries, and change image pull references.
 #   :24.04 is repaired even on no-op builds for older PR configurations.
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
-#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827.
+#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:5001/freecad-ci-mcp:24.04-03c0058aadb7.
 #
 # ---------------------------------------------------------------------------
 # ccache: persistent Docker named volume (no secrets).
@@ -122,7 +122,7 @@
 #     green lie under exit-code-only gating).
 #   * ccache is persistent: release reuses debug's cache in the same run, and
 #     later runs reuse the Docker named volume if Trusted Volumes is enabled.
-#   * 127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295 & 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
+#   * 127.0.0.1:5001/freecad-ci-deps:24.04-80e76dad4e51 & 127.0.0.1:5001/freecad-ci-mcp:24.04-03c0058aadb7
 #     are present in 127.0.0.1:5001 (the .woodpecker/build-images.yml workflow
 #     populates them on push/tag/manual/cron; see the CI-images section above)
 #     and pullable by the agent (the agent daemon can reach
@@ -285,7 +285,7 @@ steps:
       - sh ci/woodpecker/freecad-nonblocking-tests.sh
 
   - name: freecad-configure-debug
-    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04-81547b6a5295
+    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04-80e76dad4e51
     pull: true
     depends_on: [freecad-lint, pixi-lock-check, ci-images-ready]
     environment: *freecad_ccache_env
@@ -301,6 +301,16 @@ steps:
     volumes: *freecad_ccache_volume
     commands:
       - sh ci/woodpecker/freecad-debug-build.sh
+
+  # Compile a real production translation unit using the debug build's generated
+  # headers and GCC configuration, with Clang as an independent compiler.
+  - name: freecad-clang-production
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-debug-build]
+    commands:
+      - python3 -m unittest discover -s ci/woodpecker -p test_check_clang_production.py -v
+      - python3 ci/woodpecker/check-clang-production.py
 
   # Unit, integration and e2e each need only the debug build, so they start
   # together beside freecad-mcp-live-gui. A failure in one of them, or in the
@@ -378,7 +388,7 @@ steps:
       - sh ci/woodpecker/freecad-mcp-sidecar-integration.sh
 
   # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
-  # installed into the image's site-packages. freecad-ci-mcp:24.04-93468f8e9827 has NO built
+  # installed into the image's site-packages. freecad-ci-mcp:24.04-03c0058aadb7 has NO built
   # FreeCAD, so FreeCADCmd is invoked by ABSOLUTE path from the workspace build
   # tree ($CI_WORKSPACE/build/debug/bin/FreeCADCmd) -- a relative path would
   # resolve under tools/mcp/freecad-mcp/ after the `cd`. Verifies the
@@ -386,7 +396,7 @@ steps:
   # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
-    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04-93468f8e9827
+    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04-03c0058aadb7
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:

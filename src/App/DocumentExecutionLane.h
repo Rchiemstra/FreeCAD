@@ -195,7 +195,7 @@ public:
             _dispatchQueue.push_back(std::move(task));
             _workAvailable.notify_one();
         }
-        return future;
+        return std::move(future);
     }
 
     [[nodiscard]] DocumentCommandSnapshot commandStatus(DocumentCommandId id) const;
