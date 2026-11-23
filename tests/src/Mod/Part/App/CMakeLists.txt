@@ -47,6 +47,8 @@ add_executable(Part_tests_run
 set(PartTestData_Files
         brepfiles/cylinder1.brep
         brepfiles/helix1.brep
+        brepfiles/interference25158-body.brep
+        brepfiles/interference25158-tool.brep
         brepfiles/unorientableSolid.brep
 )
 

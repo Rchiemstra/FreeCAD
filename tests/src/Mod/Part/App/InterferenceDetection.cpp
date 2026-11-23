@@ -10,6 +10,8 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
@@ -19,6 +21,7 @@
 #include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
 
+#include <App/Application.h>
 #include <src/App/InitApplication.h>
 
 #include "Mod/Part/App/InterferenceDetection.h"
@@ -153,6 +156,46 @@ TEST_F(InterferenceDetectionTest, boundingBoxFalsePositiveClearedByExact)
 
     EXPECT_EQ(result.kind, InterferenceKind::Clear);
     EXPECT_NEAR(result.minimumDistance, 0.05, 1e-6);
+}
+
+// Shapes extracted from the reproducer attached to FreeCAD issue #25158.
+// The tool's positive OCCT distance on affected versions must not hide its
+// solid overlap with the body; do not assume that every OCCT version fails.
+TEST_F(InterferenceDetectionTest, positiveDistanceDoesNotHideSolidOverlap)
+{
+    const std::string path = App::Application::getHomePath() + "/tests/brepfiles/";
+    BRep_Builder builder;
+    TopoDS_Shape body;
+    TopoDS_Shape tool;
+    ASSERT_TRUE(BRepTools::Read(body, (path + "interference25158-body.brep").c_str(), builder));
+    ASSERT_TRUE(BRepTools::Read(tool, (path + "interference25158-tool.brep").c_str(), builder));
+
+    for (double clearance : {0.0, 0.2}) {
+        InterferenceOptions options;
+        options.clearance = clearance;
+        const auto result = classifyInterference(body, tool, options);
+        EXPECT_EQ(result.kind, InterferenceKind::Penetration);
+        EXPECT_GT(result.overlapVolume, 1.0);
+        // OCCT may already return zero on some versions; otherwise the
+        // classifier must mark the known-bad positive distance unavailable.
+        EXPECT_LE(result.minimumDistance, Precision::Confusion());
+        EXPECT_GE(result.minimumDistance, -1.0);
+    }
+}
+
+TEST_F(InterferenceDetectionTest, overlappingBoundsWithoutSolidOverlapUseDistance)
+{
+    const TopoDS_Shape a = BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, 0), 1).Shape();
+    const TopoDS_Shape b = BRepPrimAPI_MakeSphere(gp_Pnt(1.5, 1.5, 0), 1).Shape();
+    const auto clear = classifyInterference(a, b);
+    EXPECT_EQ(clear.kind, InterferenceKind::Clear);
+    EXPECT_NEAR(clear.minimumDistance, std::sqrt(4.5) - 2.0, 1e-5);
+
+    InterferenceOptions options;
+    options.clearance = 0.2;
+    const auto violation = classifyInterference(a, b, options);
+    EXPECT_EQ(violation.kind, InterferenceKind::ClearanceViolation);
+    EXPECT_NEAR(violation.minimumDistance, clear.minimumDistance, 1e-5);
 }
 
 TEST_F(InterferenceDetectionTest, faceContact)
