@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -280,17 +281,42 @@ DocumentCollaborationService::LifecyclePin::LifecyclePin(
             return;
         }
         _document = _gate->document;
+        const auto insertOwner = [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (!_gate->accessOwners.contains(std::this_thread::get_id())
+                && _failNextLifecycleOwnerInsertForTesting.exchange(false)) {
+                throw std::bad_alloc();
+            }
+#endif
+            return _gate->accessOwners.try_emplace(std::this_thread::get_id(), 0).first;
+        };
+        // The entire insertion, including the injected failure at that
+        // boundary, precedes either count change.
+        const auto owner = insertOwner();
+        ++owner->second;
         ++_gate->activeAccesses;
-        ++_gate->accessOwners[std::this_thread::get_id()];
     }
     _pinned = true;
-    if (const auto hook = _postLifecycleAdmissionTestHook.load(
-            std::memory_order_acquire)) {
-        hook();
+    try {
+        if (const auto hook = _postLifecycleAdmissionTestHook.load(
+                std::memory_order_acquire)) {
+            hook();
+        }
+    }
+    catch (...) {
+        // A constructor that throws has no destructor; release its admission
+        // before propagating a failing post-admission hook.
+        release();
+        throw;
     }
 }
 
 DocumentCollaborationService::LifecyclePin::~LifecyclePin()
+{
+    release();
+}
+
+void DocumentCollaborationService::LifecyclePin::release() noexcept
 {
     if (!_pinned) {
         return;
@@ -311,6 +337,7 @@ DocumentCollaborationService::LifecyclePin::~LifecyclePin()
         --_gate->activeAccesses;
         _gate->changed.notify_all();
     }
+    _pinned = false;
     if (lane) {
         lane->notifyCloseAdmissionReleased();
     }
