@@ -24,8 +24,8 @@ clone:
 
 # Committed keys, checked against ci.yml and the dependency inputs before builds.
 variables:
-  - &freecad_ci_deps_image registry-freecad:5000/freecad-ci-deps:24.04-81547b6a5295
-  - &freecad_ci_mcp_image registry-freecad:5000/freecad-ci-mcp:24.04-93468f8e9827
+  - &freecad_ci_deps_image registry-freecad:5000/freecad-ci-deps:24.04-80e76dad4e51
+  - &freecad_ci_mcp_image registry-freecad:5000/freecad-ci-mcp:24.04-03c0058aadb7
   - &freecad_registry_internal_url http://registry-freecad:5000
 
 steps:
