@@ -3,11 +3,16 @@
 add_subdirectory(Dialogs)
 add_subdirectory(propertyeditor)
 
-# The drag controller has no document dependency. Keep its input/lifetime
-# regressions runnable without building the complete native GUI test binary.
-add_executable(ViewDropDocking_tests_run ViewDropDocking.cpp)
+# These Qt components have no document dependency. Keep their input/lifetime
+# and queued-wake regressions isolated from the complete native GUI test binary.
+add_executable(ViewDropDocking_tests_run
+        ViewDropDocking.cpp
+        OpenGLViewportResize.cpp
+        ${CMAKE_SOURCE_DIR}/src/Gui/OpenGLViewportResize.cpp)
 target_include_directories(ViewDropDocking_tests_run PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(ViewDropDocking_tests_run PRIVATE GTest::gtest_main Qt6::Widgets Qt6::Test)
+target_compile_definitions(ViewDropDocking_tests_run PRIVATE FreeCADGui_EXPORTS)
+target_link_libraries(ViewDropDocking_tests_run PRIVATE
+        GTest::gtest_main Qt6::Widgets Qt6::Test Qt6::OpenGLWidgets)
 
 # Standard C++ GTest tests
 add_executable(Gui_tests_run
