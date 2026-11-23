@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+python3 tests/cmake/test_compiler_launchers.py -v
+python3 tests/cmake/test_e57_compiler_launchers.py -v
+
 mkdir -p "$CCACHE_DIR"
 ccache -M "$CCACHE_MAXSIZE" || true
 python3 build_freecad.py --config debug --no-pixi --configure --configure-only \
