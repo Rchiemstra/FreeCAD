@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <stdexcept>
 
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <App/Document.h>
 #include <App/GeoFeature.h>
 #include <Base/Interpreter.h>
+#include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProviderGeometryObject.h>
@@ -155,6 +157,25 @@ TEST_F(BodyMaterialTest, changedMaterialAssignmentUpdatesFeatureColor)
 TEST_F(BodyMaterialTest, observerEqualMaterialAssignmentDuringCatchUpReappliesFeatureColor)
 {
     const App::Material material = _body->getMaterialAppearance();
+    ASSERT_NE(material.diffuseColor, red);
+    ASSERT_TRUE(_body->Visibility.getValue());
+    ASSERT_TRUE(_bodyView->Visibility.getValue());
+
+    // Seed the same out-of-sync mirror that a deferred show leaves behind.
+    // Two owner-thread commits with a single catch-up call between them do not
+    // guarantee the first mirror ran: catch-up can defer its refresh admission.
+    {
+        Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+            App::Property::User1, &_bodyView->Visibility);
+        _bodyView->Visibility.setValue(false);
+    }
+    ASSERT_TRUE(_body->Visibility.getValue());
+    ASSERT_FALSE(_bodyView->Visibility.getValue());
+    ASSERT_EQ(_featureView->ShapeAppearance[0].diffuseColor, red);
+    _guiDocument->noteDeferredVisibilityChange(_bodyView);
+    ASSERT_TRUE(_guiDocument->hasDeferredVisibilityChange(_bodyView));
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
     bool assigned = false;
     fastsignals::scoped_connection observer =
         Gui::Application::Instance->signalChangedObject.connect(
@@ -166,12 +187,17 @@ TEST_F(BodyMaterialTest, observerEqualMaterialAssignmentDuringCatchUpReappliesFe
                     _body->setMaterialAppearance(material);
                 }
             });
-    for (const bool visible : {false, true}) {
-        const auto result = commit([&] { _body->Visibility.setValue(visible); });
-        ASSERT_TRUE(result.committed()) << result.message;
-        _guiDocument->catchUpIdleLivePresentation();
+    _guiDocument->catchUpIdleLivePresentation();
+    // Refresh admission is nonblocking. If it deferred, let its queued
+    // catch-up run and observe the actual notification before asserting.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!assigned && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
     }
-    ASSERT_TRUE(assigned);
+    ASSERT_TRUE(assigned) << "deferred visibility catch-up did not deliver the assignment";
+    EXPECT_FALSE(_guiDocument->hasDeferredVisibilityChange(_bodyView));
+    EXPECT_TRUE(_bodyView->Visibility.getValue());
+    EXPECT_TRUE(_bodyView->isShow());
     EXPECT_EQ(_featureView->ShapeAppearance[0].diffuseColor, material.diffuseColor);
 }
 
