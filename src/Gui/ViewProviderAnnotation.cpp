@@ -480,8 +480,9 @@ void ViewProviderAnnotationLabel::attach(App::DocumentObject* f)
 
         dragger->setPartAsPath("translator", imagePath);
 
-        // Hide the dragger feedback during translation
-        dragger->setPart("translatorActive", NULL);
+        // Keep an empty active part: removing it leaves translatorSwitch with
+        // no child at the active index when Coin processes a drag.
+        dragger->setPart("translatorActive", new SoSeparator);
         dragger->setPart("xAxisFeedback", NULL);
         dragger->setPart("yAxisFeedback", NULL);
     }
