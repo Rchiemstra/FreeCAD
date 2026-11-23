@@ -9,6 +9,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
+#include <App/DocumentPythonCommand.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
@@ -1463,3 +1464,172 @@ TEST_F(DocumentExecutionLaneTest, DrainDispatchQueueSkipsSubsequentTasksAfterRee
 }
 
 }  // namespace
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST_F(DocumentExecutionLaneTest, CompatibilityWaitGraphAllocationFailuresArePreEffect)
+{
+    struct ResetFault {
+        ~ResetFault() { App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::None); }
+    } reset;
+    const auto faults = {App::Internal::CompatibilityReceiptFault::CompatibilityFutureAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityStateAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityCapsuleAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityCallableAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityDictionaryAllocation};
+    for (const auto fault : faults) {
+        App::Internal::setCompatibilityReceiptFaultForTesting(fault);
+        const std::string script = std::string(R"PY(
+import FreeCAD as App
+doc = App.getDocument(")PY") + _docName + R"PY(")
+def callback():
+    doc.addObject("App::FeatureTest", "GraphFailureEffect")
+try:
+    doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+except Exception:
+    pass
+else:
+    raise AssertionError("wait graph allocation fault did not fail")
+)PY";
+        EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+        EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(fault));
+        auto fence = doc()->executionLane()->postToOwner([] { return 1; });
+        EXPECT_EQ(fence.get(), 1);
+        EXPECT_EQ(doc()->getObject("GraphFailureEffect"), nullptr);
+    }
+}
+
+
+namespace {
+std::atomic<std::promise<void>*> compatibilityEnteredPromise {nullptr};
+void notifyCompatibilityWaitEntered() noexcept
+{
+    if (auto* promise = compatibilityEnteredPromise.exchange(nullptr)) {
+        try { promise->set_value(); } catch (...) {}
+    }
+}
+}
+
+TEST_F(DocumentExecutionLaneTest, ConcurrentCompatibilityWaitIsRefusedWithoutBlockingOwner)
+{
+    std::promise<void> enteredPromise;
+    auto entered = enteredPromise.get_future();
+    compatibilityEnteredPromise.store(&enteredPromise);
+    App::Internal::setCompatibilityWaitHookForTesting(&notifyCompatibilityWaitEntered);
+    struct Cleanup {
+        ~Cleanup() {
+            App::Internal::setCompatibilityWaitHookForTesting(nullptr);
+            compatibilityEnteredPromise.store(nullptr);
+            try { Base::Interpreter().runString(
+                "gate.set()\nwaiter.join(10.0)\n"); } catch (...) {}
+        }
+    } cleanup;
+    const std::string start = std::string(R"PY(
+import FreeCAD as App
+import threading
+doc = App.getDocument(")PY") + _docName + R"PY(")
+gate = threading.Event()
+def callback():
+    gate.wait(10.0)
+    doc.addObject("App::FeatureTest", "ConcurrentWaitEffect")
+handle = doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+results = []
+def first_wait():
+    try:
+        results.append(handle["wait"](10.0))
+    except Exception as exc:
+        results.append(exc)
+waiter = threading.Thread(target=first_wait)
+waiter.start()
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(start.c_str()));
+    ASSERT_EQ(entered.wait_for(5s), std::future_status::ready);
+    const char* finish = R"PY(
+try:
+    try:
+        handle["wait"](1.0)
+    except RuntimeError as exc:
+        assert "in progress" in str(exc)
+    else:
+        raise AssertionError("concurrent wait was accepted")
+finally:
+    gate.set()
+    waiter.join(10.0)
+assert not waiter.is_alive()
+assert len(results) == 1 and isinstance(results[0], dict) and results[0]["committed"]
+assert doc.getObject("ConcurrentWaitEffect") is not None
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(finish));
+}
+
+TEST_F(DocumentExecutionLaneTest, CompatibilityResultConversionFailureRetainsCompletedResult)
+{
+    struct ResetFault {
+        ~ResetFault() { App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::None); }
+    } reset;
+    App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::CompatibilityResultConversion);
+    const std::string script = std::string(R"PY(
+import FreeCAD as App
+doc = App.getDocument(")PY") + _docName + R"PY(")
+calls = []
+def callback():
+    calls.append(1)
+    doc.addObject("App::FeatureTest", "RetainedResultEffect")
+handle = doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+try:
+    handle["wait"](10.0)
+except Exception:
+    pass
+else:
+    raise AssertionError("result conversion fault did not fail")
+result = handle["wait"](10.0)
+assert result["status"] == "Committed" and result["committed"]
+assert result["conflicts"] == [] and isinstance(result["published_revisions"], list)
+assert calls == [1] and doc.getObject("RetainedResultEffect") is not None
+try:
+    handle["wait"](10.0)
+except RuntimeError as exc:
+    assert "consumed" in str(exc)
+else:
+    raise AssertionError("result delivered twice")
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+    EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(
+        App::Internal::CompatibilityReceiptFault::CompatibilityResultConversion));
+}
+#endif
+
+TEST_F(DocumentExecutionLaneTest, SaveAsyncWritesEncodedFilename)
+{
+    struct Cleanup {
+        ~Cleanup() {
+            try { Base::Interpreter().runString("receipt_temp_dir.cleanup()\n"); } catch (...) {}
+        }
+    } cleanup;
+    const std::string start = std::string(R"PY(
+import FreeCAD as App
+import pathlib
+import tempfile
+receipt_temp_dir = tempfile.TemporaryDirectory(prefix="freecad-receipt-")
+receipt_path = pathlib.Path(receipt_temp_dir.name) / "caf\u00e9.FCStd"
+assert not receipt_path.exists()
+receipt_doc = App.getDocument(")PY") + _docName + R"PY(")
+receipt_handle = receipt_doc.saveAsync(str(receipt_path))
+receipt_id = receipt_handle.id()
+)PY";
+    ASSERT_NO_THROW(Base::Interpreter().runString(start.c_str()));
+    unsigned long long id = 0;
+    {
+        Base::PyGILStateLocker gil;
+        PyObject* mainModule = PyImport_AddModule("__main__");
+        ASSERT_NE(mainModule, nullptr);
+        PyObject* idObject = PyDict_GetItemString(PyModule_GetDict(mainModule), "receipt_id");
+        ASSERT_NE(idObject, nullptr);
+        id = PyLong_AsUnsignedLongLong(idObject);
+        ASSERT_FALSE(PyErr_Occurred());
+    }
+    App::DocumentCommandHandle handle(id, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(handle, 30s));
+    EXPECT_EQ(handle.status().state, App::DocumentCommandState::Completed);
+    EXPECT_NO_THROW(Base::Interpreter().runString(
+        "assert receipt_path.is_file() and receipt_path.stat().st_size > 0\n"));
+}
