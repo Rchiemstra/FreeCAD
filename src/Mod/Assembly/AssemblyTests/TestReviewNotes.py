@@ -3839,6 +3839,41 @@ class TestReviewNotesGui(unittest.TestCase):
             App.removeDocumentObserver(obs)
             AssemblyGui.resetReviewNoteTestHooks()
 
+    def test_gui_camera_replacement_keeps_leader_tracking(self):
+        import FreeCADGui as Gui
+        from pivy import coin
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Camera replacement"],
+            text_offset=App.Vector(40, 20, 0), open_transaction=False,
+        )
+        view = Gui.ActiveDocument.ActiveView
+        original = view.getCameraType()
+        try:
+            for camera_type, angle in (("Perspective", 0.4), ("Orthographic", -0.6),
+                                       ("Perspective", 0.9)):
+                view.setCameraType(camera_type)
+                self.assertEqual(view.getCameraType(), camera_type)
+                Gui.updateGui()
+                coin.SoDB.getSensorManager().processDelayQueue(0)
+                camera = view.getCameraNode()
+                camera.orientation.setValue(coin.SbRotation(coin.SbVec3f(0, 1, 0), angle))
+                coin.SoDB.getSensorManager().processDelayQueue(0)
+                Gui.updateGui()
+                right, up = CommandReviewNote.review_note_camera_billboard_axes(camera)
+                ok, expected, distance = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                    note.TextPosition, note.ViewObject.LeaderEnd,
+                    note.ViewObject.LeaderHalfExtent, right, up,
+                )
+                self.assertTrue(ok, f"{camera_type}: distance={distance}, expected={expected}")
+                del camera
+        finally:
+            view.setCameraType(original)
+            Gui.updateGui()
+
     def test_gui_nested_camera_during_apply_marks_dirty(self):
         """Nested camera from LeaderHalfExtent observer must mark dirty + follow-up frame."""
         operation = "Nested dirty branch during applyVisualFrame"

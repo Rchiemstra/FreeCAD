@@ -335,6 +335,30 @@ class TestViewProviderLink(unittest.TestCase):
         self.FreeCADGui.clearElementColorOverride(path)
         self.assertEqual(link.ViewObject.getElementColors(), {})
 
+    def test_link_view_is_invalidated_on_document_close(self):
+        box = self.doc.addObject("Part::Box", "Box")
+        link = self.doc.addObject("App::Link", "Link")
+        link.LinkedObject = box
+        self.doc.recompute()
+        self.FreeCADGui.updateGui()
+
+        link_view = link.ViewObject.LinkView
+        self.assertIs(link.ViewObject.LinkView, link_view)
+        link_root = link_view.RootNode
+        self.assertIsNotNone(link_root)
+
+        # closeDocument releases the GIL while delivering GUI teardown. Keep a
+        # wrapper alive to check invalidation as well as the last-reference case
+        # exercised by the element color override test's tearDown.
+        doc_name = self.doc.Name
+        self.FreeCAD.closeDocument(doc_name)
+        self.doc = None
+        self.assertNotIn(doc_name, self.FreeCAD.listDocuments())
+        with self.assertRaises(ReferenceError):
+            _ = link_view.RootNode
+        # The pivy proxy owns a Coin reference independently of the LinkView.
+        self.assertTrue(link_root.isOfType(self.coin.SoSeparator.getClassTypeId()))
+
     def test_face_override_renders_in_view(self):
         box = self.doc.addObject("Part::Box", "Box")
         link = self.doc.addObject("App::Link", "Link")
