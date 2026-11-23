@@ -45,6 +45,24 @@
 
 using namespace std::chrono_literals;
 
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+namespace Base::Internal
+{
+BaseExport void setPersistenceContentByteArrayFactoryForTest(PyObject* (*)(Py_ssize_t));
+BaseExport void setPersistenceContentBeforeReadForTest(void (*)(PyObject*, std::istream&));
+BaseExport void setPersistenceContentBufferAcquireForTest(int (*)(PyObject*, Py_buffer*, int));
+}
+#endif
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+namespace App::Internal
+{
+AppExport void setPropertyContentByteArrayFactoryForTest(PyObject* (*)(Py_ssize_t));
+AppExport void setPropertyContentBeforeReadForTest(void (*)(PyObject*, std::istream&));
+AppExport void setPropertyContentBufferAcquireForTest(int (*)(PyObject*, Py_buffer*, int));
+}
+#endif
+
 namespace
 {
 
@@ -260,6 +278,11 @@ public:
 
 private:
     std::string _name;
+};
+
+struct ScopedPythonErrorClear final
+{
+    ~ScopedPythonErrorClear() { PyErr_Clear(); }
 };
 
 class PyObjectRef final
@@ -1771,6 +1794,499 @@ protected:
     App::FeatureTest* _target {nullptr};
     std::string _documentName;
 };
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       inheritedPersistenceReleasesBytearrayExportsAfterSuccessAndInvalidRestore)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearError;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    _target->String.setValue("saved value");
+    PyObjectRef dump(PyObject_CallMethod(target.get(), "dumpContent", nullptr));
+    ASSERT_NE(dump.get(), nullptr);
+    ASSERT_TRUE(PyByteArray_Check(dump.get()));
+    const auto originalSize = PyByteArray_Size(dump.get());
+    ASSERT_GT(originalSize, 0);
+    _target->String.setValue("changed value");
+    PyObjectRef restored(PyObject_CallMethod(target.get(), "restoreContent", "O", dump.get()));
+    ASSERT_NE(restored.get(), nullptr);
+    EXPECT_STREQ(_target->String.getValue(), "saved value");
+    EXPECT_EQ(PyByteArray_Resize(dump.get(), originalSize + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+
+    PyObjectRef invalid(PyByteArray_FromStringAndSize("not a zip archive", 17));
+    ASSERT_NE(invalid.get(), nullptr);
+    PyObjectRef failed(PyObject_CallMethod(target.get(), "restoreContent", "O", invalid.get()));
+    EXPECT_EQ(failed.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_IOError));
+    PyErr_Clear();
+    EXPECT_EQ(PyByteArray_Resize(invalid.get(), 18), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+
+    PyObjectRef view(PyMemoryView_FromObject(invalid.get()));
+    ASSERT_NE(view.get(), nullptr);
+    PyObjectRef step(PyLong_FromLong(2));
+    ASSERT_NE(step.get(), nullptr);
+    PyObjectRef slice(PySlice_New(nullptr, nullptr, step.get()));
+    ASSERT_NE(slice.get(), nullptr);
+    PyObjectRef strided(PyObject_GetItem(view.get(), slice.get()));
+    ASSERT_NE(strided.get(), nullptr);
+    PyObjectRef failedStrided(PyObject_CallMethod(target.get(), "restoreContent", "O",
+                                                  strided.get()));
+    EXPECT_EQ(failedStrided.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_BufferError));
+    PyErr_Clear();
+}
+
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+namespace
+{
+thread_local PyObject* observedPersistenceByteArray = nullptr;
+
+// Own a copy of the raw exception triple at the operation boundary. Fetch and
+// restore leave the *same* pending exception for the binding to propagate.
+struct PersistenceContentErrorWitness final
+{
+    PyObject* type {nullptr};
+    PyObject* value {nullptr};
+    PyObject* traceback {nullptr};
+
+    void record()
+    {
+        clear();
+        PyErr_Fetch(&type, &value, &traceback);
+        Py_XINCREF(type);
+        Py_XINCREF(value);
+        Py_XINCREF(traceback);
+        PyErr_Restore(type, value, traceback); // steals the extra references
+    }
+    bool matchesAndClear()
+    {
+        PyObject* actualType = nullptr;
+        PyObject* actualValue = nullptr;
+        PyObject* actualTraceback = nullptr;
+        PyErr_Fetch(&actualType, &actualValue, &actualTraceback);
+        const bool matches = type && actualType == type && actualValue == value
+            && actualTraceback == traceback;
+        Py_XDECREF(actualType);
+        Py_XDECREF(actualValue);
+        Py_XDECREF(actualTraceback);
+        return matches;
+    }
+    void clear()
+    {
+        Py_CLEAR(type);
+        Py_CLEAR(value);
+        Py_CLEAR(traceback);
+    }
+};
+thread_local PersistenceContentErrorWitness persistenceContentErrorWitness;
+thread_local Py_ssize_t persistenceContentFailureSize = PY_SSIZE_T_MAX;
+thread_local PyObject* persistenceContentReadError = nullptr;
+PyObject* witnessPersistenceByteArrayAllocationFailure(Py_ssize_t)
+{
+    PyObject* result = PyByteArray_FromStringAndSize(nullptr, persistenceContentFailureSize);
+    if (!result) {
+        persistenceContentErrorWitness.record();
+    }
+    return result;
+}
+int failPersistenceByteArrayBufferAcquire(PyObject* array, Py_buffer* view, int flags)
+{
+    Py_XDECREF(observedPersistenceByteArray);
+    Py_INCREF(array);
+    observedPersistenceByteArray = array;
+    // A real readonly exporter rejects the actual writable buffer request.
+    PyObject* readonly = PyMemoryView_FromMemory(PyByteArray_AsString(array),
+                                                  PyByteArray_Size(array), PyBUF_READ);
+    if (!readonly) return -1;
+    const int status = PyObject_GetBuffer(readonly, view, flags);
+    Py_DECREF(readonly);
+    return status;
+}
+int acquirePersistenceStridedViewForTest(PyObject* object, Py_buffer* view, int)
+{
+    // Synthetic seam: request strides so a real strided exporter can reach the
+    // explicit contiguity check. A normal PyBUF_SIMPLE request rejects it.
+    return PyObject_GetBuffer(object, view, PyBUF_STRIDES);
+}
+void failPersistenceByteArrayRead(PyObject* array, std::istream& stream)
+{
+    Py_XDECREF(observedPersistenceByteArray);
+    Py_INCREF(array);
+    observedPersistenceByteArray = array;
+    stream.setstate(std::ios::badbit);
+}
+void failPersistenceByteArrayReadWithError(PyObject* array, std::istream& stream)
+{
+    Py_XDECREF(observedPersistenceByteArray);
+    Py_INCREF(array);
+    observedPersistenceByteArray = array;
+    PyErr_SetObject(PyExc_RuntimeError, persistenceContentReadError);
+    persistenceContentErrorWitness.record();
+    stream.setstate(std::ios::badbit);
+}
+struct PersistenceContentHooks final
+{
+    ~PersistenceContentHooks()
+    {
+        Base::Internal::setPersistenceContentByteArrayFactoryForTest(nullptr);
+        Base::Internal::setPersistenceContentBeforeReadForTest(nullptr);
+        Base::Internal::setPersistenceContentBufferAcquireForTest(nullptr);
+        Py_CLEAR(observedPersistenceByteArray);
+        Py_CLEAR(persistenceContentReadError);
+        persistenceContentErrorWitness.clear();
+        PyErr_Clear();
+    }
+};
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       inheritedPersistenceRejectsAndReleasesSyntheticStridedAcquisition)
+{
+    Base::PyGILStateLocker gil;
+    PersistenceContentHooks hooks;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    PyObjectRef bytes(PyByteArray_FromStringAndSize("01234567", 8));
+    ASSERT_NE(bytes.get(), nullptr);
+    {
+        PyObjectRef view(PyMemoryView_FromObject(bytes.get()));
+        ASSERT_NE(view.get(), nullptr);
+        PyObjectRef step(PyLong_FromLong(2));
+        ASSERT_NE(step.get(), nullptr);
+        PyObjectRef slice(PySlice_New(nullptr, nullptr, step.get()));
+        ASSERT_NE(slice.get(), nullptr);
+        PyObjectRef strided(PyObject_GetItem(view.get(), slice.get()));
+        ASSERT_NE(strided.get(), nullptr);
+        const auto references = Py_REFCNT(strided.get());
+        Base::Internal::setPersistenceContentBufferAcquireForTest(&acquirePersistenceStridedViewForTest);
+        PyObjectRef failed(PyObject_CallMethod(target.get(), "restoreContent", "O", strided.get()));
+        EXPECT_EQ(failed.get(), nullptr);
+        EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_TypeError));
+        PyErr_Clear();
+        EXPECT_EQ(Py_REFCNT(strided.get()), references);
+        Base::Internal::setPersistenceContentBufferAcquireForTest(nullptr);
+    }
+    EXPECT_EQ(PyByteArray_Resize(bytes.get(), 9), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       inheritedPersistenceDumpReleasesResultAndBufferOnActualAllocationAndReadFailure)
+{
+    Base::PyGILStateLocker gil;
+    PersistenceContentHooks hooks;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    Base::Internal::setPersistenceContentByteArrayFactoryForTest(&witnessPersistenceByteArrayAllocationFailure);
+    for (const Py_ssize_t requested : {PY_SSIZE_T_MAX, PY_SSIZE_T_MAX - 1}) {
+        persistenceContentFailureSize = requested;
+        persistenceContentErrorWitness.clear();
+        PyObjectRef allocation(PyObject_CallMethod(target.get(), "dumpContent", nullptr));
+        EXPECT_EQ(allocation.get(), nullptr);
+        // The second request reaches the allocator without the trailing-NUL
+        // size overflow and must fail with MemoryError on supported hosts.
+        if (requested == PY_SSIZE_T_MAX - 1) {
+            EXPECT_EQ(persistenceContentErrorWitness.type, PyExc_MemoryError);
+        }
+        EXPECT_TRUE(persistenceContentErrorWitness.matchesAndClear());
+    }
+    Base::Internal::setPersistenceContentByteArrayFactoryForTest(nullptr);
+
+    Base::Internal::setPersistenceContentBufferAcquireForTest(&failPersistenceByteArrayBufferAcquire);
+    PyObjectRef failedAcquire(PyObject_CallMethod(target.get(), "dumpContent", nullptr));
+    EXPECT_EQ(failedAcquire.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_BufferError));
+    PyErr_Clear();
+    Base::Internal::setPersistenceContentBufferAcquireForTest(nullptr);
+    ASSERT_NE(observedPersistenceByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedPersistenceByteArray), 1);
+    const auto acquiredSize = PyByteArray_Size(observedPersistenceByteArray);
+    ASSERT_GE(acquiredSize, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedPersistenceByteArray, acquiredSize + 1), 0);
+    Py_CLEAR(observedPersistenceByteArray);
+
+    Base::Internal::setPersistenceContentBeforeReadForTest(&failPersistenceByteArrayRead);
+    PyObjectRef failedRead(PyObject_CallMethod(target.get(), "dumpContent", nullptr));
+    EXPECT_EQ(failedRead.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_IOError));
+    PyErr_Clear();
+    ASSERT_NE(observedPersistenceByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedPersistenceByteArray), 1);
+    const auto size = PyByteArray_Size(observedPersistenceByteArray);
+    ASSERT_GE(size, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedPersistenceByteArray, size + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+    Py_CLEAR(observedPersistenceByteArray);
+
+    persistenceContentReadError = PyObject_CallObject(PyExc_RuntimeError, nullptr);
+    ASSERT_NE(persistenceContentReadError, nullptr);
+    Base::Internal::setPersistenceContentBeforeReadForTest(&failPersistenceByteArrayReadWithError);
+    PyObjectRef failedReadWithError(
+        PyObject_CallMethod(target.get(), "dumpContent", nullptr));
+    EXPECT_EQ(failedReadWithError.get(), nullptr);
+    EXPECT_EQ(persistenceContentErrorWitness.type, PyExc_RuntimeError);
+    EXPECT_EQ(persistenceContentErrorWitness.value, persistenceContentReadError);
+    EXPECT_TRUE(persistenceContentErrorWitness.matchesAndClear());
+    ASSERT_NE(observedPersistenceByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedPersistenceByteArray), 1);
+    const auto errorSize = PyByteArray_Size(observedPersistenceByteArray);
+    ASSERT_GE(errorSize, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedPersistenceByteArray, errorSize + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+#endif
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       propertyContentReleasesBytearrayExportsAfterSuccessAndInvalidRestore)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearError;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    _target->Vector.setValue(4.0, 5.0, 6.0);
+    PyObjectRef dump(PyObject_CallMethod(target.get(), "dumpPropertyContent", "s", "Vector"));
+    ASSERT_NE(dump.get(), nullptr);
+    ASSERT_TRUE(PyByteArray_Check(dump.get()));
+    const auto originalSize = PyByteArray_Size(dump.get());
+    ASSERT_GT(originalSize, 0);
+    _target->Vector.setValue(0.0, 0.0, 0.0);
+    PyObjectRef restored(PyObject_CallMethod(target.get(), "restorePropertyContent", "sO",
+                                              "Vector", dump.get()));
+    ASSERT_NE(restored.get(), nullptr);
+    EXPECT_DOUBLE_EQ(_target->Vector.getValue().x, 4.0);
+    EXPECT_DOUBLE_EQ(_target->Vector.getValue().y, 5.0);
+    EXPECT_DOUBLE_EQ(_target->Vector.getValue().z, 6.0);
+    EXPECT_EQ(PyByteArray_Resize(dump.get(), originalSize + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+
+    PyObjectRef invalid(PyByteArray_FromStringAndSize("not a zip archive", 17));
+    ASSERT_NE(invalid.get(), nullptr);
+    PyObjectRef failed(PyObject_CallMethod(target.get(), "restorePropertyContent", "sO",
+                                            "Vector", invalid.get()));
+    EXPECT_EQ(failed.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_IOError));
+    PyErr_Clear();
+    EXPECT_EQ(PyByteArray_Resize(invalid.get(), 18), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+
+    PyObjectRef view(PyMemoryView_FromObject(invalid.get()));
+    ASSERT_NE(view.get(), nullptr);
+    PyObjectRef step(PyLong_FromLong(2));
+    ASSERT_NE(step.get(), nullptr);
+    PyObjectRef slice(PySlice_New(nullptr, nullptr, step.get()));
+    ASSERT_NE(slice.get(), nullptr);
+    PyObjectRef strided(PyObject_GetItem(view.get(), slice.get()));
+    ASSERT_NE(strided.get(), nullptr);
+    PyObjectRef failedStrided(PyObject_CallMethod(target.get(), "restorePropertyContent", "sO",
+                                                  "Vector", strided.get()));
+    EXPECT_EQ(failedStrided.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_BufferError));
+    PyErr_Clear();
+}
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+namespace
+{
+thread_local PyObject* observedContentByteArray = nullptr;
+
+// Own a copy of the raw exception triple at the operation boundary. Fetch and
+// restore leave the *same* pending exception for the binding to propagate.
+struct PropertyContentErrorWitness final
+{
+    PyObject* type {nullptr};
+    PyObject* value {nullptr};
+    PyObject* traceback {nullptr};
+
+    void record()
+    {
+        clear();
+        PyErr_Fetch(&type, &value, &traceback);
+        Py_XINCREF(type);
+        Py_XINCREF(value);
+        Py_XINCREF(traceback);
+        PyErr_Restore(type, value, traceback); // steals the extra references
+    }
+    bool matchesAndClear()
+    {
+        PyObject* actualType = nullptr;
+        PyObject* actualValue = nullptr;
+        PyObject* actualTraceback = nullptr;
+        PyErr_Fetch(&actualType, &actualValue, &actualTraceback);
+        const bool matches = type && actualType == type && actualValue == value
+            && actualTraceback == traceback;
+        Py_XDECREF(actualType);
+        Py_XDECREF(actualValue);
+        Py_XDECREF(actualTraceback);
+        return matches;
+    }
+    void clear()
+    {
+        Py_CLEAR(type);
+        Py_CLEAR(value);
+        Py_CLEAR(traceback);
+    }
+};
+thread_local PropertyContentErrorWitness propertyContentErrorWitness;
+thread_local Py_ssize_t propertyContentFailureSize = PY_SSIZE_T_MAX;
+thread_local PyObject* propertyContentReadError = nullptr;
+PyObject* witnessPropertyByteArrayAllocationFailure(Py_ssize_t)
+{
+    PyObject* result = PyByteArray_FromStringAndSize(nullptr, propertyContentFailureSize);
+    if (!result) {
+        propertyContentErrorWitness.record();
+    }
+    return result;
+}
+int failPropertyByteArrayBufferAcquire(PyObject* array, Py_buffer* view, int flags)
+{
+    Py_XDECREF(observedContentByteArray);
+    Py_INCREF(array);
+    observedContentByteArray = array;
+    // A real readonly exporter rejects the actual writable buffer request.
+    PyObject* readonly = PyMemoryView_FromMemory(PyByteArray_AsString(array),
+                                                  PyByteArray_Size(array), PyBUF_READ);
+    if (!readonly) return -1;
+    const int status = PyObject_GetBuffer(readonly, view, flags);
+    Py_DECREF(readonly);
+    return status;
+}
+int acquirePropertyStridedViewForTest(PyObject* object, Py_buffer* view, int)
+{
+    // Synthetic seam: request strides so a real strided exporter can reach the
+    // explicit contiguity check. A normal PyBUF_SIMPLE request rejects it.
+    return PyObject_GetBuffer(object, view, PyBUF_STRIDES);
+}
+void failPropertyByteArrayRead(PyObject* array, std::istream& stream)
+{
+    Py_XDECREF(observedContentByteArray);
+    Py_INCREF(array);
+    observedContentByteArray = array;
+    stream.setstate(std::ios::badbit);
+}
+void failPropertyByteArrayReadWithError(PyObject* array, std::istream& stream)
+{
+    Py_XDECREF(observedContentByteArray);
+    Py_INCREF(array);
+    observedContentByteArray = array;
+    PyErr_SetObject(PyExc_RuntimeError, propertyContentReadError);
+    propertyContentErrorWitness.record();
+    stream.setstate(std::ios::badbit);
+}
+struct PropertyContentHooks final
+{
+    ~PropertyContentHooks()
+    {
+        App::Internal::setPropertyContentByteArrayFactoryForTest(nullptr);
+        App::Internal::setPropertyContentBeforeReadForTest(nullptr);
+        App::Internal::setPropertyContentBufferAcquireForTest(nullptr);
+        Py_CLEAR(observedContentByteArray);
+        Py_CLEAR(propertyContentReadError);
+        propertyContentErrorWitness.clear();
+        PyErr_Clear();
+    }
+};
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       propertyContentRejectsAndReleasesSyntheticStridedAcquisition)
+{
+    Base::PyGILStateLocker gil;
+    PropertyContentHooks hooks;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    PyObjectRef bytes(PyByteArray_FromStringAndSize("01234567", 8));
+    ASSERT_NE(bytes.get(), nullptr);
+    {
+        PyObjectRef view(PyMemoryView_FromObject(bytes.get()));
+        ASSERT_NE(view.get(), nullptr);
+        PyObjectRef step(PyLong_FromLong(2));
+        ASSERT_NE(step.get(), nullptr);
+        PyObjectRef slice(PySlice_New(nullptr, nullptr, step.get()));
+        ASSERT_NE(slice.get(), nullptr);
+        PyObjectRef strided(PyObject_GetItem(view.get(), slice.get()));
+        ASSERT_NE(strided.get(), nullptr);
+        const auto references = Py_REFCNT(strided.get());
+        App::Internal::setPropertyContentBufferAcquireForTest(&acquirePropertyStridedViewForTest);
+        PyObjectRef failed(PyObject_CallMethod(target.get(), "restorePropertyContent", "sO",
+                                                "Vector", strided.get()));
+        EXPECT_EQ(failed.get(), nullptr);
+        EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_TypeError));
+        PyErr_Clear();
+        EXPECT_EQ(Py_REFCNT(strided.get()), references);
+        App::Internal::setPropertyContentBufferAcquireForTest(nullptr);
+    }
+    EXPECT_EQ(PyByteArray_Resize(bytes.get(), 9), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       propertyContentDumpReleasesResultAndBufferOnActualAllocationAndReadFailure)
+{
+    Base::PyGILStateLocker gil;
+    PropertyContentHooks hooks;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    App::Internal::setPropertyContentByteArrayFactoryForTest(&witnessPropertyByteArrayAllocationFailure);
+    for (const Py_ssize_t requested : {PY_SSIZE_T_MAX, PY_SSIZE_T_MAX - 1}) {
+        propertyContentFailureSize = requested;
+        propertyContentErrorWitness.clear();
+        PyObjectRef allocation(PyObject_CallMethod(target.get(), "dumpPropertyContent", "s", "Vector"));
+        EXPECT_EQ(allocation.get(), nullptr);
+        // The second request reaches the allocator without the trailing-NUL
+        // size overflow and must fail with MemoryError on supported hosts.
+        if (requested == PY_SSIZE_T_MAX - 1) {
+            EXPECT_EQ(propertyContentErrorWitness.type, PyExc_MemoryError);
+        }
+        EXPECT_TRUE(propertyContentErrorWitness.matchesAndClear());
+    }
+    App::Internal::setPropertyContentByteArrayFactoryForTest(nullptr);
+
+    App::Internal::setPropertyContentBufferAcquireForTest(&failPropertyByteArrayBufferAcquire);
+    PyObjectRef failedAcquire(PyObject_CallMethod(target.get(), "dumpPropertyContent", "s", "Vector"));
+    EXPECT_EQ(failedAcquire.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_BufferError));
+    PyErr_Clear();
+    App::Internal::setPropertyContentBufferAcquireForTest(nullptr);
+    ASSERT_NE(observedContentByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedContentByteArray), 1);
+    const auto acquiredSize = PyByteArray_Size(observedContentByteArray);
+    ASSERT_GE(acquiredSize, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedContentByteArray, acquiredSize + 1), 0);
+    Py_CLEAR(observedContentByteArray);
+
+    App::Internal::setPropertyContentBeforeReadForTest(&failPropertyByteArrayRead);
+    PyObjectRef failedRead(PyObject_CallMethod(target.get(), "dumpPropertyContent", "s", "Vector"));
+    EXPECT_EQ(failedRead.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_IOError));
+    PyErr_Clear();
+    ASSERT_NE(observedContentByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedContentByteArray), 1);
+    const auto size = PyByteArray_Size(observedContentByteArray);
+    ASSERT_GE(size, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedContentByteArray, size + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+    Py_CLEAR(observedContentByteArray);
+
+    propertyContentReadError = PyObject_CallObject(PyExc_RuntimeError, nullptr);
+    ASSERT_NE(propertyContentReadError, nullptr);
+    App::Internal::setPropertyContentBeforeReadForTest(&failPropertyByteArrayReadWithError);
+    PyObjectRef failedReadWithError(
+        PyObject_CallMethod(target.get(), "dumpPropertyContent", "s", "Vector"));
+    EXPECT_EQ(failedReadWithError.get(), nullptr);
+    EXPECT_EQ(propertyContentErrorWitness.type, PyExc_RuntimeError);
+    EXPECT_EQ(propertyContentErrorWitness.value, propertyContentReadError);
+    EXPECT_TRUE(propertyContentErrorWitness.matchesAndClear());
+    ASSERT_NE(observedContentByteArray, nullptr);
+    EXPECT_EQ(Py_REFCNT(observedContentByteArray), 1);
+    const auto errorSize = PyByteArray_Size(observedContentByteArray);
+    ASSERT_GE(errorSize, 0);
+    EXPECT_EQ(PyByteArray_Resize(observedContentByteArray, errorSize + 1), 0);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+#endif
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        saveAsOutcomeBindingPreservesTwoArgumentsAndAddsHashDurabilityAndWarnings)
