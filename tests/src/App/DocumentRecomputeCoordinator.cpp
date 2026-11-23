@@ -1165,9 +1165,11 @@ TEST_F(
         App::DocumentRecomputeId id {0};
     };
 
-    // Complete both plans, cancel the admitted command before binding, then
-    // cancel only the dispatch plan. No simultaneous-start stress oracle.
+    // Complete both plans, cancel only the dispatch plan, then cancel the
+    // admitted command before binding. No simultaneous-start stress oracle.
     constexpr int rounds = 3;
+    constexpr int dispatchCancelRound = 1;
+    constexpr int admissionCancelRound = 2;
     for (int round = 0; round < rounds; ++round) {
         const std::string featureId = "dispatch-feature-" + std::to_string(round);
         const std::string beforeLabel = "First-before-" + std::to_string(round);
@@ -1232,10 +1234,14 @@ TEST_F(
             {feature(featureId, {}, _scenarioToken, "First", afterLabel, {}, {}, true)},
             "dispatch-plan-" + std::to_string(round));
         ownerFuture = lane->postToOwner(
-            [&, state, plan = std::move(plan), beforeLabel]() mutable {
+            [&, state, plan = std::move(plan), beforeLabel, round]() mutable {
                 object("First").Label.setValue(beforeLabel);
-                object("Second").touch();
+                EXPECT_FALSE(_document->mustExecute()) << "before dispatch plan, round " << round;
                 state->id = coordinator.submit(std::move(plan));
+                // The detached adapter must capture a stable document. Touch
+                // Second only after capture, but before the lane admission.
+                object("Second").touch();
+                EXPECT_TRUE(_document->mustExecute()) << "before admission, round " << round;
                 std::unique_lock lock(state->mutex);
                 state->submitted = true;
                 state->cv.notify_all();
@@ -1274,9 +1280,10 @@ TEST_F(
         ASSERT_TRUE(dispatchBeforeBinding.has_value());
         ASSERT_EQ(dispatchBeforeBinding->features.size(), 1U);
         EXPECT_EQ(dispatchBeforeBinding->features.front().featureId, featureId);
-        EXPECT_EQ(dispatchBeforeBinding->state, App::DocumentRecomputeState::Running);
+        ASSERT_EQ(dispatchBeforeBinding->state, App::DocumentRecomputeState::Running)
+            << "round " << round << ": " << dispatchBeforeBinding->diagnostic;
         EXPECT_FALSE(coordinator.status(admissionId).has_value());
-        if (round == 1) {
+        if (round == admissionCancelRound) {
             // There is deliberately no coordinator job for admissionId yet.
             // cancelCommand records the lane flag even when coordinator.cancel
             // returns false; binding still creates the job before pump cancels.
@@ -1305,9 +1312,9 @@ TEST_F(
         EXPECT_EQ(admittedJob->id, admissionId);
         ASSERT_EQ(admittedJob->features.size(), 1U);
         EXPECT_EQ(admittedJob->features.front().featureId, "Second");
-        const auto expectedCommandState = round == 1
+        const auto expectedCommandState = round == admissionCancelRound
             ? App::DocumentCommandState::Cancelled : App::DocumentCommandState::Completed;
-        const auto expectedJobState = round == 1
+        const auto expectedJobState = round == admissionCancelRound
             ? App::DocumentRecomputeState::Cancelled : App::DocumentRecomputeState::Completed;
         EXPECT_EQ(terminalCommand.state, expectedCommandState) << terminalCommand.diagnostic;
         EXPECT_EQ(admittedJob->state, expectedJobState);
@@ -1320,17 +1327,18 @@ TEST_F(
         EXPECT_EQ(heldDispatch.features.front().featureId, featureId);
         EXPECT_EQ(lane->postToOwner([&] { return object("First").Label.getStrValue(); }).get(),
                   beforeLabel);
-        if (round == 2) {
+        if (round == dispatchCancelRound) {
             EXPECT_TRUE(dispatchHandle.cancel("cancel dispatch plan only"));
         }
         _scenario->release(featureId);
         const auto settled = lane->postToOwner([&] {
             return waitTerminal(coordinator, state->id);
         }).get();
-        EXPECT_EQ(settled.state, round == 2 ? App::DocumentRecomputeState::Cancelled
-                                          : App::DocumentRecomputeState::Completed);
+        EXPECT_EQ(settled.state, round == dispatchCancelRound
+                                     ? App::DocumentRecomputeState::Cancelled
+                                     : App::DocumentRecomputeState::Completed);
         EXPECT_EQ(lane->postToOwner([&] { return object("First").Label.getStrValue(); }).get(),
-                  round == 2 ? beforeLabel : afterLabel);
+                  round == dispatchCancelRound ? beforeLabel : afterLabel);
         const auto unaffectedAdmission = coordinator.status(admissionId);
         ASSERT_TRUE(unaffectedAdmission.has_value());
         EXPECT_EQ(unaffectedAdmission->state, expectedJobState);
