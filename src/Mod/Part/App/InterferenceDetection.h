@@ -55,7 +55,11 @@ struct InterferenceResult
  * Classify the geometric relationship between two shapes.
  *
  * Uses BRepExtrema_DistShapeShape, then an exact Common (without size-scaled
- * auto-fuzzy) when the distance is within kernel tolerance.
+ * auto-fuzzy) when the distance is within kernel tolerance or the bounds of
+ * two solid-bearing inputs overlap. A positive distance is retained only when
+ * that Common finds no solid overlap. When Common exposes an erroneous
+ * positive distance, minimumDistance is unavailable (-1) and its points are
+ * not distance witnesses.
  */
 PartExport InterferenceResult classifyInterference(
     const TopoDS_Shape& first,

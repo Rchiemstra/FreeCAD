@@ -2,6 +2,8 @@
 
 #include "PreCompiled.h"
 #ifndef _PreComp_
+# include <Bnd_Box.hxx>
+# include <BRepBndLib.hxx>
 # include <BRepCheck_Analyzer.hxx>
 # include <BRepExtrema_DistShapeShape.hxx>
 # include <BRepGProp.hxx>
@@ -260,6 +262,37 @@ InterferenceResult classifyInterference(
         const double minimumDistance = distance.Value();
         const Base::Vector3d pointOnFirst = toVector(distance.PointOnShape1(1));
         const Base::Vector3d pointOnSecond = toVector(distance.PointOnShape2(1));
+
+        // Distance can be positive for intersecting solids (OCCT issue 1123).
+        // For solid-bearing pairs with overlapping bounds, ask Common before
+        // accepting a positive distance. Keep the distance classification if
+        // Common finds no solid: overlapping boxes alone do not imply contact.
+        if (minimumDistance > tolerance
+            && TopExp_Explorer(first, TopAbs_SOLID).More()
+            && TopExp_Explorer(second, TopAbs_SOLID).More()) {
+            Bnd_Box firstBounds;
+            Bnd_Box secondBounds;
+            BRepBndLib::Add(first, firstBounds);
+            BRepBndLib::Add(second, secondBounds);
+            if (firstBounds.IsVoid() || secondBounds.IsVoid()) {
+                return makeResult(InterferenceKind::Inconclusive, "Could not bound solid input");
+            }
+            if (!firstBounds.IsOut(secondBounds)) {
+                auto common = classifyCommon(
+                    first, second, options, minimumDistance, pointOnFirst, pointOnSecond
+                );
+                if (common.kind == InterferenceKind::Penetration) {
+                    // Neither the positive distance nor its witness points are
+                    // trustworthy. Use the existing unavailable-distance sentinel.
+                    common.minimumDistance = -1.0;
+                    common.diagnostic = "Overlapping solid volume detected; distance unavailable";
+                    return common;
+                }
+                if (common.kind != InterferenceKind::Contact) {
+                    return common;
+                }
+            }
+        }
 
         if (minimumDistance > options.clearance + tolerance) {
             InterferenceResult result = makeResult(InterferenceKind::Clear);
