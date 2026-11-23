@@ -9,5 +9,6 @@ python3 build_freecad.py --config debug --no-pixi --configure --configure-only \
   --cmake-arg=Ninja \
   --cmake-arg=-DCMAKE_C_COMPILER=/usr/bin/gcc \
   --cmake-arg=-DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+  --cmake-arg=-DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   --cmake-arg=-DCMAKE_C_COMPILER_LAUNCHER=ccache \
   --cmake-arg=-DCMAKE_CXX_COMPILER_LAUNCHER=ccache
