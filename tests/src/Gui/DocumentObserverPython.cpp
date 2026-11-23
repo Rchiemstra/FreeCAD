@@ -633,12 +633,26 @@ TEST_F(
     EXPECT_EQ(pumpOneWithinDeadline(), 1U);
 
     EventLog firstEventLog;
-    bool aReleased = false;
+    bool tracebackRetainsA = false;
     {
         Base::PyGILStateLocker gil;
         firstEventLog = readLogAndClear();
-        ASSERT_TRUE(runScript("gc.collect()\na_released = (weak_a() is None)\n"));
-        aReleased = static_cast<bool>(Py::Boolean(_ns->getItem("a_released")));
+        ASSERT_TRUE(runScript(
+            "import sys\n"
+            "def callback_frames_holding_a(tb):\n"
+            "    frames = []\n"
+            "    while tb is not None:\n"
+            "        frame = tb.tb_frame\n"
+            "        if (frame.f_code is ThrowingSelfRemovingObserver.slotCreatedObject.__code__ and\n"
+            "                frame.f_locals.get('self') is weak_a() and weak_a() is not None):\n"
+            "            frames.append(frame)\n"
+            "        tb = tb.tb_next\n"
+            "    return frames\n"
+            "gc.collect()\n"
+            "reported_traceback = getattr(sys, 'last_traceback', None)\n"
+            "callback_frames = callback_frames_holding_a(reported_traceback)\n"
+            "a_retained_by_traceback = bool(callback_frames)\n"));
+        tracebackRetainsA = static_cast<bool>(Py::Boolean(_ns->getItem("a_retained_by_traceback")));
     }
     const EventLog expectedFirst {
         {"A-enter", "FirstObj"},
@@ -647,7 +661,28 @@ TEST_F(
         {"D", "FirstObj"},
     };
     EXPECT_EQ(firstEventLog, expectedFirst);
+    EXPECT_TRUE(tracebackRetainsA);
+
+    // Exception reporting intentionally retains the traceback for debugging.
+    // Its completed callback frame owns `self` independently of the C++
+    // wrapper. Clear only the identified, completed callback frames of this
+    // test's exception, then verify no observer or callable reference remains.
+    // The traceback object and its other frames remain available for debugging.
+    bool aReleased = false;
+    bool tracebackPreserved = false;
+    {
+        Base::PyGILStateLocker gil;
+        ASSERT_TRUE(runScript(
+            "for callback_frame in callback_frames:\n"
+            "    callback_frame.clear()\n"
+            "gc.collect()\n"
+            "a_released = (weak_a() is None)\n"
+            "traceback_preserved = (getattr(sys, 'last_traceback', None) is reported_traceback)\n"));
+        aReleased = static_cast<bool>(Py::Boolean(_ns->getItem("a_released")));
+        tracebackPreserved = static_cast<bool>(Py::Boolean(_ns->getItem("traceback_preserved")));
+    }
     EXPECT_TRUE(aReleased);
+    EXPECT_TRUE(tracebackPreserved);
 
     // Event 2: D, re-registered B, and finalizer-added F receive Event 2; removed
     // A and finalizer-removed E do not.
