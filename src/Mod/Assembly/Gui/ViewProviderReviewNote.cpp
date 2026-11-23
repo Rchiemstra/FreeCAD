@@ -656,6 +656,9 @@ void ViewProviderReviewNote::flushScheduledVisualFrame()
 {
     visualFrameScheduled = false;
     visualFrameDirty = false;
+    // The delete callback can have deferred camera rebinding to this frame.
+    // Do it before rasterization, including the empty-text early-return path.
+    ensureCameraSensor();
     // A fixed-mm box must be re-rasterized when the zoom changes (mm -> px), otherwise
     // the visible box drifts away from the leader border. drawImage ends with
     // refreshLeader, so the leader stays glued to the new box in one atomic pass.
@@ -1383,7 +1386,8 @@ void ViewProviderReviewNote::ensureCameraSensor()
     if (!camera) {
         return;
     }
-    if (camera == attachedCamera && cameraSensor) {
+    if (cameraSensor && cameraSensor->getAttachedNode() == camera) {
+        attachedCamera = camera;
         return;
     }
 
@@ -1413,25 +1417,15 @@ void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
     that->scheduleVisualFrame();
 }
 
-void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* sensor)
+void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* /*sensor*/)
 {
     auto* that = static_cast<ViewProviderReviewNote*>(data);
     if (!that) {
         return;
     }
     that->attachedCamera = nullptr;
-    // Camera was replaced (e.g. ortho ↔ perspective, or 3D view replacement);
-    // reattach to the new camera and keep the GL-widget resize observer in sync.
-    auto* nodeSensor = static_cast<SoNodeSensor*>(sensor);
-    const Gui::View3DInventorViewer* viewer = that->getActiveViewer();
-    if (viewer && viewer->getSoRenderManager()) {
-        if (SoCamera* camera = viewer->getSoRenderManager()->getCamera()) {
-            nodeSensor->attach(camera);
-            that->attachedCamera = camera;
-            that->ensureViewportResizeObserver();
-            that->scheduleVisualFrame();
-            return;
-        }
-    }
+    // Coin invokes this while the sensor is still attached to the dying node.
+    // Rebind only after the callback returns and Coin finishes detaching it.
     that->ensureViewportResizeObserver();
+    that->scheduleVisualFrame();
 }

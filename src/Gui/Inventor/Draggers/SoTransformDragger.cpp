@@ -358,7 +358,9 @@ SoTransformDragger::~SoTransformDragger()
     cameraSensor.setData(nullptr);
     cameraSensor.detach();
     idleSensor.setData(nullptr);
-    idleSensor.unschedule();
+    if (idleSensor.isScheduled()) {
+        idleSensor.unschedule();
+    }
 
     removeValueChangedCallback(&SoTransformDragger::valueChangedCB);
     removeFinishCallback(&SoTransformDragger::finishDragCB, this);
