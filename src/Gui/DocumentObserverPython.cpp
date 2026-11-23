@@ -32,11 +32,34 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 
+#include <atomic>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string_view>
 
 
 using namespace Gui;
-namespace sp = std::placeholders;
+
+namespace
+{
+
+thread_local void (*beforeDeferredIdentityCopyForTest)() = nullptr;
+
+std::string nextObserverToken()
+{
+    static std::atomic<std::uint64_t> nextId {1};
+    auto id = nextId.load(std::memory_order_relaxed);
+    do {
+        if (id == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("GUI observer registration identities exhausted");
+        }
+    } while (!nextId.compare_exchange_weak(
+        id, id + 1, std::memory_order_relaxed, std::memory_order_relaxed));
+    return std::string("gui-observer-") + std::to_string(id);
+}
+
+}  // namespace
 
 std::vector<DocumentObserverPython*> DocumentObserverPython::_instances;
 
@@ -63,14 +86,20 @@ void DocumentObserverPython::removeObserver(const Py::Object& obj)
 
 DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
     : inst(obj)
+    , observerToken(nextObserverToken())
 {
+    // Each copied signal callable owns its token. The static slots only use
+    // observer inside the immediate Python callback; deferred admission never
+    // dereferences a registration that removal may already have destroyed.
     // NOLINTBEGIN
 #define FC_PY_ELEMENT_ARG1(_name1, _name2) \
     do { \
         FC_PY_GetCallable(obj.ptr(), "slot" #_name1, py##_name1.py); \
         if (!py##_name1.py.isNone()) \
             py##_name1.slot = Application::Instance->signal##_name2.connect( \
-                std::bind(&DocumentObserverPython::slot##_name1, this, sp::_1) \
+                [this, token = observerToken](const auto& value, const auto&...) { \
+                    slot##_name1(this, token, value); \
+                } \
             ); \
     } while (0);
 
@@ -79,7 +108,9 @@ DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
         FC_PY_GetCallable(obj.ptr(), "slot" #_name1, py##_name1.py); \
         if (!py##_name1.py.isNone()) \
             py##_name1.slot = Application::Instance->signal##_name2.connect( \
-                std::bind(&DocumentObserverPython::slot##_name1, this, sp::_1, sp::_2) \
+                [this, token = observerToken](const auto& value, const auto& property) { \
+                    slot##_name1(this, token, value, property); \
+                } \
             ); \
     } while (0);
 
@@ -98,6 +129,11 @@ DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
 }
 
 DocumentObserverPython::~DocumentObserverPython() = default;
+
+void DocumentObserverPython::setBeforeDeferredIdentityCopyForTest(void (*hook)())
+{
+    beforeDeferredIdentityCopyForTest = hook;
+}
 
 namespace
 {
@@ -155,13 +191,21 @@ std::string makeObjectPayloadJson(const Gui::ViewProvider& view)
 }
 
 template<typename Fn>
-void admitObserverDelivery(Fn&& fn, const char* eventKind, const std::string& payloadJson)
+void admitObserverDelivery(
+    Fn&& fn,
+    const std::string& observerToken,
+    const char* eventKind,
+    const std::string& payloadJson)
 {
     const auto outcome = GuiPythonGate::tryAdmit(
         GuiPythonGateCallbackKind::ObserverDelivery,
         std::forward<Fn>(fn));
     if (outcome.queued()) {
+        if (beforeDeferredIdentityCopyForTest) {
+            beforeDeferredIdentityCopyForTest();
+        }
         GuiPythonObserverValueEvent event;
+        event.observerToken = observerToken;
         event.eventKind = eventKind;
         event.payloadJson = payloadJson;
         GuiPythonGate::enqueueObserverValueEvent(std::move(event));
@@ -174,8 +218,18 @@ void DocumentObserverPython::installValueEventHandler()
 {
     GuiPythonGate::setObserverValueEventHandler(
         [](const GuiPythonObserverValueEvent& event) {
+            if (event.observerToken.empty()) {
+                return;
+            }
+            DocumentObserverPython* recipient = nullptr;
             for (auto* observer : _instances) {
-                observer->deliverValueEvent(event);
+                if (observer && observer->observerToken == event.observerToken) {
+                    recipient = observer;
+                    break;
+                }
+            }
+            if (recipient) {
+                recipient->deliverValueEvent(event);
             }
         });
 }
@@ -283,133 +337,163 @@ void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent
     }
 }
 
-void DocumentObserverPython::slotCreatedDocument(const Gui::Document& Doc)
+void DocumentObserverPython::slotCreatedDocument(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [this, &Doc] {
+        [observer, &Doc] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(pyCreatedDocument.ptr(), args.ptr());
+                Base::pyCall(observer->pyCreatedDocument.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "CreatedDocument",
         std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
 }
 
-void DocumentObserverPython::slotDeletedDocument(const Gui::Document& Doc)
+void DocumentObserverPython::slotDeletedDocument(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [this, &Doc] {
+        [observer, &Doc] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(pyDeletedDocument.ptr(), args.ptr());
+                Base::pyCall(observer->pyDeletedDocument.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "DeletedDocument",
         std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
 }
 
-void DocumentObserverPython::slotRelabelDocument(const Gui::Document& Doc)
+void DocumentObserverPython::slotRelabelDocument(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [this, &Doc] {
+        [observer, &Doc] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(pyRelabelDocument.ptr(), args.ptr());
+                Base::pyCall(observer->pyRelabelDocument.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "RelabelDocument",
         std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
 }
 
-void DocumentObserverPython::slotRenameDocument(const Gui::Document& Doc)
+void DocumentObserverPython::slotRenameDocument(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [this, &Doc] {
+        [observer, &Doc] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(pyRenameDocument.ptr(), args.ptr());
+                Base::pyCall(observer->pyRenameDocument.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "RenameDocument",
         std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
 }
 
-void DocumentObserverPython::slotActivateDocument(const Gui::Document& Doc)
+void DocumentObserverPython::slotActivateDocument(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::Document& Doc)
 {
     admitObserverDelivery(
-        [this, &Doc] {
+        [observer, &Doc] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::Document&>(Doc).getPyObject()));
-                Base::pyCall(pyActivateDocument.ptr(), args.ptr());
+                Base::pyCall(observer->pyActivateDocument.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "ActivateDocument",
         std::string("{\"document\":\"") + Doc.getDocument()->getName() + "\"}");
 }
 
-void DocumentObserverPython::slotCreatedObject(const Gui::ViewProvider& Obj)
+void DocumentObserverPython::slotCreatedObject(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::ViewProvider& Obj)
 {
     admitObserverDelivery(
-        [this, &Obj] {
+        [observer, &Obj] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                Base::pyCall(pyCreatedObject.ptr(), args.ptr());
+                Base::pyCall(observer->pyCreatedObject.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "CreatedObject",
         makeObjectPayloadJson(Obj));
 }
 
-void DocumentObserverPython::slotDeletedObject(const Gui::ViewProvider& Obj)
+void DocumentObserverPython::slotDeletedObject(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::ViewProvider& Obj)
 {
     admitObserverDelivery(
-        [this, &Obj] {
+        [observer, &Obj] {
             try {
                 Py::Tuple args(1);
                 args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
-                Base::pyCall(pyDeletedObject.ptr(), args.ptr());
+                Base::pyCall(observer->pyDeletedObject.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "DeletedObject",
         makeObjectPayloadJson(Obj));
 }
 
 void DocumentObserverPython::slotBeforeChangeObject(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
     const Gui::ViewProvider& Obj,
     const App::Property& Prop
 )
@@ -420,24 +504,28 @@ void DocumentObserverPython::slotBeforeChangeObject(
     }
     const std::string payload = makeObjectPayloadJson(Obj);
     admitObserverDelivery(
-        [this, &Obj, prop_name] {
+        [observer, &Obj, prop_name] {
             try {
                 Py::Tuple args(2);
                 args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
                 args.setItem(1, Py::String(prop_name));
-                Base::pyCall(pyBeforeChangeObject.ptr(), args.ptr());
+                Base::pyCall(observer->pyBeforeChangeObject.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "BeforeChangeObject",
         payload.substr(0, payload.size() - 1) + R"(,"property":")" + escapeJsonString(prop_name)
             + R"("})");
 }
 
-void DocumentObserverPython::slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop)
+void DocumentObserverPython::slotChangedObject(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::ViewProvider& Obj, const App::Property& Prop)
 {
     const char* prop_name = Obj.getPropertyName(&Prop);
     if (!prop_name) {
@@ -445,59 +533,68 @@ void DocumentObserverPython::slotChangedObject(const Gui::ViewProvider& Obj, con
     }
     const std::string payload = makeObjectPayloadJson(Obj);
     admitObserverDelivery(
-        [this, &Obj, prop_name] {
+        [observer, &Obj, prop_name] {
             try {
                 Py::Tuple args(2);
                 args.setItem(0, Py::asObject(const_cast<Gui::ViewProvider&>(Obj).getPyObject()));
                 args.setItem(1, Py::String(prop_name));
-                Base::pyCall(pyChangedObject.ptr(), args.ptr());
+                Base::pyCall(observer->pyChangedObject.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "ChangedObject",
         payload.substr(0, payload.size() - 1) + R"(,"property":")" + escapeJsonString(prop_name)
             + R"("})");
 }
 
-void DocumentObserverPython::slotInEdit(const Gui::ViewProviderDocumentObject& Obj)
+void DocumentObserverPython::slotInEdit(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::ViewProviderDocumentObject& Obj)
 {
     admitObserverDelivery(
-        [this, &Obj] {
+        [observer, &Obj] {
             try {
                 Py::Tuple args(1);
                 args.setItem(
                     0,
                     Py::asObject(const_cast<Gui::ViewProviderDocumentObject&>(Obj).getPyObject()));
-                Base::pyCall(pyInEdit.ptr(), args.ptr());
+                Base::pyCall(observer->pyInEdit.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "InEdit",
         makeObjectPayloadJson(Obj));
 }
 
-void DocumentObserverPython::slotResetEdit(const Gui::ViewProviderDocumentObject& Obj)
+void DocumentObserverPython::slotResetEdit(
+    DocumentObserverPython* observer,
+    const std::string& observerToken,
+    const Gui::ViewProviderDocumentObject& Obj)
 {
     admitObserverDelivery(
-        [this, &Obj] {
+        [observer, &Obj] {
             try {
                 Py::Tuple args(1);
                 args.setItem(
                     0,
                     Py::asObject(const_cast<Gui::ViewProviderDocumentObject&>(Obj).getPyObject()));
-                Base::pyCall(pyResetEdit.ptr(), args.ptr());
+                Base::pyCall(observer->pyResetEdit.ptr(), args.ptr());
             }
             catch (Py::Exception&) {
                 Base::PyException e;
                 e.reportException();
             }
         },
+        observerToken,
         "ResetEdit",
         makeObjectPayloadJson(Obj));
 }

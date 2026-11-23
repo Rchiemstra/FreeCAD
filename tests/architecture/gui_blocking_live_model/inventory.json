@@ -1880,7 +1880,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "void DocumentObserverPython::slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop)"
+      "evidence": "void DocumentObserverPython::slotChangedObject("
     },
     {
       "path": "src/Gui/DocumentObserverPython.cpp",
@@ -1888,7 +1888,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "void DocumentObserverPython::slotDeletedObject(const Gui::ViewProvider& Obj)"
+      "evidence": "void DocumentObserverPython::slotDeletedObject("
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
@@ -1896,7 +1896,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "void slotBeforeChangeObject(const Gui::ViewProvider& Obj, const App::Property& Prop);"
+      "evidence": "static void slotBeforeChangeObject("
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
@@ -1904,7 +1904,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "void slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop);"
+      "evidence": "static void slotChangedObject("
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
@@ -1912,7 +1912,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "void slotDeletedObject(const Gui::ViewProvider& Obj);"
+      "evidence": "static void slotDeletedObject("
     },
     {
       "path": "src/Gui/DocumentPresentationCapture.cpp",

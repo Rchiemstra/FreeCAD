@@ -22,6 +22,9 @@
 #include "PreCompiled.h"
 
 #include "MainThreadSignal.h"
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+#include "private/MainThreadSignalTestHooks.h"
+#endif
 
 #include <thread>
 
@@ -49,6 +52,18 @@ void MainThreadSignalConfig::setServiceHook(const ServiceFn service)
 {
     gService = service;
 }
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+App::Test::MainThreadSignalHooks
+App::Test::exchangeMainThreadSignalHooks(const MainThreadSignalHooks hooks) noexcept
+{
+    const MainThreadSignalHooks previous {gIsMainThread, gInvoke, gService};
+    gIsMainThread = hooks.isMainThread;
+    gInvoke = hooks.invoke;
+    gService = hooks.service;
+    return previous;
+}
+#endif
 
 bool MainThreadSignalConfig::serviceMarshalledTasks(const std::chrono::milliseconds maxWait)
 {
