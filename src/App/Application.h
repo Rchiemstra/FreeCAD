@@ -125,6 +125,14 @@ class AppExport Application
 {
 
 public:
+    enum class ShutdownState { Running, Stopping, Incomplete };
+
+    /** An incomplete shutdown is terminal for normal work. Documents or
+     * execution lanes may already have been closed or stopped. A refused close
+     * may be resolved and destruct() retried; later failures can be terminal.
+     * Callers must stop normal work once stopping begins. */
+    [[nodiscard]] ShutdownState shutdownState() const noexcept
+    { return _shutdownState.load(); }
     /**
      * @name Methods for document handling
      *
@@ -738,7 +746,23 @@ public:
     /// Initialize FreeCAD's type system for objects, properties, etc.
     static void initTypes();
 
-    /// Destroy the application.
+    /** Reserve the cleaner boundary before a GUI close attempt can save or
+     * close documents. The caller must cancel on a canceled/deferred close,
+     * or consume the reservation with prepareForShutdown(). */
+    static void preflightForShutdown();
+    static void cancelShutdownPreflight() noexcept;
+
+    /** Begin shutdown while GUI services are still alive. Closes documents,
+     * joins managed owners and holds cleaner admission until destruct().
+     * A preflight refusal has no shutdown effects; a later failure leaves the
+     * application Incomplete. Call only at a top-level shutdown boundary and
+     * prevent new App work throughout shutdown. Repeated calls after success
+     * are harmless. */
+    static void prepareForShutdown();
+
+    /** Destroy the application at a top-level shutdown boundary. Callers must
+     * prevent new App work while shutdown runs; registered foreign property
+     * threads must exit first. Preflight refusal leaves normal work available. */
     static void destruct();
 
     /// Detach from the console.
@@ -975,6 +999,7 @@ private:
     explicit Application(std::map<std::string, std::string> &mConfig);
     // Destructor
     virtual ~Application();
+    void releaseCleanupObservers();
 
     static void cleanupUnits();
 
@@ -1065,6 +1090,9 @@ private:
     bool _isRestoring{false};
     bool _allowPartial{false};
     bool _isClosingAll{false};
+    std::atomic<ShutdownState> _shutdownState {ShutdownState::Running};
+    bool _shutdownPrepared {false}; // top-level shutdown thread only
+    bool _shutdownPreflightHeld {false}; // top-level shutdown thread only
 
     // for estimate max link depth
     int _objCount{-1};

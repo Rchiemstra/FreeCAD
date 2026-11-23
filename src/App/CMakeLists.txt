@@ -363,6 +363,7 @@ SET(Properties_HPP_SRCS
     DynamicProperty.h
     ObjectIdentifier.h
     Property.h
+    PropertyCleanup.h
     PropertyContainer.h
     PropertyFile.h
     PropertyGeo.h

@@ -140,7 +140,15 @@ int main(int argc, char** argv)
 
     if (App::Internal::geometryWorkerRequested()) {
         const int workerExitCode = App::Internal::runGeometryWorkerMain();
-        Application::destruct();
+        try { Application::destruct(); }
+        catch (const Base::Exception& e) {
+            std::fprintf(stderr, "Application finalization failed: %s\n", e.what());
+            return 1;
+        }
+        catch (...) {
+            std::fprintf(stderr, "Application finalization failed\n");
+            return 1;
+        }
         return workerExitCode;
     }
 
@@ -163,15 +171,16 @@ int main(int argc, char** argv)
     // Destruction phase ===========================================================
     Console().log("FreeCAD terminating...\n");
 
-    try {
-        // close open documents
-        App::GetApplication().closeAllDocuments();
+    // cleans up
+    try { Application::destruct(); }
+    catch (const Base::Exception& e) {
+        std::fprintf(stderr, "Application finalization failed: %s\n", e.what());
+        return 1;
     }
     catch (...) {
+        std::fprintf(stderr, "Application finalization failed\n");
+        return 1;
     }
-
-    // cleans up
-    Application::destruct();
 
     Console().log("FreeCAD completely terminated\n");
 

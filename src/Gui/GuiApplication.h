@@ -51,6 +51,20 @@ public:
      */
     bool notify(QObject* receiver, QEvent* event) override;
 
+    // Used around every cancelable GUI close attempt, including nested Qt loops.
+    void beginCloseAttempt() noexcept;
+    void endCloseAttempt();
+    bool fileOpenAdmissionBlocked() const noexcept;
+    bool closeForSession(bool allowInteraction);
+    bool isSessionCloseWithoutInteraction() const noexcept;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    int deferredFileOpenCountForTesting() const noexcept;
+#endif
+
+Q_SIGNALS:
+    void fileOpenAdmissionResumed();
+
+public:
     /// Pointer to exceptions caught in Qt event handler
     std::shared_ptr<Base::SystemExitException> caughtException;
 
@@ -59,6 +73,11 @@ public Q_SLOTS:
 
 protected:
     bool event(QEvent* event) override;
+
+private:
+    unsigned int closeAttemptDepth {0};
+    unsigned int noInteractionSessionDepth {0};
+    QList<QString> deferredFileOpenEvents;
 };
 
 class GUISingleApplication: public GUIApplication
@@ -71,6 +90,9 @@ public:
 
     bool isRunning() const;
     bool sendMessage(const QString& message, int timeout = 5000);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    int pendingSocketMessageCountForTesting() const noexcept;
+#endif
 
 private Q_SLOTS:
     void receiveConnection();
@@ -84,6 +106,14 @@ private:
     class Private;
     QScopedPointer<Private> d_ptr;
 };
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+namespace Internal {
+GuiExport QApplication* createSingleApplicationForTesting(int& argc, char** argv);
+GuiExport bool closeWithoutSessionInteractionForTesting();
+GuiExport int pendingFileOpenCountForTesting(bool fileEvent);
+}
+#endif
 
 class WheelEventFilter: public QObject
 {

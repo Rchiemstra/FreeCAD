@@ -2300,7 +2300,7 @@ SelectionSingleton::SelectionSingleton()
     : CurrentPreselection(SelectionChanges::ClrSelection)
 {
     // NOLINTBEGIN
-    App::GetApplication().signalDeletedObject.connect(
+    appDeletedObjectConnection = App::GetApplication().signalDeletedObject.connect(
         std::bind(&Gui::SelectionSingleton::slotDeletedObject, this, sp::_1)
     );
 
@@ -2314,7 +2314,10 @@ SelectionSingleton::SelectionSingleton()
  * A destructor.
  * A more elaborate description of the destructor.
  */
-SelectionSingleton::~SelectionSingleton() = default;
+SelectionSingleton::~SelectionSingleton()
+{
+    appDeletedObjectConnection.disconnect();
+}
 
 SelectionSingleton* SelectionSingleton::_pcSingleton = nullptr;
 

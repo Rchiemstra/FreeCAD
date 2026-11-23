@@ -1594,3 +1594,8 @@ INSTALL(
     DESTINATION
         ${CMAKE_INSTALL_DATADIR}/3Dconnexion
 )
+
+# Expose only the deterministic GUI ingress test seam in developer builds.
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(FreeCADGui PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+endif()

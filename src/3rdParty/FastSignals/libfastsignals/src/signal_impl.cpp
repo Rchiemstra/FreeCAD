@@ -41,9 +41,15 @@ void signal_impl::remove(uint64_t id) noexcept
 
 void signal_impl::remove_all() noexcept
 {
-	std::lock_guard lock(m_mutex);
-	m_functions.clear();
-	m_ids.clear();
+	// Destruction of a slot may reconnect to this signal. Detach storage
+	// without allocating, and destroy the slots after releasing the mutex.
+	decltype(m_functions) removedFunctions;
+	decltype(m_ids) removedIds;
+	{
+		std::lock_guard lock(m_mutex);
+		removedFunctions.swap(m_functions);
+		removedIds.swap(m_ids);
+	}
 }
 
 bool signal_impl::get_next_slot(packed_function& slot, size_t& expectedIndex, uint64_t& nextId) const

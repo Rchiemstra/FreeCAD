@@ -119,11 +119,15 @@ endif()
 add_executable(GuiShutdown_tests_run
     MainWindowShutdown.cpp
 )
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(GuiShutdown_tests_run PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+endif()
 
 # BUILD_DYNAMIC_LINK_PYTHON is OFF outside MSVC, so this process has to link
 # libpython itself. keep_python_linked() runs for every TestExecutables entry.
 target_link_libraries(GuiShutdown_tests_run PRIVATE
     GTest::gmock_main
+    Qt6::Test
     ${Python3_LIBRARIES}
     FreeCADApp
     FreeCADGui

@@ -27,6 +27,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 #include <App/Application.h>
 
@@ -379,6 +380,11 @@ public:
     bool setUserEditMode(const std::string& mode);
     //@}
 
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    // Exercise the same private shutdown entry used after the event loop.
+    void shutdownForTesting() { shutdown(); }
+#endif
+
 private:
     /** Restore barrier-recorded status transitions without observable callbacks. */
     bool restoreSharedPresentationPropertyStatuses(std::string& diagnostic) noexcept;
@@ -388,6 +394,7 @@ private:
                                  bool propertyStatusChange);
 
     struct ApplicationP* d;
+    std::vector<fastsignals::scoped_connection> appConnections;
     /// workbench python dictionary
     PyObject* _pcWorkbenchDictionary;
     NavlibInterface* pNavlibInterface;

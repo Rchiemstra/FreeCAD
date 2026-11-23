@@ -32,6 +32,7 @@
 #endif
 
 #include <sstream>
+#include <utility>
 #include <QAbstractSpinBox>
 #include <QByteArray>
 #include <QComboBox>
@@ -40,6 +41,7 @@
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QSessionManager>
+#include <QScopeGuard>
 #include <QTimer>
 
 
@@ -165,20 +167,58 @@ bool GUIApplication::notify(QObject* receiver, QEvent* event)
     return true;
 }
 
+void GUIApplication::beginCloseAttempt() noexcept
+{
+    ++closeAttemptDepth;
+}
+
+bool GUIApplication::fileOpenAdmissionBlocked() const noexcept
+{
+    return closeAttemptDepth != 0
+        || App::GetApplication().shutdownState() != App::Application::ShutdownState::Running;
+}
+
+void GUIApplication::endCloseAttempt()
+{
+    Q_ASSERT(closeAttemptDepth);
+    --closeAttemptDepth;
+    if (fileOpenAdmissionBlocked()) {
+        return;
+    }
+    // Post instead of opening here: the close event and its scope guards must
+    // finish first. A new close in the meantime requeues the event.
+    const auto pending = std::exchange(deferredFileOpenEvents, {});
+    for (const auto& file : pending) {
+        QCoreApplication::postEvent(this, new QFileOpenEvent(file));
+    }
+    Q_EMIT fileOpenAdmissionResumed();
+}
+
+bool GUIApplication::isSessionCloseWithoutInteraction() const noexcept
+{
+    return noInteractionSessionDepth != 0;
+}
+
+bool GUIApplication::closeForSession(bool allowInteraction)
+{
+    if (!allowInteraction) {
+        ++noInteractionSessionDepth;
+        auto restoreInteraction = qScopeGuard([this] { --noInteractionSessionDepth; });
+        // MainWindow::closeEvent now reserves cleanup before any document
+        // effects. The no-interaction flag skips only the save/close prompts.
+        return Gui::getMainWindow()->close();
+    }
+    return Gui::getMainWindow()->close();
+}
+
 void GUIApplication::commitData(QSessionManager& manager)
 {
-    if (manager.allowsInteraction()) {
-        if (!Gui::getMainWindow()->close()) {
-            // cancel the shutdown
+    const bool allowInteraction = manager.allowsInteraction();
+    if (!closeForSession(allowInteraction)) {
+        if (allowInteraction) {
             manager.release();
-            manager.cancel();
         }
-    }
-    else {
-        // no user interaction allowed, thus close all documents and
-        // the main window
-        App::GetApplication().closeAllDocuments();
-        Gui::getMainWindow()->close();
+        manager.cancel();
     }
 }
 
@@ -200,6 +240,10 @@ bool GUIApplication::event(QEvent* ev)
         }
 
         QString file = static_cast<QFileOpenEvent*>(ev)->file();
+        if (fileOpenAdmissionBlocked()) {
+            deferredFileOpenEvents.push_back(file);
+            return true;
+        }
         QFileInfo fi(file);
         if (fi.suffix().toLower() == QLatin1String("fcstd")) {
             QByteArray fn = file.toUtf8();
@@ -277,6 +321,7 @@ public:
     QString serverName;
     QList<QString> messages;
     bool running {false};
+    bool processingMessages {false};
 };
 
 GUISingleApplication::GUISingleApplication(int& argc, char** argv)
@@ -285,6 +330,8 @@ GUISingleApplication::GUISingleApplication(int& argc, char** argv)
 {
     d_ptr->setupConnection();
     connect(d_ptr->timer, &QTimer::timeout, this, &GUISingleApplication::processMessages);
+    connect(this, &GUIApplication::fileOpenAdmissionResumed,
+            this, &GUISingleApplication::processMessages, Qt::QueuedConnection);
 }
 
 GUISingleApplication::~GUISingleApplication() = default;
@@ -351,10 +398,56 @@ void GUISingleApplication::receiveConnection()
 
 void GUISingleApplication::processMessages()
 {
-    QList<QString> msg = d_ptr->messages;
-    d_ptr->messages.clear();
-    Q_EMIT messageReceived(msg);
+    if (d_ptr->processingMessages || fileOpenAdmissionBlocked() || d_ptr->messages.isEmpty()) {
+        return;
+    }
+    d_ptr->processingMessages = true;
+    const auto release = qScopeGuard([this] {
+        d_ptr->processingMessages = false;
+        // A receiver may throw after consuming its one request. Keep and
+        // retry later requests while ordinary App work is still admissible.
+        if (!d_ptr->messages.isEmpty() && !fileOpenAdmissionBlocked()) {
+            d_ptr->timer->start(0);
+        }
+    });
+    while (!d_ptr->messages.isEmpty() && !fileOpenAdmissionBlocked()) {
+        // Allocate the one-item message before removing it from the queue.
+        // A receiver may reenter Qt and close the application, so admission
+        // is checked again before removing the next message.
+        const QList<QString> next {d_ptr->messages.front()};
+        d_ptr->messages.removeFirst();
+        Q_EMIT messageReceived(next);
+    }
 }
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+int GUIApplication::deferredFileOpenCountForTesting() const noexcept
+{
+    return static_cast<int>(deferredFileOpenEvents.size());
+}
+
+int GUISingleApplication::pendingSocketMessageCountForTesting() const noexcept
+{
+    return static_cast<int>(d_ptr->messages.size());
+}
+
+int Gui::Internal::pendingFileOpenCountForTesting(bool fileEvent)
+{
+    auto* application = static_cast<GUISingleApplication*>(qApp);
+    return fileEvent ? application->deferredFileOpenCountForTesting()
+                     : application->pendingSocketMessageCountForTesting();
+}
+
+QApplication* Gui::Internal::createSingleApplicationForTesting(int& argc, char** argv)
+{
+    return new GUISingleApplication(argc, argv);
+}
+
+bool Gui::Internal::closeWithoutSessionInteractionForTesting()
+{
+    return static_cast<GUIApplication*>(qApp)->closeForSession(false);
+}
+#endif
 
 // ----------------------------------------------------------------------------
 

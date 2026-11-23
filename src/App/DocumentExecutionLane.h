@@ -45,6 +45,9 @@ class DocumentExecutionTelemetryCollector;
 namespace Internal
 {
 struct CollaborationServiceLifetimeGate;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+AppExport void failNextLaneStartupForTesting() noexcept;
+#endif
 }  // namespace Internal
 
 /**
@@ -130,6 +133,11 @@ public:
     static std::shared_ptr<DocumentExecutionLane> create(
         Document& document,
         DocumentRevisionIdentityBinding identity);
+
+    // Application teardown seals lane creation, requests stop, and waits for
+    // every owner thread including already-detached threads and their TLS.
+    static void shutdownAllBeforeInterpreterFinalization();
+    [[nodiscard]] static bool isCurrentThreadAnyOwner() noexcept;
 
     DocumentExecutionLane(const DocumentExecutionLane&) = delete;
     DocumentExecutionLane& operator=(const DocumentExecutionLane&) = delete;
@@ -522,6 +530,9 @@ private:
     std::shared_ptr<DocumentHandle::State> _handleState;
 
     std::thread _thread;
+    std::shared_ptr<std::promise<void>> _threadExitPromise;
+    std::shared_future<void> _threadExitCompletion;
+    std::exception_ptr _startupFailure;
     std::thread::id _ownerThreadId {};
     mutable std::mutex _mutex;
     mutable std::condition_variable _workAvailable;

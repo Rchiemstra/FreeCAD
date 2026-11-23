@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "PreparedEditExecutor.h"
+#include "PropertyCleanup.h"
 
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <thread>
@@ -23,6 +27,9 @@ namespace
 
 constexpr std::size_t MinDefaultWorkerCount = 2;
 constexpr std::size_t MaxDefaultWorkerCount = 4;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::atomic<bool> failNextCleanerRegistration {false};
+#endif
 
 std::size_t defaultWorkerCount() noexcept
 {
@@ -38,6 +45,13 @@ bool isTerminal(PreparedEditExecutionStatus status) noexcept
 }
 
 }  // namespace
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void App::Internal::failNextPreparedCleanerRegistrationForTesting() noexcept
+{
+    failNextCleanerRegistration.store(true);
+}
+#endif
 
 class PreparedEditExecutor::Impl
 {
@@ -58,7 +72,8 @@ public:
         std::string diagnostic;
     };
 
-    Impl(std::size_t requestedWorkerCount, std::size_t requestedQueueCapacity)
+    Impl(std::size_t requestedWorkerCount, std::size_t requestedQueueCapacity,
+         bool applicationOwned)
         : workerCountValue(requestedWorkerCount == 0 ? defaultWorkerCount()
                                                      : requestedWorkerCount)
         , queueCapacityValue(requestedQueueCapacity)
@@ -70,9 +85,31 @@ public:
         workers.reserve(workerCountValue);
         try {
             for (std::size_t index = 0; index < workerCountValue; ++index) {
-                workers.emplace_back([this](std::stop_token stopToken) {
+                workers.emplace_back([this, applicationOwned](std::stop_token stopToken) {
+                    std::exception_ptr failure;
+                    try {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                        if (failNextCleanerRegistration.exchange(false)) throw std::bad_alloc();
+#endif
+                        initializeManagedPropertyCleanup(applicationOwned);
+                    }
+                    catch (...) { failure = std::current_exception(); }
+                    {
+                        std::lock_guard lock(mutex);
+                        if (failure && !startupFailure) startupFailure = failure;
+                        ++startedWorkers;
+                    }
+                    condition.notify_all();
+                    if (failure) return;
                     workerLoop(stopToken);
                 });
+            }
+            {
+                std::optional<Base::PyGILStateRelease> release;
+                if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+                std::unique_lock lock(mutex);
+                condition.wait(lock, [this] { return startedWorkers == workerCountValue; });
+                if (startupFailure) std::rethrow_exception(startupFailure);
             }
         }
         catch (...) {
@@ -84,11 +121,16 @@ public:
                 worker.request_stop();
             }
             condition.notify_all();
+            std::optional<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+            workers.clear();
             throw;
         }
     }
 
-    ~Impl()
+    ~Impl() { shutdownAndJoin(); }
+
+    void shutdownAndJoin()
     {
         {
             std::lock_guard lock(mutex);
@@ -116,7 +158,20 @@ public:
             worker.request_stop();
         }
         condition.notify_all();
+        // Worker exit may destroy a Python-bearing property.
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
         workers.clear();
+    }
+
+    void discardRetainedJobs()
+    {
+        decltype(jobs) retired;
+        {
+            std::lock_guard lock(mutex);
+            retired.swap(jobs);
+        }
+        // Task and result destructors may re-enter the executor.
     }
 
     [[nodiscard]] PreparedEditExecutionId
@@ -272,6 +327,7 @@ public:
     void workerLoop(std::stop_token workerStopToken)
     {
         while (true) {
+            std::optional<PropertyCleanupBoundary> cleanup;
             std::shared_ptr<Job> job;
             CollaborativeOperationPreparation::DetachedTask task;
             {
@@ -299,6 +355,9 @@ public:
             std::string diagnostic;
             bool failed = false;
             try {
+                // The boundary outlives the job locals, but is absent while
+                // idle. A sealed-state rejection is reported as job failure.
+                cleanup.emplace();
                 operation = task(job->stopSource.get_token());
             }
             catch (const Base::Exception& exception) {
@@ -345,14 +404,32 @@ public:
     std::vector<std::jthread> workers;
     PreparedEditExecutionId nextId {1};
     bool shuttingDown {false};
+    std::size_t startedWorkers {0};
+    std::exception_ptr startupFailure;
 };
 
 PreparedEditExecutor::PreparedEditExecutor(std::size_t workerCount,
                                            std::size_t queueCapacity)
-    : _impl(std::make_unique<Impl>(workerCount, queueCapacity))
+    : PreparedEditExecutor(workerCount, queueCapacity, false)
+{}
+
+PreparedEditExecutor::PreparedEditExecutor(std::size_t workerCount,
+                                           std::size_t queueCapacity,
+                                           bool applicationOwned)
+    : _impl(std::make_unique<Impl>(workerCount, queueCapacity, applicationOwned))
 {}
 
 PreparedEditExecutor::~PreparedEditExecutor() = default;
+
+void PreparedEditExecutor::shutdownAndJoin()
+{
+    _impl->shutdownAndJoin();
+}
+
+void PreparedEditExecutor::discardRetainedJobs()
+{
+    _impl->discardRetainedJobs();
+}
 
 PreparedEditExecutionId PreparedEditExecutor::submit(
     CollaborativeOperationPreparation::DetachedTask task,
