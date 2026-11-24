@@ -1428,7 +1428,7 @@ TEST_F(DocumentExecutionLaneTest, GuiCloseDocumentRefusesWhilePostToOwnerTaskIsE
     }
 }
 
-TEST_F(DocumentExecutionLaneTest, DrainDispatchQueueSkipsSubsequentTasksAfterReentrantClose)
+TEST_F(DocumentExecutionLaneTest, ReentrantCloseRejectsWhileAdmittedDispatchRemains)
 {
     const std::string closeDocName = App::GetApplication().getUniqueDocumentName(
         "lane-reentrant-close-batch"
@@ -1477,20 +1477,18 @@ TEST_F(DocumentExecutionLaneTest, DrainDispatchQueueSkipsSubsequentTasksAfterRee
     batchGate->cv.notify_all();
 
     blockerFuture.get();
-    EXPECT_TRUE(task1Future.get());
-    bool task2Dropped = false;
-    try {
-        task2Future.get();
-    }
-    catch (const std::future_error&) {
-        task2Dropped = true;
-    }
-    lanePin->joinThread();
+    EXPECT_FALSE(task1Future.get());
+    EXPECT_NO_THROW(task2Future.get());
+    EXPECT_TRUE(task2Ran.load(std::memory_order_acquire));
+    EXPECT_NE(App::GetApplication().getDocument(closeDocName.c_str()), nullptr);
 
-    EXPECT_FALSE(task2Ran.load(std::memory_order_acquire))
-        << "drainDispatchQueue must not execute subsequent queued tasks after a task "
-           "closes the owning document";
-    EXPECT_TRUE(task2Dropped);
+    // Once admitted dispatches have settled, an ordinary synchronous close
+    // must complete and remove the document before returning success.
+    const bool closed = App::GetApplication().closeDocument(closeDocName.c_str());
+    EXPECT_TRUE(closed);
+    if (closed) {
+        lanePin->joinThread();
+    }
     EXPECT_EQ(App::GetApplication().getDocument(closeDocName.c_str()), nullptr);
 }
 
