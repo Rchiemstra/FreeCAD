@@ -24,9 +24,11 @@ from unittest import mock
 import run_gui_tests as runner
 from run_gui_tests import (
     EXPECTED_GUI_SUITES,
+    NEWLY_REQUIRED_GUI_SUITES,
     SKETCHER_GUI_CLASS_UNITS,
     discover_gui_suites,
     evaluate_unit_result,
+    find_console_executable,
     parse_completed_test_count,
     parse_final_outcome,
     parse_registered_tests,
@@ -36,8 +38,19 @@ from run_gui_tests import (
 )
 
 
-def _listing(*names: str) -> str:
-    return "startup noise\nRegistered test units:\n" + "\n".join(names) + "\n"
+CONSOLE_SUITES: tuple[str, ...] = ("BaseTests", "Document", "TestPartApp")
+FULL_SUITES = EXPECTED_GUI_SUITES
+
+
+def _listing(*names: str, with_footer: bool = True) -> str:
+    body = "startup noise\nRegistered test units:\n\n" + "\n".join(names) + "\n"
+    if with_footer:
+        body += (
+            "\nPlease choose one or use 0 for all\n\n"
+            + "-" * 70
+            + "\nRan 0 tests in 0.000s\n\nNO TESTS RAN\nSystem exit\n"
+        )
+    return body
 
 
 def _ran(n: int, ok: bool = True) -> str:
@@ -50,24 +63,40 @@ def _unittest_output(ran: int, outcome: str | None) -> str:
     return body + (outcome + "\n" if outcome is not None else "")
 
 
+@contextlib.contextmanager
+def _dummy_freecad():
+    with tempfile.TemporaryDirectory() as tmp:
+        gui = Path(tmp) / "FreeCAD"
+        console = Path(tmp) / "FreeCADCmd"
+        for path in (gui, console):
+            path.touch()
+            path.chmod(0o755)
+        yield str(gui)
+
+
 def _quiet_run_gui_modules(run) -> int:
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        return run_gui_modules("FreeCAD", run=run, crash_helper=False)
+    with _dummy_freecad() as gui, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return run_gui_modules(gui, run=run, crash_helper=False)
 
 
-def _fake_freecad(per_unit: dict[str, tuple[int, str]], default=(0, _unittest_output(3, "OK"))):
+def _fake_freecad(
+    per_unit: dict[str, tuple[int, str]],
+    default=(0, _unittest_output(3, "OK")),
+    *,
+    console_suites: tuple[str, ...] = CONSOLE_SUITES,
+    gui_suites: tuple[str, ...] = (*FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES),
+):
     seen: list[str] = []
 
     def run(cmd: list[str]) -> tuple[int, str]:
         if cmd[-1] == "-t":
-            return 0, _listing(*FULL_SUITES)
+            if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                return 0, _listing(*console_suites, with_footer=True)
+            return 0, _listing(*console_suites, *gui_suites, with_footer=True)
         seen.append(cmd[-1])
         return per_unit.get(cmd[-1], default)
 
     return run, seen
-
-
-FULL_SUITES = EXPECTED_GUI_SUITES
 
 
 class ModuleWatchdogTests(unittest.TestCase):
@@ -188,6 +217,55 @@ class ParseTests(unittest.TestCase):
         names = parse_registered_tests(_listing("GuiDocument", "TestPartGui"))
         self.assertEqual(names, ["GuiDocument", "TestPartGui"])
 
+    def test_parse_registered_tests_stops_at_footer_and_ignores_shutdown_output(self):
+        output = (
+            _listing("Workbench", "TestPartPreview", "AssemblyTests.TestIsolateSelectionGui", with_footer=True)
+            + "ShutdownWord\n"
+        )
+        names = parse_registered_tests(output)
+        self.assertEqual(
+            names,
+            ["Workbench", "TestPartPreview", "AssemblyTests.TestIsolateSelectionGui"],
+        )
+
+    def test_parse_registered_tests_stops_at_unittest_trailer_without_footer(self):
+        output = (
+            "Registered test units:\n\n"
+            "Workbench\n"
+            "TestPartPreview\n\n"
+            + "-" * 70
+            + "\nRan 0 tests in 0.000s\n\nOK\nSystem exit\n"
+        )
+        self.assertEqual(parse_registered_tests(output), ["Workbench", "TestPartPreview"])
+
+    def test_parse_registered_tests_handles_console_preamble_and_non_identifier_noise(self):
+        output = (
+            "\n"
+            + "-" * 70
+            + "\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n"
+            "FreeCAD 27.1.0\n\n"
+            "Registered test units:\n\n"
+            "BaseTests\n"
+            "Warning: stray diagnostic message\n"
+            "Document\n\n"
+            "Please choose one or use 0 for all\n"
+        )
+        self.assertEqual(parse_registered_tests(output), ["BaseTests", "Document"])
+
+    def test_find_console_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in ("FreeCAD", "FreeCADCmd", "FreeCAD.exe", "FreeCADCmd.exe"):
+                path = directory / name
+                path.touch()
+                path.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": str(directory)}):
+                self.assertEqual(find_console_executable("FreeCAD"), str(directory / "FreeCADCmd"))
+                self.assertEqual(find_console_executable("FreeCAD.exe"), str(directory / "FreeCADCmd.exe"))
+                self.assertEqual(find_console_executable("FreeCADCmd"), str(directory / "FreeCADCmd"))
+                self.assertEqual(find_console_executable(str(directory / "FreeCAD")), str(directory / "FreeCADCmd"))
+                self.assertIsNone(find_console_executable("custom-binary"))
+
     def test_parse_completed_test_count_uses_last_summary(self):
         output = "Ran 2 tests in 0.1s\nOK\nRan 12 tests in 4.6s\nOK\n"
         self.assertEqual(parse_completed_test_count(output), 12)
@@ -198,37 +276,186 @@ class ParseTests(unittest.TestCase):
 
 class DiscoveryFalseGreenTests(unittest.TestCase):
     def test_failed_listing_is_preserved(self):
-        rc, suites, err = discover_gui_suites(1, _listing(*FULL_SUITES))
+        rc, suites, err = discover_gui_suites(
+            1, _listing(*CONSOLE_SUITES, *FULL_SUITES), 0, _listing(*CONSOLE_SUITES)
+        )
         self.assertEqual(rc, 1)
         self.assertEqual(suites, [])
         self.assertIn("discovery failed", err.lower())
 
     def test_empty_list_after_clean_listing_is_failure(self):
         # Pipelines 341-343: ~7s, no modules, exit 0.
-        rc, suites, err = discover_gui_suites(0, "FreeCAD 26.3.0\nSystem exit\n")
+        rc, suites, err = discover_gui_suites(
+            0, "FreeCAD 26.3.0\nSystem exit\n", 0, _listing(*CONSOLE_SUITES)
+        )
         self.assertEqual(rc, 2)
         self.assertEqual(suites, [])
         self.assertIn("Registered test units", err)
 
     def test_header_without_units_is_failure(self):
-        rc, _, err = discover_gui_suites(0, "Registered test units:\n\n")
+        rc, _, err = discover_gui_suites(
+            0, "Registered test units:\n\n", 0, _listing(*CONSOLE_SUITES)
+        )
         self.assertEqual(rc, 2)
         self.assertIn("no registered units", err.lower())
 
     def test_missing_expected_suite_is_failure(self):
         names = [n for n in FULL_SUITES if n != "TestSketcherGui"]
-        rc, suites, err = discover_gui_suites(0, _listing(*names))
+        rc, suites, err = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *names), 0, _listing(*CONSOLE_SUITES)
+        )
         self.assertEqual(rc, 3)
         self.assertNotIn("TestSketcherGui", suites)
         self.assertIn("TestSketcherGui", err)
 
     def test_full_expected_set_discovers(self):
-        rc, suites, err = discover_gui_suites(0, _listing(*FULL_SUITES, "TestExtraGui"))
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*CONSOLE_SUITES, *FULL_SUITES, "TestExtraGui", with_footer=True),
+            0,
+            _listing(*CONSOLE_SUITES, with_footer=True),
+        )
         self.assertEqual(rc, 0)
         self.assertEqual(err, "")
         self.assertIn("TestExtraGui", suites)
         for name in FULL_SUITES:
             self.assertIn(name, suites)
+        for name in CONSOLE_SUITES:
+            self.assertNotIn(name, suites)
+
+    def test_discovers_gui_suites_without_gui_in_name(self):
+        nameless = (
+            "Workbench",
+            "Menu",
+            "TestGraphicsViewWrapping",
+            "TestMDIView",
+            "TestRubberbandSelection",
+            "TestSelectionVisual",
+            "TestCornerAxisCrossVisual",
+            "TestCoinNodeSnapshots",
+            "TestViewProviderLink",
+            "TestPartPreview",
+        )
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*CONSOLE_SUITES, *FULL_SUITES, *nameless, with_footer=True),
+            0,
+            _listing(*CONSOLE_SUITES, with_footer=True),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(suites, [*FULL_SUITES, *nameless])
+
+    def test_preserves_shared_name_suite_registered_in_both_init_and_init_gui(self):
+        console = (*CONSOLE_SUITES, "SharedSuite")
+        gui = (*CONSOLE_SUITES, "SharedSuite", "TestPartPreview", "SharedSuite", *FULL_SUITES)
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*gui, with_footer=True),
+            0,
+            _listing(*console, with_footer=True),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(suites, ["TestPartPreview", "SharedSuite", *FULL_SUITES])
+
+    def test_preserves_shared_name_gui_or_expected_suite_in_both_registries(self):
+        console = (*CONSOLE_SUITES, "TestSharedGui", "GuiDocument")
+        gui = (*CONSOLE_SUITES, "TestSharedGui", *FULL_SUITES, "TestPartPreview")
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*gui, with_footer=True),
+            0,
+            _listing(*console, with_footer=True),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(suites, ["TestSharedGui", *FULL_SUITES, "TestPartPreview"])
+
+    def test_preserves_registration_order_and_deduplicates_duplicates(self):
+        console = ("BaseTests", "BaseTests", "Document")
+        gui = (
+            "BaseTests",
+            "BaseTests",
+            "Document",
+            "Workbench",
+            "Menu",
+            "Workbench",
+            *FULL_SUITES,
+            "TestPartPreview",
+            "TestPartPreview",
+        )
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*gui, with_footer=True),
+            0,
+            _listing(*console, with_footer=True),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertEqual(suites, ["Workbench", "Menu", *FULL_SUITES, "TestPartPreview"])
+
+    def test_failed_console_listing_is_preserved(self):
+        rc, suites, err = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES), 19, "boom\n"
+        )
+        self.assertEqual(rc, 19)
+        self.assertEqual(suites, [])
+        self.assertIn("console test discovery failed", err.lower())
+
+        sig_rc, sig_suites, sig_err = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES), -11, ""
+        )
+        self.assertEqual(sig_rc, 1)
+        self.assertEqual(sig_suites, [])
+        self.assertIn("console test discovery failed", sig_err.lower())
+
+    def test_malformed_console_listing_missing_header_is_failure(self):
+        rc, suites, err = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES), 0, "FreeCADCmd 27.1.0\n"
+        )
+        self.assertEqual(rc, 2)
+        self.assertEqual(suites, [])
+        self.assertIn("Registered test units", err)
+
+    def test_empty_console_listing_with_footer_is_failure(self):
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True),
+            0,
+            "Registered test units:\n\nPlease choose one or use 0 for all\n",
+        )
+        self.assertEqual(rc, 2)
+        self.assertEqual(suites, [])
+        self.assertIn("console test discovery listed no registered units", err.lower())
+
+    def test_malformed_listing_with_only_garbage_lines_is_failure(self):
+        garbage = "Registered test units:\n\nnot a valid suite\nPlease choose one or use 0 for all\n"
+        rc_gui, suites_gui, err_gui = discover_gui_suites(
+            0, garbage, 0, _listing(*CONSOLE_SUITES, with_footer=True)
+        )
+        self.assertEqual(rc_gui, 2)
+        self.assertEqual(suites_gui, [])
+        self.assertIn("no registered units", err_gui.lower())
+
+        rc_cmd, suites_cmd, err_cmd = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True), 0, garbage
+        )
+        self.assertEqual(rc_cmd, 2)
+        self.assertEqual(suites_cmd, [])
+        self.assertIn("console test discovery listed no registered units", err_cmd.lower())
+
+    def test_gui_listing_matching_console_only_fails_even_without_expected_suites(self):
+        rc, suites, err = discover_gui_suites(
+            0,
+            _listing(*CONSOLE_SUITES, with_footer=True),
+            0,
+            _listing(*CONSOLE_SUITES, with_footer=True),
+            expected_suites=(),
+        )
+        self.assertEqual(rc, 3)
+        self.assertEqual(suites, [])
+        self.assertIn("No GUI tests found", err)
 
 
 class CompletedTestsAndAggregate(unittest.TestCase):
@@ -312,6 +539,38 @@ class UnitVerdicts(unittest.TestCase):
 class GateVerdicts(unittest.TestCase):
     """run_gui_modules(...) -- the whole e2e gate as freecad-e2e.sh runs it."""
 
+    def test_newly_discovered_suites_execute_and_failure_fails_gate(self):
+        nameless = (
+            "Workbench",
+            "Menu",
+            "TestGraphicsViewWrapping",
+            "TestMDIView",
+            "TestRubberbandSelection",
+            "TestSelectionVisual",
+            "TestCornerAxisCrossVisual",
+            "TestCoinNodeSnapshots",
+            "TestViewProviderLink",
+            "TestPartPreview",
+        )
+        run, seen = _fake_freecad(
+            {"Workbench": (1, _unittest_output(2, "FAILED (failures=1)"))},
+            gui_suites=(*FULL_SUITES, *nameless),
+        )
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+        self.assertEqual([name for name in seen if name in nameless], list(nameless))
+
+    def test_console_discovery_failure_runs_no_suites(self):
+        calls = []
+
+        def run(cmd):
+            calls.append(cmd)
+            if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                return 17, "console listing failed\n"
+            return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True)
+
+        self.assertEqual(_quiet_run_gui_modules(run), 17)
+        self.assertEqual([cmd[-1] for cmd in calls], ["-t", "-t"])
+
     def test_exit0_failed_outcome_in_mandatory_suite_fails_gate(self):
         run, _ = _fake_freecad({"TestPartGui": (0, _unittest_output(9, "FAILED (failures=1)"))})
         self.assertNotEqual(_quiet_run_gui_modules(run), 0)
@@ -356,36 +615,245 @@ class GateVerdicts(unittest.TestCase):
             self.assertIn(suite, seen)
 
 
+class Task76ReviewRegressions(unittest.TestCase):
+    def test_truncated_gui_listing_with_all_old_required_suites_fails(self):
+        rc, suites, _ = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=False),
+            0, _listing(*CONSOLE_SUITES, with_footer=True),
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(suites, [])
+
+    def test_truncated_console_listing_fails(self):
+        rc, suites, _ = discover_gui_suites(
+            0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True),
+            0, _listing(*CONSOLE_SUITES, with_footer=False),
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(suites, [])
+
+    def test_trailer_before_footer_is_not_a_complete_listing(self):
+        incomplete = _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=False) + (
+            "-----" * 14 + "\nRan 0 tests in 0.0s\nOK\n"
+            "Please choose one or use 0 for all\n"
+        )
+        rc, suites, _ = discover_gui_suites(
+            0, incomplete, 0, _listing(*CONSOLE_SUITES, with_footer=True)
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(suites, [])
+
+    def test_all_skipped_linkview_fails_real_runner_verdict(self):
+        run, seen = _fake_freecad(
+            {"TestViewProviderLink": (0, _unittest_output(8, "OK (skipped=8)"))},
+            gui_suites=(*FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES),
+        )
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+        self.assertIn("TestViewProviderLink", seen)
+
+    def test_missing_gui_sibling_does_not_use_other_path_console(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp) / "a", Path(tmp) / "b"
+            first.mkdir(); second.mkdir()
+            gui = first / "FreeCAD"; gui.touch(); gui.chmod(0o755)
+            wrong = second / "FreeCADCmd"; wrong.touch(); wrong.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(first), str(second)))}):
+                self.assertIsNone(find_console_executable("FreeCAD"))
+
+    def test_path_symlink_uses_real_gui_binary_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            linkdir, realdir = Path(tmp) / "links", Path(tmp) / "real"
+            linkdir.mkdir(); realdir.mkdir()
+            real = realdir / "FreeCAD"; real.touch(); real.chmod(0o755)
+            sibling = realdir / "FreeCADCmd"; sibling.touch(); sibling.chmod(0o755)
+            (linkdir / "FreeCAD").symlink_to(real)
+            with mock.patch.dict(os.environ, {"PATH": str(linkdir)}):
+                self.assertEqual(find_console_executable("FreeCAD"), str(sibling))
+
+    def test_each_new_suite_requires_a_non_skipped_test(self):
+        for suite in NEWLY_REQUIRED_GUI_SUITES:
+            with self.subTest(suite=suite):
+                run, seen = _fake_freecad({suite: (0, _unittest_output(3, "OK (skipped=3)"))})
+                self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+                self.assertIn(suite, seen)
+
+    def test_partial_skip_in_linkview_passes(self):
+        run, seen = _fake_freecad({"TestViewProviderLink": (0, _unittest_output(8, "OK (skipped=7)"))})
+        self.assertEqual(_quiet_run_gui_modules(run), 0)
+        self.assertIn("TestViewProviderLink", seen)
+
+    def test_truncated_listings_fail_end_to_end_without_running_units(self):
+        for truncated in ("gui", "console"):
+            with self.subTest(truncated=truncated):
+                calls = []
+                def run(cmd):
+                    calls.append(cmd)
+                    if cmd[-1] != "-t":
+                        return 0, _ran(1)
+                    is_console = Path(cmd[0]).name.startswith("FreeCADCmd")
+                    names = CONSOLE_SUITES if is_console else (*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+                    return 0, _listing(*names, with_footer=(truncated != ("console" if is_console else "gui")))
+                self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+                self.assertTrue(all(cmd[-1] == "-t" for cmd in calls))
+
+    def test_split_path_never_runs_the_other_console(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp) / "a", Path(tmp) / "b"
+            first.mkdir(); second.mkdir()
+            for path in (first / "FreeCAD", second / "FreeCADCmd"):
+                path.touch(); path.chmod(0o755)
+            calls = []
+            def run(cmd):
+                calls.append(cmd)
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+            with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(first), str(second)))}):
+                self.assertNotEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 0)
+            self.assertEqual(calls, [[str(first / "FreeCAD"), "-t"]])
+
+    def test_symlink_directory_console_does_not_replace_real_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            links, real = Path(tmp) / "links", Path(tmp) / "real"
+            links.mkdir(); real.mkdir()
+            executable = real / "FreeCAD"; executable.touch(); executable.chmod(0o755)
+            (links / "FreeCAD").symlink_to(executable)
+            wrong = links / "FreeCADCmd"; wrong.touch(); wrong.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": str(links)}):
+                self.assertIsNone(find_console_executable("FreeCAD"))
+
+    def test_symlink_resolution_is_stable_across_listing_and_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            links, real, other = (Path(tmp) / name for name in ("links", "real", "other"))
+            for directory in (links, real, other):
+                directory.mkdir()
+            for path in (real / "FreeCAD", real / "FreeCADCmd", other / "FreeCAD", other / "FreeCADCmd"):
+                path.touch(); path.chmod(0o755)
+            (links / "FreeCAD").symlink_to(real / "FreeCAD")
+            calls = []
+            def run(cmd):
+                calls.append(cmd)
+                if len(calls) == 1:
+                    os.environ["PATH"] = str(other)
+                if cmd[-1] == "-t":
+                    names = CONSOLE_SUITES if Path(cmd[0]).name.startswith("FreeCADCmd") else (*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+                    return 0, _listing(*names)
+                return 0, _ran(1)
+            with mock.patch.dict(os.environ, {"PATH": str(links)}), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 0)
+            self.assertEqual(calls[0], [str(real / "FreeCAD"), "-t"])
+            self.assertEqual(calls[1], [str(real / "FreeCADCmd"), "-t"])
+            self.assertTrue(all(str(real / "FreeCAD") in cmd for cmd in calls[2:]))
+
+    def test_explicit_other_console_is_rejected(self):
+        with _dummy_freecad() as gui, tempfile.TemporaryDirectory() as tmp:
+            wrong = Path(tmp) / "FreeCADCmd"; wrong.touch(); wrong.chmod(0o755)
+            run, seen = _fake_freecad({})
+            self.assertNotEqual(run_gui_modules(gui, freecad_cmd_exec=str(wrong), run=run, crash_helper=False), 0)
+            self.assertEqual(seen, [])
+
+    def test_foreign_console_symlink_is_rejected_even_as_explicit_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build, foreign = Path(tmp) / "build", Path(tmp) / "foreign"
+            build.mkdir(); foreign.mkdir()
+            gui = build / "FreeCAD"; gui.touch(); gui.chmod(0o755)
+            other = foreign / "FreeCADCmd"; other.touch(); other.chmod(0o755)
+            (build / "FreeCADCmd").symlink_to(other)
+            calls = []
+            def run(cmd):
+                calls.append(cmd)
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+            for override in (None, str(other)):
+                with self.subTest(override=override), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    calls.clear()
+                    self.assertNotEqual(run_gui_modules(str(gui), freecad_cmd_exec=override,
+                                                       run=run, crash_helper=False), 0)
+                    self.assertEqual(calls, [[str(gui), "-t"]])
+            self.assertIsNone(find_console_executable(str(gui)))
+
+    def test_same_build_console_alias_and_explicit_alias_resolve_to_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build, aliases = Path(tmp) / "build", Path(tmp) / "aliases"
+            build.mkdir(); aliases.mkdir()
+            gui = build / "FreeCAD"; gui.touch(); gui.chmod(0o755)
+            actual = build / "FreeCADCmd-real"; actual.touch(); actual.chmod(0o755)
+            (build / "FreeCADCmd").symlink_to(actual)
+            alias = aliases / "console"; alias.symlink_to(actual)
+            self.assertEqual(find_console_executable(str(gui)), str(actual))
+            calls = []
+            def run(cmd):
+                calls.append(cmd)
+                if cmd[-1] == "-t":
+                    names = CONSOLE_SUITES if cmd[0] == str(actual) else (*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+                    return 0, _listing(*names)
+                return 0, _ran(1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_gui_modules(str(gui), freecad_cmd_exec=str(alias),
+                                                run=run, crash_helper=False), 0)
+            self.assertEqual(calls[1], [str(actual), "-t"])
+
+    def test_console_symlink_retarget_after_selection_does_not_change_execution(self):
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as tmp:
+                build, foreign = Path(tmp) / "build", Path(tmp) / "foreign"
+                build.mkdir(); foreign.mkdir()
+                gui = build / "FreeCAD"; gui.touch(); gui.chmod(0o755)
+                actual = build / "FreeCADCmd-real"; actual.touch(); actual.chmod(0o755)
+                other = foreign / "FreeCADCmd"; other.touch(); other.chmod(0o755)
+                sibling = build / "FreeCADCmd"; sibling.symlink_to(actual)
+                original = runner.find_console_executable
+                def select_then_retarget(path):
+                    selected = original(path)
+                    sibling.unlink(); sibling.symlink_to(other)
+                    return selected
+                calls = []
+                def run(cmd):
+                    calls.append(cmd)
+                    if cmd[-1] == "-t":
+                        names = CONSOLE_SUITES if cmd[0] == str(actual) else (*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+                        return 0, _listing(*names)
+                    return 0, _ran(1)
+                with mock.patch.object(runner, "find_console_executable", side_effect=select_then_retarget), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_gui_modules(str(gui), freecad_cmd_exec=str(actual) if explicit else None,
+                                                    run=run, crash_helper=False), 0)
+                self.assertEqual(calls[1], [str(actual), "-t"])
+
+
 class EndToEndFakeFreeCAD(unittest.TestCase):
+    def setUp(self):
+        self.context = _dummy_freecad()
+        self.gui = self.context.__enter__()
+        self.addCleanup(self.context.__exit__, None, None, None)
+
     def test_empty_discovery_does_not_return_zero(self):
         def run(cmd):
             self.assertEqual(cmd[-1], "-t")
             return 0, "FreeCAD ready\n"
 
-        self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 2)
+        self.assertEqual(run_gui_modules(self.gui, run=run, crash_helper=False), 2)
 
     def test_missing_suite_does_not_return_zero(self):
         def run(cmd):
             return 0, _listing("GuiDocument")
 
-        self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 3)
+        self.assertEqual(run_gui_modules(self.gui, run=run, crash_helper=False), 3)
 
     def test_failed_discovery_exit_is_preserved(self):
         def run(cmd):
             return 17, "boom\n"
 
-        self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 17)
+        self.assertEqual(run_gui_modules(self.gui, run=run, crash_helper=False), 17)
 
     def test_aggregate_sketcher_runs_before_class_units(self):
         seen: list[str] = []
 
         def run(cmd):
             if cmd[-1] == "-t":
-                return 0, _listing(*FULL_SUITES)
+                if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                    return 0, _listing(*CONSOLE_SUITES)
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
             seen.append(cmd[-1])
             return 0, _ran(5)
 
-        rc = run_gui_modules("FreeCAD", run=run, crash_helper=False)
+        rc = run_gui_modules(self.gui, run=run, crash_helper=False)
         self.assertEqual(rc, 0)
         sketcher = [name for name in seen if name == "TestSketcherGui" or name.startswith("SketcherTests.")]
         self.assertEqual(sketcher[0], "TestSketcherGui")
@@ -394,12 +862,67 @@ class EndToEndFakeFreeCAD(unittest.TestCase):
     def test_zero_test_module_fails_the_gate(self):
         def run(cmd):
             if cmd[-1] == "-t":
-                return 0, _listing(*FULL_SUITES)
+                if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                    return 0, _listing(*CONSOLE_SUITES, with_footer=True)
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES, with_footer=True)
             if cmd[-1] == "GuiDocument":
                 return 0, "Ran 0 tests in 0.0s\nOK\n"
             return 0, _ran(1)
 
-        self.assertEqual(run_gui_modules("FreeCAD", run=run, crash_helper=False), 4)
+        self.assertEqual(run_gui_modules(self.gui, run=run, crash_helper=False), 4)
+
+    def test_runs_nameless_gui_suites_and_skips_console_only_suites(self):
+        extra = ("Workbench", "Menu", "TestPartPreview")
+        run, seen = _fake_freecad({}, gui_suites=(*FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES))
+        self.assertEqual(_quiet_run_gui_modules(run), 0)
+        for suite in (*FULL_SUITES, *extra):
+            self.assertIn(suite, seen)
+        for suite in CONSOLE_SUITES:
+            self.assertNotIn(suite, seen)
+        self.assertNotIn("Please choose one or use 0 for all", seen)
+        self.assertNotIn("NO TESTS RAN", seen)
+        self.assertNotIn("System exit", seen)
+
+    def test_failed_console_discovery_fails_gate_without_running_modules(self):
+        seen: list[str] = []
+
+        def run(cmd):
+            if cmd[-1] == "-t":
+                if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                    return 13, "console failed\n"
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True)
+            seen.append(cmd[-1])
+            return 0, _ran(1)
+
+        self.assertEqual(_quiet_run_gui_modules(run), 13)
+        self.assertEqual(seen, [])
+
+    def test_empty_console_discovery_fails_gate_without_running_modules(self):
+        seen: list[str] = []
+
+        def run(cmd):
+            if cmd[-1] == "-t":
+                if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                    return 0, "Registered test units:\n\nPlease choose one or use 0 for all\n"
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True)
+            seen.append(cmd[-1])
+            return 0, _ran(1)
+
+        self.assertEqual(_quiet_run_gui_modules(run), 2)
+        self.assertEqual(seen, [])
+
+    def test_missing_companion_console_executable_fails_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gui = Path(tmp) / "custom_gui"
+            gui.touch()
+            gui.chmod(0o755)
+            def run(cmd):
+                self.assertEqual(cmd, [str(gui), "-t"])
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, with_footer=True)
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = run_gui_modules(str(gui), run=run, crash_helper=False)
+            self.assertEqual(rc, 2)
 
 
 def _build_fcrash(path: Path, frames: list[tuple[str, int]], *, code: int) -> None:
@@ -447,8 +970,8 @@ def _build_fcrash(path: Path, frames: list[tuple[str, int]], *, code: int) -> No
 
 def _capture_modules(run, **kwargs) -> tuple[int, str, str]:
     stdout, stderr = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        rc = run_gui_modules("FreeCAD", run=run, crash_helper=False, **kwargs)
+    with _dummy_freecad() as gui, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        rc = run_gui_modules(gui, run=run, crash_helper=False, **kwargs)
     return rc, stdout.getvalue(), stderr.getvalue()
 
 
@@ -469,7 +992,9 @@ class CrashReportDiagnostics(unittest.TestCase):
                         if Path(cmd[0]).name == "gdb":
                             return 0, "thread apply all bt"
                         if cmd[-1] == "-t":
-                            return 0, _listing(*FULL_SUITES)
+                            if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                                return 0, _listing(*CONSOLE_SUITES)
+                            return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
                         if cmd[-1] == "GuiDocument":
                             _build_fcrash(
                                 _dir / "crash-9-9.fcrash",
@@ -511,7 +1036,9 @@ class CrashReportDiagnostics(unittest.TestCase):
             if Path(cmd[0]).name == "gdb":
                 return 0, "thread apply all bt"
             if cmd[-1] == "-t":
-                return 0, _listing(*FULL_SUITES)
+                if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                    return 0, _listing(*CONSOLE_SUITES)
+                return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
             if cmd[-1] == "GuiDocument":
                 return -11, ""
             return 0, _ran(1)
@@ -534,7 +1061,9 @@ class CrashReportDiagnostics(unittest.TestCase):
 
             def run(cmd):
                 if cmd[-1] == "-t":
-                    return 0, _listing(*FULL_SUITES)
+                    if Path(cmd[0]).name.startswith("FreeCADCmd"):
+                        return 0, _listing(*CONSOLE_SUITES)
+                    return 0, _listing(*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
                 return 0, _ran(1)
 
             rc, _stdout, stderr = _capture_modules(run, crash_reports_dir=directory)

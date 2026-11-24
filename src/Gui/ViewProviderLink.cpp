@@ -62,6 +62,7 @@
 #include <App/MainThreadSignal.h>
 #include <App/SuppressibleExtension.h>
 #include <Base/BoundBoxPy.h>
+#include <Base/Interpreter.h>
 #include <Base/MatrixPy.h>
 #include <Base/PlacementPy.h>
 #include <Base/Tools.h>
@@ -1091,14 +1092,15 @@ PyObject* LinkView::getPyObject()
 
 void LinkView::setInvalid()
 {
+    // Document teardown can reach this function with the GIL released.
+    Base::PyGILStateLocker lock;
     if (!PythonObject.is(Py::_None())) {
         auto obj = static_cast<Base::PyObjectBase*>(PythonObject.ptr());
         obj->setInvalid();
-        obj->DecRef();
     }
-    else {
-        delete this;
-    }
+    // Invalidation detaches the wrapper's twin pointer. Destroy the handle and
+    // let PythonObject release its reference under the GIL.
+    delete this;
 }
 
 Base::BoundBox3d LinkView::getBoundBox(ViewProviderDocumentObject* vpd) const

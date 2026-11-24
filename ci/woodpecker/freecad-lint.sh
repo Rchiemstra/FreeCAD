@@ -8,6 +8,9 @@ mkdir -p /tmp/logs /tmp/report
 # 1) version consistency (stdlib, whole-repo, no file list needed)
 python3 src/Tools/sync_version.py --check
 
+# Run the GUI discovery and verdict regressions even when codespell has no diff.
+python3 -B -m unittest discover -s .github/scripts -p test_run_gui_tests.py
+
 # 2) codespell on changed files only
 base=""
 if [ -n "$CI_COMMIT_TARGET_BRANCH" ]; then
