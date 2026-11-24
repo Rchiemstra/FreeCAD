@@ -806,6 +806,9 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
             ));
         }
     }
+    if (const auto hook = _preCancelSnapshotMutationTestHook.load(std::memory_order_acquire)) {
+        hook();
+    }
     {
         std::lock_guard lock(_mutex);
         if (!_active || _active->id != id) {
@@ -1467,14 +1470,6 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
         return;
     }
 
-    const auto previousProgress = command.snapshot.progress;
-    const auto previousCompleted = command.snapshot.recompute
-        ? command.snapshot.recompute->completedFeatures
-        : std::size_t {0};
-    const auto previousRecomputeState = command.snapshot.recompute
-        ? command.snapshot.recompute->state
-        : DocumentCommandRecomputeState::Running;
-
     if (command.cancelRequested.load(std::memory_order_acquire)) {
         static_cast<void>(_document.recomputeCoordinator().cancel(
             *command.recomputeId,
@@ -1487,15 +1482,39 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
         return;
     }
 
+    if (const auto hook = _prePumpSnapshotCaptureTestHook.load(std::memory_order_acquire)) {
+        hook();
+    }
+
     // commandStatus() copies command.snapshot from other threads under _mutex,
-    // so update a local copy and publish it under the lock.
+    // and cancelCommand()/requestShutdown() mutate command.snapshot under _mutex,
+    // so capture the source snapshot and comparison values under _mutex, update
+    // the local copy outside the lock, and publish it under the lock.
     // The coordinator can already be terminal here. Publishing that as the
     // command state would let status()/done() return before
     // finalizeDetachedRecompute and completeActiveCommand. Keep the command
     // Running, Cancelling, or Stalled; progress and the recompute observation
     // still advance. completeActiveCommand is what publishes Completed,
     // Failed, or Cancelled.
-    auto snapshot = command.snapshot;
+    DocumentCommandSnapshot snapshot;
+    double previousProgress = 0.0;
+    std::size_t previousCompleted = 0;
+    DocumentCommandRecomputeState previousRecomputeState = DocumentCommandRecomputeState::Running;
+    {
+        std::lock_guard lock(_mutex);
+        snapshot = command.snapshot;
+        previousProgress = snapshot.progress;
+        previousCompleted = snapshot.recompute
+            ? snapshot.recompute->completedFeatures
+            : std::size_t {0};
+        previousRecomputeState = snapshot.recompute
+            ? snapshot.recompute->state
+            : DocumentCommandRecomputeState::Running;
+        if (const auto hook = _pumpSnapshotCaptureTestHook.load(std::memory_order_acquire)) {
+            hook();
+        }
+    }
+
     snapshot.progress = recomputeSnapshot->progress;
     snapshot.diagnostic = recomputeSnapshot->diagnostic;
     snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
@@ -1517,6 +1536,9 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
         touchWatchdogProgress(command);
     }
     updateWatchdogState(snapshot);
+    if (const auto hook = _prePublishActiveSnapshotTestHook.load(std::memory_order_acquire)) {
+        hook();
+    }
     publishActiveSnapshot(snapshot);
 
     if (_telemetry) {

@@ -3180,12 +3180,22 @@ class RepositoryInventoryTests(unittest.TestCase):
     def test_thread_wait_started_found(self) -> None:
         self._assert_site("src/Gui/Assistant.cpp", 165, "thread-waits")
 
+    def _assert_socket_wait(self, evidence: str) -> None:
+        self.assertIn(
+            ("src/Gui/GuiApplication.cpp", "thread-waits", evidence, 1),
+            {finding.key() for finding in self.scanned},
+        )
+
     def test_thread_wait_bytes_written_found(self) -> None:
-        self._assert_site("src/Gui/GuiApplication.cpp", 322, "thread-waits")
+        self._assert_socket_wait("return socket.waitForBytesWritten(timeout);")
 
     def test_thread_wait_connected_found(self) -> None:
-        for line in (240, 303):
-            self._assert_site("src/Gui/GuiApplication.cpp", line, "thread-waits")
+        # Private::setupConnection and GUISingleApplication::sendMessage.
+        for evidence in (
+            "if (socket.waitForConnected(1000)) {",
+            "connected = socket.waitForConnected(timeout / 2);",
+        ):
+            self._assert_socket_wait(evidence)
 
     def test_thread_wait_condition_wait_found(self) -> None:
         self._assert_site("src/Gui/SplashScreen.cpp", 161, "thread-waits")

@@ -2616,7 +2616,7 @@
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
-      "evidence": "App::GetApplication().signalDeletedObject.connect("
+      "evidence": "appDeletedObjectConnection = App::GetApplication().signalDeletedObject.connect("
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
