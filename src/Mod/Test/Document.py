@@ -1284,6 +1284,47 @@ class DocumentRecomputeCases(unittest.TestCase):
             return str(recompute["state"]).lower()
         return str(status.get("state", "")).lower()
 
+    def testRecomputeSelectionSequenceReadsOnce(self):
+        class CountingSequence:
+            def __init__(self, objects):
+                self.objects = objects
+                self.reads = [0] * len(objects)
+
+            def __len__(self):
+                return len(self.objects)
+
+            def __getitem__(self, index):
+                self.reads[index] += 1
+                return self.objects[index]
+
+        self.L1.Integer += 1
+        self.L2.Integer += 1
+        self.Doc.recompute()
+        initial = (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount)
+        selected = [self.L1, self.L2]
+
+        for make_selection in (CountingSequence, list, tuple):
+            with self.subTest(selection=make_selection.__name__, entry="sync"):
+                selection = make_selection(selected)
+                self.assertEqual(self.Doc.recompute(selection, True), 2)
+                if isinstance(selection, CountingSequence):
+                    self.assertEqual(selection.reads, [1, 1])
+                initial = (initial[0] + 1, initial[1] + 1, initial[2])
+                self.assertEqual(
+                    (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount), initial
+                )
+
+            with self.subTest(selection=make_selection.__name__, entry="async"):
+                selection = make_selection(selected)
+                status = self._submitAndWaitRecomputeAsync(selection, True)
+                self.assertEqual(self._recomputeStatusState(status), "completed", status)
+                if isinstance(selection, CountingSequence):
+                    self.assertEqual(selection.reads, [1, 1])
+                initial = (initial[0] + 1, initial[1] + 1, initial[2])
+                self.assertEqual(
+                    (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount), initial
+                )
+
     def testRecomputeAsyncForceCleanFeature(self):
         # Settle a counted feature so it is clean before testing recomputeAsync force forwarding.
         self.L1.Integer = self.L1.Integer + 1
