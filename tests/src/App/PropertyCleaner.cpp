@@ -1228,9 +1228,13 @@ TEST(PropertyCleaner, PythonThreadRemovePropertyMustNotStrandRetiredPayload)
             PyDict_SetItemString(globals, "obj", pyObject);
             Py_DECREF(pyObject);
             PyObject* created = PyRun_String(
+                "import threading\n"
                 "released = []\n"
+                "finalized = threading.Event()\n"
                 "class Probe:\n"
-                "    def __del__(self): released.append('finalized')\n"
+                "    def __del__(self):\n"
+                "        released.append('finalized')\n"
+                "        finalized.set()\n"
                 "probe = Probe()\n", Py_file_input, globals, globals);
             if (!created) std::_Exit(96);
             Py_DECREF(created);
@@ -1250,11 +1254,28 @@ TEST(PropertyCleaner, PythonThreadRemovePropertyMustNotStrandRetiredPayload)
             Py_DECREF(completed);
             if (PyList_Size(PyDict_GetItemString(globals, "errors")) != 0
                 || PyList_Size(PyDict_GetItemString(globals, "removed")) != 1
-                || object->getDynamicPropertyByName("Payload")
-                || PyList_Size(PyDict_GetItemString(globals, "released")) != 1) std::_Exit(99);
+                || PyList_GetItem(PyDict_GetItemString(globals, "removed"), 0) != Py_True
+                || object->getDynamicPropertyByName("Payload")) std::_Exit(99);
+            // Python join can precede C++ TLS completion and the registry reaper.
+            // Event.wait releases the GIL so either cleanup path can finalize.
+            PyObject* waited = PyObject_CallMethod(
+                PyDict_GetItemString(globals, "finalized"), "wait", "d", 5.0);
+            if (!waited) std::_Exit(101);
+            const bool finalized = waited == Py_True;
+            Py_DECREF(waited);
+            if (!finalized || PyList_Size(PyDict_GetItemString(globals, "released")) != 1)
+                std::_Exit(102);
             Py_DECREF(globals);
         }
         if (!App::GetApplication().closeDocument("CleanerPythonThread")) std::_Exit(100);
+        // The finalizer can run in TLS cleanup before the native thread exits.
+        // Shutdown requires foreign cleaner owners to have physically exited.
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!App::preparePropertyCleanupFinalization()) {
+            if (std::chrono::steady_clock::now() >= deadline) std::_Exit(103);
+            std::this_thread::yield();
+        }
+        App::cancelPropertyCleanupFinalization();
         App::Application::destruct();
         { std::lock_guard lock(watchdogMutex); done = true; }
         watchdogChanged.notify_all();
