@@ -425,7 +425,7 @@ void exerciseDeferredFileOpen(bool useFileEvent, bool cancelClose, bool failAfte
         if (!source || !source->saveAs(path.toUtf8().constData())) std::_Exit(93);
         app.closeDocument("Incoming");
         auto* dirty = app.newDocument("GuiCleanerModal");
-        if (!dirty || !dirty->addObject("App::Feature", "Dirty")
+        if (!dirty || !dirty->addObject("App::FeatureTest", "Dirty")
             || !gui.getDocument(dirty)->isModified()) std::_Exit(94);
         int opened = 0;
         auto observer = app.signalNewDocument.connect([&](const App::Document&, bool) { ++opened; });
@@ -562,7 +562,7 @@ TEST(MainWindowShutdown, noInteractionSessionUsesTheCleanerBoundaryBeforeClosing
             Gui::MainWindow window;
             auto* document = app.newDocument("GuiCleanerBlocked");
             if (!document || !document->executionLane() || !gui.getDocument(document)
-                || !document->addObject("App::Feature", "Dirty")
+                || !document->addObject("App::FeatureTest", "Dirty")
                 || !gui.getDocument(document)->isModified()) std::_Exit(92);
             ShutdownGate gate; std::atomic<int> observed {0};
             std::thread worker([&] { App::Property::destroy(new BlockingExitProperty(gate, document, observed)); });
@@ -697,7 +697,7 @@ void exerciseBatchedMacroClose(bool cancelClose, bool failAfterSeal)
         QSignalSpy delivered(qt.get(), SIGNAL(messageReceived(const QList<QString>&)));
         if (!delivered.isValid()) std::_Exit(94);
         auto* dirty = app.newDocument("BatchDirty");
-        if (!dirty || !dirty->addObject("App::Feature", "Dirty")
+        if (!dirty || !dirty->addObject("App::FeatureTest", "Dirty")
             || !gui.getDocument(dirty)->isModified()) std::_Exit(95);
         bool sawDialog = false;
         QTimer responder;

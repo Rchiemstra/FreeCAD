@@ -532,9 +532,6 @@ private:
     std::shared_ptr<DocumentHandle::State> _handleState;
 
     std::thread _thread;
-    std::shared_ptr<std::promise<void>> _threadExitPromise;
-    std::shared_future<void> _threadExitCompletion;
-    std::exception_ptr _startupFailure;
     std::thread::id _ownerThreadId {};
     mutable std::mutex _mutex;
     mutable std::condition_variable _workAvailable;

@@ -281,6 +281,35 @@ App::PropertyPythonObject* makeCancelProbe(std::atomic<int>& result)
     Py_DECREF(globals);
     return property;
 }
+// The owner may be drained after successful shutdown closes the document.
+// Its probe measures finalization without requiring the document to remain live.
+App::PropertyPythonObject* makeFinalizationProbe(std::atomic<int>& result)
+{
+    PyObject* globals = PyDict_New();
+    PyObject* capsule = PyCapsule_New(&result, "cleaner-count", nullptr);
+    PyObject* notify = capsule ? PyCFunction_New(&notifyDefinition, capsule) : nullptr;
+    if (!globals || !capsule || !notify
+        || PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins()) != 0
+        || PyDict_SetItemString(globals, "notify", notify) != 0) {
+        Py_XDECREF(notify); Py_XDECREF(capsule); Py_XDECREF(globals);
+        return nullptr;
+    }
+    Py_DECREF(notify); Py_DECREF(capsule);
+    PyObject* created = PyRun_String(
+        "class Probe:\n    def __del__(self): notify()\nprobe = Probe()\n",
+        Py_file_input, globals, globals);
+    if (!created) { Py_DECREF(globals); return nullptr; }
+    Py_DECREF(created);
+    PyObject* probe = PyDict_GetItemString(globals, "probe");
+    if (!probe) { Py_DECREF(globals); return nullptr; }
+    auto* property = new App::PropertyPythonObject;
+    property->setPyObject(probe);
+    if (PyDict_DelItemString(globals, "probe") != 0) {
+        delete property; Py_DECREF(globals); return nullptr;
+    }
+    Py_DECREF(globals);
+    return property;
+}
 }  // namespace
 
 TEST(PropertyCleaner, IndependentManagedJobsDrainOnTheirOwnThread)
@@ -576,7 +605,7 @@ TEST(PropertyCleaner, LiveForeignOwnersRefuseAndDrainOnTheirOwnExit)
         App::PropertyPythonObject* idleProperty;
         {
             Base::PyGILStateLocker gil;
-            ownerProperty = makeCancelProbe(ownerFinalized);
+            ownerProperty = makeFinalizationProbe(ownerFinalized);
             externalProperty = makeCancelProbe(externalFinalized);
             idleProperty = makeCancelProbe(idleFinalized);
             if (!ownerProperty || !externalProperty || !idleProperty) std::_Exit(93);

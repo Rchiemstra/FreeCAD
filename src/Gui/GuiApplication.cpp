@@ -373,11 +373,16 @@ void GUISingleApplication::readFromSocket()
 {
     auto socket = qobject_cast<QLocalSocket*>(sender());
     if (socket) {
-        QTextStream in(socket);
-        in.setEncoding(QStringConverter::Utf8);
         while (socket->canReadLine()) {
             d_ptr->timer->stop();
-            QString message = in.readLine();
+            // Read from the same device whose line availability is tested.
+            // QTextStream may buffer subsequent lines beyond the one returned.
+            QByteArray line = socket->readLine();
+            line.chop(1);  // canReadLine() guarantees the trailing newline
+            if (line.endsWith('\r')) {
+                line.chop(1);
+            }
+            QString message = QString::fromUtf8(line);
             Base::Console().log("Received message: {}\n", message.toStdString());
             d_ptr->messages.push_back(message);
             d_ptr->timer->start(1000);
