@@ -34,6 +34,7 @@
 #include <App/DocumentRevisionIndex.h>
 #include <App/FeatureTest.h>
 #include <App/MutationKind.h>
+#include <App/PropertyCleanup.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <App/PropertyStandard.h>
@@ -244,6 +245,8 @@ struct ExpectedMutatorInventory
 // These are wrappers, rejected setters, attachment helpers, or metadata-only configuration.
 // Storage writers are intentionally absent: they must bracket, publish, or reject themselves.
 constexpr std::array reviewedDelegations {
+    // Retirement queues an already removed property; schema removal owns the receipt.
+    ReviewedDelegation {"Property.cpp:PropertyCleaner::add", "s.removed.push_back({property, PropertyCleanupBoundary::current})", 1},
     ReviewedDelegation {"Property.cpp:Property::setContainer", "this->father = father", 1},
     ReviewedDelegation {"Property.cpp:Property::setPathValue", "path.setValue", 1},
     ReviewedDelegation {"Property.cpp:Property::setReadOnly", "setStatus(", 1},
@@ -1397,6 +1400,22 @@ TEST_F(DocumentCollaborationBoundaryTest, dynamicPropertySchemaUsesTypedStructur
     before = captureFor(object->getNameInDocument());
     ASSERT_TRUE(object->removeDynamicProperty("RenamedDynamicValue"));
     expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "DynamicProperty remove");
+}
+
+TEST_F(DocumentCollaborationBoundaryTest, dynamicRemovalReceiptDoesNotRepeatAtCleanup)
+{
+    auto* object = document()->addObject("App::FeatureTest", "CleanupReceiptIngress");
+    ASSERT_NE(object, nullptr);
+    ASSERT_NE(object->addDynamicProperty("App::PropertyFloat", "RetiredValue"), nullptr);
+
+    const auto before = captureFor(object->getNameInDocument());
+    {
+        App::PropertyCleanupBoundary cleanup;
+        ASSERT_TRUE(object->removeDynamicProperty("RetiredValue"));
+        EXPECT_EQ(object->getPropertyByName("RetiredValue"), nullptr);
+        expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "dynamic removal");
+    }
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "retired property cleanup");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, recursiveDynamicPropertyRemovalPublishesExactlyOnce)
