@@ -10,7 +10,7 @@ those signatures use.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal, TypeAlias, overload
+from typing import Any, Literal, Protocol, TypeAlias, TypedDict, overload
 
 from Base.Metadata import module
 from . import Console as Console  # pylint: disable=no-name-in-module,unused-import
@@ -23,6 +23,24 @@ module(
     CallbackOwner="ApplicationPy",
     CallbackPrefix="s",
 )
+
+class _CompatibilityMutationResult(TypedDict):
+    status: str
+    committed: bool
+    operation_id: str
+    message: str
+    conflicts: list[dict[str, object]]
+    published_revisions: list[dict[str, object]]
+
+
+class _CompatibilityMutationWait(Protocol):
+    def __call__(self, timeout: float = -1.0, /) -> _CompatibilityMutationResult: ...
+
+
+class _CompatibilityMutationWaitHandle(TypedDict):
+    state: Literal["Running"]
+    wait: _CompatibilityMutationWait
+
 
 _FileTypeModules: TypeAlias = dict[str, str | list[str] | None]
 _LogLevelName: TypeAlias = Literal["Default", "Error", "Warning", "Message", "Log", "Trace"]
