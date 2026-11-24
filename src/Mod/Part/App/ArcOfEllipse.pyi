@@ -33,7 +33,6 @@ class ArcOfEllipse(ArcOfConic):
     """The internal ellipse representation"""
 
     @typing_only
-    @overload
     def __init__(
         self, ellipse: "Part.Ellipse", u1: float, u2: float, sense: bool = ..., /
     ) -> None: ...

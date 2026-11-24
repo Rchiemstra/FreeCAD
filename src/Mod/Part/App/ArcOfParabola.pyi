@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export
+from Base.Metadata import export, typing_only
 from ArcOfConic import ArcOfConic
 from typing import Final
 
@@ -31,3 +31,6 @@ class ArcOfParabola(ArcOfConic):
 
     Parabola: Final[object] = ...
     """The internal parabola representation"""
+
+    @typing_only
+    def __init__(self, parabola: "Part.Parabola", u1: float, u2: float, sense: bool = ..., /) -> None: ...

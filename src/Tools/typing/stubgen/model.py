@@ -156,6 +156,7 @@ HELPER_PYI_FILES = {
     "src/App/FreeCADInit.pyi",
 }
 PUBLIC_STUB_DECORATORS = {
+    "abstractmethod",
     "classmethod",
     "deprecated",
     "overload",
