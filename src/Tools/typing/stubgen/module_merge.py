@@ -474,8 +474,29 @@ def filtered_type_class_support_nodes(
     return filtered_nodes
 
 
-def module_support_source(source: str) -> str:
+def module_support_source(
+    source: str,
+    module_name: str = "",
+    import_targets: dict[tuple[str, str], tuple[str, str]] | None = None,
+) -> str:
     tree = ast.parse(source)
+    # A source-side import can refer to a class that is emitted into this very
+    # module.  Keeping it would both reference a non-public implementation
+    # path and hide the class from the subsequent class merge.
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
+            continue
+        node.names = [
+            alias for alias in node.names
+            if not (
+                (import_targets or {}).get((node.module, alias.name))
+                == (module_name, alias.asname or alias.name)
+            )
+        ]
+    tree.body = [
+        node for node in tree.body
+        if not isinstance(node, ast.ImportFrom) or node.names
+    ]
     support_nodes = filtered_module_support_nodes(tree.body, set())
     return unparse_module_body(support_nodes)
 
@@ -641,6 +662,7 @@ def copy_module_support_stubs(
     source_dir: Path,
     target_dir: Path,
     module_names: set[str] | None = None,
+    import_targets: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> int:
     count = 0
     for source in sorted(iter_module_stub_pyi_files(root, source_dir)):
@@ -652,7 +674,9 @@ def copy_module_support_stubs(
         )
         if not target.exists():
             continue
-        support_source = module_support_source(source.read_text(encoding="utf-8"))
+        support_source = module_support_source(
+            source.read_text(encoding="utf-8"), module_name, import_targets
+        )
         if not support_source.strip():
             continue
         merged = merge_module_support_nodes(target.read_text(encoding="utf-8"), support_source)
