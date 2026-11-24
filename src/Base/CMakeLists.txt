@@ -423,6 +423,10 @@ if(FREECAD_USE_PCH)
     )
 endif(FREECAD_USE_PCH)
 
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(FreeCADBase PRIVATE FREECAD_PERSISTENCE_TEST_API)
+endif()
+
 target_sources(FreeCADBase PRIVATE ${FreeCADBase_SRCS})
 target_link_libraries(FreeCADBase ${FreeCADBase_LIBS})
 

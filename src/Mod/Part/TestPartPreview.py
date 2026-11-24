@@ -109,8 +109,17 @@ def _coordinateCount(node):
 
     search = coin.SoSearchAction()
     search.setType(coin.SoCoordinate3.getClassTypeId())
-    search.apply(node)
-    return search.getPath().getTail().point.getNum()
+    # Some caller-created nodes have refcount zero. Preserve the caller's
+    # ownership while the action and its result path temporarily reference it.
+    node.ref()
+    try:
+        search.apply(node)
+        return search.getPath().getTail().point.getNum()
+    finally:
+        try:
+            search.reset()
+        finally:
+            node.unrefNoDelete()
 
 
 class PreviewViewProvider:
@@ -162,10 +171,18 @@ class TestPreviewNodeAccess(unittest.TestCase):
         from pivy import coin
 
         node = coin.SoType.fromName("SoPreviewShape").createInstance()
-
-        self.object.ViewObject.updatePreviewShape(Part.makeBox(5, 5, 5), node)
-
-        self.assertGreaterEqual(_coordinateCount(node), 8)
+        try:
+            self.object.ViewObject.updatePreviewShape(Part.makeBox(5, 5, 5), node)
+            initial_refs = node.getRefCount()
+            self.assertEqual(initial_refs, 0)
+            self.assertGreaterEqual(_coordinateCount(node), 8)
+            # The temporary action ownership must not delete the caller's
+            # fresh node or change its reference count.
+            self.assertTrue(node.isOfType(coin.SoType.fromName("SoPreviewShape")))
+            self.assertEqual(node.getRefCount(), initial_refs)
+        finally:
+            node.ref()
+            node.unref()
 
     def testUpdatePreviewShapeRejectsWrongNodeType(self):
         from pivy import coin

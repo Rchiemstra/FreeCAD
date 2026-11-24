@@ -39,6 +39,7 @@ that is, previews, of the real objects that will be created on the 3D view.
 # @{
 import math
 import re
+import weakref
 import pivy.coin as coin
 
 import FreeCAD
@@ -86,14 +87,40 @@ class Tracker:
         self.switch.whichChild = -1
         self.setColor(scolor)
         self.Visible = False
+        # A tracker belongs to the view in which it was created, even if the
+        # active view changes before the queued scenegraph work runs.
+        view = gui_utils.get_3d_view()
+        self._scene_graph = None
+        self._view_widget = None
+        self._view_closed_callback = None
+        if view is not None:
+            # graphicsView() is the exact viewer QObject, including for
+            # undocked and fullscreen views; the view wrapper itself is not
+            # a QObject and may outlive the underlying view.
+            widget = view.graphicsView()
+            self._scene_graph = view.getSceneGraph()
+            self._view_widget = widget
+            tracker_ref = weakref.ref(self)
+            def view_closed(*_args):
+                tracker = tracker_ref()
+                if tracker is not None:
+                    tracker._scene_graph = None
+                    tracker._view_widget = None
+                    tracker._view_closed_callback = None
+            self._view_closed_callback = view_closed
+            widget.destroyed.connect(view_closed)
+        self._at_top = self.ontop
         ToDo.delay(self._insertSwitch, self.switch)
 
     def finalize(self):
         """Finish the command by removing the switch.
         Also called by ghostTracker.remove.
         """
-        ToDo.delay(self._removeSwitch, self.switch)
+        switch = self.switch
+        if switch is None:
+            return
         self.switch = None
+        ToDo.delay(self._removeSwitch, switch)
 
     def get_scene_graph(self):
         """Returns the current scenegraph or None if this is not a 3D view"""
@@ -109,10 +136,10 @@ class Tracker:
         Must not be called
         from an event handler (or other scene graph traversal).
         """
-        sg = self.get_scene_graph()
-        if not sg:
+        sg = self._scene_graph
+        if switch is not self.switch or sg is None or sg.findChild(switch) >= 0:
             return
-        if self.ontop:
+        if self._at_top:
             sg.insertChild(switch, 0)
         else:
             sg.addChild(switch)
@@ -123,11 +150,16 @@ class Tracker:
         As with _insertSwitch,
         must not be called during scene graph traversal).
         """
-        sg = self.get_scene_graph()
-        if not sg:
-            return
-        if sg.findChild(switch) >= 0:
-            sg.removeChild(switch)
+        sg = self._scene_graph
+        try:
+            if sg is not None and sg.findChild(switch) >= 0:
+                sg.removeChild(switch)
+        finally:
+            self._scene_graph = None
+            if self._view_widget is not None:
+                self._view_widget.destroyed.disconnect(self._view_closed_callback)
+                self._view_widget = None
+                self._view_closed_callback = None
 
     def on(self):
         """Set the visibility to True."""
@@ -139,29 +171,26 @@ class Tracker:
         self.switch.whichChild = -1
         self.Visible = False
 
-    def lowerTracker(self):
-        """Lower the tracker to the bottom of the scenegraph.
+    def _restackSwitch(self, switch):
+        """Apply the latest requested order outside scenegraph traversal."""
+        sg = self._scene_graph
+        if switch is not self.switch or sg is None:
+            return
+        if sg.findChild(switch) >= 0:
+            sg.removeChild(switch)
+        self._insertSwitch(switch)
 
-        So it doesn't obscure the other objects.
-        """
-        if self.switch:
-            sg = self.get_scene_graph()
-            if not sg:
-                return
-            sg.removeChild(self.switch)
-            sg.addChild(self.switch)
+    def lowerTracker(self):
+        """Lower the tracker to the bottom of its original scenegraph."""
+        if self.switch is not None:
+            self._at_top = False
+            ToDo.delay(self._restackSwitch, self.switch)
 
     def raiseTracker(self):
-        """Raise the tracker to the top of the scenegraph.
-
-        So it obscures the other objects.
-        """
-        if self.switch:
-            sg = self.get_scene_graph()
-            if not sg:
-                return
-            sg.removeChild(self.switch)
-            sg.insertChild(self.switch, 0)
+        """Raise the tracker to the top of its original scenegraph."""
+        if self.switch is not None:
+            self._at_top = True
+            ToDo.delay(self._restackSwitch, self.switch)
 
     def setColor(self, color=None):
         """Set the color."""

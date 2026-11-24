@@ -13,7 +13,6 @@ memory checkers and debug allocators can see it, and checks that the Coin
 viewport matches the GL widget afterwards.
 """
 
-import time
 import unittest
 
 import FreeCAD as App
@@ -189,7 +188,6 @@ class _NestedResize(QtCore.QObject):
         self.done = False
         self.held = False
         self.held_after_modal = False
-        self.cpu = 0.0
         self.after_flush = None
         self.step = _AfterFlush(self._measure_after_flush)
 
@@ -217,11 +215,9 @@ class _NestedResize(QtCore.QObject):
         app = QtWidgets.QApplication.instance()
         app.installEventFilter(swallow)
         try:
-            started = time.thread_time()
             loop = QtCore.QEventLoop()
             QtCore.QTimer.singleShot(200, loop.quit)
             loop.exec()
-            self.cpu = time.thread_time() - started
         finally:
             app.removeEventFilter(swallow)
         coin, framebuffer = self.measure()
@@ -312,11 +308,9 @@ class TestQuarterViewGui(unittest.TestCase):
             nested.held_after_modal,
             "held resize was delivered while the modal loop was still running",
         )
-        self.assertLess(
-            nested.cpu,
-            0.15,
-            "modal loop from a paint delivery spun the resize guard (cpu %.3fs)" % nested.cpu,
-        )
+        # The native resize-guard regression checks exact queued-wake behavior
+        # while a paint flush is held. Total GUI thread CPU also includes
+        # unrelated timers and rendering, so it cannot identify guard polling.
         viewport = _gl_viewport(self.window)
         coin, framebuffer = _sizes(self.doc.Name, viewport)
         self.assertEqual(

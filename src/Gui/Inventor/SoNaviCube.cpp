@@ -1091,7 +1091,7 @@ void SoNaviCube::updateEdges(const RenderParams& params) const
         edgeMaterial->transparency = params.emphTr;
     }
     if (edgeDrawStyle) {
-        edgeDrawStyle->lineWidth = params.bw;
+        edgeDrawStyle->lineWidth = std::max(1.0F, params.bw);
     }
 }
 
@@ -1122,8 +1122,8 @@ void SoNaviCube::updateAxes(const RenderParams& params) const
             nodes.material->transparency = params.axisTr;
         }
         if (nodes.drawStyle) {
-            nodes.drawStyle->lineWidth = params.bw * 2.0F;
-            nodes.drawStyle->pointSize = params.bw * 2.0F;
+            nodes.drawStyle->lineWidth = std::max(1.0F, params.bw * 2.0F);
+            nodes.drawStyle->pointSize = std::max(1.0F, params.bw * 2.0F);
         }
     }
 
@@ -1178,7 +1178,7 @@ void SoNaviCube::updateButtons(const RenderParams& params) const
                 nodes.outlineMaterial->transparency = params.emphTr;
             }
             if (nodes.outlineDrawStyle) {
-                nodes.outlineDrawStyle->lineWidth = params.bw;
+                nodes.outlineDrawStyle->lineWidth = std::max(1.0F, params.bw);
             }
         }
         style.buttonsBaseRgb = params.baseRgb;

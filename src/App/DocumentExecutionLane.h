@@ -44,6 +44,7 @@ class DocumentExecutionTelemetryCollector;
 
 namespace Internal
 {
+class DocumentExecutionLaneTestAccess;
 struct CollaborationServiceLifetimeGate;
 }  // namespace Internal
 
@@ -361,6 +362,7 @@ public:
 
 private:
     friend struct DocumentHandle::State;
+    friend class Internal::DocumentExecutionLaneTestAccess;
 
     /** True when the active command must finish before a dispatch may run. Holds _mutex. */
     [[nodiscard]] bool commandBlocksDispatchLocked(const bool allowWhileCommandActive) const
@@ -547,6 +549,12 @@ private:
     std::atomic<bool> _recoverySnapshotOwnerWorkInFlight {false};
 
     std::shared_ptr<DocumentExecutionTelemetryCollector> _telemetry;
+
+    using PumpTestHook = void (*)();
+    inline static std::atomic<PumpTestHook> _prePumpSnapshotCaptureTestHook {nullptr};
+    inline static std::atomic<PumpTestHook> _pumpSnapshotCaptureTestHook {nullptr};
+    inline static std::atomic<PumpTestHook> _prePublishActiveSnapshotTestHook {nullptr};
+    inline static std::atomic<PumpTestHook> _preCancelSnapshotMutationTestHook {nullptr};
 };
 
 }  // namespace App

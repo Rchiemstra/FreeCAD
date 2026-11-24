@@ -64,7 +64,8 @@ FixedTimeAnimation::FixedTimeAnimation(
 {
     setDuration(duration);
     setStartValue(0.0);
-    setEndValue(duration * 1.0);
+    // An instantaneous animation still needs one finite endpoint sample.
+    setEndValue(duration == 0 ? 1.0 : duration * 1.0);
     setEasingCurve(easingCurve);
 }
 
@@ -90,8 +91,9 @@ void FixedTimeAnimation::initialize()
     // Convert post-multiplication axis to a pre-multiplication axis
     navigation->getCamera()->orientation.getValue().inverse().multVec(rotationAxisPost, rotationAxis);
 
-    angularVelocity = angle / duration();
-    linearVelocity = targetTranslation / duration();
+    const int interpolationScale = duration() == 0 ? 1 : duration();
+    angularVelocity = angle / interpolationScale;
+    linearVelocity = targetTranslation / interpolationScale;
 }
 
 /**
