@@ -27,13 +27,16 @@
 #include <Base/Stream.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <future>
 #include <map>
 #include <memory>
+#include <new>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -195,21 +198,56 @@ std::string buildRecomputeCoalescingKey(const std::vector<DocumentObject*>& obje
     return key;
 }
 
-PyObject* makeAcceptedCommandHandle(Document& document, const DocumentCommandSubmitOutcome& outcome)
+// Allocate the wrapper and its native storage before the lane can accept work.
+class PythonCommandAdmission
 {
-    if (!outcome.accepted()) {
-        raiseSubmitOutcome(outcome);
-    }
-    const auto identity = document.executionHandle().identity();
-    return makeDocumentCommandHandlePy(DocumentCommandHandle(outcome.commandId, identity));
-}
+public:
+    explicit PythonCommandAdmission(DocumentHandle execution)
+        : execution(std::move(execution)), identityValue(this->execution.identity()),
+          wrapper(allocate(), true) {}
 
-PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind)
+    PyObject* submit(DocumentCommand command)
+    {
+        const auto outcome = execution.trySubmit(std::move(command));
+        if (!outcome.accepted()) {
+            raiseSubmitOutcome(outcome);
+        }
+        setDocumentCommandHandlePy(wrapper.ptr(), DocumentCommandHandle(outcome.commandId, identityValue));
+        return Py::new_reference_to(wrapper);
+    }
+
+private:
+    static PyObject* allocate()
+    {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (Internal::consumeCompatibilityReceiptFaultForTesting(
+                Internal::CompatibilityReceiptFault::CommandHandleAllocation)) {
+            throw std::bad_alloc();
+        }
+#endif
+        return makeDocumentCommandHandlePy(DocumentCommandHandle());
+    }
+    DocumentHandle execution;
+    DocumentRevisionIdentityBinding identityValue;
+    Py::Object wrapper;
+};
+
+static_assert(std::is_nothrow_constructible_v<DocumentCommandHandle,
+              DocumentCommandId, DocumentRevisionIdentityBinding>);
+static_assert(std::is_nothrow_move_assignable_v<DocumentCommandHandle>);
+
+PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind,
+                              bool notifyClose = false)
 {
+    auto execution = document.executionHandle();
     DocumentCommand command;
     command.kind = kind;
-    command.document = document.executionHandle().identity();
-    return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
+    command.document = execution.identity();
+    PythonCommandAdmission admission(std::move(execution));
+    if (notifyClose) {
+        GetApplication().signalBeforeCloseDocumentAdmission(document);
+    }
+    return admission.submit(std::move(command));
 }
 
 // The synchronous Python API stays usable on the GUI thread: with an execution
@@ -223,6 +261,26 @@ void throwIfGuiThreadWithoutLane(const Document& document,
     if (!document.executionLane()) {
         DocumentWouldBlock::throwIfGuiThread(syncApi, asyncApi);
     }
+}
+
+PyObject* makeRecomputeHandlePyForAdmission(Document& document)
+{
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeHandleAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    auto value = std::make_unique<RecomputeHandle>(document, 0);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputePythonWrapperAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    auto* wrapper = new RecomputeHandlePy(value.get());
+    value.release();
+    return wrapper;
 }
 
 PyObject* submitRecomputeCommand(Document& document,
@@ -245,19 +303,36 @@ PyObject* submitRecomputeCommand(Document& document,
         }
     }
 
-    const auto outcome = document.executionHandle().trySubmit(std::move(command));
+    auto execution = document.executionHandle();
+    const auto identity = execution.identity();
+    Py::Object recomputeWrapper(makeRecomputeHandlePyForAdmission(document), true);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeCommandHandleAllocation)) {
+        throw std::bad_alloc();
+    }
+#endif
+    Py::Object commandWrapper(makeDocumentCommandHandlePy(DocumentCommandHandle()), true);
+    const auto outcome = execution.trySubmit(std::move(command));
     if (!outcome.accepted()) {
         raiseSubmitOutcome(outcome);
     }
 
-    const auto identity = document.executionHandle().identity();
     const DocumentCommandHandle commandHandle(outcome.commandId, identity);
-    const auto snapshot = commandHandle.status();
-    if (snapshot.recompute && snapshot.recompute->id != 0) {
-        return new RecomputeHandlePy(
-            new RecomputeHandle(document, static_cast<DocumentRecomputeId>(snapshot.recompute->id)));
+    auto recomputeId = commandHandle.recomputeIdForReturn();
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (Internal::consumeCompatibilityReceiptFaultForTesting(
+            Internal::CompatibilityReceiptFault::RecomputeReturnFallback)) {
+        recomputeId = 0;
     }
-    return makeDocumentCommandHandlePy(commandHandle);
+#endif
+    if (recomputeId != 0) {
+        static_cast<RecomputeHandlePy*>(recomputeWrapper.ptr())->getRecomputeHandlePtr()
+            ->bindAdmissionId(static_cast<DocumentRecomputeId>(recomputeId));
+        return Py::new_reference_to(recomputeWrapper);
+    }
+    setDocumentCommandHandlePy(commandWrapper.ptr(), commandHandle);
+    return Py::new_reference_to(commandWrapper);
 }
 
 const char* saveDispositionName(const DocumentSaveDisposition disposition)
@@ -415,7 +490,21 @@ struct AsyncWaitState
 {
     std::shared_ptr<std::future<AsyncMutationPayload>> future;
     std::shared_ptr<PythonCompatibilityCallbackError> callbackError;
+    std::optional<AsyncMutationPayload> pendingResult;
+    std::atomic_bool waiting {false};
+
+    AsyncWaitState(std::shared_ptr<std::future<AsyncMutationPayload>> value,
+                   std::shared_ptr<PythonCompatibilityCallbackError> error)
+        : future(std::move(value)), callbackError(std::move(error)) {}
 };
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::atomic<Internal::CompatibilityWaitHook> compatibilityWaitHook {nullptr};
+std::atomic<Internal::CompatibilityReceiptFault> compatibilityReceiptFault {Internal::CompatibilityReceiptFault::None};
+#endif
+
+static_assert(std::is_nothrow_move_constructible_v<AsyncMutationPayload>);
+static_assert(std::is_nothrow_move_assignable_v<std::future<AsyncMutationPayload>>);
 
 const char* documentLifecycleStateName(DocumentLifecycleState state)
 {
@@ -716,6 +805,20 @@ Py::Dict preparedEditResultToPython(CollaborationPreparedEditResult result)
 
 }  // namespace
 
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void App::Internal::setCompatibilityWaitHookForTesting(CompatibilityWaitHook hook) noexcept
+{
+    compatibilityWaitHook.store(hook, std::memory_order_release);
+}
+void App::Internal::setCompatibilityReceiptFaultForTesting(CompatibilityReceiptFault fault) noexcept
+{
+    compatibilityReceiptFault.store(fault);
+}
+bool App::Internal::consumeCompatibilityReceiptFaultForTesting(CompatibilityReceiptFault fault) noexcept
+{
+    return compatibilityReceiptFault.compare_exchange_strong(fault, CompatibilityReceiptFault::None);
+}
+#endif
 
 PyObject* DocumentPy::addProperty(PyObject* args, PyObject* kwd)
 {
@@ -840,9 +943,11 @@ PyObject* DocumentPy::saveAsync(PyObject* args)
     }
 
     std::string utf8Name;
-    if (fn) {
-        utf8Name = fn;
-        PyMem_Free(fn);
+    {
+        std::unique_ptr<char, decltype(&PyMem_Free)> filename(fn, &PyMem_Free);
+        if (filename) {
+            utf8Name = filename.get();
+        }
     }
 
     PY_TRY
@@ -870,7 +975,7 @@ PyObject* DocumentPy::saveAsync(PyObject* args)
             }
         }
 
-        return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
+        return PythonCommandAdmission(document.executionHandle()).submit(std::move(command));
     }
     PY_CATCH;
 }
@@ -1815,9 +1920,7 @@ PyObject* DocumentPy::commitEditAsync(PyObject* args)
             raiseUnsupportedSubmit(
                 "prepared edit cannot be encoded as a pointer-free document command");
         }
-        return makeAcceptedCommandHandle(
-            *getDocumentPtr(),
-            getDocumentPtr()->executionHandle().trySubmit(std::move(*command)));
+        return PythonCommandAdmission(getDocumentPtr()->executionHandle()).submit(std::move(*command));
     }
     PY_CATCH;
 }
@@ -2113,47 +2216,15 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
             auto optCapture = std::move(options);
             auto cbErrCapture = callbackError;
             auto nativeCbCapture = std::move(nativeCallbackFn);
-            // Capture the raw pointer; safe because the owner thread holds a lane
-            // self-pin that keeps the Document alive for the lambda's lifetime.
+            // The lane self-pin keeps the lane alive; document lifetime must be
+            // protected separately by the close and collaboration lifecycle rules.
             Document* docPtr = &document;
 
-            std::shared_ptr<std::future<AsyncMutationPayload>> future;
-            if (auto rejected = document.collaborationService()
-                                    .rejectSerializedCompatibilityDispatch("legacy-compatibility")) {
-                // Preserve the async wait handle while rejecting on the sender,
-                // where the outer serialized callback context is still known.
-                std::promise<AsyncMutationPayload> completed;
-                future = std::make_shared<std::future<AsyncMutationPayload>>(
-                    completed.get_future());
-                AsyncMutationPayload payload;
-                payload.result = std::move(*rejected);
-                completed.set_value(std::move(payload));
-            }
-            else {
-                future = std::make_shared<std::future<AsyncMutationPayload>>(
-                    lane->postToOwner([docPtr,
-                                       mutCapture = std::move(mutCapture),
-                                       optCapture = std::move(optCapture),
-                                       cbErrCapture,
-                                       nativeCbCapture = std::move(nativeCbCapture)]()
-                                          mutable -> AsyncMutationPayload {
-                        CollaborationCompatibilityMutation mut = mutCapture;
-                        CollaborationCompatibilityMutationOptions opt = std::move(optCapture);
-                        CollaborationCompatibilityCallback cb = std::move(nativeCbCapture);
-                        AsyncMutationPayload payload;
-                        payload.result =
-                            docPtr->collaborationService().commitCompatibilityMutationWithOptions(
-                                std::move(mut), std::move(cb), std::move(opt));
-                        if (cbErrCapture->captured()
-                            && payload.result.status != DocumentCommitStatus::RollbackFailed) {
-                            // Do NOT restore the Python exception here (owner thread).
-                            // The wait() callable restores callbackError on the waiting
-                            // thread so the error is visible in the right thread's state.
-                            payload.callbackFailed = true;
-                        }
-                        return payload;
-                    }));
-            }
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityFutureAllocation))
+                throw std::bad_alloc();
+#endif
+            auto future = std::make_shared<std::future<AsyncMutationPayload>>();
 
             // Expose a blocking wait(timeout=-1.0) Python callable.
             // It releases the GIL while blocking on the owner-thread result,
@@ -2171,11 +2242,23 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                     if (!state) {
                         return nullptr;
                     }
-                    if (!state->future->valid()) {
+                    if (state->waiting.exchange(true, std::memory_order_acq_rel)) {
+                        PyErr_SetString(PyExc_RuntimeError, "wait() already in progress");
+                        return nullptr;
+                    }
+                    struct ReleaseWait {
+                        AsyncWaitState* state;
+                        ~ReleaseWait() { state->waiting.store(false, std::memory_order_release); }
+                    } releaseWait {state};
+                    if (!state->pendingResult && !state->future->valid()) {
                         PyErr_SetString(PyExc_RuntimeError,
                                         "wait() result already consumed");
                         return nullptr;
                     }
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                    if (const auto hook = compatibilityWaitHook.load(std::memory_order_acquire))
+                        hook();
+#endif
                     // A GUI-thread wait cannot service marshalled owner tasks and
                     // would deadlock if the owner blocks on the GUI thread (N3).
                     if (DocumentWouldBlock::isGuiThread()) {
@@ -2186,13 +2269,13 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                         }
                         PY_CATCH
                     }
-                    // Release the GIL while blocking on the owner-thread work.
-                    if (timeoutSecs < 0.0) {
+                    // A concurrent waiter is rejected, never blocked while holding the GIL.
+                    if (!state->pendingResult && timeoutSecs < 0.0) {
                         Py_BEGIN_ALLOW_THREADS
                         state->future->wait();
                         Py_END_ALLOW_THREADS
                     }
-                    else {
+                    else if (!state->pendingResult) {
                         std::future_status fst {};
                         Py_BEGIN_ALLOW_THREADS
                         fst = state->future->wait_for(
@@ -2211,13 +2294,13 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                             return nullptr;
                         }
                     }
-                    // GIL re-held. Retrieve the result (consumes the future;
-                    // call only once — enforced by the valid() check above).
+                    // GIL re-held. Cache the native result with a nonthrowing
+                    // move before any Python conversion can fail.
                     PY_TRY
                     {
-                        AsyncMutationPayload payload;
                         try {
-                            payload = state->future->get();
+                            if (!state->pendingResult)
+                                state->pendingResult.emplace(state->future->get());
                         }
                         catch (const PythonCompatibilityCallbackFailure&) {
                             // The callback or postcondition raised and the commit
@@ -2244,13 +2327,21 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                                             "exception");
                             return nullptr;
                         }
-                        if (payload.callbackFailed) {
+                        if (state->pendingResult->callbackFailed) {
+                            state->pendingResult.reset();
                             // Restore the saved Python exception on *this* thread
                             // (the RPC/waiter thread), not the owner thread.
                             state->callbackError->restore();
                             return nullptr;
                         }
-                        return Py::new_reference_to(commitResultToPython(payload.result));
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                        if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityResultConversion))
+                            throw std::bad_alloc();
+#endif
+                        Py::Dict converted = commitResultToPython(state->pendingResult->result);
+                        PyObject* result = Py::new_reference_to(converted);
+                        state->pendingResult.reset();
+                        return result;
                     }
                     PY_CATCH
                 },
@@ -2260,27 +2351,82 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                 "result dict (same fields as commitCompatibilityMutation).\n"
                 "Pass a positive float for a timeout in seconds; raises\n"
                 "TimeoutError on expiry. Raises the callback/postcondition\n"
-                "exception on failure. May only be called once."};
+                "exception on failure. One successful result is delivered; a\n"
+                "failed result conversion may be retried. Concurrent calls are refused."};
 
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityStateAllocation))
+                throw std::bad_alloc();
+#endif
+            auto state = std::make_unique<AsyncWaitState>(future, cbErrCapture);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityCapsuleAllocation))
+                throw std::bad_alloc();
+#endif
             auto* waitStateCapsule = PyCapsule_New(
-                new AsyncWaitState {std::move(future), cbErrCapture},
-                "App.AsyncMutationWait",
-                [](PyObject* cap) {
+                state.get(), "App.AsyncMutationWait", [](PyObject* cap) {
                     delete static_cast<AsyncWaitState*>(
                         PyCapsule_GetPointer(cap, "App.AsyncMutationWait"));
                 });
             if (!waitStateCapsule) {
                 return nullptr;
             }
-            auto* waitCallable =
-                PyCFunction_NewEx(&waitMethodDef, waitStateCapsule, nullptr);
-            Py_DECREF(waitStateCapsule);
+            state.release();
+            Py::Object capsuleOwner(waitStateCapsule, true);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityCallableAllocation))
+                throw std::bad_alloc();
+#endif
+            auto* waitCallable = PyCFunction_NewEx(&waitMethodDef, capsuleOwner.ptr(), nullptr);
             if (!waitCallable) {
                 return nullptr;
             }
+            Py::Object waitOwner(waitCallable, true);
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (Internal::consumeCompatibilityReceiptFaultForTesting(Internal::CompatibilityReceiptFault::CompatibilityDictionaryAllocation))
+                throw std::bad_alloc();
+#endif
             Py::Dict handle;
             handle["state"] = Py::String("Running");
-            handle["wait"] = Py::Object(waitCallable, true);
+            handle["wait"] = waitOwner;
+
+            // Once posted, installation is a noexcept future move and returning the
+            // already-owned Python graph only increments its reference count.
+            if (auto rejected = document.collaborationService()
+                                    .rejectSerializedCompatibilityDispatch("legacy-compatibility")) {
+                // Preserve the async wait handle while rejecting on the sender,
+                // where the outer serialized callback context is still known.
+                std::promise<AsyncMutationPayload> completed;
+                *future = completed.get_future();
+                AsyncMutationPayload payload;
+                payload.result = std::move(*rejected);
+                completed.set_value(std::move(payload));
+            }
+            else {
+                *future = lane->postToOwner([docPtr,
+                                       mutCapture = std::move(mutCapture),
+                                       optCapture = std::move(optCapture),
+                                       cbErrCapture,
+                                       nativeCbCapture = std::move(nativeCbCapture)]()
+                                          mutable -> AsyncMutationPayload {
+                        CollaborationCompatibilityMutation mut = mutCapture;
+                        CollaborationCompatibilityMutationOptions opt = std::move(optCapture);
+                        CollaborationCompatibilityCallback cb = std::move(nativeCbCapture);
+                        AsyncMutationPayload payload;
+                        payload.result =
+                            docPtr->collaborationService().commitCompatibilityMutationWithOptions(
+                                std::move(mut), std::move(cb), std::move(opt));
+                        if (cbErrCapture->captured()
+                            && payload.result.status != DocumentCommitStatus::RollbackFailed) {
+                            // Do NOT restore the Python exception here (owner thread).
+                            // The wait() callable restores callbackError on the waiting
+                            // thread so the error is visible in the right thread's state.
+                            payload.callbackFailed = true;
+                        }
+                        return payload;
+                    });
+            }
+
             return Py::new_reference_to(handle);
         }
 
@@ -2422,14 +2568,9 @@ PyObject* DocumentPy::closeAsync(PyObject* args)
         if (!getDocumentPtr()->executionLane()) {
             DocumentWouldBlock::throwIfGuiThread("FreeCAD.closeDocument()", "Document.closeAsync()");
         }
-        if (DocumentWouldBlock::isGuiThread()) {
-            // Completed recovery IO can still retain its GUI lifecycle pin
-            // until the executor polls completion. Cancel before Close is
-            // admitted, just as synchronous Python close does. Running IO
-            // retains its own pin and keeps admission Busy until it retires.
-            GetApplication().signalBeforeCloseDocumentAdmission(*getDocumentPtr());
-        }
-        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close);
+        // The existing GUI recovery notification still precedes admission.
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close,
+                                   DocumentWouldBlock::isGuiThread());
     }
     PY_CATCH;
 }
@@ -2593,8 +2734,11 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
             return submitRecomputeCommand(
                 *getDocumentPtr(), objs, Base::asBoolean(force), options);
         }
+        Py::Object wrapper(makeRecomputeHandlePyForAdmission(*getDocumentPtr()), true);
         auto handle = getDocumentPtr()->recomputeAsync(objs, Base::asBoolean(force), options);
-        return new RecomputeHandlePy(handle.release());
+        static_cast<RecomputeHandlePy*>(wrapper.ptr())->getRecomputeHandlePtr()
+            ->bindAdmissionId(handle->id());
+        return Py::new_reference_to(wrapper);
     }
     PY_CATCH;
 }

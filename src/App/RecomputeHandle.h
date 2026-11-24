@@ -39,6 +39,8 @@ public:
     RecomputeHandle(RecomputeHandle&&) = delete;
     RecomputeHandle& operator=(RecomputeHandle&&) = delete;
 
+    // Bind preallocated storage only after admission succeeds.
+    void bindAdmissionId(DocumentRecomputeId id) noexcept { _id = id; }
     [[nodiscard]] DocumentRecomputeId id() const noexcept;
     [[nodiscard]] DocumentRecomputeSnapshot status();
     [[nodiscard]] bool poll();

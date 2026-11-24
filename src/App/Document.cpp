@@ -7620,11 +7620,14 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         throw Base::RuntimeError("document recompute is blocked during native spreadsheet cache refresh");
     }
 
-    const auto submitEmpty = [this] {
+    // Allocate the result before callbacks or coordinator admission can have effects.
+    auto result = std::make_unique<RecomputeHandle>(*this, 0);
+    const auto submitEmpty = [this, &result] {
         DocumentRecomputeRequest request;
         request.coalescingKey = "empty-document-recompute";
         const auto id = recomputeCoordinator().submit(std::move(request));
-        return std::make_unique<RecomputeHandle>(*this, id);
+        result->bindAdmissionId(id);
+        return std::move(result);
     };
 
     if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
@@ -7734,7 +7737,8 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
-    return std::make_unique<RecomputeHandle>(*this, id);
+    result->bindAdmissionId(id);
+    return result;
 }
 
 void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot)

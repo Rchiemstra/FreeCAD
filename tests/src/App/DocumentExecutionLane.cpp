@@ -9,6 +9,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
+#include <App/DocumentPythonCommand.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
@@ -24,6 +25,7 @@
 #include <condition_variable>
 #include <algorithm>
 #include <deque>
+#include <future>
 #include <optional>
 #include <map>
 #include <memory>
@@ -1945,3 +1947,398 @@ TEST_F(DocumentExecutionLaneTest, PumpSnapshotCaptureAndCancelOverlapPreservesLo
 }
 
 }  // namespace
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST_F(DocumentExecutionLaneTest, RecomputeAdmissionReturnsUsableLegacyHandles)
+{
+    struct Reset {
+        ~Reset() { App::Internal::setCompatibilityReceiptFaultForTesting(
+            App::Internal::CompatibilityReceiptFault::None); }
+    } reset;
+    ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt3Feature"), nullptr);
+    const std::string setup = std::string("import FreeCAD as App\ndoc = App.getDocument(\"")
+        + _docName + "\")\nfeature = doc.getObject('Receipt3Feature')\n"
+        "assert not doc.RecomputesFrozen\nbefore_count = feature.ExecCount\nfeature.touch()\n";
+    ASSERT_NO_THROW(Base::Interpreter().runString(setup.c_str()));
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    for (const auto fault : {App::Internal::CompatibilityReceiptFault::RecomputeHandleAllocation,
+                             App::Internal::CompatibilityReceiptFault::RecomputePythonWrapperAllocation,
+                             App::Internal::CompatibilityReceiptFault::RecomputeCommandHandleAllocation}) {
+        App::Internal::setCompatibilityReceiptFaultForTesting(fault);
+        ASSERT_NO_THROW(Base::Interpreter().runString(
+            "try:\n    doc.recomputeAsync()\nexcept Exception:\n    pass\n"
+            "else:\n    raise AssertionError('allocation fault was not raised')\n"));
+        EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(fault));
+        EXPECT_TRUE(lane->isIdle());
+        ASSERT_NO_THROW(Base::Interpreter().runString("assert 'Touched' in feature.State\n"));
+    }
+
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "h = doc.recomputeAsync()\nassert isinstance(h, App.RecomputeHandle)\n"
+        "assert h.id() != 0\n"));
+    const auto idleDeadline = std::chrono::steady_clock::now() + 30s;
+    while (!lane->isIdle() && std::chrono::steady_clock::now() < idleDeadline) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(lane->isIdle());
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "result = h.wait(30.0)\nassert result['terminal'] and result['state'] == 'completed'\n"
+        "assert result['id'] == h.id()\nassert 'Touched' not in feature.State\n"
+        "assert feature.ExecCount == before_count + 1\n"));
+
+    // Force the same fallback that an unavailable status produces, then verify
+    // that the returned public command handle observes the completed work.
+    ASSERT_NO_THROW(Base::Interpreter().runString("feature.touch()\n"));
+    App::Internal::setCompatibilityReceiptFaultForTesting(
+        App::Internal::CompatibilityReceiptFault::RecomputeReturnFallback);
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "fallback = doc.recomputeAsync()\n"
+        "assert type(fallback).__name__ == 'DocumentCommandHandle'\n"
+        "fallback_id = fallback.id()\nassert fallback_id != 0\n"));
+    unsigned long long id = 0;
+    {
+        Base::PyGILStateLocker gil;
+        auto* module = PyImport_AddModule("__main__");
+        ASSERT_NE(module, nullptr);
+        auto* value = PyDict_GetItemString(PyModule_GetDict(module), "fallback_id");
+        ASSERT_NE(value, nullptr);
+        id = PyLong_AsUnsignedLongLong(value);
+        ASSERT_FALSE(PyErr_Occurred());
+    }
+    App::DocumentCommandHandle command(id, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(command, 30s));
+    ASSERT_EQ(command.status().state, App::DocumentCommandState::Completed);
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert fallback.done() and fallback.status()['state'] == 'Completed'\n"
+        "assert 'Touched' not in feature.State\n"
+        "assert feature.ExecCount == before_count + 2\n"));
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeBusyDoesNotStartPublicRequest)
+{
+    auto* blocker = doc()->addObject<App::FeatureTestAsyncBlocker>("Receipt3Blocker");
+    ASSERT_NE(blocker, nullptr);
+    ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt3Busy"), nullptr);
+    const std::string setup = std::string("import FreeCAD as App\ndoc = App.getDocument(\"")
+        + _docName + "\")\nfeature = doc.getObject('Receipt3Busy')\n"
+        "assert not doc.RecomputesFrozen\nbefore_count = feature.ExecCount\n"
+        "assert not feature.OutList\n"
+        "feature.touch()\nassert 'Touched' in feature.State\n";
+    ASSERT_NO_THROW(Base::Interpreter().runString(setup.c_str()));
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    struct ReleaseBlocker {
+        ~ReleaseBlocker() { App::FeatureTestAsyncBlocker::releaseBlocker(); }
+    } release;
+    blocker->touch();
+    auto command = makeRecomputeCommand("receipt3-real-blocker");
+    command.recompute->featureIds.emplace_back("Receipt3Blocker");
+    const auto first = doc()->executionHandle().trySubmit(std::move(command));
+    ASSERT_TRUE(first.accepted());
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+
+    auto attempt = std::async(std::launch::async, [] {
+        return Base::Interpreter().runString(
+            "try:\n    doc.recomputeAsync()\nexcept Exception as e:\n"
+            "    assert 'busy' in str(e).lower()\n"
+            "else:\n    raise AssertionError('expected Busy')\n");
+    });
+    const auto readyWhileBlocked = attempt.wait_for(5s) == std::future_status::ready;
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    EXPECT_TRUE(readyWhileBlocked);
+    EXPECT_NO_THROW(attempt.get());
+    App::DocumentCommandHandle handle(first.commandId, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(handle, 30s));
+    ASSERT_EQ(handle.status().state, App::DocumentCommandState::Completed);
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert 'Touched' in feature.State\nassert feature.ExecCount == before_count\n"));
+}
+
+#endif
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST_F(DocumentExecutionLaneTest, CommandWrapperFaultPreservesUndoRedoAndSaveEffects)
+{
+    struct Reset {
+        ~Reset() {
+            App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::None);
+            try { Base::Interpreter().runString("receipt2_temp.cleanup()\n"); } catch (...) {}
+        }
+    } reset;
+    ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt2History"), nullptr);
+    const std::string setup = std::string(R"PY(
+import FreeCAD as App
+import pathlib, tempfile
+receipt2_temp = tempfile.TemporaryDirectory(prefix="freecad-receipt2-")
+missing = pathlib.Path(receipt2_temp.name) / "missing.FCStd"
+existing = pathlib.Path(receipt2_temp.name) / "existing.FCStd"
+original_bytes = b"unchanged receipt test\n"
+existing.write_bytes(original_bytes)
+doc = App.getDocument(")PY") + _docName + R"PY(")
+feature = doc.getObject("Receipt2History")
+original_label = feature.Label
+doc.openTransaction("receipt2 history")
+feature.Label = "receipt2 changed"
+doc.commitTransaction()
+assert doc.UndoCount > 0
+)PY";
+    ASSERT_NO_THROW(Base::Interpreter().runString(setup.c_str()));
+    const auto fault = [&](const char* call) {
+        App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::CommandHandleAllocation);
+        const std::string script = std::string("try:\n    ") + call
+            + "\nexcept Exception:\n    pass\nelse:\n    raise AssertionError('wrapper allocation fault was not raised')\n";
+        ASSERT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+        EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(
+            App::Internal::CompatibilityReceiptFault::CommandHandleAllocation));
+        auto* lane = doc()->executionLane();
+        const auto deadline = std::chrono::steady_clock::now() + 30s;
+        while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        ASSERT_TRUE(lane->isIdle());
+        auto fence = lane->postToOwner([] { return 1; });
+        EXPECT_EQ(fence.get(), 1);
+    };
+    ASSERT_NO_THROW(Base::Interpreter().runString("undo_before, redo_before = doc.UndoCount, doc.RedoCount\n"));
+    ASSERT_NO_FATAL_FAILURE(fault("doc.undoAsync()"));
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert feature.Label == 'receipt2 changed'\n"
+        "assert (doc.UndoCount, doc.RedoCount) == (undo_before, redo_before)\n"));
+
+    ASSERT_NO_THROW(Base::Interpreter().runString("undo_handle = doc.undoAsync()\nundo_id = undo_handle.id()\n"));
+    unsigned long long id = 0;
+    {
+        Base::PyGILStateLocker gil;
+        PyObject* module = PyImport_AddModule("__main__");
+        ASSERT_NE(module, nullptr);
+        PyObject* value = PyDict_GetItemString(PyModule_GetDict(module), "undo_id");
+        ASSERT_NE(value, nullptr);
+        id = PyLong_AsUnsignedLongLong(value);
+        ASSERT_FALSE(PyErr_Occurred());
+    }
+    App::DocumentCommandHandle undo(id, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(undo, 30s));
+    ASSERT_EQ(undo.status().state, App::DocumentCommandState::Completed);
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert feature.Label == original_label and doc.RedoCount > 0\n"
+        "undo_before, redo_before = doc.UndoCount, doc.RedoCount\n"));
+    ASSERT_NO_FATAL_FAILURE(fault("doc.redoAsync()"));
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert feature.Label == original_label\n"
+        "assert (doc.UndoCount, doc.RedoCount) == (undo_before, redo_before)\n"));
+    ASSERT_NO_FATAL_FAILURE(fault("doc.saveAsync(str(missing))"));
+    ASSERT_NO_THROW(Base::Interpreter().runString("assert not missing.exists()\n"));
+    ASSERT_NO_FATAL_FAILURE(fault("doc.saveAsync(str(existing), True)"));
+    ASSERT_NO_THROW(Base::Interpreter().runString("assert existing.read_bytes() == original_bytes\n"));
+
+    // Exercise the same public APIs without a fault and inspect their real effects.
+    auto waitPythonCommand = [&](const char* expression) {
+        const std::string start = std::string("receipt2_handle = ") + expression
+            + "\nreceipt2_id = receipt2_handle.id()\n";
+        EXPECT_NO_THROW(Base::Interpreter().runString(start.c_str()));
+        unsigned long long commandId = 0;
+        {
+            Base::PyGILStateLocker gil;
+            PyObject* module = PyImport_AddModule("__main__");
+            if (!module) { ADD_FAILURE() << "missing Python main module"; return; }
+            PyObject* value = PyDict_GetItemString(PyModule_GetDict(module), "receipt2_id");
+            if (!value) { ADD_FAILURE() << "missing command id"; return; }
+            commandId = PyLong_AsUnsignedLongLong(value);
+            if (PyErr_Occurred()) { PyErr_Clear(); ADD_FAILURE() << "invalid command id"; return; }
+        }
+        App::DocumentCommandHandle handle(commandId, doc()->executionHandle().identity());
+        ASSERT_TRUE(waitForTerminal(handle, 30s));
+        EXPECT_EQ(handle.status().state, App::DocumentCommandState::Completed);
+    };
+    ASSERT_NO_FATAL_FAILURE(waitPythonCommand("doc.redoAsync()"));
+    ASSERT_NO_THROW(Base::Interpreter().runString("assert feature.Label == 'receipt2 changed'\n"));
+    ASSERT_NO_FATAL_FAILURE(waitPythonCommand("doc.saveAsync(str(missing))"));
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "import zipfile\n"
+        "assert missing.is_file() and zipfile.is_zipfile(missing)\n"
+        "with zipfile.ZipFile(missing) as saved:\n"
+        "    assert b'receipt2 changed' in saved.read('Document.xml')\n"));
+}
+
+TEST_F(DocumentExecutionLaneTest, CompatibilityWaitGraphAllocationFailuresArePreEffect)
+{
+    struct ResetFault {
+        ~ResetFault() { App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::None); }
+    } reset;
+    const auto faults = {App::Internal::CompatibilityReceiptFault::CompatibilityFutureAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityStateAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityCapsuleAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityCallableAllocation,
+                         App::Internal::CompatibilityReceiptFault::CompatibilityDictionaryAllocation};
+    for (const auto fault : faults) {
+        App::Internal::setCompatibilityReceiptFaultForTesting(fault);
+        const std::string script = std::string(R"PY(
+import FreeCAD as App
+doc = App.getDocument(")PY") + _docName + R"PY(")
+def callback():
+    doc.addObject("App::FeatureTest", "GraphFailureEffect")
+try:
+    doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+except Exception:
+    pass
+else:
+    raise AssertionError("wait graph allocation fault did not fail")
+)PY";
+        EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+        EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(fault));
+        auto fence = doc()->executionLane()->postToOwner([] { return 1; });
+        EXPECT_EQ(fence.get(), 1);
+        EXPECT_EQ(doc()->getObject("GraphFailureEffect"), nullptr);
+    }
+}
+
+
+namespace {
+std::atomic<std::promise<void>*> compatibilityEnteredPromise {nullptr};
+void notifyCompatibilityWaitEntered() noexcept
+{
+    if (auto* promise = compatibilityEnteredPromise.exchange(nullptr)) {
+        try { promise->set_value(); } catch (...) {}
+    }
+}
+}
+
+TEST_F(DocumentExecutionLaneTest, ConcurrentCompatibilityWaitIsRefusedWithoutBlockingOwner)
+{
+    std::promise<void> enteredPromise;
+    auto entered = enteredPromise.get_future();
+    compatibilityEnteredPromise.store(&enteredPromise);
+    App::Internal::setCompatibilityWaitHookForTesting(&notifyCompatibilityWaitEntered);
+    struct Cleanup {
+        ~Cleanup() {
+            App::Internal::setCompatibilityWaitHookForTesting(nullptr);
+            compatibilityEnteredPromise.store(nullptr);
+            try { Base::Interpreter().runString(
+                "gate.set()\nwaiter.join(10.0)\n"); } catch (...) {}
+        }
+    } cleanup;
+    const std::string start = std::string(R"PY(
+import FreeCAD as App
+import threading
+doc = App.getDocument(")PY") + _docName + R"PY(")
+gate = threading.Event()
+def callback():
+    gate.wait(10.0)
+    doc.addObject("App::FeatureTest", "ConcurrentWaitEffect")
+handle = doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+results = []
+def first_wait():
+    try:
+        results.append(handle["wait"](10.0))
+    except Exception as exc:
+        results.append(exc)
+waiter = threading.Thread(target=first_wait)
+waiter.start()
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(start.c_str()));
+    ASSERT_EQ(entered.wait_for(5s), std::future_status::ready);
+    const char* finish = R"PY(
+try:
+    try:
+        handle["wait"](1.0)
+    except RuntimeError as exc:
+        assert "in progress" in str(exc)
+    else:
+        raise AssertionError("concurrent wait was accepted")
+finally:
+    gate.set()
+    waiter.join(10.0)
+assert not waiter.is_alive()
+assert len(results) == 1 and isinstance(results[0], dict) and results[0]["committed"]
+assert doc.getObject("ConcurrentWaitEffect") is not None
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(finish));
+}
+
+TEST_F(DocumentExecutionLaneTest, CompatibilityResultConversionFailureRetainsCompletedResult)
+{
+    struct ResetFault {
+        ~ResetFault() { App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::None); }
+    } reset;
+    App::Internal::setCompatibilityReceiptFaultForTesting(App::Internal::CompatibilityReceiptFault::CompatibilityResultConversion);
+    const std::string script = std::string(R"PY(
+import FreeCAD as App
+doc = App.getDocument(")PY") + _docName + R"PY(")
+calls = []
+def callback():
+    calls.append(1)
+    doc.addObject("App::FeatureTest", "RetainedResultEffect")
+handle = doc.commitCompatibilityMutationAsync(callback, structural=True, recompute=False)
+try:
+    handle["wait"](10.0)
+except Exception:
+    pass
+else:
+    raise AssertionError("result conversion fault did not fail")
+result = handle["wait"](10.0)
+assert result["status"] == "Committed" and result["committed"]
+assert result["conflicts"] == [] and isinstance(result["published_revisions"], list)
+assert calls == [1] and doc.getObject("RetainedResultEffect") is not None
+try:
+    handle["wait"](10.0)
+except RuntimeError as exc:
+    assert "consumed" in str(exc)
+else:
+    raise AssertionError("result delivered twice")
+)PY";
+    EXPECT_NO_THROW(Base::Interpreter().runString(script.c_str()));
+    EXPECT_FALSE(App::Internal::consumeCompatibilityReceiptFaultForTesting(
+        App::Internal::CompatibilityReceiptFault::CompatibilityResultConversion));
+}
+#endif
+
+TEST_F(DocumentExecutionLaneTest, SaveAsyncWritesEncodedFilename)
+{
+    struct Cleanup {
+        ~Cleanup() {
+            try { Base::Interpreter().runString("receipt_temp_dir.cleanup()\n"); } catch (...) {}
+        }
+    } cleanup;
+    const std::string start = std::string(R"PY(
+import FreeCAD as App
+import os
+import pathlib
+import tempfile
+import zipfile
+receipt_temp_dir = tempfile.TemporaryDirectory(prefix="freecad-receipt-")
+receipt_path = pathlib.Path(receipt_temp_dir.name) / "caf\u00e9.FCStd"
+# saveAsync consumes UTF-8 independently of Python's locale filesystem codec.
+# Use that exact byte name for filesystem checks even when the codec is ASCII.
+receipt_bytes = os.path.join(os.fsencode(receipt_temp_dir.name), "caf\u00e9.FCStd".encode("utf-8"))
+assert not os.path.exists(receipt_bytes)
+receipt_doc = App.getDocument(")PY") + _docName + R"PY(")
+receipt_doc.addObject("App::FeatureTest", "EncodedSaveMarker")
+receipt_handle = receipt_doc.saveAsync(str(receipt_path))
+receipt_id = receipt_handle.id()
+)PY";
+    ASSERT_NO_THROW(Base::Interpreter().runString(start.c_str()));
+    unsigned long long id = 0;
+    {
+        Base::PyGILStateLocker gil;
+        PyObject* mainModule = PyImport_AddModule("__main__");
+        ASSERT_NE(mainModule, nullptr);
+        PyObject* idObject = PyDict_GetItemString(PyModule_GetDict(mainModule), "receipt_id");
+        ASSERT_NE(idObject, nullptr);
+        id = PyLong_AsUnsignedLongLong(idObject);
+        ASSERT_FALSE(PyErr_Occurred());
+    }
+    App::DocumentCommandHandle handle(id, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(handle, 30s));
+    EXPECT_EQ(handle.status().state, App::DocumentCommandState::Completed);
+    EXPECT_NO_THROW(Base::Interpreter().runString(R"PY(
+assert receipt_handle.id() == receipt_id
+assert receipt_handle.done() and receipt_handle.status()['state'] == 'Completed'
+assert receipt_doc.FileName == str(receipt_path)
+assert os.path.isfile(receipt_bytes) and os.stat(receipt_bytes).st_size > 0
+with open(receipt_bytes, 'rb') as receipt_file:
+    with zipfile.ZipFile(receipt_file) as archive:
+        assert archive.testzip() is None
+        assert b'EncodedSaveMarker' in archive.read('Document.xml')
+)PY"));
+}

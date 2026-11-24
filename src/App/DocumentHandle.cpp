@@ -65,7 +65,7 @@ const char* documentCommandStateName(const DocumentCommandState state) noexcept
 }
 
 DocumentCommandHandle::DocumentCommandHandle(DocumentCommandId id,
-                                             DocumentRevisionIdentityBinding document)
+                                             DocumentRevisionIdentityBinding document) noexcept
     : _id(id)
     , _document(document)
 {}
@@ -109,6 +109,18 @@ DocumentCommandSnapshot DocumentCommandHandle::status() const
     snapshot.state = DocumentCommandState::Failed;
     snapshot.diagnostic = "document execution lane is not active";
     return snapshot;
+}
+
+DocumentCommandRecomputeId DocumentCommandHandle::recomputeIdForReturn() const noexcept
+{
+    try {
+        if (!valid()) { return 0; }
+        if (const auto lane = DocumentExecutionLane::find(_document.documentInstanceId)) {
+            return lane->recomputeIdForReturn(_id);
+        }
+        return findTerminalRecomputeIdForReturn(_document.documentInstanceId, _id);
+    }
+    catch (...) { return 0; }
 }
 
 bool DocumentCommandHandle::cancel(std::string reason)

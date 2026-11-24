@@ -190,5 +190,14 @@ int DocumentCommandHandlePy::setCustomAttributes(const char* /*attr*/, PyObject*
 PyObject* App::makeDocumentCommandHandlePy(const DocumentCommandHandle& handle)
 {
     ensureDocumentCommandHandleTypeRegistered();
-    return new DocumentCommandHandlePy(new DocumentCommandHandle(handle));
+    auto value = std::make_unique<DocumentCommandHandle>(handle);
+    auto* wrapper = new DocumentCommandHandlePy(value.get());
+    value.release();
+    return wrapper;
+}
+
+void App::setDocumentCommandHandlePy(PyObject* wrapper, DocumentCommandHandle handle) noexcept
+{
+    auto* pyHandle = static_cast<DocumentCommandHandlePy*>(wrapper);
+    *pyHandle->getDocumentCommandHandlePtr() = std::move(handle);
 }
