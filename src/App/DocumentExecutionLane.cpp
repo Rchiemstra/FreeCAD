@@ -383,8 +383,8 @@ void DocumentExecutionLane::endRecoverySnapshotOwnerWork() noexcept
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 {
     std::lock_guard lock(_mutex);
-    // Preserve already admitted dispatches before closing the document.
-    if (!_dispatchQueue.empty()) {
+    // A reentrant owner dispatch must not discard later admitted dispatches.
+    if (isOwnerThread() && _activeDispatchCount > 0 && !_dispatchQueue.empty()) {
         return false;
     }
     if (_active) {
@@ -410,8 +410,8 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 bool DocumentExecutionLane::tryBeginApplicationClose() noexcept
 {
     std::lock_guard lock(_mutex);
-    // Preserve already admitted dispatches before closing the document.
-    if (!_dispatchQueue.empty()) {
+    // A reentrant owner dispatch must not discard later admitted dispatches.
+    if (isOwnerThread() && _activeDispatchCount > 0 && !_dispatchQueue.empty()) {
         return false;
     }
     if (_active) {
