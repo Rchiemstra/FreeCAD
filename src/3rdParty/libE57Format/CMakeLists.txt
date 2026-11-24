@@ -213,7 +213,9 @@ install(
 
 # ccache
 # Turns on ccache if found
-include( ccache )
+if ( NOT E57_USE_FREECAD_COMPILER_LAUNCHERS )
+    include( ccache )
+endif()
 
 # Formatting
 include( ClangFormat )

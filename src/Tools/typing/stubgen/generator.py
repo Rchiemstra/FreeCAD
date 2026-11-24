@@ -25,6 +25,7 @@ import shutil
 
 from .class_merge import (
     append_class_stubs,
+    public_import_target_index,
     validate_public_class_aliases,
 )
 from .cpp_properties import (
@@ -319,7 +320,9 @@ def write_outputs(
     overlay_count = (
         copy_overlay_stubs(overlay_dir, out_dir / "stubs", module_names) if overlay_dir else 0
     )
-    copy_module_support_stubs(root, source_dir, out_dir / "stubs", module_names)
+    copy_module_support_stubs(
+        root, source_dir, out_dir / "stubs", module_names, public_import_target_index(classes)
+    )
     append_property_aliases(out_dir / "stubs", module_names, property_catalog)
     append_type_stubs(
         out_dir / "stubs",

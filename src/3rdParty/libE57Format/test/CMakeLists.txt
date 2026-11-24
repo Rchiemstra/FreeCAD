@@ -53,7 +53,7 @@ target_link_libraries( testE57
 
 # ccache
 # Turns on ccache if found
-if ( CCACHE_PROGRAM )
+if ( NOT E57_USE_FREECAD_COMPILER_LAUNCHERS AND CCACHE_PROGRAM )
     message( STATUS "[${PROJECT_NAME}] Using ccache: ${CCACHE_PROGRAM}" )
 
     set_target_properties( ${PROJECT_NAME}
