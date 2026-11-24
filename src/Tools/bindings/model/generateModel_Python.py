@@ -139,6 +139,12 @@ class FunctionSignature:
         self.docstring = ast.get_docstring(func) or ""
 
         args = func.args
+        self.generic_kwargs = (
+            not args.posonlyargs and len(args.args) == 1
+            and args.args[0].arg in ("self", "cls")
+            and not args.kwonlyargs and args.vararg is None
+            and args.kwarg is not None and args.kwarg.annotation is None
+        )
         self.update_flags(func)
 
         self.args.extend(
@@ -305,7 +311,16 @@ class Function:
     @property
     def annotated_signatures(self) -> list[FunctionSignature]:
         overloads = [sig for sig in self.public_signatures if sig.is_overload]
-        return overloads or self.doc_signatures
+        if overloads:
+            return overloads
+        # A typing-only overload can describe the public call while the
+        # **kwargs declaration remains responsible for the binding itself.
+        public = self.public_signatures
+        typing_overloads = [sig for sig in self.signatures if sig.typing_only_flag and sig.is_overload]
+        if (len(public) == 1 and not public[0].is_overload
+                and public[0].generic_kwargs and len(typing_overloads) == 1):
+            return typing_overloads
+        return self.doc_signatures
 
     @property
     def static_flag(self) -> bool:

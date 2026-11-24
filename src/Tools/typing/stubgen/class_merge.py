@@ -109,7 +109,22 @@ def normalize_class_overloads(body: list[ast.stmt]) -> list[ast.stmt]:
                 continue
             if len(group) == 1:
                 variant = group[0]
-                if (ast.dump(variant.args, include_attributes=False) != ast.dump(implementation.args, include_attributes=False)
+                # An unannotated **kwargs-only binding declaration describes the
+                # implementation mechanism, not an additional public call form.
+                args = implementation.args
+                generic_kwargs = (not args.posonlyargs and len(args.args) == 1
+                    and not args.kwonlyargs and args.vararg is None
+                    and args.kwarg is not None and args.kwarg.annotation is None)
+                if (generic_kwargs and getattr(variant, "_typing_only_signature", False)
+                    and (ast.dump(variant.returns, include_attributes=False) if variant.returns else None)
+                    == (ast.dump(implementation.returns, include_attributes=False) if implementation.returns else None)
+                    and args.args[0].annotation is None):
+                    variant.decorator_list = [d for d in variant.decorator_list
+                        if decorator_name(d) not in {"overload", "typing.overload", "typing_extensions.overload"}]
+                    if ast.get_docstring(implementation, clean=False) and not ast.get_docstring(variant, clean=False):
+                        variant.body.insert(0, copy.deepcopy(implementation.body[0]))
+                    result.append(variant)
+                elif (ast.dump(variant.args, include_attributes=False) != ast.dump(implementation.args, include_attributes=False)
                     or ast.dump(variant.returns, include_attributes=False) != ast.dump(implementation.returns, include_attributes=False)):
                     result.extend(group)
                     result.append(implementation)
@@ -389,6 +404,7 @@ class PublicClassStubTransformer(ast.NodeTransformer):
         return node
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        node._typing_only_signature = any(decorator_name(d) == "typing_only" for d in node.decorator_list)
         node.decorator_list = self.public_decorators(node.decorator_list)
         node.args = self.visit(node.args)
         node.returns = self.rewrite_annotation(node.returns)

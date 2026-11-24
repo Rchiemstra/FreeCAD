@@ -225,17 +225,6 @@ class GeometrySurface(Geometry):
         """
         ...
 
-    @overload
-    def toBSpline(
-        self,
-        Tol3d: float = 1e-7,
-        UContinuity: Literal["C0", "G0", "G1", "C1", "G2", "C3", "CN"] = "C1",
-        VContinuity: Literal["C0", "G0", "G1", "C1", "G2", "C3", "CN"] = "C1",
-        MaxDegreeU: int = 25,
-        MaxDegreeV: int = 25,
-        MaxSegments: int = 1000,
-        PrecisCode: int = 0,
-    ) -> Any: ...
     @constmethod
     def toBSpline(
         self,

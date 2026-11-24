@@ -1,0 +1,30 @@
+from typing import cast
+import Part
+from FreeCAD import Vector
+curve = cast(Part.BSplineCurve, None)
+poles: list[Vector] = [Vector(), Vector()]
+curve.interpolate(poles, True, 1e-6, Vector(), Vector(), poles, [True, False], [0.0, 1.0], 'bad')
+curve.interpolate(Points=poles, PeriodicFlag=True, Tolerance=1e-6, InitialTangent=Vector(), FinalTangent=Vector(), Tangents=poles, TangentFlags=[True, False], Parameters=[0.0, 1.0], Scale='bad')
+curve.interpolate(Points='bad')
+curve.interpolate(poles, unknown=True)
+curve.buildFromPolesMultsKnots(poles, [2, 2], [0.0, 1.0], False, 'bad', [1.0, 1.0], True)
+curve.buildFromPolesMultsKnots(poles=poles, mults=[2, 2], knots=[0.0, 1.0], periodic=False, degree='bad', weights=[1.0, 1.0], CheckRational=True)
+curve.buildFromPolesMultsKnots(poles=poles, unknown=True)
+cast(Part.GeometrySurface, None).toBSpline(UContinuity=42)
+Part.ArcOfEllipse('invalid', 0.0, 1.0)
+Part.SurfaceOfRevolution(Vector(), curve, Vector())
+
+curve.interpolate(None)
+curve.interpolate(poles, InitialTangent=(1, 0, 0))
+curve.interpolate(poles, FinalTangent=[1, 0, 0])
+curve.interpolate(poles, Parameters=None)
+curve.interpolate(poles, Tangents=None, TangentFlags=[True, True])
+curve.interpolate(poles, Tangents=poles, TangentFlags=None)
+curve.interpolate([Vector(), 'bad'])
+curve.interpolate(poles, Tangents=[Vector(), 'bad'], TangentFlags=[True, True])
+curve.interpolate(poles, Parameters=[0, 'bad'])
+curve.buildFromPolesMultsKnots(None)
+curve.buildFromPolesMultsKnots([Vector(), 'bad'])
+curve.buildFromPolesMultsKnots(poles, mults=[2, 'bad'])
+curve.buildFromPolesMultsKnots(poles, knots=[0, 'bad'])
+curve.buildFromPolesMultsKnots(poles, weights=[1, 'bad'])

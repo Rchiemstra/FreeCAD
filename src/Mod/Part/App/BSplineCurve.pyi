@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export, constmethod
+from Base.Metadata import export, constmethod, typing_only
 from Base.Vector import Vector
 from BoundedCurve import BoundedCurve
 from Part.App.Arc import Arc
 from Part.App.BezierCurve import BezierCurve
-from typing import Final, List, overload, Any
+from typing import Final, List, Sequence, overload, Any
 
 @export(
     PythonName="Part.BSplineCurve",
@@ -24,6 +24,21 @@ class BSplineCurve(BoundedCurve):
     Author: Werner Mayer (wmayer@users.sourceforge.net)
     Licence: LGPL
     """
+
+    @overload
+    def __init__(self, **kwargs: Any) -> None: ...
+    @overload
+    def __init__(
+        self,
+        poles: Sequence[Vector | Sequence[float]],
+        /,
+        mults: Sequence[int] | None = None,
+        knots: Sequence[float] | None = None,
+        periodic: bool = False,
+        degree: int = 3,
+        weights: Sequence[float] | None = None,
+        CheckRational: bool = True,
+    ) -> None: ...
 
     Degree: Final[int] = 0
     """Returns the polynomial degree of this B-Spline curve."""
@@ -409,17 +424,18 @@ class BSplineCurve(BoundedCurve):
         """
         ...
 
+    @typing_only
     @overload
     def interpolate(
         self,
-        Points: List[Vector],
+        Points: Sequence[Vector | Sequence[float]],
         PeriodicFlag: bool = False,
         Tolerance: float = 1e-6,
-        InitialTangent: Vector = None,
-        FinalTangent: Vector = None,
-        Tangents: List[Vector] = None,
-        TangentFlags: List[bool] = None,
-        Parameters: List[float] = None,
+        InitialTangent: Vector = ...,
+        FinalTangent: Vector = ...,
+        Tangents: Sequence[Vector | Sequence[float]] = ...,
+        TangentFlags: Sequence[object] = ...,
+        Parameters: Sequence[float] = ...,
         Scale: bool = True,
     ) -> None: ...
     def interpolate(self, **kwargs) -> None:
@@ -488,16 +504,17 @@ class BSplineCurve(BoundedCurve):
         """
         ...
 
+    @typing_only
     @overload
     def buildFromPolesMultsKnots(
         self,
-        poles: List[Vector],
-        mults: List[int] = None,
-        knots: List[float] = None,
+        poles: Sequence[Vector | Sequence[float]],
+        mults: Sequence[int] | None = None,
+        knots: Sequence[float] | None = None,
         periodic: bool = False,
         degree: int = 3,
-        weights: List[float] = None,
-        CheckRational: bool = False,
+        weights: Sequence[float] | None = None,
+        CheckRational: bool = True,
     ) -> None: ...
     def buildFromPolesMultsKnots(self, **kwargs) -> None:
         """
