@@ -25,6 +25,7 @@
 #include <condition_variable>
 #include <algorithm>
 #include <deque>
+#include <future>
 #include <optional>
 #include <map>
 #include <memory>
@@ -1474,7 +1475,8 @@ TEST_F(DocumentExecutionLaneTest, RecomputeAdmissionReturnsUsableLegacyHandles)
     } reset;
     ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt3Feature"), nullptr);
     const std::string setup = std::string("import FreeCAD as App\ndoc = App.getDocument(\"")
-        + _docName + "\")\nfeature = doc.getObject('Receipt3Feature')\nfeature.touch()\n";
+        + _docName + "\")\nfeature = doc.getObject('Receipt3Feature')\n"
+        "assert not doc.RecomputesFrozen\nbefore_count = feature.ExecCount\nfeature.touch()\n";
     ASSERT_NO_THROW(Base::Interpreter().runString(setup.c_str()));
     auto* lane = doc()->executionLane();
     ASSERT_NE(lane, nullptr);
@@ -1500,7 +1502,8 @@ TEST_F(DocumentExecutionLaneTest, RecomputeAdmissionReturnsUsableLegacyHandles)
     ASSERT_TRUE(lane->isIdle());
     ASSERT_NO_THROW(Base::Interpreter().runString(
         "result = h.wait(30.0)\nassert result['terminal'] and result['state'] == 'completed'\n"
-        "assert result['id'] == h.id()\nassert 'Touched' not in feature.State\n"));
+        "assert result['id'] == h.id()\nassert 'Touched' not in feature.State\n"
+        "assert feature.ExecCount == before_count + 1\n"));
 
     // Force the same fallback that an unavailable status produces, then verify
     // that the returned public command handle observes the completed work.
@@ -1509,7 +1512,7 @@ TEST_F(DocumentExecutionLaneTest, RecomputeAdmissionReturnsUsableLegacyHandles)
         App::Internal::CompatibilityReceiptFault::RecomputeReturnFallback);
     ASSERT_NO_THROW(Base::Interpreter().runString(
         "fallback = doc.recomputeAsync()\n"
-        "assert isinstance(fallback, App.DocumentCommandHandle)\n"
+        "assert type(fallback).__name__ == 'DocumentCommandHandle'\n"
         "fallback_id = fallback.id()\nassert fallback_id != 0\n"));
     unsigned long long id = 0;
     {
@@ -1526,28 +1529,50 @@ TEST_F(DocumentExecutionLaneTest, RecomputeAdmissionReturnsUsableLegacyHandles)
     ASSERT_EQ(command.status().state, App::DocumentCommandState::Completed);
     ASSERT_NO_THROW(Base::Interpreter().runString(
         "assert fallback.done() and fallback.status()['state'] == 'Completed'\n"
-        "assert 'Touched' not in feature.State\n"));
+        "assert 'Touched' not in feature.State\n"
+        "assert feature.ExecCount == before_count + 2\n"));
 }
 
 TEST_F(DocumentExecutionLaneTest, RecomputeBusyDoesNotStartPublicRequest)
 {
+    auto* blocker = doc()->addObject<App::FeatureTestAsyncBlocker>("Receipt3Blocker");
+    ASSERT_NE(blocker, nullptr);
     ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt3Busy"), nullptr);
     const std::string setup = std::string("import FreeCAD as App\ndoc = App.getDocument(\"")
-        + _docName + "\")\nfeature = doc.getObject('Receipt3Busy')\nfeature.touch()\n";
+        + _docName + "\")\nfeature = doc.getObject('Receipt3Busy')\n"
+        "assert not doc.RecomputesFrozen\nbefore_count = feature.ExecCount\n"
+        "assert not feature.OutList\n"
+        "feature.touch()\nassert 'Touched' in feature.State\n";
     ASSERT_NO_THROW(Base::Interpreter().runString(setup.c_str()));
-    _blocking->reset();
-    const auto first = doc()->executionHandle().trySubmit(makeLaneBlockingRecomputeCommand());
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    struct ReleaseBlocker {
+        ~ReleaseBlocker() { App::FeatureTestAsyncBlocker::releaseBlocker(); }
+    } release;
+    blocker->touch();
+    auto command = makeRecomputeCommand("receipt3-real-blocker");
+    command.recompute->featureIds.emplace_back("Receipt3Blocker");
+    const auto first = doc()->executionHandle().trySubmit(std::move(command));
     ASSERT_TRUE(first.accepted());
-    ASSERT_TRUE(_blocking->waitUntilStarted());
-    ASSERT_NO_THROW(Base::Interpreter().runString(
-        "try:\n    doc.recomputeAsync()\nexcept Exception as e:\n"
-        "    assert 'busy' in str(e).lower()\n"
-        "else:\n    raise AssertionError('expected Busy')\n"));
-    _blocking->release();
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+
+    auto attempt = std::async(std::launch::async, [] {
+        return Base::Interpreter().runString(
+            "try:\n    doc.recomputeAsync()\nexcept Exception as e:\n"
+            "    assert 'busy' in str(e).lower()\n"
+            "else:\n    raise AssertionError('expected Busy')\n");
+    });
+    const auto readyWhileBlocked = attempt.wait_for(5s) == std::future_status::ready;
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    EXPECT_TRUE(readyWhileBlocked);
+    EXPECT_NO_THROW(attempt.get());
     App::DocumentCommandHandle handle(first.commandId, doc()->executionHandle().identity());
     ASSERT_TRUE(waitForTerminal(handle, 30s));
-    ASSERT_NO_THROW(Base::Interpreter().runString("assert 'Touched' in feature.State\n"));
+    ASSERT_EQ(handle.status().state, App::DocumentCommandState::Completed);
+    ASSERT_NO_THROW(Base::Interpreter().runString(
+        "assert 'Touched' in feature.State\nassert feature.ExecCount == before_count\n"));
 }
+
 #endif
 
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
@@ -1795,12 +1820,18 @@ TEST_F(DocumentExecutionLaneTest, SaveAsyncWritesEncodedFilename)
     } cleanup;
     const std::string start = std::string(R"PY(
 import FreeCAD as App
+import os
 import pathlib
 import tempfile
+import zipfile
 receipt_temp_dir = tempfile.TemporaryDirectory(prefix="freecad-receipt-")
 receipt_path = pathlib.Path(receipt_temp_dir.name) / "caf\u00e9.FCStd"
-assert not receipt_path.exists()
+# saveAsync consumes UTF-8 independently of Python's locale filesystem codec.
+# Use that exact byte name for filesystem checks even when the codec is ASCII.
+receipt_bytes = os.path.join(os.fsencode(receipt_temp_dir.name), "caf\u00e9.FCStd".encode("utf-8"))
+assert not os.path.exists(receipt_bytes)
 receipt_doc = App.getDocument(")PY") + _docName + R"PY(")
+receipt_doc.addObject("App::FeatureTest", "EncodedSaveMarker")
 receipt_handle = receipt_doc.saveAsync(str(receipt_path))
 receipt_id = receipt_handle.id()
 )PY";
@@ -1818,6 +1849,14 @@ receipt_id = receipt_handle.id()
     App::DocumentCommandHandle handle(id, doc()->executionHandle().identity());
     ASSERT_TRUE(waitForTerminal(handle, 30s));
     EXPECT_EQ(handle.status().state, App::DocumentCommandState::Completed);
-    EXPECT_NO_THROW(Base::Interpreter().runString(
-        "assert receipt_path.is_file() and receipt_path.stat().st_size > 0\n"));
+    EXPECT_NO_THROW(Base::Interpreter().runString(R"PY(
+assert receipt_handle.id() == receipt_id
+assert receipt_handle.done() and receipt_handle.status()['state'] == 'Completed'
+assert receipt_doc.FileName == str(receipt_path)
+assert os.path.isfile(receipt_bytes) and os.stat(receipt_bytes).st_size > 0
+with open(receipt_bytes, 'rb') as receipt_file:
+    with zipfile.ZipFile(receipt_file) as archive:
+        assert archive.testzip() is None
+        assert b'EncodedSaveMarker' in archive.read('Document.xml')
+)PY"));
 }
