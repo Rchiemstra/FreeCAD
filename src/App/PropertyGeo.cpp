@@ -42,6 +42,27 @@
 #include "ObjectIdentifier.h"
 
 
+namespace
+{
+long checkedPythonLong(PyObject* value)
+{
+    const long converted = PyLong_AsLong(value);
+    if (converted == -1 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+
+double checkedPythonFloat(PyObject* value)
+{
+    const double converted = PyFloat_AsDouble(value);
+    if (converted == -1.0 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+}  // namespace
+
 using namespace App;
 using namespace Base;
 using namespace std;
@@ -102,10 +123,10 @@ void PropertyVector::setPyObject(PyObject* value)
         // x
         item = PyTuple_GetItem(value, 0);
         if (PyFloat_Check(item)) {
-            cVec.x = PyFloat_AsDouble(item);
+            cVec.x = checkedPythonFloat(item);
         }
         else if (PyLong_Check(item)) {
-            cVec.x = (double)PyLong_AsLong(item);
+            cVec.x = (double)checkedPythonLong(item);
         }
         else {
             throw Base::TypeError("Not allowed type used in tuple (float expected)...");
@@ -113,10 +134,10 @@ void PropertyVector::setPyObject(PyObject* value)
         // y
         item = PyTuple_GetItem(value, 1);
         if (PyFloat_Check(item)) {
-            cVec.y = PyFloat_AsDouble(item);
+            cVec.y = checkedPythonFloat(item);
         }
         else if (PyLong_Check(item)) {
-            cVec.y = (double)PyLong_AsLong(item);
+            cVec.y = (double)checkedPythonLong(item);
         }
         else {
             throw Base::TypeError("Not allowed type used in tuple (float expected)...");
@@ -124,10 +145,10 @@ void PropertyVector::setPyObject(PyObject* value)
         // z
         item = PyTuple_GetItem(value, 2);
         if (PyFloat_Check(item)) {
-            cVec.z = PyFloat_AsDouble(item);
+            cVec.z = checkedPythonFloat(item);
         }
         else if (PyLong_Check(item)) {
-            cVec.z = (double)PyLong_AsLong(item);
+            cVec.z = (double)checkedPythonLong(item);
         }
         else {
             throw Base::TypeError("Not allowed type used in tuple (float expected)...");
@@ -301,6 +322,8 @@ PyObject* PropertyVectorList::getPyObject()
     return list;
 }
 
+
+
 Base::Vector3d PropertyVectorList::getPyValue(PyObject* item) const
 {
     PropertyVector val;
@@ -438,10 +461,10 @@ void PropertyMatrix::setPyObject(PyObject* value)
             for (int y = 0; y < dim; y++) {
                 item = PyTuple_GetItem(value, x + y * dim);
                 if (PyFloat_Check(item)) {
-                    cMatrix[x][y] = PyFloat_AsDouble(item);
+                    cMatrix[x][y] = checkedPythonFloat(item);
                 }
                 else if (PyLong_Check(item)) {
-                    cMatrix[x][y] = (double)PyLong_AsLong(item);
+                    cMatrix[x][y] = (double)checkedPythonLong(item);
                 }
                 else {
                     throw Base::TypeError(

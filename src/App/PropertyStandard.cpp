@@ -31,6 +31,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -62,6 +63,44 @@ using namespace App;
 using namespace Base;
 using namespace std;
 
+namespace
+{
+const char* checkedPythonUtf8(PyObject* value)
+{
+    const char* result = PyUnicode_AsUTF8(value);
+    if (!result) {
+        throw Py::Exception();
+    }
+    return result;
+}
+
+long checkedPythonLong(PyObject* value)
+{
+    const long converted = PyLong_AsLong(value);
+    if (converted == -1 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+
+double checkedPythonFloat(PyObject* value)
+{
+    const double converted = PyFloat_AsDouble(value);
+    if (converted == -1.0 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+unsigned long checkedPythonUnsignedLong(PyObject* value)
+{
+    const unsigned long converted = PyLong_AsUnsignedLong(value);
+    if (converted == static_cast<unsigned long>(-1) && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+
+}  // namespace
 
 //**************************************************************************
 //**************************************************************************
@@ -106,8 +145,9 @@ PyObject* PropertyInteger::getPyObject()
 void PropertyInteger::setPyObject(PyObject* value)
 {
     if (PyLong_Check(value)) {
+        const long converted = checkedPythonLong(value);
         aboutToSetValue();
-        _lValue = PyLong_AsLong(value);
+        _lValue = converted;
         hasSetValue();
     }
     else {
@@ -230,7 +270,7 @@ void PropertyPath::setPyObject(PyObject* value)
 {
     std::string path;
     if (PyUnicode_Check(value)) {
-        path = PyUnicode_AsUTF8(value);
+        path = checkedPythonUtf8(value);
     }
     else {
         std::string error = std::string("type must be str or unicode, not ");
@@ -469,8 +509,11 @@ PyObject* PropertyEnumeration::getPyObject()
 void PropertyEnumeration::setPyObject(PyObject* value)
 {
     if (PyLong_Check(value)) {
-        long val = PyLong_AsLong(value);
+        long val = checkedPythonLong(value);
         if (_enum.isValid()) {
+            if (val < 0 || val >= _enum.countItems()) {
+                throw Base::ValueError("Out of range");
+            }
             aboutToSetValue();
             _enum.setValue(val, true);
             hasSetValue();
@@ -478,7 +521,11 @@ void PropertyEnumeration::setPyObject(PyObject* value)
         return;
     }
     if (PyUnicode_Check(value)) {
-        std::string str = PyUnicode_AsUTF8(value);
+        const char* encoded = PyUnicode_AsUTF8(value);
+        if (!encoded) {
+            throw Py::Exception();
+        }
+        std::string str(encoded);
         if (_enum.contains(str.c_str())) {
             aboutToSetValue();
             _enum.setValue(str);
@@ -495,13 +542,14 @@ void PropertyEnumeration::setPyObject(PyObject* value)
         try {
             std::vector<std::string> values;
 
-            int idx = -1;
+            long idx = -1;
             Py::Sequence seq(value);
 
             if (seq.size() == 2) {
                 Py::Object v(seq[0].ptr());
                 if (!v.isString() && v.isSequence()) {
-                    idx = Py::Long(seq[1].ptr());
+                    Py::Long index(seq[1].ptr());
+                    idx = checkedPythonLong(index.ptr());
                     seq = v;
                 }
             }
@@ -512,6 +560,9 @@ void PropertyEnumeration::setPyObject(PyObject* value)
                 values[i] = Py::Object(seq[i].ptr()).as_string();
             }
 
+            if (idx >= 0 && static_cast<std::size_t>(idx) >= values.size()) {
+                throw Base::ValueError("Out of range");
+            }
             aboutToSetValue();
             _enum.setEnums(values);
             if (idx >= 0) {
@@ -521,6 +572,10 @@ void PropertyEnumeration::setPyObject(PyObject* value)
             return;
         }
         catch (Py::Exception&) {
+            if (PyErr_ExceptionMatches(PyExc_OverflowError)
+                || PyErr_ExceptionMatches(PyExc_UnicodeError)) {
+                throw;
+            }
             Base::PyException e;
             e.reportException();
         }
@@ -699,7 +754,7 @@ long PropertyIntegerConstraint::getStepSize() const
 void PropertyIntegerConstraint::setPyObject(PyObject* value)
 {
     if (PyLong_Check(value)) {
-        long temp = PyLong_AsLong(value);
+        long temp = checkedPythonLong(value);
         if (_ConstStruct) {
             if (temp > _ConstStruct->UpperBound) {
                 temp = _ConstStruct->UpperBound;
@@ -868,10 +923,12 @@ PyObject* PropertyIntegerList::getPyObject()
     return list;
 }
 
+
+
 long PropertyIntegerList::getPyValue(PyObject* item) const
 {
     if (PyLong_Check(item)) {
-        return PyLong_AsLong(item);
+        return checkedPythonLong(item);
     }
     std::string error = std::string("type in list must be int, not ");
     error += item->ob_type->tp_name;
@@ -1073,13 +1130,13 @@ void PropertyIntegerSet::setPyObject(PyObject* value)
                 error += item.ptr()->ob_type->tp_name;
                 throw Base::TypeError(error);
             }
-            values.insert(PyLong_AsLong(item.ptr()));
+            values.insert(checkedPythonLong(item.ptr()));
         }
 
         setValues(values);
     }
     else if (PyLong_Check(value)) {
-        setValue(PyLong_AsLong(value));
+        setValue(checkedPythonLong(value));
     }
     else {
         std::string error = std::string("type must be int or list of int, not ");
@@ -1179,13 +1236,15 @@ PyObject* PropertyFloat::getPyObject()
 void PropertyFloat::setPyObject(PyObject* value)
 {
     if (PyFloat_Check(value)) {
+        const double converted = checkedPythonFloat(value);
         aboutToSetValue();
-        _dValue = PyFloat_AsDouble(value);
+        _dValue = converted;
         hasSetValue();
     }
     else if (PyLong_Check(value)) {
+        const long converted = checkedPythonLong(value);
         aboutToSetValue();
-        _dValue = PyLong_AsLong(value);
+        _dValue = converted;
         hasSetValue();
     }
     else {
@@ -1317,7 +1376,7 @@ double PropertyFloatConstraint::getStepSize() const
 void PropertyFloatConstraint::setPyObject(PyObject* value)
 {
     if (PyFloat_Check(value)) {
-        double temp = PyFloat_AsDouble(value);
+        double temp = checkedPythonFloat(value);
         if (_ConstStruct) {
             if (temp > _ConstStruct->UpperBound) {
                 temp = _ConstStruct->UpperBound;
@@ -1332,7 +1391,7 @@ void PropertyFloatConstraint::setPyObject(PyObject* value)
         hasSetValue();
     }
     else if (PyLong_Check(value)) {
-        double temp = static_cast<double>(PyLong_AsLong(value));
+        double temp = static_cast<double>(checkedPythonLong(value));
         if (_ConstStruct) {
             if (temp > _ConstStruct->UpperBound) {
                 temp = _ConstStruct->UpperBound;
@@ -1506,13 +1565,15 @@ PyObject* PropertyFloatList::getPyObject()
     return list;
 }
 
+
+
 double PropertyFloatList::getPyValue(PyObject* item) const
 {
     if (PyFloat_Check(item)) {
-        return PyFloat_AsDouble(item);
+        return checkedPythonFloat(item);
     }
     if (PyLong_Check(item)) {
-        return static_cast<double>(PyLong_AsLong(item));
+        return static_cast<double>(checkedPythonLong(item));
     }
     std::string error = std::string("type in list must be float, not ");
     error += item->ob_type->tp_name;
@@ -1697,7 +1758,7 @@ void PropertyString::setPyObject(PyObject* value)
 {
     std::string string;
     if (PyUnicode_Check(value)) {
-        string = PyUnicode_AsUTF8(value);
+        string = checkedPythonUtf8(value);
     }
     else {
         std::string error = std::string("type must be str or unicode, not ");
@@ -1864,7 +1925,7 @@ void PropertyUUID::setPyObject(PyObject* value)
 {
     std::string string;
     if (PyUnicode_Check(value)) {
-        string = PyUnicode_AsUTF8(value);
+        string = checkedPythonUtf8(value);
     }
     else {
         std::string error = std::string("type must be unicode or str, not ");
@@ -1966,11 +2027,13 @@ PyObject* PropertyStringList::getPyObject()
     return list;
 }
 
+
+
 std::string PropertyStringList::getPyValue(PyObject* item) const
 {
     std::string ret;
     if (PyUnicode_Check(item)) {
-        ret = PyUnicode_AsUTF8(item);
+        ret = checkedPythonUtf8(item);
     }
     else if (PyBytes_Check(item)) {
         ret = PyBytes_AsString(item);
@@ -2222,16 +2285,30 @@ void PropertyMap::setPyObject(PyObject* value)
     if (PyMapping_Check(value)) {
         std::map<std::string, std::string> values;
         // get key and item list
-        PyObject* keyList = PyMapping_Keys(value);
-        PyObject* itemList = PyMapping_Values(value);
-        Py_ssize_t nSize = PyList_Size(keyList);
+        PyObject* keys = PyMapping_Keys(value);
+        if (!keys) {
+            throw Py::Exception();
+        }
+        Py::Object keyList(keys, true);
+        PyObject* items = PyMapping_Values(value);
+        if (!items) {
+            throw Py::Exception();
+        }
+        Py::Object itemList(items, true);
+        Py_ssize_t nSize = PyList_Size(keyList.ptr());
+        if (nSize < 0 || PyList_Size(itemList.ptr()) < 0) {
+            throw Py::Exception();
+        }
+        if (PyList_Size(itemList.ptr()) != nSize) {
+            throw Base::ValueError("mapping keys and values have different sizes");
+        }
 
         for (Py_ssize_t i = 0; i < nSize; ++i) {
             // check on the key:
             std::string keyStr;
-            PyObject* key = PyList_GetItem(keyList, i);
+            PyObject* key = PyList_GetItem(keyList.ptr(), i);
             if (PyUnicode_Check(key)) {
-                keyStr = PyUnicode_AsUTF8(key);
+                keyStr = checkedPythonUtf8(key);
             }
             else {
                 std::string error("type of the key need to be string, not ");
@@ -2240,9 +2317,9 @@ void PropertyMap::setPyObject(PyObject* value)
             }
 
             // check on the item:
-            PyObject* item = PyList_GetItem(itemList, i);
+            PyObject* item = PyList_GetItem(itemList.ptr(), i);
             if (PyUnicode_Check(item)) {
-                values[keyStr] = PyUnicode_AsUTF8(item);
+                values[keyStr] = checkedPythonUtf8(item);
             }
             else {
                 std::string error("type in values must be string, not ");
@@ -2250,9 +2327,6 @@ void PropertyMap::setPyObject(PyObject* value)
                 throw Base::TypeError(error);
             }
         }
-
-        Py_XDECREF(itemList);
-        Py_XDECREF(keyList);
 
         setValues(values);
     }
@@ -2477,7 +2551,7 @@ void PropertyBoolList::setPyObject(PyObject* value)
     // string is also a sequence and must be treated differently
     std::string str;
     if (PyUnicode_Check(value)) {
-        str = PyUnicode_AsUTF8(value);
+        str = checkedPythonUtf8(value);
         boost::dynamic_bitset<> values(str);
         setValues(values);
     }
@@ -2492,7 +2566,7 @@ bool PropertyBoolList::getPyValue(PyObject* item) const
         return Base::asBoolean(item);
     }
     if (PyLong_Check(item)) {
-        return (PyLong_AsLong(item) ? true : false);
+        return (checkedPythonLong(item) ? true : false);
     }
     std::string error = std::string("type in list must be bool or int, not ");
     error += item->ob_type->tp_name;
@@ -2620,17 +2694,17 @@ void PropertyColor::setPyObject(PyObject* value)
         PyObject* item;
         item = PyTuple_GetItem(value, 0);
         if (PyFloat_Check(item)) {
-            cCol.r = (float)PyFloat_AsDouble(item);
+            cCol.r = (float)checkedPythonFloat(item);
             item = PyTuple_GetItem(value, 1);
             if (PyFloat_Check(item)) {
-                cCol.g = (float)PyFloat_AsDouble(item);
+                cCol.g = (float)checkedPythonFloat(item);
             }
             else {
                 throw Base::TypeError("Type in tuple must be consistent (float)");
             }
             item = PyTuple_GetItem(value, 2);
             if (PyFloat_Check(item)) {
-                cCol.b = (float)PyFloat_AsDouble(item);
+                cCol.b = (float)checkedPythonFloat(item);
             }
             else {
                 throw Base::TypeError("Type in tuple must be consistent (float)");
@@ -2638,7 +2712,7 @@ void PropertyColor::setPyObject(PyObject* value)
             if (PyTuple_Size(value) == 4) {
                 item = PyTuple_GetItem(value, 3);
                 if (PyFloat_Check(item)) {
-                    cCol.a = (float)PyFloat_AsDouble(item);
+                    cCol.a = (float)checkedPythonFloat(item);
                 }
                 else {
                     throw Base::TypeError("Type in tuple must be consistent (float)");
@@ -2646,17 +2720,17 @@ void PropertyColor::setPyObject(PyObject* value)
             }
         }
         else if (PyLong_Check(item)) {
-            cCol.r = PyLong_AsLong(item) / 255.0;
+            cCol.r = checkedPythonLong(item) / 255.0;
             item = PyTuple_GetItem(value, 1);
             if (PyLong_Check(item)) {
-                cCol.g = PyLong_AsLong(item) / 255.0;
+                cCol.g = checkedPythonLong(item) / 255.0;
             }
             else {
                 throw Base::TypeError("Type in tuple must be consistent (integer)");
             }
             item = PyTuple_GetItem(value, 2);
             if (PyLong_Check(item)) {
-                cCol.b = PyLong_AsLong(item) / 255.0;
+                cCol.b = checkedPythonLong(item) / 255.0;
             }
             else {
                 throw Base::TypeError("Type in tuple must be consistent (integer)");
@@ -2664,7 +2738,7 @@ void PropertyColor::setPyObject(PyObject* value)
             if (PyTuple_Size(value) == 4) {
                 item = PyTuple_GetItem(value, 3);
                 if (PyLong_Check(item)) {
-                    cCol.a = PyLong_AsLong(item) / 255.0;
+                    cCol.a = checkedPythonLong(item) / 255.0;
                 }
                 else {
                     throw Base::TypeError("Type in tuple must be consistent (integer)");
@@ -2676,7 +2750,7 @@ void PropertyColor::setPyObject(PyObject* value)
         }
     }
     else if (PyLong_Check(value)) {
-        cCol.setPackedValue(PyLong_AsUnsignedLong(value));
+        cCol.setPackedValue(checkedPythonUnsignedLong(value));
     }
     else {
         std::string error =
@@ -2760,6 +2834,8 @@ PyObject* PropertyColorList::getPyObject()
 
     return list;
 }
+
+
 
 Base::Color PropertyColorList::getPyValue(PyObject* item) const
 {

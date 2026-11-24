@@ -1142,6 +1142,41 @@ PyObject* PropertyLinkList::getPyObject()
     return Py::new_reference_to(sequence);
 }
 
+void PropertyLinkList::setPyValues(const std::vector<PyObject*>& values,
+                                   const std::vector<int>& indices)
+{
+    // Only these registered concrete types are known to use this setter's contract.
+    // Other subclasses can override set1Value or getPyValue with different semantics.
+    const auto& type = typeid(*this);
+    if (!indices.empty()
+        && (type == typeid(PropertyLinkList) || type == typeid(PropertyLinkListGlobal)
+            || type == typeid(PropertyLinkListChild) || type == typeid(PropertyLinkListHidden))) {
+        std::vector<DocumentObject*> converted;
+        converted.reserve(values.size());
+        for (auto* value : values) {
+            converted.push_back(getPyValue(value));
+        }
+        auto staged = _lValueList;
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            const auto index = static_cast<std::size_t>(indices[i]);
+            auto* value = converted[i];
+            if (index < staged.size() && staged[index] == value) {
+                continue;
+            }
+            if (!value || !value->isAttachedToDocument()) {
+                throw Base::ValueError("invalid document object");
+            }
+            if (index == staged.size()) {
+                staged.push_back(value);
+            }
+            else {
+                staged[index] = value;
+            }
+        }
+    }
+    inherited::setPyValues(values, indices);
+}
+
 DocumentObject* PropertyLinkList::getPyValue(PyObject* item) const
 {
     Base::PyTypeCheck(&item, &DocumentObjectPy::Type);

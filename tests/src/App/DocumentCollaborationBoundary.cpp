@@ -433,6 +433,12 @@ constexpr std::array reviewedDelegations {
     },
 };
 
+// These routes remain mandatory even when another branch is directly bracketed.
+constexpr std::array requiredListFallbacks {
+    ReviewedDelegation {"PropertyStandard.cpp:PropertyIntPairList::setPyObject", "PropertyLists::setPyObject(value)", 1},
+    ReviewedDelegation {"PropertyStandard.cpp:PropertyBoolList::setPyObject", "inherited::setPyObject(value)", 1},
+};
+
 // Header-defined wrappers and configuration-only methods are reviewed separately so that a new
 // inline mutator cannot disappear into the much larger out-of-line inventory.
 constexpr std::array reviewedHeaderDelegations {
@@ -1188,6 +1194,7 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
         + mutatorName
         + R"()\s*\([^;{}]*\)\s*(?:const\s*)?(?:override\s*)?(?:final\s*)?(?:noexcept(?:\([^)]*\))?\s*)?\{)"
     );
+    std::map<std::string, std::size_t> fallbackCounts;
     std::map<std::string, std::size_t> sourceReviewedCounts;
     std::map<std::string, std::size_t> headerReviewedCounts;
     std::map<std::string, std::size_t> sourceInventory;
@@ -1225,12 +1232,16 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
             const auto closing = matchingBrace(source, opening);
             ASSERT_NE(closing, std::string::npos) << sourcePath << ':' << match->str();
             const std::string_view body(source.data() + opening, closing - opening + 1);
+            const std::string key = sourcePath.filename().string() + ':' + (*match)[1].str()
+                + "::" + (*match)[2].str();
+            for (const auto& route : requiredListFallbacks) {
+                if (route.key == key && containsEvidence(body, route.requiredEvidence)) {
+                    ++fallbackCounts[key + ':' + std::string(route.requiredEvidence)];
+                }
+            }
             if (directlyBracketedOrRejected(body)) {
                 continue;
             }
-
-            const std::string key = sourcePath.filename().string() + ':' + (*match)[1].str()
-                + "::" + (*match)[2].str();
             const auto reviewed = std::ranges::find_if(reviewedDelegations, [&](const auto& item) {
                 return item.key == key && containsEvidence(body, item.requiredEvidence);
             });
@@ -1242,6 +1253,13 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
             }
             ++sourceReviewedCounts[key + ':' + std::string(reviewed->requiredEvidence)];
         }
+    }
+
+    for (const auto& route : requiredListFallbacks) {
+        const std::string key = std::string(route.key) + ':' + std::string(route.requiredEvidence);
+        EXPECT_EQ(fallbackCounts[key], route.expectedCount)
+            << "required list fallback disappeared or gained an overload: " << route.key
+            << " " << route.requiredEvidence;
     }
 
     for (const auto& reviewed : reviewedDelegations) {

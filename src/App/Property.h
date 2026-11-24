@@ -27,6 +27,8 @@
 
 #include <Base/Exception.h>
 #include <Base/Persistence.h>
+#include <CXX/Exception.hxx>
+#include <optional>
 #include <boost/any.hpp>
 #include <fastsignals/signal.h>
 #include <bitset>
@@ -1127,11 +1129,19 @@ public:
      */
     void setPyObject(PyObject* value) override
     {
+        std::optional<T> singleValue;
         try {
-            setValue(getPyValue(value));
-            return;
+            singleValue.emplace(getPyValue(value));
+        }
+        catch (const Py::BaseException&) {
+            throw;
         }
         catch (...) {
+            PyErr_Clear();
+        }
+        if (singleValue) {
+            setValue(*singleValue);
+            return;
         }
         parent_type::setPyObject(value);
     }
@@ -1189,11 +1199,14 @@ protected:
             return;
         }
         assert(vals.size() == indices.size());
+        std::vector<T> values;
+        values.reserve(vals.size());
+        for (auto* value : vals) {
+            values.push_back(getPyValue(value));
+        }
         atomic_change guard(*this);
-        int i {0};
-        for (auto index : indices) {
-            set1Value(index, getPyValue(vals[i]));
-            i++;
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            set1Value(indices[i], values[i]);
         }
         guard.tryInvoke();
     }
