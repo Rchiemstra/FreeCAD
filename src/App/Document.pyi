@@ -393,6 +393,11 @@ class Document(PropertyContainer):
         ) -> _CompatibilityMutationResult | _CompatibilityMutationWaitHandle:
             """Submit a mutation and return its result or a foreign-thread wait handle.
 
+            For an unmodified return value, test ``"status" not in result``
+            for the wait handle and ``"wait" not in result`` for the immediate
+            result. Both guards narrow in mypy and pyright. Do not mutate either
+            dictionary before the checks.
+
             The wait handle also represents dispatch rejection; its state does not
             guarantee acceptance. Call wait off the GUI thread, with an optional
             positional timeout in seconds, to retrieve the result. A timeout raises
