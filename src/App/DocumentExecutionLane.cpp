@@ -212,8 +212,18 @@ bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentComman
     if (!left.recompute || !right.recompute) {
         return false;
     }
-    return left.recompute->coalescingKey == right.recompute->coalescingKey
-        && left.recompute->options == right.recompute->options;
+    const auto& first = *left.recompute;
+    const auto& second = *right.recompute;
+    // A key opts in to joining, but all execution inputs must still agree.
+    // Comparing expected revisions here does not validate the revision fence.
+    return !first.coalescingKey.empty()
+        && first.coalescingKey == second.coalescingKey
+        && left.expectedRevisions == right.expectedRevisions
+        && first.featureIds == second.featureIds
+        && first.options == second.options
+        && first.force == second.force
+        && first.refreshRevisionFenceAfterEachCommit == second.refreshRevisionFenceAfterEachCommit
+        && first.declaresCrossDocumentSnapshots == second.declaresCrossDocumentSnapshots;
 }
 
 bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept

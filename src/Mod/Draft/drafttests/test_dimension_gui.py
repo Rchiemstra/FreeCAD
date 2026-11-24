@@ -49,6 +49,25 @@ from Test.GuiRecompute import (
 )
 
 
+class _CheckedRemovalParent:
+    """Forward to a real Coin group and record invalid removal attempts."""
+    def __init__(self, parent, invalid):
+        object.__setattr__(self, "parent", parent)
+        object.__setattr__(self, "invalid", invalid)
+
+    def __getattr__(self, name):
+        return getattr(self.parent, name)
+
+    def __setattr__(self, name, value):
+        setattr(self.parent, name, value)
+
+    def removeChild(self, child):
+        if self.parent.findChild(child) < 0:
+            self.invalid.append(child)
+            return
+        self.parent.removeChild(child)
+
+
 class DraftGuiDimension(test_base.DraftTestCaseDoc):
     """GUI regressions for Draft dimensions."""
 
@@ -67,6 +86,278 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
         """Close the temporary document even if save/reopen invalidated the Python wrapper."""
         if self.doc_name in App.listDocuments():
             close_document(App.getDocument(self.doc_name))
+
+    @staticmethod
+    def _child_count(parent, child):
+        return sum(parent.getChild(i) == child for i in range(parent.getNumChildren()))
+
+    def test_linear_decorations_follow_line_switches(self):
+        dimension = Draft.make_dimension(Vector(0, 0, 0), Vector(10, 0, 0), Vector(0, 3, 0))
+        view = dimension.ViewObject
+        proxy = view.Proxy
+        invalid = []
+        names = ("node_wld", "node_scr", "lineswitch_wld", "lineswitch_scr")
+        parents = {name: getattr(proxy, name) for name in names}
+        try:
+            for name in names:
+                setattr(proxy, name, _CheckedRemovalParent(parents[name], invalid))
+            for mode in ("World", "Screen"):
+                view.DisplayMode = mode
+                for visible in (False, True, False, True):
+                    view.ShowLine = visible
+                    view.ArrowTypeStart = "Dot" if visible else "Arrow"
+                    view.ArrowTypeEnd = "Arrow" if visible else "Dot"
+                    view.DimOvershoot = 2 if visible else 1
+                    view.ExtOvershoot = 3 if visible else 1
+                    for root, switch in ((proxy.node_wld, proxy.lineswitch_wld),
+                                         (proxy.node_scr, proxy.lineswitch_scr)):
+                        self.assertEqual(switch.whichChild.getValue(), -3 if visible else -1)
+                        for index, node in enumerate((proxy.marks, proxy.marksDimOvershoot,
+                                                      proxy.marksExtOvershoot), 2):
+                            self.assertEqual(self._child_count(switch, node), 1)
+                            self.assertEqual(self._child_count(root, node), 0)
+                            self.assertEqual(switch.findChild(node), index)
+            self.assertEqual(invalid, [], "redraw attempted to remove a non-child")
+        finally:
+            for name, parent in parents.items():
+                setattr(proxy, name, parent)
+
+    def test_grid_restack_pending_and_view_change(self):
+        from unittest.mock import patch
+        from draftguitools import gui_trackers, gui_snapper
+
+        pending = []
+        first_view = gui_trackers.gui_utils.get_3d_view()
+        self.assertIsNotNone(first_view)
+        first_graph = first_view.getSceneGraph()
+        other = App.newDocument("TrackerOtherView")
+        try:
+            second_view = gui_trackers.gui_utils.get_3d_view()
+            self.assertIsNotNone(second_view)
+            second_graph = second_view.getSceneGraph()
+            self.assertNotEqual(first_graph, second_graph)
+            App.setActiveDocument(self.doc.Name)
+            with patch.object(gui_trackers.ToDo, "delay", side_effect=lambda f, arg: pending.append((f, arg))):
+                grid = gui_trackers.gridTracker(self.doc.Name)
+                switch = grid.switch
+                invalid = []
+                grid._scene_graph = _CheckedRemovalParent(first_graph, invalid)
+                snapper = type("RestackTarget", (), {"grid": grid})()
+                gui_snapper.Snapper.restack(snapper)
+                self.assertEqual(self._child_count(first_graph, switch), 0)
+                App.setActiveDocument(other.Name)
+                while pending:
+                    function, argument = pending.pop(0)
+                    function(argument)
+                self.assertEqual(self._child_count(first_graph, switch), 1)
+                self.assertEqual(self._child_count(second_graph, switch), 0)
+                self.assertEqual(first_graph.findChild(switch), first_graph.getNumChildren() - 1)
+                grid.raiseTracker()
+                grid.lowerTracker()
+                grid.raiseTracker()
+                while pending:
+                    function, argument = pending.pop(0)
+                    function(argument)
+                self.assertEqual(first_graph.findChild(switch), 0)
+                self.assertEqual(self._child_count(first_graph, switch), 1)
+                grid.finalize()
+                grid.finalize()
+                while pending:
+                    function, argument = pending.pop(0)
+                    function(argument)
+                self.assertEqual(self._child_count(first_graph, switch), 0)
+                self.assertEqual(self._child_count(second_graph, switch), 0)
+
+                # Finalization before queued insertion must not resurrect the switch.
+                App.setActiveDocument(self.doc.Name)
+                grid = gui_trackers.gridTracker(self.doc.Name)
+                switch = grid.switch
+                grid._scene_graph = _CheckedRemovalParent(first_graph, invalid)
+                grid.lowerTracker()
+                grid.finalize()
+                while pending:
+                    function, argument = pending.pop(0)
+                    function(argument)
+                self.assertEqual(self._child_count(first_graph, switch), 0)
+                self.assertEqual(invalid, [], "restack attempted to remove a non-child")
+        finally:
+            close_document(other)
+            App.setActiveDocument(self.doc.Name)
+
+    def test_closed_view_releases_cached_trackers_with_queued_work(self):
+        import gc
+        import weakref
+        from unittest.mock import patch
+        from pivy import coin
+        from draftguitools import gui_trackers, gui_snapper
+        import WorkingPlane
+
+        WorkingPlane.get_working_plane()
+        original_delay = gui_trackers.ToDo.delay
+        pending = []
+        def delay(function, argument):
+            if isinstance(getattr(function, "__self__", None), gui_trackers.Tracker):
+                pending.append((function, argument))
+            else:
+                original_delay(function, argument)
+        def drain():
+            while pending:
+                function, argument = pending.pop(0)
+                function(argument)
+
+        first = self.doc
+        second = None
+        with patch.object(gui_trackers.ToDo, "delay", side_effect=delay):
+            snapper = gui_snapper.Snapper()
+            snapper.setTrackers(update_grid=False)
+            first_grid = snapper.grid
+            first_switch = first_grid.switch
+            first_view = gui_trackers.gui_utils.get_3d_view()
+            graph = first_view.getSceneGraph()
+            marker = coin.SoSeparator()
+            graph.addChild(marker)
+            graph_ref = weakref.ref(graph)
+            gui_snapper.Snapper.restack(snapper)
+            self.assertEqual(self._child_count(graph, first_switch), 0)
+
+            second = App.newDocument("TrackerRetainedSecondView")
+            second_view = gui_trackers.gui_utils.get_3d_view()
+            second_graph = second_view.getSceneGraph()
+            try:
+                # Close with first insertion and restack still pending. The
+                # process-wide-style snapper cache remains live deliberately.
+                close_document(first)
+                gc.collect()
+                for cached in snapper.trackers[1:]:
+                    self.assertIsNone(cached[0]._scene_graph)
+                self.assertEqual(graph.getRefCount(), 1)
+                before = graph.getNumChildren()
+                drain()
+                self.assertEqual(graph.getNumChildren(), before)
+                self.assertEqual(self._child_count(graph, first_switch), 0)
+                self.assertEqual(self._child_count(second_graph, first_switch), 0)
+                self.assertGreaterEqual(graph.findChild(marker), 0)
+                print("CLOSED_TRACKER_ROOT_REFS", graph.getRefCount(), flush=True)
+                del graph
+                gc.collect()
+                self.assertIsNone(graph_ref())
+
+                # An already-inserted tracker can also be finalized while its
+                # original view closes before the queued removal executes.
+                snapper.setTrackers(update_grid=False)
+                second_grid = snapper.grid
+                second_switch = second_grid.switch
+                drain()
+                self.assertEqual(self._child_count(second_graph, second_switch), 1)
+                second_grid.lowerTracker()
+                second_grid.finalize()
+                second_grid.finalize()
+                close_document(second)
+                second = None
+                gc.collect()
+                self.assertIsNone(second_grid._scene_graph)
+                self.assertEqual(second_graph.getRefCount(), 1)
+                before = second_graph.getNumChildren()
+                drain()
+                self.assertEqual(second_graph.getNumChildren(), before)
+                self.assertEqual(self._child_count(second_graph, second_switch), 1)
+            finally:
+                if second is not None and second.Name in App.listDocuments():
+                    close_document(second)
+
+    def test_one_view_close_keeps_document_and_other_view(self):
+        import gc
+        from unittest.mock import patch
+        from PySide import QtWidgets
+        from draftguitools import gui_trackers, gui_snapper
+        import WorkingPlane
+
+        WorkingPlane.get_working_plane()
+        pending = []
+        original_delay = gui_trackers.ToDo.delay
+        def delay(function, argument):
+            if isinstance(getattr(function, "__self__", None), gui_trackers.Tracker):
+                pending.append((function, argument))
+            else:
+                original_delay(function, argument)
+        with patch.object(gui_trackers.ToDo, "delay", side_effect=delay):
+            snapper = gui_snapper.Snapper()
+            snapper.setTrackers(update_grid=False)
+            old_view = gui_trackers.gui_utils.get_3d_view()
+            old_graph = old_view.getSceneGraph()
+            old_switch = snapper.grid.switch
+            Gui.runCommand("Std_ViewCreate")
+            self._pump_draft_view(timeout_seconds=0.2)
+            other_view = gui_trackers.gui_utils.get_3d_view()
+            self.assertNotEqual(old_view, other_view)
+            other_graph = other_view.getSceneGraph()
+            widget = old_view.graphicsView()
+            while widget is not None and not isinstance(widget, QtWidgets.QMdiSubWindow):
+                widget = widget.parentWidget()
+            self.assertIsNotNone(widget)
+            widget.close()
+            QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+            self._pump_draft_view(timeout_seconds=0.2)
+            gc.collect()
+            self.assertIn(self.doc_name, App.listDocuments())
+            for row in snapper.trackers[1:]:
+                self.assertIsNone(row[0]._scene_graph)
+            self.assertEqual(old_graph.getRefCount(), 1)
+            while pending:
+                function, argument = pending.pop(0)
+                function(argument)
+            self.assertEqual(self._child_count(old_graph, old_switch), 0)
+            self.assertEqual(self._child_count(other_graph, old_switch), 0)
+            self.assertEqual(gui_trackers.gui_utils.get_3d_view(), other_view)
+            print("SINGLE_VIEW_CLOSE_ROOT_REFS", old_graph.getRefCount(), flush=True)
+
+    def test_undocked_view_tracker_releases_original_scene(self):
+        import gc
+        from unittest.mock import patch
+        from PySide import QtWidgets
+        from pivy import coin
+        from draftguitools import gui_trackers, gui_snapper
+        import WorkingPlane
+
+        WorkingPlane.get_working_plane()
+        Gui.runCommand("Std_ViewDockUndockFullscreen", 1)
+        self._pump_draft_view(timeout_seconds=0.3)
+        view = gui_trackers.gui_utils.get_3d_view()
+        self.assertIsNotNone(view)
+        widget = view.graphicsView()
+        container = widget
+        while container is not None and not container.isWindow():
+            self.assertNotIsInstance(container, QtWidgets.QMdiSubWindow)
+            container = container.parentWidget()
+        self.assertIsNotNone(container)
+        self.assertNotIsInstance(container, QtWidgets.QMdiSubWindow)
+        pending = []
+        original_delay = gui_trackers.ToDo.delay
+        def delay(function, argument):
+            if isinstance(getattr(function, "__self__", None), gui_trackers.Tracker):
+                pending.append((function, argument))
+            else:
+                original_delay(function, argument)
+        with patch.object(gui_trackers.ToDo, "delay", side_effect=delay):
+            snapper = gui_snapper.Snapper()
+            snapper.setTrackers(update_grid=False)
+            switch = snapper.grid.switch
+            graph = view.getSceneGraph()
+            marker = coin.SoSeparator()
+            graph.addChild(marker)
+            snapper.restack()
+            close_document(self.doc)
+            gc.collect()
+            for row in snapper.trackers[1:]:
+                self.assertIsNone(row[0]._scene_graph)
+            self.assertEqual(graph.getRefCount(), 1)
+            before = graph.getNumChildren()
+            while pending:
+                function, argument = pending.pop(0)
+                function(argument)
+            self.assertEqual(graph.getNumChildren(), before)
+            self.assertEqual(self._child_count(graph, switch), 0)
+            print("UNDOCKED_ROOT_REFS", graph.getRefCount(), flush=True)
 
     def _pump_draft_view(self, timeout_seconds: float = 5.0) -> None:
         deadline = time.monotonic() + timeout_seconds

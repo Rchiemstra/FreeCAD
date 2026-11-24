@@ -3,8 +3,8 @@
 """
 run_gui_tests.py
 
-List registered tests via `FreeCAD -t`, filter for GUI tests (names containing 'Gui'), and run each
-GUI test module using the specified FreeCAD executable.
+Discover GUI test suites by comparing registered test units from `FreeCAD -t` against
+`FreeCADCmd -t`, and run each GUI test module using the specified FreeCAD executable.
 
 Usage:
     run_gui_tests.py [FREECAD_EXEC]
@@ -35,11 +35,11 @@ import shutil
 import tempfile
 import time
 import zlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-# Required GUI suites. Extra registered Gui names are allowed; a missing
+# Required GUI suites. Extra registered GUI suites are allowed; a missing
 # required suite is a discovery failure, not a skip.
 EXPECTED_GUI_SUITES: tuple[str, ...] = (
     "GuiDocument",
@@ -58,6 +58,21 @@ EXPECTED_GUI_SUITES: tuple[str, ...] = (
     "TestAssemblyGui",
 )
 
+# These InitGui suites were previously absent from both CI test runners.
+# Each must execute at least one non-skipped test.
+NEWLY_REQUIRED_GUI_SUITES: tuple[str, ...] = (
+    "Workbench",
+    "Menu",
+    "TestGraphicsViewWrapping",
+    "TestMDIView",
+    "TestRubberbandSelection",
+    "TestSelectionVisual",
+    "TestCornerAxisCrossVisual",
+    "TestCoinNodeSnapshots",
+    "TestViewProviderLink",
+    "TestPartPreview",
+)
+
 # Diagnostic class units. Never a substitute for the aggregate TestSketcherGui.
 SKETCHER_GUI_CLASS_UNITS: tuple[str, ...] = (
     "SketcherTests.TestConstraintPreselectionGui.SketcherGuiTestCases",
@@ -73,6 +88,11 @@ _RAN_TESTS = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
 # unittest's final status line: "OK", "OK (skipped=2)", "FAILED (failures=1, errors=2)".
 # Anchored to the whole line so diagnostics like "FAILED to load ..." never match.
 _OUTCOME = re.compile(r"^(OK|FAILED|NO TESTS RAN)(?:\s*\(([^)]*)\))?\s*$")
+
+_LISTING_HEADER = "Registered test units:"
+_LISTING_FOOTER = "Please choose one or use 0 for all"
+_UNITTEST_RULE = re.compile(r"^-{10,}$")
+_TEST_UNIT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 RunCommand = Callable[[list[str]], tuple[int, str]]
 
@@ -97,6 +117,40 @@ def find_executable(arg: str | None) -> str:
         return str(p)
     # fallback: return as-is (may be on PATH)
     return arg
+
+
+def resolve_gui_executable(freecad_exec: str) -> str | None:
+    """Resolve the actual executable once, including PATH and symlinks."""
+    has_dir = os.sep in freecad_exec or (os.altsep is not None and os.altsep in freecad_exec)
+    located = freecad_exec if has_dir else shutil.which(freecad_exec)
+    if not located:
+        return None
+    try:
+        path = Path(located).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_file() or not os.access(str(path), os.X_OK):
+        return None
+    return str(path)
+
+
+def find_console_executable(freecad_exec: str) -> str | None:
+    """Return the resolved console target only if it shares the GUI's build directory."""
+    resolved = resolve_gui_executable(freecad_exec)
+    if not resolved:
+        return None
+    path = Path(resolved)
+    name = path.name
+    if name.startswith("FreeCADCmd"):
+        return str(path)
+    cmd_name = name.replace("FreeCAD", "FreeCADCmd", 1) if name.startswith("FreeCAD") else (
+        "FreeCADCmd.exe" if name.lower().endswith(".exe") else "FreeCADCmd"
+    )
+    sibling = path.with_name(cmd_name)
+    target = resolve_gui_executable(str(sibling))
+    if target and Path(target).parent == path.parent:
+        return target
+    return None
 
 
 def validate_executable(path: str) -> tuple[bool, str]:
@@ -361,22 +415,31 @@ def run_and_capture(cmd: list[str]) -> tuple[int, str]:
 
 
 def parse_registered_tests(output: str) -> list[str]:
-    """Parse output from `FreeCAD -t` and return a list of registered test unit names.
+    """Parse output from ``FreeCAD -t`` or ``FreeCADCmd -t`` into registered test unit names.
 
-    The function looks for the section starting with the literal 'Registered test units:' and
-    then collects non-empty, stripped lines from that point onwards as test names.
+    Starts collecting after the literal ``Registered test units:`` header, stops at the
+    ``TestApp.PrintAll()`` footer (``Please choose one or use 0 for all``) or unittest/shutdown
+    trailer, and ignores blank lines and non-identifier diagnostic lines.
     """
     lines = output.splitlines()
     tests: list[str] = []
     started = False
     for ln in lines:
         if not started:
-            if "Registered test units:" in ln:
+            if _LISTING_HEADER in ln:
                 started = True
             continue
         s = ln.strip()
         if not s:
-            # allow blank lines but keep going
+            continue
+        if (
+            s.startswith(_LISTING_FOOTER)
+            or _UNITTEST_RULE.match(s)
+            or _RAN_TESTS.match(s)
+            or s == "System exit"
+        ):
+            break
+        if not _TEST_UNIT_NAME.fullmatch(s):
             continue
         tests.append(s)
     return tests
@@ -397,24 +460,77 @@ def units_for_module(mod: str) -> list[str]:
     return [mod]
 
 
-def discover_gui_suites(
+def _parse_listing(
     listing_rc: int,
     listing_output: str,
-    expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
+    label: str,
 ) -> tuple[int, list[str], str]:
-    """Return (exit_code, gui_suite_names, error). exit_code 0 means discovery is usable."""
     if listing_rc != 0:
         return (
             1 if listing_rc < 0 else listing_rc,
             [],
-            f"Test discovery failed with exit code {_format_rc(listing_rc)}.",
+            f"{label} failed with exit code {_format_rc(listing_rc)}.",
         )
-    if "Registered test units:" not in listing_output:
-        return 2, [], "Test discovery output is missing 'Registered test units:'."
+    if _LISTING_HEADER not in listing_output:
+        return 2, [], f"{label} output is missing '{_LISTING_HEADER}'."
     tests = parse_registered_tests(listing_output)
     if not tests:
-        return 2, [], "Test discovery listed no registered units."
-    gui_tests = [t for t in tests if "Gui" in t]
+        return 2, [], f"{label} listed no registered units."
+    started = False
+    complete = False
+    for line in listing_output.splitlines():
+        if not started:
+            started = _LISTING_HEADER in line
+            continue
+        s = line.strip()
+        if s == _LISTING_FOOTER:
+            complete = True
+            break
+        if _UNITTEST_RULE.match(s) or _RAN_TESTS.match(s) or s == "System exit":
+            break
+    if not complete:
+        return 2, [], f"{label} output is incomplete (missing '{_LISTING_FOOTER}' footer)."
+    return 0, tests, ""
+
+
+def discover_gui_suites(
+    listing_rc: int,
+    listing_output: str,
+    console_listing_rc: int,
+    console_listing_output: str,
+    expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
+) -> tuple[int, list[str], str]:
+    """Return (exit_code, gui_suite_names, error). exit_code 0 means discovery is usable.
+
+    Selects every suite added by GUI initialization (the multiset difference between
+    ``FreeCAD -t`` and ``FreeCADCmd -t``) in registration order without duplicates, while also
+    preserving any suite shared with the console registry whose name contains ``Gui`` or appears
+    in ``expected_suites``.
+    """
+    gui_rc, gui_all, gui_err = _parse_listing(listing_rc, listing_output, "Test discovery")
+    if gui_rc != 0:
+        return gui_rc, [], gui_err
+
+    console_rc, console_all, console_err = _parse_listing(
+        console_listing_rc, console_listing_output, "Console test discovery"
+    )
+    if console_rc != 0:
+        return console_rc, [], console_err
+
+    expected_set = set(expected_suites)
+    remaining_console = Counter(console_all)
+    gui_tests: list[str] = []
+    seen: set[str] = set()
+    for name in gui_all:
+        if remaining_console[name] > 0:
+            remaining_console[name] -= 1
+            if "Gui" not in name and name not in expected_set:
+                continue
+        if name in seen:
+            continue
+        seen.add(name)
+        gui_tests.append(name)
+
     missing = [name for name in expected_suites if name not in gui_tests]
     if missing:
         return (
@@ -862,6 +978,7 @@ def _rerun_under_gdb(freecad_exec: str, unit: str, run: RunCommand) -> str:
 def run_gui_modules(
     freecad_exec: str,
     *,
+    freecad_cmd_exec: str | None = None,
     run: RunCommand = run_and_capture,
     expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
     crash_helper: bool = True,
@@ -869,6 +986,12 @@ def run_gui_modules(
     symbolize: Symbolize | None = None,
 ) -> int:
     """Discover GUI suites and run them. Non-zero means the e2e gate failed."""
+    resolved_gui = resolve_gui_executable(freecad_exec)
+    if not resolved_gui:
+        _log(f"Could not locate GUI executable {freecad_exec}.", error=True)
+        return 2
+    freecad_exec = resolved_gui
+    required_suites = tuple(dict.fromkeys((*expected_suites, *NEWLY_REQUIRED_GUI_SUITES)))
     listing_rc, listing_out = run([freecad_exec, "-t"])
     if listing_rc != 0:
         _log(
@@ -877,8 +1000,41 @@ def run_gui_modules(
         )
         if run is not run_and_capture:
             _log(listing_out, error=True)
+        disc_rc, _, disc_err = discover_gui_suites(
+            listing_rc, listing_out, 0, "", expected_suites
+        )
+        _log(disc_err, error=True)
+        return disc_rc
+
+    console_exec = find_console_executable(freecad_exec)
+    if freecad_cmd_exec and (
+        not console_exec
+        or resolve_gui_executable(freecad_cmd_exec) != console_exec
+    ):
+        _log("Requested console executable is not the GUI binary's companion.", error=True)
+        return 2
+    if not console_exec:
+        _log(
+            f"Could not locate companion FreeCADCmd executable for {freecad_exec}.",
+            error=True,
+        )
+        return 2
+
+    console_rc, console_out = run([console_exec, "-t"])
+    if console_rc != 0:
+        _log(
+            f"Warning: listing console tests returned exit code {_format_rc(console_rc)}.",
+            error=True,
+        )
+        if run is not run_and_capture:
+            _log(console_out, error=True)
+
     disc_rc, gui_tests, disc_err = discover_gui_suites(
-        listing_rc, listing_out, expected_suites
+        listing_rc,
+        listing_out,
+        console_rc,
+        console_out,
+        required_suites,
     )
     if disc_rc != 0:
         _log(disc_err, error=True)
@@ -905,7 +1061,7 @@ def run_gui_modules(
             rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
             if run is not run_and_capture:
                 _log(out)
-            eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in expected_suites)
+            eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in required_suites)
             if eval_rc != 0:
                 _log(f"Module {unit}: {eval_err}", error=True)
                 last_rc = eval_rc
