@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -377,22 +379,77 @@ def _python_reaches_public_facade(
     return visit(start)
 
 
+def _assert_native_admission_route(body: str) -> None:
+    allocation = body.find("autoresult=std::make_unique<RecomputeHandle>(*this,0)")
+    empty_submit = body.find("recomputeCoordinator().submit(std::move(request))", allocation)
+    empty_bind = body.find("result->bindAdmissionId(id)", empty_submit)
+    skip_signal = body.find("signalSkipRecompute(", empty_bind)
+    before_signal = body.find("signalBeforeRecompute(", skip_signal)
+    registration = body.find("Internal::ensureGenericIsolatedRecomputeRegistered()", before_signal)
+    plan = body.find("Internal::makeGenericIsolatedRecomputeRequest(", registration)
+    submit = body.find("recomputeCoordinator().submit(std::move(request),admissionId)", plan)
+    bind = body.find("result->bindAdmissionId(id)", submit)
+    returned = body.find("returnresult;", bind)
+    assert 0 <= allocation < empty_submit < empty_bind < skip_signal < before_signal < registration < plan < submit < bind < returned
+
+
+def _assert_python_admission_route(binding: str, helper: str, factory: str) -> None:
+    lane = binding.find("if(getDocumentPtr()->executionLane())")
+    routed = binding.find("returnsubmitRecomputeCommand(*getDocumentPtr(),objs,Base::asBoolean(force),options)", lane)
+    wrapper = binding.find("Py::Objectwrapper(makeRecomputeHandlePyForAdmission(*getDocumentPtr()),true)", routed)
+    native = binding.find("autohandle=getDocumentPtr()->recomputeAsync(objs,Base::asBoolean(force),options)", wrapper)
+    bind = binding.find("->bindAdmissionId(handle->id())", native)
+    returned = binding.find("returnPy::new_reference_to(wrapper)", bind)
+    assert 0 <= lane < routed < wrapper < native < bind < returned
+    value = factory.find("std::make_unique<RecomputeHandle>(document,0)")
+    wrap = factory.find("newRecomputeHandlePy(value.get())", value)
+    release = factory.find("value.release()", wrap)
+    assert 0 <= value < wrap < release
+    payload = helper.find("command.recompute->force=force")
+    recompute_wrapper = helper.find("Py::ObjectrecomputeWrapper(makeRecomputeHandlePyForAdmission(document),true)", payload)
+    command_wrapper = helper.find("Py::ObjectcommandWrapper(makeDocumentCommandHandlePy(DocumentCommandHandle()),true)", recompute_wrapper)
+    submit = helper.find("execution.trySubmit(std::move(command))", command_wrapper)
+    accepted = helper.find("if(!outcome.accepted()){raiseSubmitOutcome(outcome);}", submit)
+    bind_id = helper.find("->bindAdmissionId(static_cast<DocumentRecomputeId>(recomputeId))", accepted)
+    return_recompute = helper.find("returnPy::new_reference_to(recomputeWrapper)", bind_id)
+    set_command = helper.find("setDocumentCommandHandlePy(commandWrapper.ptr(),commandHandle)", return_recompute)
+    return_command = helper.find("returnPy::new_reference_to(commandWrapper)", set_command)
+    assert 0 <= payload < recompute_wrapper < command_wrapper < submit < accepted < bind_id < return_recompute < set_command < return_command
+
+
+def test_admission_route_negative_controls() -> None:
+    native = _compact(_body(DOCUMENT_SOURCE, "Document::recomputeAsync"))
+    binding = _compact(_body(DOCUMENT_PYTHON, "DocumentPy::recomputeAsync"))
+    helper = _compact(_body(DOCUMENT_PYTHON, "submitRecomputeCommand"))
+    factory = _compact(_body(DOCUMENT_PYTHON, "makeRecomputeHandlePyForAdmission"))
+    for token in ("autoresult=std::make_unique<RecomputeHandle>(*this,0)",
+                  "Internal::ensureGenericIsolatedRecomputeRegistered()",
+                  "Internal::makeGenericIsolatedRecomputeRequest(",
+                  "recomputeCoordinator().submit(std::move(request),admissionId)",
+                  "result->bindAdmissionId(id)"):
+        with pytest.raises(AssertionError):
+            _assert_native_admission_route(native.replace(token, "REMOVED", 1))
+    for index, token in ((0, "returnsubmitRecomputeCommand("),
+                         (0, "->bindAdmissionId(handle->id())"),
+                         (1, "command.recompute->force=force"),
+                         (1, "execution.trySubmit(std::move(command))"),
+                         (1, "if(!outcome.accepted()){raiseSubmitOutcome(outcome);}"),
+                         (1, "->bindAdmissionId(static_cast<DocumentRecomputeId>(recomputeId))"),
+                         (1, "returnPy::new_reference_to(commandWrapper)"),
+                         (2, "newRecomputeHandlePy(value.get())")):
+        values = [binding, helper, factory]
+        assert token in values[index]
+        values[index] = values[index].replace(token, "REMOVED", 1)
+        with pytest.raises(AssertionError):
+            _assert_python_admission_route(*values)
+
+
 def test_sync_async_and_feature_facades_share_the_coordinator_generic_plan() -> None:
     asynchronous = _compact(_body(DOCUMENT_SOURCE, "Document::recomputeAsync"))
     synchronous = _compact(_body(DOCUMENT_SOURCE, "Document::recompute"))
     feature = _compact(_body(DOCUMENT_SOURCE, "Document::recomputeFeature"))
 
-    registration = asynchronous.find(
-        "Internal::ensureGenericIsolatedRecomputeRegistered()"
-    )
-    plan = asynchronous.find(
-        "Internal::makeGenericIsolatedRecomputeRequest(", registration
-    )
-    submission = asynchronous.find("recomputeCoordinator().submit(", plan)
-    handle = asynchronous.find(
-        "std::make_unique<RecomputeHandle>(*this,id)", submission
-    )
-    assert 0 <= registration < plan < submission < handle
+    _assert_native_admission_route(asynchronous)
 
     async_call = synchronous.find("recomputeAsync(objs,force,options)")
     wait = synchronous.find("handle->wait(", async_call)
@@ -423,9 +480,11 @@ def test_python_binding_returns_the_exported_handle_and_declares_its_surface() -
     handle_stub = ast.parse(_read(HANDLE_STUB), filename=HANDLE_STUB.as_posix())
 
     assert 'addType(&RecomputeHandlePy::Type,pAppModule,"RecomputeHandle")' in setup
-    native_call = binding.find("getDocumentPtr()->recomputeAsync(")
-    wrapper = binding.find("newRecomputeHandlePy(handle.release())", native_call)
-    assert 0 <= native_call < wrapper
+    _assert_python_admission_route(
+        binding,
+        _compact(_body(DOCUMENT_PYTHON, "submitRecomputeCommand")),
+        _compact(_body(DOCUMENT_PYTHON, "makeRecomputeHandlePyForAdmission")),
+    )
 
     imported = {
         alias.name
