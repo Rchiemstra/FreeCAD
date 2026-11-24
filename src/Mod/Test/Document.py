@@ -1246,7 +1246,7 @@ class DocumentRecomputeCases(unittest.TestCase):
         self.Doc.removeObject(L8.Name)
 
     def _submitAndWaitRecomputeAsync(
-        self, objects=None, force=False, check_cycle=False, timeout=10.0
+        self, objects=None, force=False, check_cycle=False, timeout=10.0, selection_factory=None
     ):
         import time
 
@@ -1254,7 +1254,8 @@ class DocumentRecomputeCases(unittest.TestCase):
         handle = None
         while True:
             try:
-                handle = self.Doc.recomputeAsync(objects, force, check_cycle)
+                selection = selection_factory() if selection_factory is not None else objects
+                handle = self.Doc.recomputeAsync(selection, force, check_cycle)
                 break
             except RuntimeError as exc:
                 if "lane is busy" not in str(exc).lower() or time.monotonic() >= deadline:
@@ -1315,11 +1316,23 @@ class DocumentRecomputeCases(unittest.TestCase):
                 )
 
             with self.subTest(selection=make_selection.__name__, entry="async"):
-                selection = make_selection(selected)
-                status = self._submitAndWaitRecomputeAsync(selection, True)
+                if make_selection is CountingSequence:
+                    attempts = []
+
+                    def make_attempt():
+                        selection = CountingSequence(selected)
+                        attempts.append(selection)
+                        return selection
+
+                    status = self._submitAndWaitRecomputeAsync(
+                        force=True, selection_factory=make_attempt
+                    )
+                    self.assertTrue(attempts)
+                    for selection in attempts:
+                        self.assertEqual(selection.reads, [1, 1])
+                else:
+                    status = self._submitAndWaitRecomputeAsync(make_selection(selected), True)
                 self.assertEqual(self._recomputeStatusState(status), "completed", status)
-                if isinstance(selection, CountingSequence):
-                    self.assertEqual(selection.reads, [1, 1])
                 initial = (initial[0] + 1, initial[1] + 1, initial[2])
                 self.assertEqual(
                     (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount), initial
