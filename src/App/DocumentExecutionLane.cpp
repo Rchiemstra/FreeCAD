@@ -995,16 +995,85 @@ void DocumentExecutionLane::executeActiveCommand()
     executeActiveRecompute();
 }
 
-void DocumentExecutionLane::executeActiveRecompute()
+std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::waitForRecompute(
+    const DocumentRecomputeId id, const std::chrono::steady_clock::time_point deadline)
 {
+    std::optional<DocumentCommandSnapshot> command;
+    {
+        std::lock_guard lock(_mutex);
+        if (_active && _active->snapshot.recompute
+            && (_active->recomputeId == id || _active->snapshot.recompute->id == id)) {
+            command = _active->snapshot;
+        }
+        else {
+            for (const auto& [commandId, snapshot] : _terminalSnapshots) {
+                static_cast<void>(commandId);
+                if (snapshot.recompute && snapshot.recompute->id == id) {
+                    command = snapshot;
+                    break;
+                }
+            }
+        }
+    }
+    if (!command) {
+        return std::nullopt;
+    }
+    if (!command->terminal()) {
+        if (_advancingRecompute) {
+            throw DocumentWouldBlock(
+                "cannot wait for the active recompute inside its submission, commit or "
+                "presentation callback; use RecomputeHandle::status() instead");
+        }
+        // A dispatch drain has suspended the enclosing command loop. Drive that
+        // same lifecycle, including pre-binding submission and terminal publication,
+        // rather than polling the coordinator behind its publisher's back.
+        executeActiveRecompute(deadline);
+        command = commandStatus(command->id);
+    }
+    if (!command->recompute) {
+        DocumentRecomputeSnapshot unavailable;
+        unavailable.id = id;
+        unavailable.state = DocumentRecomputeState::Cancelled;
+        unavailable.diagnostic = command->diagnostic;
+        return unavailable;
+    }
+    auto snapshot = recomputeSnapshotFromObservation(*command->recompute);
+    if (command->terminal()
+        && (!snapshot.terminal() || command->state == DocumentCommandState::Cancelled
+            || (command->state == DocumentCommandState::Failed
+                && snapshot.state == DocumentRecomputeState::Completed))) {
+        // Submission/polling failure or teardown can precede a terminal observation;
+        // presentation can also fail after the coordinator completed successfully.
+        // Report the command's failure without misidentifying a live admission.
+        snapshot.state = command->state == DocumentCommandState::Cancelled
+            ? DocumentRecomputeState::Cancelled
+            : DocumentRecomputeState::PartialFailure;
+        snapshot.diagnostic = command->diagnostic;
+    }
+    return snapshot;
+}
+
+void DocumentExecutionLane::executeActiveRecompute(
+    const std::chrono::steady_clock::time_point deadline)
+{
+    DocumentCommandId commandId;
+    {
+        std::lock_guard lock(_mutex);
+        if (!_active) {
+            return;
+        }
+        commandId = _active->id;
+    }
     while (true) {
+        // No ActiveCommand reference or coordinator operation survives this
+        // drain. A dispatched wait may finish this command before returning.
         drainDispatchQueue();
 
         std::optional<std::string> cancelReason;
         bool submitNeeded = false;
         {
             std::lock_guard lock(_mutex);
-            if (!_active) {
+            if (!_active || _active->id != commandId) {
                 return;
             }
             if (!_ownerDocumentAlive) {
@@ -1018,6 +1087,20 @@ void DocumentExecutionLane::executeActiveRecompute()
             completeActiveCommand(DocumentCommandState::Cancelled, std::move(*cancelReason));
             return;
         }
+
+        struct AdvancingRecompute
+        {
+            bool& advancing;
+            explicit AdvancingRecompute(bool& advancing)
+                : advancing(advancing)
+            {
+                advancing = true;
+            }
+            ~AdvancingRecompute()
+            {
+                advancing = false;
+            }
+        } advancing {_advancingRecompute};
 
         if (submitNeeded) {
             const auto& coalescingKey = _active->command.recompute
@@ -1226,7 +1309,9 @@ void DocumentExecutionLane::executeActiveRecompute()
             return;
         }
 
-        drainDispatchQueue();
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return;
+        }
         std::this_thread::sleep_for(1ms);
     }
 }
