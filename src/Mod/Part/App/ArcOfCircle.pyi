@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export
+from Base.Metadata import export, typing_only
 from ArcOfConic import ArcOfConic
-from typing import Final
+from typing import Final, overload
+from Base.Vector import Vector
 
 @export(
     PythonName="Part.ArcOfCircle",
@@ -26,3 +27,11 @@ class ArcOfCircle(ArcOfConic):
 
     Circle: Final[object] = ...
     """The internal circle representation"""
+
+    @typing_only
+    @overload
+    def __init__(self, circle: "Part.Circle", u1: float, u2: float, sense: bool = ..., /) -> None: ...
+
+    @typing_only
+    @overload
+    def __init__(self, p1: Vector, p2: Vector, p3: Vector, /) -> None: ...
