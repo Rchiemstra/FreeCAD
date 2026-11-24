@@ -12,7 +12,11 @@ endif()
 add_subdirectory(lazy_loader)
 
 if(NOT FREECAD_USE_EXTERNAL_E57FORMAT)
+    # FreeCAD has already selected the compiler launchers, including explicit
+    # empty choices. Do not let the bundled library replace them with ccache.
+    set(E57_USE_FREECAD_COMPILER_LAUNCHERS ON)
     add_subdirectory(libE57Format)
+    unset(E57_USE_FREECAD_COMPILER_LAUNCHERS)
 endif()
 
 if(BUILD_MATERIAL_EXTERNAL)
