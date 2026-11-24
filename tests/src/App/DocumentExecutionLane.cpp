@@ -43,9 +43,41 @@ namespace App::Internal
 class DocumentExecutionLaneTestAccess
 {
 public:
+    using Hook = void (*)();
+
     static bool isCollaborationOwnerThread(const Document& document) noexcept
     {
         return document.isCollaborationOwnerThread();
+    }
+
+    [[nodiscard]] static bool tryLockMutex(const DocumentExecutionLane& lane)
+    {
+        std::unique_lock<std::mutex> probe(lane._mutex, std::try_to_lock);
+        return probe.owns_lock();
+    }
+
+    static void setPrePumpSnapshotCaptureHook(Hook hook) noexcept
+    {
+        DocumentExecutionLane::_prePumpSnapshotCaptureTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPumpSnapshotCaptureHook(Hook hook) noexcept
+    {
+        DocumentExecutionLane::_pumpSnapshotCaptureTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPrePublishActiveSnapshotHook(Hook hook) noexcept
+    {
+        DocumentExecutionLane::_prePublishActiveSnapshotTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPreCancelSnapshotMutationHook(Hook hook) noexcept
+    {
+        DocumentExecutionLane::_preCancelSnapshotMutationTestHook.store(
+            hook, std::memory_order_release);
     }
 };
 
@@ -1586,6 +1618,330 @@ TEST_F(DocumentExecutionLaneTest, DrainDispatchQueueSkipsSubsequentTasksAfterRee
            "closes the owning document";
     EXPECT_TRUE(task2Dropped);
     EXPECT_EQ(App::GetApplication().getDocument(closeDocName.c_str()), nullptr);
+}
+
+TEST_F(DocumentExecutionLaneTest, PumpSnapshotCaptureAndCancelOverlapPreservesLongReason)
+{
+    _blocking->reset();
+
+    struct OverlapState
+    {
+        std::thread::id ownerThreadId {};
+
+        // Step 1: cross-thread mutex exclusion probe at the capture critical section.
+        // Touched only by the owner thread (iteration 1) and the test thread.
+        std::mutex captureMutex;
+        std::condition_variable captureCv;
+        std::size_t captureProbeCalls {0};
+        bool ownerInCaptureSection {false};
+        bool releaseCaptureProbe {false};
+        bool captureProbeTimedOut {false};
+
+        // Owner-thread-only pump iteration counter (accessed only on ownerThreadId).
+        std::size_t preCaptureCalls {0};
+
+        // Step 2 pre-overlap rendezvous: touched by owner (iteration 2, before snapshot
+        // read R), test thread (before spawning canceller), and canceller (only BEFORE
+        // snapshot write W). Disjoint from postMutex so W -> postMutex cannot create a
+        // happens-before edge to R in the unfixed build.
+        std::mutex preMutex;
+        std::condition_variable preCv;
+        std::thread::id cancelThreadId {};
+        bool ownerReadyForOverlap {false};
+        bool cancelAtMutationHook {false};
+        bool cancelReadyForOverlap {false};
+        bool preCaptureTimedOut {false};
+
+        // Step 2 post-write gate and Step 3 next-pump pause: touched by canceller ONLY
+        // AFTER W, by owner ONLY AFTER R (pre-publish on iteration 2 and pre-capture
+        // on iteration 3), and by test thread after spawning canceller.
+        std::mutex postMutex;
+        std::condition_variable postCv;
+        bool ownerAtPublishHook {false};
+        bool cancelMutationCompleted {false};
+        bool cancelResult {false};
+        bool ownerPausedOnNextPump {false};
+        bool allowSubsequentPumps {false};
+        bool postPublishTimedOut {false};
+    };
+
+    static std::mutex activeStateMutex;
+    static std::shared_ptr<OverlapState> activeState;
+
+    auto state = std::make_shared<OverlapState>();
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    state->ownerThreadId = lane->ownerThreadId();
+    ASSERT_NE(std::this_thread::get_id(), state->ownerThreadId);
+    {
+        std::lock_guard lock(activeStateMutex);
+        activeState = state;
+    }
+
+    struct CleanupGuard
+    {
+        std::shared_ptr<OverlapState> state;
+        std::shared_ptr<LaneBlockingRecomputeState> blocking;
+        std::thread canceller;
+
+        CleanupGuard(std::shared_ptr<OverlapState> overlapState,
+                     std::shared_ptr<LaneBlockingRecomputeState> blockingState)
+            : state(std::move(overlapState))
+            , blocking(std::move(blockingState))
+        {}
+
+        CleanupGuard(const CleanupGuard&) = delete;
+        CleanupGuard& operator=(const CleanupGuard&) = delete;
+
+        void unblockAll() const
+        {
+            App::Internal::DocumentExecutionLaneTestAccess::setPrePumpSnapshotCaptureHook(nullptr);
+            App::Internal::DocumentExecutionLaneTestAccess::setPumpSnapshotCaptureHook(nullptr);
+            App::Internal::DocumentExecutionLaneTestAccess::setPrePublishActiveSnapshotHook(
+                nullptr);
+            App::Internal::DocumentExecutionLaneTestAccess::setPreCancelSnapshotMutationHook(
+                nullptr);
+            {
+                std::lock_guard lock(activeStateMutex);
+                if (activeState == state) {
+                    activeState.reset();
+                }
+            }
+            if (state) {
+                {
+                    std::lock_guard lock(state->captureMutex);
+                    state->releaseCaptureProbe = true;
+                }
+                state->captureCv.notify_all();
+                {
+                    std::lock_guard lock(state->preMutex);
+                    state->cancelReadyForOverlap = true;
+                }
+                state->preCv.notify_all();
+                {
+                    std::lock_guard lock(state->postMutex);
+                    state->cancelMutationCompleted = true;
+                    state->allowSubsequentPumps = true;
+                }
+                state->postCv.notify_all();
+            }
+            if (blocking) {
+                blocking->release();
+            }
+        }
+
+        ~CleanupGuard()
+        {
+            // Release all blocked callbacks and the detached recompute task BEFORE
+            // joining canceller so an early ASSERT failure or timeout cannot deadlock.
+            unblockAll();
+            if (canceller.joinable()) {
+                canceller.join();
+            }
+        }
+    } cleanup(state, _blocking);
+
+    App::Internal::DocumentExecutionLaneTestAccess::setPumpSnapshotCaptureHook(+[]() {
+        std::shared_ptr<OverlapState> current;
+        {
+            std::lock_guard lock(activeStateMutex);
+            current = activeState;
+        }
+        if (!current || std::this_thread::get_id() != current->ownerThreadId) {
+            return;
+        }
+        std::unique_lock lock(current->captureMutex);
+        ++current->captureProbeCalls;
+        if (current->captureProbeCalls == 1) {
+            current->ownerInCaptureSection = true;
+            current->captureCv.notify_all();
+            if (!current->captureCv.wait_for(lock, 5s, [&] {
+                    return current->releaseCaptureProbe;
+                })) {
+                current->captureProbeTimedOut = true;
+            }
+        }
+    });
+
+    App::Internal::DocumentExecutionLaneTestAccess::setPrePumpSnapshotCaptureHook(+[]() {
+        std::shared_ptr<OverlapState> current;
+        {
+            std::lock_guard lock(activeStateMutex);
+            current = activeState;
+        }
+        if (!current || std::this_thread::get_id() != current->ownerThreadId) {
+            return;
+        }
+        const auto call = ++current->preCaptureCalls;
+        if (call == 2) {
+            std::unique_lock lock(current->preMutex);
+            current->ownerReadyForOverlap = true;
+            current->preCv.notify_all();
+            if (!current->preCv.wait_for(lock, 5s, [&] {
+                    return current->cancelReadyForOverlap;
+                })) {
+                current->preCaptureTimedOut = true;
+            }
+        }
+        else if (call == 3) {
+            std::unique_lock lock(current->postMutex);
+            current->ownerPausedOnNextPump = true;
+            current->postCv.notify_all();
+            if (!current->postCv.wait_for(lock, 5s, [&] {
+                    return current->allowSubsequentPumps;
+                })) {
+                current->postPublishTimedOut = true;
+            }
+        }
+    });
+
+    App::Internal::DocumentExecutionLaneTestAccess::setPreCancelSnapshotMutationHook(+[]() {
+        std::shared_ptr<OverlapState> current;
+        {
+            std::lock_guard lock(activeStateMutex);
+            current = activeState;
+        }
+        if (!current) {
+            return;
+        }
+        {
+            std::lock_guard lock(current->preMutex);
+            if (std::this_thread::get_id() != current->cancelThreadId) {
+                return;
+            }
+            current->cancelAtMutationHook = true;
+            current->cancelReadyForOverlap = true;
+        }
+        current->preCv.notify_all();
+    });
+
+    App::Internal::DocumentExecutionLaneTestAccess::setPrePublishActiveSnapshotHook(+[]() {
+        std::shared_ptr<OverlapState> current;
+        {
+            std::lock_guard lock(activeStateMutex);
+            current = activeState;
+        }
+        if (!current || std::this_thread::get_id() != current->ownerThreadId) {
+            return;
+        }
+        if (current->preCaptureCalls == 2) {
+            std::unique_lock lock(current->postMutex);
+            current->ownerAtPublishHook = true;
+            current->postCv.notify_all();
+            if (!current->postCv.wait_for(lock, 5s, [&] {
+                    return current->cancelMutationCompleted;
+                })) {
+                current->postPublishTimedOut = true;
+            }
+        }
+    });
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeLaneBlockingRecomputeCommand());
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted(5s));
+
+    // Step 1: Witness from a non-owner thread that DocumentExecutionLane::_mutex
+    // is held across pumpActiveRecompute()'s snapshot capture critical section.
+    {
+        std::unique_lock lock(state->captureMutex);
+        ASSERT_TRUE(
+            state->captureCv.wait_for(lock, 5s, [&] { return state->ownerInCaptureSection; }));
+    }
+    bool mutexAcquiredDuringCapture = false;
+    for (int attempt = 0; attempt < 64 && !mutexAcquiredDuringCapture; ++attempt) {
+        mutexAcquiredDuringCapture =
+            App::Internal::DocumentExecutionLaneTestAccess::tryLockMutex(*lane);
+    }
+    EXPECT_FALSE(mutexAcquiredDuringCapture)
+        << "pumpActiveRecompute must hold DocumentExecutionLane::_mutex while capturing "
+           "command.snapshot";
+
+    // Disarm the inside-capture hook before releasing iteration 1 so iteration 2's
+    // capture/cancel overlap runs without any hook inside the capture section.
+    App::Internal::DocumentExecutionLaneTestAccess::setPumpSnapshotCaptureHook(nullptr);
+    {
+        std::lock_guard lock(state->captureMutex);
+        state->releaseCaptureProbe = true;
+    }
+    state->captureCv.notify_all();
+
+    // Step 2: Pause iteration 2 immediately before snapshot capture (outside _mutex),
+    // then run cancelCommand() with a long non-SSO diagnostic on a separate thread.
+    // Neither the test thread nor canceller touches preMutex after canceller's
+    // pre-mutation release, so in an unfixed build there is no happens-before edge
+    // between the owner's snapshot copy and canceller's snapshot mutation under TSAN.
+    {
+        std::unique_lock lock(state->preMutex);
+        ASSERT_TRUE(state->preCv.wait_for(lock, 5s, [&] { return state->ownerReadyForOverlap; }));
+    }
+
+    const std::string longCancelReason =
+        "cooperative-cancel-during-pump-snapshot-capture:"
+        + std::string(192, 'R')
+        + ":must-survive-cancellation-merge-and-terminal-completion";
+    ASSERT_GT(longCancelReason.size(), 128U);
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    cleanup.canceller = std::thread([state, commandHandle, longCancelReason]() mutable {
+        {
+            std::lock_guard lock(state->preMutex);
+            state->cancelThreadId = std::this_thread::get_id();
+        }
+        const bool cancelled = commandHandle.cancel(longCancelReason);
+        {
+            std::lock_guard lock(state->postMutex);
+            state->cancelResult = cancelled;
+            state->cancelMutationCompleted = true;
+        }
+        state->postCv.notify_all();
+    });
+
+    // Step 3: Wait until canceller has completed its snapshot write and iteration 2
+    // has finished publishActiveSnapshot() so iteration 3 is paused after its
+    // coordinator poll/status and before it captures or publishes _active->snapshot.
+    bool cancelResult = false;
+    {
+        std::unique_lock lock(state->postMutex);
+        ASSERT_TRUE(state->postCv.wait_for(lock, 5s, [&] {
+            return state->cancelMutationCompleted && state->ownerPausedOnNextPump;
+        }));
+        cancelResult = state->cancelResult;
+        EXPECT_TRUE(state->ownerAtPublishHook);
+        EXPECT_FALSE(state->postPublishTimedOut);
+    }
+    cleanup.canceller.join();
+    {
+        std::lock_guard lock(state->captureMutex);
+        EXPECT_FALSE(state->captureProbeTimedOut);
+    }
+    {
+        std::lock_guard lock(state->preMutex);
+        EXPECT_TRUE(state->cancelAtMutationHook);
+        EXPECT_FALSE(state->preCaptureTimedOut);
+    }
+    EXPECT_TRUE(cancelResult);
+
+    const auto mergedActiveSnapshot = commandHandle.status();
+    EXPECT_EQ(mergedActiveSnapshot.state, App::DocumentCommandState::Cancelling);
+    EXPECT_EQ(mergedActiveSnapshot.diagnostic, longCancelReason);
+
+    // Step 4: Resume subsequent pumps and release the detached recompute task;
+    // verify terminal Cancelled state and long diagnostic survive completion.
+    {
+        std::lock_guard lock(state->postMutex);
+        state->allowSubsequentPumps = true;
+    }
+    state->postCv.notify_all();
+    _blocking->release();
+
+    ASSERT_TRUE(waitForTerminal(commandHandle, 5s));
+    const auto terminalSnapshot = commandHandle.status();
+    EXPECT_EQ(terminalSnapshot.state, App::DocumentCommandState::Cancelled);
+    EXPECT_EQ(terminalSnapshot.diagnostic, longCancelReason);
+    ASSERT_TRUE(terminalSnapshot.recompute.has_value());
+    EXPECT_EQ(terminalSnapshot.recompute->state, App::DocumentCommandRecomputeState::Cancelled);
+    EXPECT_EQ(terminalSnapshot.recompute->diagnostic, longCancelReason);
 }
 
 }  // namespace
