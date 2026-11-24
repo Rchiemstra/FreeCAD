@@ -978,10 +978,9 @@ def _make_scene_for_node(type_name: str, fixture: _SnapshotFixture):
         "SoFCIndexedFaceSetPerVertexColor",
         "SoFCIndexedFaceSetTranslucent",
     ):
-        # SoFCIndexedFaceSet test geometry does not provide normals. Without normals, lighting
-        # contributes only ambient, which makes all material variants appear nearly black.
-        # Provide one normal per face (triangle) so PER_FACE/PER_VERTEX material bindings
-        # visibly differ under the default directional light.
+        # Give each triangle a flat normal so material variants differ under the light.
+        # The mesh renderer builds buffers for indexed per-vertex normals; repeating each
+        # triangle's normal index at its three corners preserves the same flat shading.
         normals = coin.SoNormal()
         normals.vector.setValues(
             0,
@@ -1002,7 +1001,7 @@ def _make_scene_for_node(type_name: str, fixture: _SnapshotFixture):
             ],
         )
         normal_bind = coin.SoNormalBinding()
-        normal_bind.value = coin.SoNormalBinding.PER_FACE
+        normal_bind.value = coin.SoNormalBinding.PER_VERTEX_INDEXED
         root.addChild(normals)
         root.addChild(normal_bind)
 
@@ -1057,6 +1056,9 @@ def _make_scene_for_node(type_name: str, fixture: _SnapshotFixture):
                 3, 7, 4, -1,  3, 4, 0, -1,  # -X
             ])
             # fmt: on
+        triangle_count = faces.coordIndex.getNum() // 4
+        normal_indices = [value for i in range(triangle_count) for value in (i, i, i, -1)]
+        faces.normalIndex.setValues(0, len(normal_indices), normal_indices)
         material = coin.SoMaterial()
         if type_name == "SoFCIndexedFaceSetPerFaceColor":
             # 12 faces (triangles).

@@ -40,15 +40,6 @@ option(FREECAD_USE_CCACHE "Auto detect and use ccache during compilation" ON)
 # provide a scanner such as clang-scan-deps.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-if(FREECAD_USE_CCACHE)
-    find_program(CCACHE_PROGRAM ccache)  #This check should occur before project()
-    if(CCACHE_PROGRAM)
-        message(STATUS "Using ccache found at: " ${CCACHE_PROGRAM})
-        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    endif()
-endif()
-
 # Version and Package Name are set in the version.json file and propagate to all other
 # files with version information in them either via CMake or via the sync_version.py
 # script (in src/Tools/)
@@ -61,6 +52,22 @@ string(JSON PACKAGE_VERSION_SUFFIX GET ${VERSION_JSON} "version_suffix")
 string(JSON PACKAGE_BUILD_VERSION GET ${VERSION_JSON} "build_version")
 
 project(${_PROJECT_NAME})
+
+# project() initializes launcher settings from the toolchain and environment.
+# A defined launcher (including an empty one) is an explicit choice.
+if(FREECAD_USE_CCACHE)
+    if(NOT DEFINED CMAKE_C_COMPILER_LAUNCHER OR NOT DEFINED CMAKE_CXX_COMPILER_LAUNCHER)
+        find_program(CCACHE_PROGRAM ccache)
+        if(CCACHE_PROGRAM)
+            foreach(_lang C CXX)
+                if(NOT DEFINED CMAKE_${_lang}_COMPILER_LAUNCHER)
+                    set(CMAKE_${_lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+                    message(STATUS "Using ccache for ${_lang}: ${CCACHE_PROGRAM}")
+                endif()
+            endforeach()
+        endif()
+    endif()
+endif()
 string(TIMESTAMP PACKAGE_COPYRIGHT_YEAR "%Y")
 
 set(PACKAGE_VERSION "${PACKAGE_VERSION_MAJOR}.${PACKAGE_VERSION_MINOR}.${PACKAGE_VERSION_PATCH}")

@@ -1737,8 +1737,10 @@ Py::Object View3DInventorPy::listNavigationTypes()
     std::vector<Base::Type> types;
     Py::List styles;
     Base::Type::getAllDerivedFrom(UserNavigationStyle::getClassTypeId(), types);
-    for (auto it = types.begin() + 1; it != types.end(); ++it) {
-        styles.append(Base::toPyString(it->getName()));
+    for (const auto& type : types) {
+        if (type.canInstantiate()) {
+            styles.append(Base::toPyString(type.getName()));
+        }
     }
     return styles;
 }

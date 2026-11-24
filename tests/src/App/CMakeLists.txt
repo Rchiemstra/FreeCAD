@@ -62,6 +62,7 @@ add_executable(App_tests_run
 
 target_compile_definitions(App_tests_run PRIVATE DATADIR="${CMAKE_SOURCE_DIR}/data")
 target_compile_definitions(App_tests_run PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+target_compile_definitions(App_tests_run PRIVATE FREECAD_PERSISTENCE_TEST_API)
 
 add_executable(GeometryProcessTestWorker GeometryProcessTestWorker.cpp)
 if(WIN32)
@@ -91,6 +92,7 @@ target_link_libraries(App_tests_run PRIVATE
     GTest::gmock_main
     ${Python3_LIBRARIES}
     FreeCADApp
+    FreeCADBase
 )
 
 if(WIN32)

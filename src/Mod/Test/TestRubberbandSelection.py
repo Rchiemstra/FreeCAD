@@ -371,7 +371,7 @@ class TestRubberbandSelection(unittest.TestCase):
         FreeCADGui.ActiveDocument = FreeCADGui.getDocument(self.doc.Name)
         self.view = FreeCADGui.ActiveDocument.ActiveView
         self.viewer = self.view.getViewer()
-        self.view.setNavigationType("CAD")
+        self.view.setNavigationType("Gui::CADNavigationStyle")
         self._refresh_view()
 
         tool = gui_beziers.CubicBezCurve()
