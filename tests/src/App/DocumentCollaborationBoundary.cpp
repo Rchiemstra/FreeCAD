@@ -486,6 +486,7 @@ constexpr std::array reviewedHeaderDelegations {
 };
 
 constexpr std::array expectedSourceMutators {
+    ExpectedMutatorInventory {"Property.cpp", "collection", 1},
     ExpectedMutatorInventory {"Property.cpp", "setter", 5},
     ExpectedMutatorInventory {"Property.cpp", "purge", 1},
     ExpectedMutatorInventory {"Property.cpp", "touch", 1},
