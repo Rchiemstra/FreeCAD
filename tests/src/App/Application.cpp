@@ -8,6 +8,9 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
+#include <Base/PyObjectBase.h>
+#include <stdexcept>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 
@@ -73,6 +76,142 @@ TEST_F(ApplicationTest, fCustomSyntaxEmptyIn)
     Spr exp {"", ""};
     EXPECT_EQ(res, exp);
 };
+
+// Exercise public creation with faults in the actual constructor, in one process.
+TEST_F(ApplicationTest, ConstructorFailureCleansOwnedResourcesAndAllowsRetry)
+{
+    auto& app = App::GetApplication();
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    struct Probe {
+        int target;
+        int reached = 0;
+        bool simulateConflict = false;
+        bool pathStateCorrect = false;
+        std::string conflict;
+        std::string created;
+        const App::DocumentCollaborationService* service = nullptr;
+        std::shared_ptr<App::Internal::CollaborationServiceLifetimeGate> gate;
+        PyObject* wrapper = nullptr;
+    };
+    const auto name = app.getUniqueDocumentName("constructionFailure");
+    const auto reset = qScopeGuard([&] {
+        App::Internal::setDocumentConstructionTestHook(nullptr, nullptr);
+        App::Internal::setDocumentConstructionDirectoryOutcomeForTesting(0);
+        if (app.getDocument(name.c_str())) app.closeDocument(name.c_str());
+    });
+    for (int scenario = 0; scenario != 6; ++scenario) {
+        Probe probe {scenario == 5 ? 4 : scenario + 1};
+        probe.simulateConflict = scenario == 5;
+        const auto before = App::Internal::documentConstructionLifetimeCountForTesting();
+        App::Internal::setDocumentConstructionTestHook(
+            [](App::Document& doc, int stage, const char* path, void* context) {
+                auto& p = *static_cast<Probe*>(context);
+                if (stage == 1) {
+                    p.service = &doc.collaborationService();
+                    p.gate = App::Internal::documentConstructionGateForTesting(doc);
+                }
+                if (stage == 2) p.wrapper = doc.getPyObject();
+                if (stage == 6 && p.simulateConflict && p.conflict.empty()) {
+                    p.conflict = path;
+                    App::Internal::setDocumentConstructionDirectoryOutcomeForTesting(1);
+                }
+                if ((stage == 4 || stage == 5) && path) {
+                    p.created = path;
+                    p.pathStateCorrect = stage == 4 ? doc.TransientDir.getStrValue().empty()
+                                                    : doc.TransientDir.getStrValue() == path;
+                }
+                if (stage == p.target) {
+                    p.reached = stage;
+                    throw std::runtime_error("injected constructor failure");
+                }
+            }, &probe);
+        EXPECT_THROW(app.newDocument(name.c_str(), "failure", flags), std::runtime_error);
+        App::Internal::setDocumentConstructionTestHook(nullptr, nullptr);
+        EXPECT_EQ(probe.reached, probe.target);
+        EXPECT_EQ(app.getDocument(name.c_str()), nullptr);
+        EXPECT_EQ(App::Internal::documentConstructionLifetimeCountForTesting(), before);
+        ASSERT_NE(probe.service, nullptr);
+        EXPECT_FALSE(App::Internal::documentConstructionRegisteredForTesting(probe.service));
+        ASSERT_TRUE(probe.gate);
+        {
+            std::lock_guard guard(probe.gate->mutex);
+            EXPECT_TRUE(probe.gate->sealed);
+            EXPECT_EQ(probe.gate->document, nullptr);
+        }
+        if (probe.wrapper) {
+            Base::PyGILStateLocker gil;
+            EXPECT_FALSE(static_cast<Base::PyObjectBase*>(probe.wrapper)->isValid());
+            Py_DECREF(probe.wrapper);
+        }
+        if (probe.target >= 4) {
+            ASSERT_FALSE(probe.created.empty());
+            EXPECT_TRUE(probe.pathStateCorrect);
+            EXPECT_FALSE(QFile::exists(QString::fromStdString(probe.created)));
+        }
+        if (probe.simulateConflict) {
+            ASSERT_FALSE(probe.conflict.empty());
+            EXPECT_NE(probe.conflict, probe.created);
+        }
+        auto* next = app.newDocument(name.c_str(), "retry", flags);
+        ASSERT_NE(next, nullptr);
+        EXPECT_EQ(app.getDocument(name.c_str()), next);
+        const auto owned = QString::fromStdString(next->TransientDir.getStrValue());
+        ASSERT_FALSE(owned.isEmpty());
+        EXPECT_TRUE(QFile::exists(owned));
+        app.closeDocument(name.c_str());
+        EXPECT_FALSE(QFile::exists(owned));
+        EXPECT_EQ(app.getDocument(name.c_str()), nullptr);
+        EXPECT_EQ(App::Internal::documentConstructionLifetimeCountForTesting(), before);
+    }
+
+    // A lost atomic claim must retry even when construction ultimately succeeds.
+    Probe conflict {0};
+    conflict.simulateConflict = true;
+    App::Internal::setDocumentConstructionTestHook(
+        [](App::Document&, int stage, const char* path, void* context) {
+            auto& p = *static_cast<Probe*>(context);
+            if (stage == 6 && p.conflict.empty()) {
+                p.conflict = path;
+                App::Internal::setDocumentConstructionDirectoryOutcomeForTesting(1);
+            }
+        }, &conflict);
+    auto* doc = app.newDocument(name.c_str(), "conflict retry", flags);
+    App::Internal::setDocumentConstructionTestHook(nullptr, nullptr);
+    ASSERT_NE(doc, nullptr);
+    const auto owned = QString::fromStdString(doc->TransientDir.getStrValue());
+    ASSERT_FALSE(conflict.conflict.empty());
+    ASSERT_FALSE(owned.isEmpty());
+    EXPECT_NE(owned, QString::fromStdString(conflict.conflict));
+    EXPECT_TRUE(QFile::exists(owned));
+    app.closeDocument(name.c_str());
+    EXPECT_FALSE(QFile::exists(owned));
+
+    // An ordinary mkdir error must not claim the path or retry as a collision.
+    Probe error {0};
+    App::Internal::setDocumentConstructionTestHook(
+        [](App::Document&, int stage, const char* path, void* context) {
+            auto& p = *static_cast<Probe*>(context);
+            if (stage == 6) {
+                ++p.reached;
+                p.conflict = path;
+                App::Internal::setDocumentConstructionDirectoryOutcomeForTesting(2);
+            }
+        }, &error);
+    doc = app.newDocument(name.c_str(), "mkdir error", flags);
+    App::Internal::setDocumentConstructionTestHook(nullptr, nullptr);
+    ASSERT_NE(doc, nullptr);
+    EXPECT_EQ(error.reached, 1);
+    EXPECT_TRUE(doc->TransientDir.getStrValue().empty());
+    app.closeDocument(name.c_str());
+    doc = app.newDocument(name.c_str(), "healthy", flags);
+    ASSERT_NE(doc, nullptr);
+    const auto healthy = QString::fromStdString(doc->TransientDir.getStrValue());
+    ASSERT_FALSE(healthy.isEmpty());
+    EXPECT_TRUE(QFile::exists(healthy));
+    app.closeDocument(name.c_str());
+    EXPECT_FALSE(QFile::exists(healthy));
+}
 
 TEST_F(ApplicationTest, newDocumentObserversSeeInitializedLabel)
 {

@@ -81,6 +81,14 @@ namespace Internal
 {
 class DocumentCollaborationServiceTestAccess;
 struct CollaborationServiceLifetimeGate;
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+using DocumentConstructionTestHook = void (*)(Document&, int, const char*, void*);
+AppExport void setDocumentConstructionTestHook(DocumentConstructionTestHook, void*) noexcept;
+AppExport void setDocumentConstructionDirectoryOutcomeForTesting(int) noexcept;
+AppExport std::size_t documentConstructionLifetimeCountForTesting();
+AppExport std::shared_ptr<CollaborationServiceLifetimeGate> documentConstructionGateForTesting(Document&);
+AppExport bool documentConstructionRegisteredForTesting(const DocumentCollaborationService*);
+#endif
 }
 
 /// Options for acquiring links.
@@ -1073,6 +1081,11 @@ private:
     friend class Document;
     friend class DocumentCollaborationService;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+    friend std::size_t Internal::documentConstructionLifetimeCountForTesting();
+    friend std::shared_ptr<Internal::CollaborationServiceLifetimeGate> Internal::documentConstructionGateForTesting(Document&);
+    friend bool Internal::documentConstructionRegisteredForTesting(const DocumentCollaborationService*);
+#endif
 
     using CloseTestHook = void (*)();
     inline static std::atomic<CloseTestHook> _postMarkCollaborationClosingTestHook {nullptr};
