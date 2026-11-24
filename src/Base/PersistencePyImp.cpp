@@ -22,6 +22,11 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <sstream>
+
 #include <boost/iostreams/stream.hpp>
 
 #include "Persistence.h"
@@ -33,6 +38,79 @@
 #include "PersistencePy.cpp"
 
 using namespace Base;
+
+namespace
+{
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+using BufferAcquire = int (*)(PyObject*, Py_buffer*, int);
+thread_local BufferAcquire bufferAcquireForTest = nullptr;
+#endif
+
+class ScopedPythonBuffer final
+{
+public:
+    int acquire(PyObject* object, int flags)
+    {
+        int result;
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+        if (bufferAcquireForTest) {
+            result = bufferAcquireForTest(object, &view, flags);
+        }
+        else
+#endif
+        {
+            result = PyObject_GetBuffer(object, &view, flags);
+        }
+        acquired = result == 0;
+        return result;
+    }
+    ~ScopedPythonBuffer()
+    {
+        if (acquired) {
+            PyObject* errorType = nullptr;
+            PyObject* errorValue = nullptr;
+            PyObject* errorTraceback = nullptr;
+            const bool hadError = PyErr_Occurred() != nullptr;
+            if (hadError) {
+                PyErr_Fetch(&errorType, &errorValue, &errorTraceback);
+            }
+            PyBuffer_Release(&view);
+            if (hadError) {
+                PyErr_Restore(errorType, errorValue, errorTraceback);
+            }
+        }
+    }
+    Py_buffer view {};
+private:
+    bool acquired {false};
+};
+
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+using ByteArrayFactory = PyObject* (*)(Py_ssize_t);
+using BeforeByteArrayRead = void (*)(PyObject*, std::istream&);
+thread_local ByteArrayFactory byteArrayFactoryForTest = nullptr;
+thread_local BeforeByteArrayRead beforeByteArrayReadForTest = nullptr;
+#endif
+}  // namespace
+
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+namespace Base::Internal
+{
+BaseExport void setPersistenceContentByteArrayFactoryForTest(PyObject* (*factory)(Py_ssize_t))
+{
+    byteArrayFactoryForTest = factory;
+}
+BaseExport void setPersistenceContentBufferAcquireForTest(int (*hook)(PyObject*, Py_buffer*, int))
+{
+    bufferAcquireForTest = hook;
+}
+BaseExport void setPersistenceContentBeforeReadForTest(void (*hook)(PyObject*, std::istream&))
+{
+    beforeByteArrayReadForTest = hook;
+}
+}  // namespace Base::Internal
+#endif
+
 
 // returns a string which represent the object e.g. when printed in python
 std::string PersistencePy::representation() const
@@ -73,14 +151,18 @@ PyObject* PersistencePy::dumpContent(PyObject* args, PyObject* kwds) const
         getPersistencePtr()->dumpToStream(stream, compression);
     }
     catch (NotImplementedError&) {
-        PyErr_SetString(
-            PyExc_NotImplementedError,
-            "Dumping content of this object type is not implemented"
-        );
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(
+                PyExc_NotImplementedError,
+                "Dumping content of this object type is not implemented"
+            );
+        }
         return nullptr;
     }
     catch (...) {
-        PyErr_SetString(PyExc_IOError, "Unable to parse content into binary representation");
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_IOError, "Unable to parse content into binary representation");
+        }
         return nullptr;
     }
 
@@ -96,25 +178,54 @@ PyObject* PersistencePy::dumpContent(PyObject* args, PyObject* kwds) const
         return nullptr;
     }
 
-    PyObject* ba = PyByteArray_FromStringAndSize(nullptr, offset);
-
-    // use the buffer protocol to access the underlying array and write into it
-    Py_buffer buf = Py_buffer();
-    PyObject_GetBuffer(ba, &buf, PyBUF_WRITABLE);
-    try {
-        if (!stream.read((char*)buf.buf, offset)) {
-            PyErr_SetString(PyExc_IOError, "Error copying data into byte array");
-            return nullptr;
-        }
-        PyBuffer_Release(&buf);
+    const auto size = static_cast<std::streamoff>(offset);
+    if (size < 0 || static_cast<std::uintmax_t>(size)
+            > static_cast<std::uintmax_t>(std::numeric_limits<Py_ssize_t>::max())
+        || static_cast<std::uintmax_t>(size)
+            > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
+        PyErr_SetString(PyExc_OverflowError, "Serialized content is too large");
+        return nullptr;
     }
-    catch (...) {
-        PyBuffer_Release(&buf);
-        PyErr_SetString(PyExc_IOError, "Error copying data into byte array");
+    PyObject* result = nullptr;
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+    if (byteArrayFactoryForTest) {
+        result = byteArrayFactoryForTest(static_cast<Py_ssize_t>(size));
+    }
+    else
+#endif
+    {
+        result = PyByteArray_FromStringAndSize(nullptr, static_cast<Py_ssize_t>(size));
+    }
+    std::unique_ptr<PyObject, decltype(&Py_DecRef)> ba(result, &Py_DecRef);
+    if (!ba) {
         return nullptr;
     }
 
-    return ba;
+    ScopedPythonBuffer buf;
+    if (buf.acquire(ba.get(), PyBUF_WRITABLE) < 0) {
+        return nullptr;
+    }
+    try {
+#if defined(FREECAD_PERSISTENCE_TEST_API)
+        if (beforeByteArrayReadForTest) {
+            beforeByteArrayReadForTest(ba.get(), stream);
+        }
+#endif
+        if (!stream.read(static_cast<char*>(buf.view.buf), static_cast<std::streamsize>(size))) {
+            if (!PyErr_Occurred()) {
+                PyErr_SetString(PyExc_IOError, "Error copying data into byte array");
+            }
+            return nullptr;
+        }
+    }
+    catch (...) {
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_IOError, "Error copying data into byte array");
+        }
+        return nullptr;
+    }
+
+    return ba.release();
 }
 
 PyObject* PersistencePy::restoreContent(PyObject* args)
@@ -130,24 +241,25 @@ PyObject* PersistencePy::restoreContent(PyObject* args)
         return nullptr;
     }
 
-    Py_buffer buf;
-    if (PyObject_GetBuffer(buffer, &buf, PyBUF_SIMPLE) < 0) {
+    ScopedPythonBuffer buf;
+    if (buf.acquire(buffer, PyBUF_SIMPLE) < 0) {
         return nullptr;
     }
 
-    if (!PyBuffer_IsContiguous(&buf, 'C')) {
+    if (!PyBuffer_IsContiguous(&buf.view, 'C')) {
         PyErr_SetString(PyExc_TypeError, "Buffer must be contiguous");
         return nullptr;
     }
 
-    // check if it really is a buffer
     try {
         using Device = boost::iostreams::basic_array_source<char>;
-        boost::iostreams::stream<Device> stream((char*)buf.buf, buf.len);
+        boost::iostreams::stream<Device> stream(static_cast<char*>(buf.view.buf), buf.view.len);
         getPersistencePtr()->restoreFromStream(stream);
     }
     catch (...) {
-        PyErr_SetString(PyExc_IOError, "Unable to restore content");
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_IOError, "Unable to restore content");
+        }
         return nullptr;
     }
 

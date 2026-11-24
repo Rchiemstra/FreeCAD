@@ -771,9 +771,26 @@ bool Application::closeDocument(const char* name)
     // The sealed gate prevents a zero-count/new-admission race.
     {
         std::unique_lock lock(collaborationLifetimeGate->mutex);
-        collaborationLifetimeGate->changed.wait(lock, [&] {
-            return collaborationLifetimeGate->activeAccesses == 0;
-        });
+        if (collaborationLifetimeGate->activeAccesses != 0
+            && Py_IsInitialized() != 0 && PyGILState_Check() != 0) {
+            // Admitted callers may need Python before releasing their pins.
+            // Drop the gate before releasing the GIL, then reacquire the GIL
+            // only after the wait's gate lock is gone. The gate is sealed, so
+            // no new access can enter in the interval between these locks.
+            lock.unlock();
+            Base::PyGILStateRelease releaseGil;
+            {
+                std::unique_lock waitLock(collaborationLifetimeGate->mutex);
+                collaborationLifetimeGate->changed.wait(waitLock, [&] {
+                    return collaborationLifetimeGate->activeAccesses == 0;
+                });
+            }
+        }
+        else {
+            collaborationLifetimeGate->changed.wait(lock, [&] {
+                return collaborationLifetimeGate->activeAccesses == 0;
+            });
+        }
     }
     if (const auto hook = _postCollaborationAccessDrainTestHook.load(
             std::memory_order_acquire)) {

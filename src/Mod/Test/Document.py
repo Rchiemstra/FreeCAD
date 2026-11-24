@@ -1245,6 +1245,109 @@ class DocumentRecomputeCases(unittest.TestCase):
         self.Doc.removeObject(L7.Name)
         self.Doc.removeObject(L8.Name)
 
+    def _submitAndWaitRecomputeAsync(
+        self, objects=None, force=False, check_cycle=False, timeout=10.0
+    ):
+        import time
+
+        deadline = time.monotonic() + timeout
+        handle = None
+        while True:
+            try:
+                handle = self.Doc.recomputeAsync(objects, force, check_cycle)
+                break
+            except RuntimeError as exc:
+                if "lane is busy" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                if getattr(FreeCAD, "GuiUp", False):
+                    from PySide import QtCore
+
+                    QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                time.sleep(0.005)
+
+        while not handle.done():
+            if time.monotonic() >= deadline:
+                self.fail(
+                    f"recomputeAsync timed out after {timeout}s: status={handle.status()!r}"
+                )
+            if getattr(FreeCAD, "GuiUp", False):
+                from PySide import QtCore
+
+                QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+            time.sleep(0.005)
+        return handle.status()
+
+    @staticmethod
+    def _recomputeStatusState(status):
+        recompute = status.get("recompute")
+        if isinstance(recompute, dict) and "state" in recompute:
+            return str(recompute["state"]).lower()
+        return str(status.get("state", "")).lower()
+
+    def testRecomputeAsyncForceCleanFeature(self):
+        # Settle a counted feature so it is clean before testing recomputeAsync force forwarding.
+        self.L1.Integer = self.L1.Integer + 1
+        self.assertEqual(self.Doc.recompute(), 1)
+        self.assertEqual(self.L1.ExecCount, 1)
+        self.assertEqual(self.L1.State, ["Up-to-date"])
+        self.assertFalse(self.Doc.mustExecute())
+
+        # Non-forced async recompute must leave the clean feature unexecuted.
+        status = self._submitAndWaitRecomputeAsync([self.L1], False)
+        self.assertEqual(self._recomputeStatusState(status), "completed", status)
+        self.assertEqual(self.L1.ExecCount, 1)
+
+        # Forced async recompute on the explicit feature list must execute it once.
+        status = self._submitAndWaitRecomputeAsync([self.L1], True)
+        self.assertEqual(self._recomputeStatusState(status), "completed", status)
+        self.assertEqual(self.L1.ExecCount, 2)
+        self.assertEqual(self.L1.State, ["Up-to-date"])
+
+        # A subsequent non-forced call must still skip the clean feature.
+        status = self._submitAndWaitRecomputeAsync([self.L1], False)
+        self.assertEqual(self._recomputeStatusState(status), "completed", status)
+        self.assertEqual(self.L1.ExecCount, 2)
+
+        # Forced async recompute on the full document must also execute the clean feature once.
+        status = self._submitAndWaitRecomputeAsync(None, True)
+        self.assertEqual(self._recomputeStatusState(status), "completed", status)
+        self.assertEqual(self.L1.ExecCount, 3)
+        self.assertEqual(self.L1.State, ["Up-to-date"])
+
+    def testRecomputeAsyncForceOverridesSkipRecompute(self):
+        self.L1.Integer = self.L1.Integer + 1
+        self.assertEqual(self.Doc.recompute(), 1)
+        self.assertEqual(self.L1.ExecCount, 1)
+        self.assertEqual(self.L1.State, ["Up-to-date"])
+
+        self.Doc.RecomputesFrozen = True
+        try:
+            self.assertTrue(self.Doc.RecomputesFrozen)
+
+            # Dirty feature with SkipRecompute active: non-forced skips, forced executes once.
+            self.L1.Integer = self.L1.Integer + 1
+            self.assertIn("Touched", self.L1.State)
+
+            self._submitAndWaitRecomputeAsync([self.L1], False)
+            self.assertEqual(self.L1.ExecCount, 1)
+            self.assertIn("Touched", self.L1.State)
+
+            status = self._submitAndWaitRecomputeAsync([self.L1], True)
+            self.assertEqual(self.L1.ExecCount, 2)
+            self.assertEqual(self.L1.State, ["Up-to-date"])
+            self.assertEqual(self._recomputeStatusState(status), "completed", status)
+
+            # Clean feature with SkipRecompute active: non-forced skips, forced executes once.
+            self._submitAndWaitRecomputeAsync([self.L1], False)
+            self.assertEqual(self.L1.ExecCount, 2)
+
+            status = self._submitAndWaitRecomputeAsync([self.L1], True)
+            self.assertEqual(self.L1.ExecCount, 3)
+            self.assertEqual(self.L1.State, ["Up-to-date"])
+            self.assertEqual(self._recomputeStatusState(status), "completed", status)
+        finally:
+            self.Doc.RecomputesFrozen = False
+
     def tearDown(self):
         # closing doc
         FreeCAD.closeDocument("RecomputeTests")

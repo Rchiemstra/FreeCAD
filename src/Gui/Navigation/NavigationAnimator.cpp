@@ -73,7 +73,10 @@ bool NavigationAnimator::startAndWait(const std::shared_ptr<NavigationAnimation>
         loop.quit();
     });
     start(animation);
-    loop.exec();
+    // A zero-duration animation can finish inside start(), before the loop is running.
+    if (animation->state() != QAbstractAnimation::State::Stopped) {
+        loop.exec();
+    }
     return finished;
 }
 
