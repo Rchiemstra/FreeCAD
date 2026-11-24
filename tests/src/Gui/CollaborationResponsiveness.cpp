@@ -22,6 +22,9 @@
 #include <App/RecoverySnapshot.h>
 #include <App/RecoveryAdmission.h>
 #include <Gui/DocumentExecutionIngress.h>
+#ifdef FREECAD_TEST_PART_CAPTURE_CACHE
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
+#endif
 #include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
@@ -484,6 +487,67 @@ protected:
 };
 
 }  // namespace
+
+#ifdef FREECAD_TEST_PART_CAPTURE_CACHE
+TEST_F(CollaborationResponsivenessTest, partRecomputeRejectsDetachedObject)
+{
+    App::FeatureTest detached;
+    ASSERT_EQ(detached.getDocument(), nullptr);
+    const auto outcome = PartGui::trySubmitDocumentRecompute(detached);
+    EXPECT_EQ(outcome.result, App::DocumentCommandSubmitResult::Unsupported);
+    EXPECT_EQ(outcome.commandId, 0U);
+}
+
+TEST_F(CollaborationResponsivenessTest, partRecomputeRejectsTransactionRetainedObject)
+{
+    ASSERT_TRUE(_source->isAttachedToDocument());
+    ASSERT_EQ(_source->getDocument(), _document);
+    const auto transaction = _document->openTransaction("Remove recompute target");
+    ASSERT_NE(transaction, 0);
+    ASSERT_EQ(_document->getBookedTransactionID(), transaction);
+    _document->removeObject(_source->getNameInDocument());
+    ASSERT_FALSE(_document->isTransactionEmpty());
+    // The open undo transaction owns this removed object until committed or undone.
+    ASSERT_FALSE(_source->isAttachedToDocument());
+    ASSERT_EQ(_source->getDocument(), _document);
+    const auto outcome = PartGui::trySubmitDocumentRecompute(*_source);
+    EXPECT_EQ(outcome.result, App::DocumentCommandSubmitResult::Unsupported);
+    EXPECT_EQ(outcome.commandId, 0U);
+    _document->commitTransaction();
+}
+
+TEST_F(CollaborationResponsivenessTest, partRecomputeAttachedObjectPreservesSelection)
+{
+    auto* selected = dynamic_cast<App::FeatureTest*>(_source);
+    auto* other = dynamic_cast<App::FeatureTest*>(_target);
+    ASSERT_NE(selected, nullptr);
+    ASSERT_NE(other, nullptr);
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    ASSERT_FALSE(selected->isTouched());
+    ASSERT_FALSE(other->isTouched());
+    const auto selectedBefore = selected->ExecCount.getValue();
+    const auto otherBefore = other->ExecCount.getValue();
+
+    const auto outcome = PartGui::trySubmitDocumentRecompute(*selected, true);
+    ASSERT_TRUE(outcome.accepted()) << outcome.diagnostic;
+    ASSERT_NE(outcome.commandId, 0U);
+    App::DocumentCommandHandle handle(outcome.commandId, _document->executionHandle().identity());
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    auto snapshot = handle.status();
+    while ((!snapshot.terminal() || !lane->isIdle())
+           && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+        snapshot = handle.status();
+    }
+    ASSERT_TRUE(snapshot.terminal()) << "Part recompute did not finish before timeout";
+    ASSERT_TRUE(lane->isIdle());
+    ASSERT_EQ(snapshot.state, App::DocumentCommandState::Completed) << snapshot.diagnostic;
+    EXPECT_EQ(selected->ExecCount.getValue(), selectedBefore + 1);
+    EXPECT_EQ(other->ExecCount.getValue(), otherBefore);
+}
+#endif
 
 TEST_F(CollaborationResponsivenessTest, recomputeCommandPreservesRequestForce)
 {

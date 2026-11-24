@@ -85,7 +85,14 @@ inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
     const bool force = false,
     const int options = 0)
 {
-    return trySubmitDocumentRecompute(*object.getDocument(), {&object}, force, options);
+    auto* document = object.getDocument();
+    if (!document || !object.isAttachedToDocument()) {
+        App::DocumentCommandSubmitOutcome outcome;
+        outcome.result = App::DocumentCommandSubmitResult::Unsupported;
+        outcome.diagnostic = "recompute target is not attached to a document";
+        return outcome;
+    }
+    return trySubmitDocumentRecompute(*document, {&object}, force, options);
 }
 
 inline App::DocumentCommandSubmitOutcome trySubmitActiveDocumentRecompute(
