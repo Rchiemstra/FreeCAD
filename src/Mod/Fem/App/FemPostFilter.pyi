@@ -7,7 +7,7 @@ from typing import Any, TypeAlias
 from Base.Metadata import export
 from Fem.FemPostObject import FemPostObject
 
-vtkAlgorithm: TypeAlias = object
+from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 @export(
     Include="Mod/Fem/App/FemPostFilter.h",

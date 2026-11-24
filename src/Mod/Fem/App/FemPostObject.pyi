@@ -7,7 +7,7 @@ from typing import TypeAlias
 from Base.Metadata import export
 from App.GeoFeature import GeoFeature
 
-vtkDataSet: TypeAlias = object
+from vtkmodules.vtkCommonDataModel import vtkDataSet
 
 @export(
     Include="Mod/Fem/App/FemPostObject.h",

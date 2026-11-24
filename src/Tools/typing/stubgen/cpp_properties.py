@@ -529,7 +529,12 @@ def _annotation(expression: str) -> ast.expr:
 def _localize_expression(expression: str, module_name: str) -> str:
     """Remove a public module qualifier when it names the target module."""
 
-    return re.sub(rf"\b{re.escape(module_name)}\.", "", expression)
+    expression = re.sub(rf"\b{re.escape(module_name)}\.", "", expression)
+    if module_name != "FreeCAD":
+        # A class can itself declare a Base property (for example Robot6Axis).
+        # Use the public root so that member cannot shadow the type namespace.
+        expression = re.sub(r"(?<![.\w])Base\.", "FreeCAD.Base.", expression)
+    return expression
 
 
 def _docstring(value: str | None) -> ast.Expr | None:
