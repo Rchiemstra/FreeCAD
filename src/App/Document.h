@@ -290,6 +290,25 @@ using DocumentRecomputeId = std::uint64_t;
  * @ingroup DocumentGroup
  * @details For a more high-level discussion see the topic @ref DocumentGroup "Document".
  */
+// Borrowed only by the currently executing trusted prepared operation. It is
+// never ambient state: a callback cannot acquire it by reentering a writer.
+class AppExport CollaborationWriterCapability final
+{
+public:
+    CollaborationWriterCapability(const CollaborationWriterCapability&) = delete;
+    CollaborationWriterCapability& operator=(const CollaborationWriterCapability&) = delete;
+    [[nodiscard]] bool permits(const Document* document) const noexcept
+    {
+        return document && document == _document && std::this_thread::get_id() == _thread;
+    }
+private:
+    friend class DocumentCommitCoordinator;
+    explicit CollaborationWriterCapability(Document& document) noexcept
+        : _document(&document), _thread(std::this_thread::get_id()) {}
+    Document* const _document;
+    const std::thread::id _thread;
+};
+
 class AppExport Document: public PropertyContainer
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::Document);
@@ -2072,6 +2091,21 @@ private:
 
     private:
         Document* _document {nullptr};
+    };
+
+    // Nonblocking, document-local exclusion for cooperating whole-operation writers.
+    // It does not pin the document and does not yet cover every mutation path.
+    class AppExport CollaborationWriterScope final
+    {
+    public:
+        explicit CollaborationWriterScope(Document* document) noexcept;
+        ~CollaborationWriterScope();
+        CollaborationWriterScope(const CollaborationWriterScope&) = delete;
+        CollaborationWriterScope& operator=(const CollaborationWriterScope&) = delete;
+        explicit operator bool() const noexcept { return _admitted; }
+    private:
+        Document* _document;
+        bool _admitted;
     };
 
     std::recursive_mutex& collaborationCommitMutex() noexcept;

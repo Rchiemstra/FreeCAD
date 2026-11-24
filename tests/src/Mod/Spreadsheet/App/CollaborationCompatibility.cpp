@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <App/Application.h>
+#include <App/CollaborativeSetPropertyOperation.h>
+#include <App/CollaborativeOperationRegistry.h>
+#include <App/private/CollaborativeOperationRegistryInternal.h>
+#include <App/private/CollaborativeWriterOperation.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentCommitCoordinator.h>
@@ -27,6 +31,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -38,6 +43,16 @@ namespace App::Internal
 class DocumentStructuralCompatibilityTestAccess
 {
 public:
+    static bool withWriterScope(Document& document, const std::function<void()>& action)
+    {
+        Document::CollaborationWriterScope writer(&document);
+        if (!writer) {
+            return false;
+        }
+        action();
+        return true;
+    }
+
     static void withStableRead(Document& document, const std::function<void()>& action)
     {
         document.beginCollaborationStableReadCapture();
@@ -115,6 +130,49 @@ public:
 
     std::filesystem::path path;
 };
+
+// A test adapter represents a trusted prepared operation which explicitly
+// passes its borrowed capability to two different Spreadsheet writers.
+class PreparedSheetOperation final: public App::CollaborativeOperation,
+                                    public App::Internal::CollaborativeWriterOperation
+{
+public:
+    std::string_view typeId() const noexcept override { return "Spreadsheet.Test.ScopedWriter"; }
+    void apply(App::Document&) const override
+    {
+        throw std::runtime_error("prepared writer capability was not supplied");
+    }
+    void applyWithWriterCapability(App::Document& document,
+        const App::CollaborationWriterCapability& capability) const override
+    {
+        auto* sheet = freecad_cast<Spreadsheet::Sheet*>(document.getObject("Sheet"));
+        if (!sheet) throw std::runtime_error("missing sheet");
+        sheet->setCellWithWriterCapability(App::CellAddress("A1"), "1", capability);
+        sheet->setContentWithWriterCapability(App::CellAddress("B1"), "2", capability);
+    }
+    App::CollaborativePostconditionResult checkPostcondition(
+        const App::Document& document) const override
+    {
+        const auto* sheet = freecad_cast<const Spreadsheet::Sheet*>(document.getObject("Sheet"));
+        return {sheet && sheet->getCell(App::CellAddress("A1"))
+                      && sheet->getCell(App::CellAddress("B1")), "cells missing"};
+    }
+};
+
+void registerPreparedSheetOperation()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        App::Internal::CollaborativeOperationRegistrar::registerAdapter(
+            "Spreadsheet.Test.ScopedWriter",
+            [](const App::Document&, const App::CollaborativeOperationIntent&) {
+                const auto key = App::DocumentRevisionKey::unknownModelMutation();
+                return App::CollaborativeOperationPreparation {
+                    {key}, {key}, {{key, std::nullopt}},
+                    std::make_unique<const PreparedSheetOperation>()};
+            });
+    });
+}
 
 class SpreadsheetCollaborationCompatibilityTest: public ::testing::Test
 {
@@ -646,6 +704,165 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     ASSERT_EQ(PyList_Size(pythonRemoved.get()), 1);
     EXPECT_STREQ(PyUnicode_AsUTF8(PyList_GetItem(pythonRemoved.get(), 0)), "A1");
     expectSingleSpreadsheetPublication();
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, PreparedWriterCapabilityDoesNotReachObservers)
+{
+    registerPreparedSheetOperation();
+    const auto session = _document->collaborationService().beginEditSession("scoped-writer");
+    App::CollaborativeOperationIntent intent {"Spreadsheet.Test.ScopedWriter", {}};
+    const auto prepared = _document->collaborationService().prepareEdit(
+        session.sessionId(), "sheet-scoped", intent, "native-test");
+    bool attempted = false;
+    bool refused = false;
+    auto before = _sheet->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            attempted = true;
+            try { _sheet->setCell("C1", "observer"); }
+            catch (const Base::Exception&) { refused = true; }
+        });
+    const auto result = _document->collaborationService().commitEdit(session.sessionId(), prepared);
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
+    EXPECT_TRUE(attempted);
+    EXPECT_TRUE(refused);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("A1")), nullptr);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("B1")), nullptr);
+    EXPECT_EQ(_sheet->getCell(App::CellAddress("C1")), nullptr);
+    before.disconnect();
+    EXPECT_NO_THROW(_sheet->setCell("C1", "retry"));
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, PublicPreparedEditRefusesInFlightSheetSet)
+{
+    App::ensureCollaborativeSetPropertyOperationRegistered();
+    auto* text = dynamic_cast<App::PropertyString*>(
+        _failure->addDynamicProperty("App::PropertyString", "WriterTestText"));
+    ASSERT_NE(text, nullptr);
+    text->setValue("Before");
+    _document->recompute();
+    const auto session = _document->collaborationService().beginEditSession("writer-overlap");
+    App::CollaborativeOperationIntent intent {
+        std::string(App::CollaborativeSetPropertyOperationType),
+        {{"object", "Failure"}, {"property", "WriterTestText"},
+         {"value_type", "string"}, {"value", "Control"}}};
+    const auto control = _document->collaborationService().prepareEdit(
+        session.sessionId(), "sheet-control", intent, "spreadsheet-test");
+    const auto controlResult = _document->collaborationService().commitEdit(
+        session.sessionId(), control);
+    ASSERT_EQ(controlResult.status, App::DocumentCommitStatus::Committed) << controlResult.message;
+    ASSERT_STREQ(text->getValue(), "Control");
+
+    intent.arguments["value"] = "After";
+    const auto prepared = _document->collaborationService().prepareEdit(
+        session.sessionId(), "sheet-overlap", intent, "spreadsheet-test");
+    const auto key = App::DocumentRevisionKey::objectModel("Failure");
+    bool observed = false;
+    auto before = _sheet->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            if (!observed) {
+                observed = true;
+                const auto pendingBefore = _document->hasPendingTransaction();
+                const auto revision = _document->collaborationRevisions().current(key);
+                const auto identity = _document->collaborationIdentity();
+                const App::DocumentRevisionCursor cursor {
+                    identity.instanceId, identity.lifecycleEpoch,
+                    _document->collaborationRevisions().pollPublications(
+                        {identity.instanceId, identity.lifecycleEpoch, 0}, 0).latestSequence};
+                const auto result = _document->collaborationService().commitEdit(
+                    session.sessionId(), prepared);
+                EXPECT_EQ(result.status, App::DocumentCommitStatus::Busy);
+                EXPECT_TRUE(result.publishedRevisions.empty());
+                EXPECT_STREQ(text->getValue(), "Control");
+                EXPECT_EQ(_document->collaborationRevisions().current(key), revision);
+                EXPECT_TRUE(_document->collaborationRevisions().pollPublications(cursor).events.empty());
+                EXPECT_EQ(_document->hasPendingTransaction(), pendingBefore);
+            }
+        });
+    Base::PyGILStateLocker gil;
+    PyObjectRef sheet(_sheet->getPyObject());
+    ASSERT_NE(sheet.get(), nullptr);
+    PyObjectRef result(PyObject_CallMethod(sheet.get(), "set", "ss", "A1", "1"));
+    ASSERT_NE(result.get(), nullptr);
+    EXPECT_TRUE(observed);
+    EXPECT_STREQ(text->getValue(), "Control");
+    EXPECT_NE(_sheet->getCell(App::CellAddress("A1")), nullptr);
+
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, PythonRangeSetHoldsWriterThroughNotifications)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef sheet(_sheet->getPyObject());
+    ASSERT_NE(sheet.get(), nullptr);
+    bool observed = false;
+    bool nestedRefused = false;
+    auto before = _sheet->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            observed = true;
+            try {
+                _sheet->setCell("C1", "nested");
+            }
+            catch (const Base::Exception&) {
+                nestedRefused = true;
+            }
+        });
+    PyObjectRef result(PyObject_CallMethod(sheet.get(), "set", "ss", "A1:B1", "1"));
+    ASSERT_NE(result.get(), nullptr);
+    EXPECT_TRUE(observed);
+    EXPECT_TRUE(nestedRefused);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("A1")), nullptr);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("B1")), nullptr);
+    EXPECT_EQ(_sheet->getCell(App::CellAddress("C1")), nullptr);
+    before.disconnect();
+    EXPECT_NO_THROW(_sheet->setCell("C1", "2"));
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, PythonRangeFailureLeavesCompletedCellVisible)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef sheet(_sheet->getPyObject());
+    ASSERT_NE(sheet.get(), nullptr);
+    bool rejectedSecond = false;
+    auto before = _sheet->signalBeforeChange.connect(
+        [&](const App::DocumentObject&, const App::Property&) {
+            if (_sheet->getCell(App::CellAddress("A1"))) {
+                rejectedSecond = true;
+                throw Base::RuntimeError("test stops the second cell");
+            }
+        });
+    PyObjectRef result(PyObject_CallMethod(sheet.get(), "set", "ss", "A1:B1", "1"));
+    EXPECT_EQ(result.get(), nullptr);
+    EXPECT_TRUE(PyErr_Occurred());
+    PyErr_Clear();
+    EXPECT_TRUE(rejectedSecond);
+    const auto* first = _sheet->getCell(App::CellAddress("A1"));
+    ASSERT_NE(first, nullptr);
+    std::string content;
+    first->getStringContent(content);
+    EXPECT_EQ(content, "1");
+    EXPECT_EQ(_sheet->getCell(App::CellAddress("B1")), nullptr);
+    before.disconnect();
+    EXPECT_NO_THROW(_sheet->setCell("B1", "2"));
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest, WriterRefusalPrecedesPythonRangeEffects)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef sheet(_sheet->getPyObject());
+    ASSERT_NE(sheet.get(), nullptr);
+    ASSERT_TRUE(App::Internal::DocumentStructuralCompatibilityTestAccess::withWriterScope(
+        *_document, [&] {
+        PyObjectRef refused(PyObject_CallMethod(sheet.get(), "set", "ss", "A1:B1", "1"));
+        EXPECT_EQ(refused.get(), nullptr);
+        ASSERT_TRUE(PyErr_Occurred());
+        PyErr_Clear();
+        EXPECT_EQ(_sheet->getCell(App::CellAddress("A1")), nullptr);
+        EXPECT_EQ(_sheet->getCell(App::CellAddress("B1")), nullptr);
+    }));
+    PyObjectRef retried(PyObject_CallMethod(sheet.get(), "set", "ss", "A1:B1", "1"));
+    ASSERT_NE(retried.get(), nullptr);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("A1")), nullptr);
+    EXPECT_NE(_sheet->getCell(App::CellAddress("B1")), nullptr);
 }
 
 TEST_F(SpreadsheetCollaborationCompatibilityTest,

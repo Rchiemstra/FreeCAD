@@ -50,6 +50,8 @@
 #include "PropertySheet.h"
 
 
+namespace App { class CollaborationWriterCapability; }
+
 namespace Spreadsheet
 {
 
@@ -135,6 +137,13 @@ public:
     void setCell(const char* address, const char* value);
 
     void setCell(App::CellAddress address, const char* value);
+
+    // Explicitly borrowed from a live prepared operation; never available to
+    // Python or implicitly inherited by signal/observer callbacks.
+    void setCellWithWriterCapability(App::CellAddress address, const char* value,
+                                     const App::CollaborationWriterCapability& capability);
+    void setContentWithWriterCapability(App::CellAddress address, const char* value,
+                                        const App::CollaborationWriterCapability& capability);
 
     void clearAll();
 
@@ -273,6 +282,10 @@ public:
     unsigned getCopyOrCutBorder(App::CellAddress address, bool copy = true) const;
 
 private:
+    friend class SheetPy;
+    void setRangeFromPython(const char* address, const char* contents);
+    // Caller holds the document writer scope for the complete public operation.
+    void setCellAdmitted(App::CellAddress address, const char* value);
     static App::DocumentObjectExecReturn* refreshDerivedCache(App::DocumentObject& object);
     App::Property* addCellCache(App::CellAddress key, Base::Type nativePropertyType);
     void removeCellCache(App::CellAddress key);

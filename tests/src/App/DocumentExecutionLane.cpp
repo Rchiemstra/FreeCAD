@@ -9,6 +9,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
+#include <App/DocumentRevisionIndex.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
@@ -401,6 +402,17 @@ protected:
     App::Document* _doc {};
     std::shared_ptr<LaneBlockingRecomputeState> _blocking;
 };
+
+TEST_F(DocumentExecutionLaneTest, FencedEditIsRefusedBeforeAdmissionUntilWriterCoverageExists)
+{
+    auto command = makeKindCommand(App::DocumentCommandKind::Edit);
+    command.expectedRevisions = doc()->collaborationRevisions().capture(
+        {App::DocumentRevisionKey::documentStructure()});
+    command.edit = App::DocumentCommandEditPayload {};
+    const auto result = doc()->executionHandle().trySubmit(std::move(command));
+    EXPECT_EQ(result.result, App::DocumentCommandSubmitResult::Unsupported);
+    EXPECT_EQ(result.commandId, 0U);
+}
 
 TEST_F(DocumentExecutionLaneTest, OwnerThreadIsLaneThread)
 {

@@ -26,6 +26,7 @@
 
 #include <boost/tokenizer.hpp>
 
+#include <App/Document.h>
 #include <App/Range.h>
 #include <Base/Exception.h>
 
@@ -71,20 +72,7 @@ PyObject* SheetPy::set(PyObject* args)
     }
 
     try {
-        Sheet* sheet = getSheetPtr();
-        std::string cellAddress = sheet->getAddressFromAlias(address).c_str();
-
-        /* Check to see if address is really an alias first */
-        if (!cellAddress.empty()) {
-            sheet->setCell(cellAddress.c_str(), contents);
-        }
-        else {
-            Range rangeIter(address);
-
-            do {
-                sheet->setCell(rangeIter.address().c_str(), contents);
-            } while (rangeIter.next());
-        }
+        getSheetPtr()->setRangeFromPython(address, contents);
     }
     catch (const Base::Exception& e) {
         PyErr_SetString(PyExc_ValueError, e.what());
