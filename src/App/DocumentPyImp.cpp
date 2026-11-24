@@ -716,6 +716,10 @@ Py::Dict preparedEditResultToPython(CollaborationPreparedEditResult result)
 
 }  // namespace
 
+PyObject* App::makeDocumentSaveOutcomePy(const DocumentSaveOutcome& outcome)
+{
+    return Py::new_reference_to(saveOutcomeToPy(outcome));
+}
 
 PyObject* DocumentPy::addProperty(PyObject* args, PyObject* kwd)
 {

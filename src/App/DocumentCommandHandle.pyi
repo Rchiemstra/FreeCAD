@@ -15,7 +15,11 @@ class DocumentCommandHandle(PyObjectBase):
         ...
 
     def status(self) -> dict:
-        """Return a read-only command snapshot without advancing execution."""
+        """Return a read-only snapshot; save_result is present once a save returns an outcome.
+
+        The result has the same fields as Document.saveWithOutcome(). It remains
+        available within the bounded terminal-command archive.
+        """
         ...
 
     def progress(self) -> float:
