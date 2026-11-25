@@ -632,9 +632,17 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
     assert "recomputeLegacy(" not in commit
     assert "trustedStructural" not in commit
 
-    operation_apply = commit.find("operation.apply(_document)")
+    # The shared apply lambda dispatches through the writer-aware helper. Its
+    # deferred and eager paths must finish applying before eager recompute.
+    operation_dispatch = commit.find("constautoapplyOperation=[&]{")
+    deferred = commit.find(
+        "if(recomputePolicy==CollaborationCompatibilityRecomputePolicy::Deferred){",
+        operation_dispatch,
+    )
+    last_apply = commit.rfind("applyOperation();", deferred, eager)
+    assert commit.count("applyOperation();") == 4
     postcondition = commit.find("operation.checkPostcondition(_document)", eager_closing)
-    assert 0 <= operation_apply < eager < eager_closing < postcondition
+    assert 0 <= operation_dispatch < deferred < last_apply < eager < eager_closing < postcondition
 
     empty_finalize_body = _compact(
         _body(DOCUMENT_SOURCE, "Document::finalizeEmptyDetachedRecompute")

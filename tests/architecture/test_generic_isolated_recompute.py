@@ -1001,12 +1001,39 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         _read(COMMIT_SOURCE),
         "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
     ))
-    deferred = commit.find(
-        "recomputePolicy==CollaborationCompatibilityRecomputePolicy::Deferred"
+    # Both capability-aware and ordinary dispatch execute through the same
+    # lambda. The deferred fence must enclose each structural/nonstructural call.
+    dispatch = (
+        "constautoapplyOperation=[&]{if(writer){"
+        "CollaborationWriterCapabilitycapability(_document);"
+        "Internal::applyCollaborativeOperation(operation,_document,&capability);"
+        "}else{Internal::applyCollaborativeOperation(operation,_document,nullptr);}};"
     )
-    fence = commit.find("_document.openCollaborationDeferredRecomputeFence()", deferred)
-    apply = commit.find("operation.apply(_document)", fence)
-    assert 0 <= deferred < fence < apply
+    deferred = (
+        "if(recomputePolicy==CollaborationCompatibilityRecomputePolicy::Deferred){"
+        "autorecomputeFence=_document.openCollaborationDeferredRecomputeFence();"
+        "if(structuralCompatibility){"
+        "autogrant=_document.openCollaborationStructuralMutationGrant();"
+        "applyOperation();}else{applyOperation();}}"
+        "elseif(structuralCompatibility){"
+        "autogrant=_document.openCollaborationStructuralMutationGrant();"
+        "applyOperation();}else{applyOperation();}"
+    )
+    assert commit.count(dispatch) == 1
+    assert commit.count(deferred) == 1
+    assert commit.find(dispatch) < commit.find(deferred)
+    assert commit.count("applyOperation();") == 4
+
+    helper = _compact(_body(
+        _read("src/App/private/CollaborativeWriterOperation.h"),
+        "applyCollaborativeOperation",
+    ))
+    assert helper == (
+        "constauto*scoped=capability?"
+        "dynamic_cast<constCollaborativeWriterOperation*>(&operation):nullptr;"
+        "if(scoped){scoped->applyWithWriterCapability(document,*capability);}"
+        "else{operation.apply(document);}"
+    )
 
 
 def test_safe_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
