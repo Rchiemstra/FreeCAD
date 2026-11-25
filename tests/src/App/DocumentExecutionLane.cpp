@@ -32,6 +32,8 @@
 #include <stop_token>
 #include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -481,6 +483,130 @@ TEST_F(DocumentExecutionLaneTest, RecomputeWithSameKeyButDifferentOptionsReturns
     EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Busy);
     EXPECT_NE(second.commandId, first.commandId);
     _blocking->release();
+}
+
+TEST_F(DocumentExecutionLaneTest, SameKeyUnequalRecomputeInputsAreBusyBeforeEffects)
+{
+    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        doc()->addObject("App::FeatureTestAsyncBlocker", "CoalescingBlocker"));
+    auto* companion = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "CoalescingCompanion"));
+    auto* target = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "CoalescingTarget"));
+    ASSERT_NE(blocker, nullptr);
+    ASSERT_NE(companion, nullptr);
+    ASSERT_NE(target, nullptr);
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    struct ReleaseBlocker {
+        ~ReleaseBlocker() { App::FeatureTestAsyncBlocker::releaseBlocker(); }
+    } releaseBlocker;
+    blocker->touch();
+    const auto initialExecutions = target->ExecCount.getValue();
+    auto handle = doc()->executionHandle();
+    auto firstCommand = makeRecomputeCommand("explicit-recompute-key");
+    firstCommand.recompute->featureIds = {"CoalescingBlocker", "CoalescingCompanion"};
+    const auto structureKey = App::DocumentRevisionKey::documentStructure();
+    const auto objectKey = App::DocumentRevisionKey::objectProperty("CoalescingTarget", "ExecCount");
+    firstCommand.expectedRevisions.emplace_back(
+        structureKey, doc()->collaborationRevisions().current(structureKey));
+    firstCommand.expectedRevisions.emplace_back(
+        objectKey, doc()->collaborationRevisions().current(objectKey));
+
+    const auto first = handle.trySubmit(firstCommand);
+    ASSERT_TRUE(first.accepted());
+    ASSERT_NE(first.commandId, 0U);
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+    const auto identical = handle.trySubmit(firstCommand);
+    EXPECT_TRUE(identical.accepted());
+    EXPECT_EQ(identical.commandId, first.commandId);
+
+    auto differentFeatures = firstCommand;
+    differentFeatures.recompute->featureIds = {"CoalescingBlocker", "CoalescingTarget"};
+    auto differentOrder = firstCommand;
+    std::reverse(differentOrder.recompute->featureIds.begin(),
+                 differentOrder.recompute->featureIds.end());
+    auto differentForce = firstCommand;
+    differentForce.recompute->force = true;
+    auto differentOptions = firstCommand;
+    differentOptions.recompute->options = App::Document::DepNoCycle;
+    auto differentFence = firstCommand;
+    differentFence.recompute->refreshRevisionFenceAfterEachCommit = true;
+    auto differentSnapshots = firstCommand;
+    differentSnapshots.recompute->declaresCrossDocumentSnapshots = true;
+    auto differentRevision = firstCommand;
+    ++differentRevision.expectedRevisions[0].revision;
+    auto differentRevisionKey = firstCommand;
+    differentRevisionKey.expectedRevisions[0].key = App::DocumentRevisionKey::unknownModelMutation();
+    auto differentRevisionSubject = firstCommand;
+    differentRevisionSubject.expectedRevisions[1].key.subject = "CoalescingCompanion";
+    auto differentRevisionProperty = firstCommand;
+    differentRevisionProperty.expectedRevisions[1].key.propertyName = "ExecResult";
+    auto differentObservationOrder = firstCommand;
+    std::reverse(differentObservationOrder.expectedRevisions.begin(),
+                 differentObservationOrder.expectedRevisions.end());
+    auto missingObservation = firstCommand;
+    missingObservation.expectedRevisions.pop_back();
+    const std::vector<std::pair<const char*, App::DocumentCommand>> variants {
+        {"feature IDs", differentFeatures}, {"feature order", differentOrder},
+        {"force", differentForce}, {"options", differentOptions},
+        {"fence policy", differentFence}, {"cross-document snapshots", differentSnapshots},
+        {"expected revision", differentRevision}, {"revision kind", differentRevisionKey},
+        {"revision subject", differentRevisionSubject}, {"revision property", differentRevisionProperty},
+        {"observation order", differentObservationOrder}, {"missing observation", missingObservation}
+    };
+    std::atomic<int> beforeRecompute {0};
+    fastsignals::scoped_connection beforeConnection = doc()->signalBeforeRecompute.connect(
+        [&](const App::Document&) { beforeRecompute.fetch_add(1, std::memory_order_relaxed); });
+    for (const auto& [label, command] : variants) {
+        SCOPED_TRACE(label);
+        const auto rejected = handle.trySubmit(command);
+        EXPECT_EQ(rejected.result, App::DocumentCommandSubmitResult::Busy);
+        EXPECT_EQ(rejected.commandId, 0U);
+    }
+    EXPECT_EQ(beforeRecompute.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(target->ExecCount.getValue(), initialExecutions);
+
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    App::DocumentCommandHandle firstReceipt(first.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(firstReceipt, 30s));
+    ASSERT_EQ(firstReceipt.status().state, App::DocumentCommandState::Completed);
+    EXPECT_EQ(target->ExecCount.getValue(), initialExecutions);
+    auto retryCommand = differentFeatures;
+    retryCommand.recompute->force = true;
+    // Fence enforcement is separate; the retry does not depend on stale observations.
+    retryCommand.expectedRevisions.clear();
+    const auto retry = handle.trySubmit(retryCommand);
+    ASSERT_TRUE(retry.accepted());
+    EXPECT_NE(retry.commandId, first.commandId);
+    App::DocumentCommandHandle retryReceipt(retry.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(retryReceipt, 30s));
+    EXPECT_EQ(retryReceipt.status().state, App::DocumentCommandState::Completed);
+    EXPECT_EQ(target->ExecCount.getValue(), initialExecutions + 1);
+}
+
+TEST_F(DocumentExecutionLaneTest, EmptyRecomputeKeyDoesNotJoinActiveRequest)
+{
+    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        doc()->addObject("App::FeatureTestAsyncBlocker", "UnkeyedCoalescingBlocker"));
+    ASSERT_NE(blocker, nullptr);
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    struct ReleaseBlocker {
+        ~ReleaseBlocker() { App::FeatureTestAsyncBlocker::releaseBlocker(); }
+    } releaseBlocker;
+    blocker->touch();
+    auto handle = doc()->executionHandle();
+    auto command = makeRecomputeCommand("");
+    command.recompute->featureIds = {"UnkeyedCoalescingBlocker"};
+    const auto first = handle.trySubmit(command);
+    ASSERT_TRUE(first.accepted());
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+    const auto second = handle.trySubmit(command);
+    EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Busy);
+    EXPECT_EQ(second.commandId, 0U);
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    App::DocumentCommandHandle receipt(first.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(receipt, 30s));
+    EXPECT_EQ(receipt.status().state, App::DocumentCommandState::Completed);
 }
 
 TEST_F(DocumentExecutionLaneTest, EditReturnsBusyWhileRecomputeActive)

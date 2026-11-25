@@ -14,6 +14,7 @@ import FreeCAD
 import FreeCADGui
 from FreeCADGui import Selection
 import Part
+from pivy import coin
 
 try:
     from PySide6 import QtWidgets
@@ -65,7 +66,7 @@ class TestSelectionVisual(unittest.TestCase):
         self._flush_gui()
         selection_color = self._center_pixel_color()
 
-        Selection.setPreselection(plane, "Face1")
+        self._preselect_face(plane)
         self._flush_gui()
         preselection_color = self._center_pixel_color()
 
@@ -117,11 +118,12 @@ class TestSelectionVisual(unittest.TestCase):
 
         base_color = self._center_pixel_color()
 
-        Selection.setPreselection(plane, "Face1")
+        self._preselect_face(plane)
         self._flush_gui()
         preselection_color = self._center_pixel_color()
 
         Selection.clearPreselection()
+        self.assertEqual(Selection.getPreselection().ObjectName, "")
         self._flush_gui()
         cleared_color = self._center_pixel_color()
 
@@ -144,7 +146,29 @@ class TestSelectionVisual(unittest.TestCase):
         self.doc.recompute()
         return plane
 
+    def _preselect_face(self, plane):
+        Selection.setPreselection(plane, "Face1")
+        preselection = Selection.getPreselection()
+        self.assertEqual(preselection.DocumentName, self.doc.Name)
+        self.assertEqual(preselection.ObjectName, plane.Name)
+        self.assertEqual(preselection.SubElementNames, ("Face1",))
+
     def _prepare_view(self):
+        # Recompute queues the live view update. Fit the populated scene so
+        # the framebuffer center lies inside the face, not on its corner.
+        FreeCADGui.updateGui()
+        QtWidgets.QApplication.processEvents()
+
+        # The default selection and highlight colors are too similar for this
+        # visual ordering check. Change only this document's selection node.
+        search = coin.SoSearchAction()
+        search.setType(coin.SoType.fromName("SoFCUnifiedSelection"))
+        search.apply(self.view.getSceneGraph())
+        self.assertIsNotNone(search.getPath(), "3D view has no selection node")
+        selection = search.getPath().getTail()
+        selection.colorSelection.setValue(1.0, 0.0, 0.0)
+        selection.colorHighlight.setValue(0.0, 1.0, 0.0)
+
         self.view.viewTop()
         self._set_orthographic_if_supported()
         self.view.fitAll()
@@ -167,7 +191,16 @@ class TestSelectionVisual(unittest.TestCase):
 
     def _center_pixel_color(self):
         image = self.viewer.grabFramebuffer()
-        color = image.pixelColor(image.width() // 2, image.height() // 2)
+        self.assertFalse(image.isNull(), "3D view framebuffer capture returned a null image")
+        center = (image.width() // 2, image.height() // 2)
+        picked = self.view.getObjectInfo(center)
+        self.assertIsNotNone(picked, "Framebuffer center does not cover the test plane")
+        self.assertEqual(picked["Document"], self.doc.Name)
+        self.assertEqual(picked["Object"], "Plane")
+        self.assertEqual(
+            picked["Component"], "Face1", "Framebuffer center must cover the face interior"
+        )
+        color = image.pixelColor(*center)
         return (color.redF(), color.greenF(), color.blueF())
 
     def _assert_color_changed(self, before, after, message):

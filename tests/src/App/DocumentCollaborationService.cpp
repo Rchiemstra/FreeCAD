@@ -1838,6 +1838,67 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsSessionCancellationGap)
     }
 }
 
+
+TEST_F(DocumentCollaborationServiceTest, PythonCloseReleasesGilWhileDrainingAdmittedLifecyclePin)
+{
+    const auto oldStyle = GTEST_FLAG_GET(death_test_style);
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT({
+        using namespace std::chrono_literals;
+        std::mutex watchdogMutex; std::condition_variable watchdogChanged; bool done = false;
+        std::thread watchdog([&] {
+            std::unique_lock lock(watchdogMutex);
+            if (!watchdogChanged.wait_for(lock, 20s, [&] { return done; })) std::_Exit(91);
+        });
+        if (!Py_IsInitialized() || MainThreadSignalConfig::hasHooks()) std::_Exit(92);
+        // The existing self-pin rule still refuses rather than waiting on itself.
+        {
+            auto pin = Internal::DocumentCollaborationServiceTestAccess::pinDocumentAccess(
+                _document->collaborationService());
+            Base::PyGILStateLocker gil;
+            if (!pin || App::GetApplication().closeDocument(_documentName.c_str())) std::_Exit(93);
+            if (App::GetApplication().getDocument(_documentName.c_str()) != _document) std::_Exit(94);
+        }
+        HookBarrier markedClosing;
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(&HookBarrier::invoke);
+        std::promise<void> entered;
+        std::promise<void> requestPython;
+        auto enteredFuture = entered.get_future();
+        auto pythonRequested = requestPython.get_future();
+        auto* service = &_document->collaborationService();
+        std::thread pinOwner([&] {
+            auto pin = Internal::DocumentCollaborationServiceTestAccess::pinDocumentAccess(*service);
+            if (!pin) std::_Exit(95);
+            entered.set_value();
+            pythonRequested.wait();
+            // The close owns the GIL until it enters its lifetime drain.
+            Base::PyGILStateLocker gil;
+            if (!PyGILState_Check()) std::_Exit(96);
+        });
+        std::optional<Base::PyGILStateRelease> mainGil;
+        if (PyGILState_Check()) mainGil.emplace();
+        if (enteredFuture.wait_for(5s) != std::future_status::ready) std::_Exit(97);
+        const std::string script = "import FreeCAD\nFreeCAD.closeDocument('" + _documentName + "')\n";
+        auto closing = std::async(std::launch::async, [&] {
+            Base::PyGILStateLocker gil;
+            try { Base::Interpreter().runString(script.c_str()); return true; }
+            catch (...) { return false; }
+        });
+        if (!markedClosing.waitUntilEntered(5s)) std::_Exit(98);
+        requestPython.set_value();
+        markedClosing.release();
+        if (closing.wait_for(5s) != std::future_status::ready || !closing.get()) std::_Exit(99);
+        pinOwner.join();
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        mainGil.reset();
+        if (App::GetApplication().getDocument(_documentName.c_str())) std::_Exit(100);
+        { std::lock_guard lock(watchdogMutex); done = true; }
+        watchdogChanged.notify_all(); watchdog.join();
+        std::_Exit(0);
+    }, ::testing::ExitedWithCode(0), "");
+    GTEST_FLAG_SET(death_test_style, oldStyle);
+}
+
 TEST_F(DocumentCollaborationServiceTest, closeDrainsResultCollectionGap)
 {
     const auto executionId = _document->collaborationService().prepareEditAsync(

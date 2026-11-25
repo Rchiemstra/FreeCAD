@@ -11,12 +11,46 @@ import unittest
 TYPING_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TYPING_DIR))
 
-from stubgen.class_merge import public_class_stub_source  # noqa: E402
-from stubgen.module_merge import merge_type_class_support_nodes  # noqa: E402
+from stubgen.class_merge import (append_class_stubs, public_class_stub_source, public_import_target_index)  # noqa: E402
+from stubgen.module_merge import merge_type_class_support_nodes, module_support_source  # noqa: E402
+from stubgen.source_inputs import parse_binding_class_file  # noqa: E402
 from stubgen.model import BindingClass  # noqa: E402
 
 
 class ClassMergeTests(unittest.TestCase):
+    def test_module_support_import_does_not_hide_real_sketch_binding(self):
+        root = TYPING_DIR.parents[2]
+        binding = root / "src/Mod/Sketcher/App/SketchObject.pyi"
+        klass = parse_binding_class_file(root, binding, {})[0]
+        targets = public_import_target_index([klass])
+        source = (root / "src/Mod/Sketcher/App/Sketcher.module.pyi").read_text(
+            encoding="utf-8"
+        )
+        support = module_support_source(source, "Sketcher", targets)
+        self.assertNotIn("from Sketcher.App.SketchObject import SketchObject", support)
+        self.assertIn("sketch: SketchObject", support)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            target = out / "Sketcher" / "__init__.pyi"
+            target.parent.mkdir()
+            target.write_text(support, encoding="utf-8")
+            append_class_stubs(out, root, [klass], {"Sketcher"})
+            result = target.read_text(encoding="utf-8")
+        tree = ast.parse(result)
+        sketch = next(node for node in tree.body
+                      if isinstance(node, ast.ClassDef) and node.name == "SketchObject")
+        self.assertTrue(any(isinstance(node, ast.FunctionDef) and node.name == "addGeometry"
+                            for node in sketch.body))
+
+    def test_module_support_keeps_other_imports_and_aliases(self):
+        source = "from Sketcher.App.SketchObject import SketchObject, Other\n" \
+                 "from Sketcher.App.SketchObject import SketchObject as Alias\n"
+        targets = {("Sketcher.App.SketchObject", "SketchObject"): ("Sketcher", "SketchObject")}
+        result = module_support_source(source, "Sketcher", targets)
+        self.assertIn("import Other", result)
+        self.assertIn("import SketchObject as Alias", result)
+        self.assertNotIn("import SketchObject,", result)
+
     def test_merges_source_adjacent_bases_without_class_members(self):
         target = """\
 class Derived:
