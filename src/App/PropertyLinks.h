@@ -862,6 +862,8 @@ public:
 
 protected:
     DocumentObject* getPyValue(PyObject* item) const override;
+    void setPyValues(const std::vector<PyObject*>& values,
+                     const std::vector<int>& indices) override;
 
 protected:
     mutable std::map<std::string, int> _nameMap;

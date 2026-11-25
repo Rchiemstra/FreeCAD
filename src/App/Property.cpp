@@ -592,6 +592,9 @@ void PropertyListsBase::_setPyObject(PyObject* value)
                 throw Base::TypeError("expect key type to be integer");
             }
             long idx = PyLong_AsLong(key);
+            if (idx == -1 && PyErr_Occurred()) {
+                throw Py::Exception();
+            }
             if (idx < -1 || idx > listSize) {
                 throw Base::ValueError("index out of bound");
             }

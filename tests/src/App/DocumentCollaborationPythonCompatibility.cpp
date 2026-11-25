@@ -35,6 +35,8 @@
 #include <functional>
 #include <future>
 #include <iterator>
+#include <limits>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +64,121 @@ AppExport void setPropertyContentBeforeReadForTest(void (*)(PyObject*, std::istr
 AppExport void setPropertyContentBufferAcquireForTest(int (*)(PyObject*, Py_buffer*, int));
 }
 #endif
+
+// Document::addObject loads the module named by the first namespace component.
+// App is built in; a test-only top-level namespace would trigger a failed import.
+namespace App::ConversionBoundaryTest
+{
+class InheritedList: public App::PropertyIntegerList
+{
+public:
+    int calls = 0;
+protected:
+    void setPyValues(const std::vector<PyObject*>& values, const std::vector<int>& indices) override
+    {
+        ++calls;
+        App::PropertyIntegerList::setPyValues(values, indices);
+    }
+};
+// An unregistered subclass can deliberately give indexed assignment a different contract.
+class LinkListOverride: public App::PropertyLinkList
+{
+    TYPESYSTEM_HEADER_WITH_OVERRIDE();
+public:
+    int calls = 0;
+    void set1Value(int index, App::DocumentObject* const& value) override
+    {
+        ++calls;
+        if (value) App::PropertyLinkList::set1Value(index, value);
+    }
+};
+class SetterProbe: public App::PropertyIntegerList
+{
+public:
+    mutable int conversions = 0;
+    int wholeCalls = 0;
+    int indexedCalls = 0;
+    void setValues(const std::vector<long>& values) override
+    {
+        ++wholeCalls;
+        App::PropertyIntegerList::setValues(values);
+    }
+    void set1Value(int index, const long& value) override
+    {
+        ++indexedCalls;
+        App::PropertyIntegerList::set1Value(index, value);
+    }
+protected:
+    long getPyValue(PyObject* value) const override
+    {
+        if (PyLong_Check(value)) ++conversions;
+        return App::PropertyIntegerList::getPyValue(value);
+    }
+};
+class RegisteredList: public App::PropertyIntegerList
+{
+    TYPESYSTEM_HEADER_WITH_OVERRIDE();
+public:
+    int calls = 0;
+protected:
+    void setPyValues(const std::vector<PyObject*>& values, const std::vector<int>& indices) override
+    {
+        ++calls;
+        App::PropertyIntegerList::setPyValues(values, indices);
+    }
+};
+// Reject a scalar during scalar interpretation, then accept it via the virtual list hook.
+template<class Parent> class ColorHook: public Parent
+{
+public:
+    int calls = 0;
+protected:
+    Base::Color getPyValue(PyObject* value) const override
+    {
+        if (PyLong_Check(value)) {
+            PyErr_SetString(PyExc_TypeError, "probe scalar fallback");
+            throw Base::TypeError("probe scalar fallback");
+        }
+        return Parent::getPyValue(value);
+    }
+    void setPyValues(const std::vector<PyObject*>& values, const std::vector<int>& indices) override
+    {
+        ++calls;
+        if (indices.empty() && values.size() == 1 && PyLong_Check(values[0])) {
+            this->setValue(Base::Color(0.25F, 0.5F, 0.75F, 1.0F));
+            return;
+        }
+        Parent::setPyValues(values, indices);
+    }
+};
+using InheritedColor = ColorHook<App::PropertyColorList>;
+class RegisteredColor: public ColorHook<App::PropertyColorList>
+{
+    TYPESYSTEM_HEADER_WITH_OVERRIDE();
+};
+class Feature: public App::FeatureTest
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::ConversionBoundaryTest::Feature);
+public:
+    Feature()
+    {
+        ADD_PROPERTY(Probe, (1L));
+        ADD_PROPERTY(Inherited, (1L));
+        ADD_PROPERTY(Registered, (1L));
+        ADD_PROPERTY(InheritedColour, (Base::Color()));
+        ADD_PROPERTY(RegisteredColour, (Base::Color()));
+    }
+    SetterProbe Probe;
+    InheritedList Inherited;
+    RegisteredList Registered;
+    InheritedColor InheritedColour;
+    RegisteredColor RegisteredColour;
+};
+}
+TYPESYSTEM_SOURCE(App::ConversionBoundaryTest::LinkListOverride, App::PropertyLinkList)
+TYPESYSTEM_SOURCE(App::ConversionBoundaryTest::RegisteredList, App::PropertyIntegerList)
+TYPESYSTEM_SOURCE(App::ConversionBoundaryTest::RegisteredColor, App::PropertyColorList)
+PROPERTY_SOURCE(App::ConversionBoundaryTest::Feature, App::FeatureTest)
 
 namespace
 {
@@ -280,11 +397,6 @@ private:
     std::string _name;
 };
 
-struct ScopedPythonErrorClear final
-{
-    ~ScopedPythonErrorClear() { PyErr_Clear(); }
-};
-
 class PyObjectRef final
 {
 public:
@@ -307,6 +419,13 @@ public:
 
 private:
     PyObject* _object;
+};
+
+// Declared after the GIL locker and before Python references: fatal assertions must
+// not leave a pending exception on the thread state used by later tests.
+struct ScopedPythonErrorClear final
+{
+    ~ScopedPythonErrorClear() { PyErr_Clear(); }
 };
 
 class PythonDocumentObserverGuard final
@@ -1749,6 +1868,16 @@ protected:
     static void SetUpTestSuite()
     {
         tests::initApplication();
+        // The test runner initializes one process-wide application/type registry. Suite setup
+        // repeats under --gtest_repeat, but the registry survives each repetition.
+        static const bool registered = [] {
+            App::ConversionBoundaryTest::LinkListOverride::init();
+            App::ConversionBoundaryTest::RegisteredList::init();
+            App::ConversionBoundaryTest::RegisteredColor::init();
+            App::ConversionBoundaryTest::Feature::init();
+            return true;
+        }();
+        (void)registered;
     }
 
     void SetUp() override
@@ -1794,6 +1923,1419 @@ protected:
     App::FeatureTest* _target {nullptr};
     std::string _documentName;
 };
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       indexedLinkListRejectsInvalidLaterValueBeforeEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* links = dynamic_cast<App::PropertyLinkList*>(
+        _target->addDynamicProperty("App::PropertyLinkList", "Links"));
+    auto* a = _document->addObject<App::FeatureTest>("A");
+    auto* b = _document->addObject<App::FeatureTest>("B");
+    auto* c = _document->addObject<App::FeatureTest>("C");
+    ASSERT_NE(links, nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    PyObjectRef owner(_target->getPyObject());
+    PyObjectRef pa(a->getPyObject());
+    PyObjectRef pb(b->getPyObject());
+    PyObjectRef pc(c->getPyObject());
+    ASSERT_NE(owner.get(), nullptr);
+    ASSERT_NE(pa.get(), nullptr);
+    ASSERT_NE(pb.get(), nullptr);
+    ASSERT_NE(pc.get(), nullptr);
+    PyObjectRef initial(Py_BuildValue("[OO]", pa.get(), pb.get()));
+    ASSERT_NE(initial.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Links", initial.get()), 0);
+    const auto aBack = a->getInList();
+    const auto bBack = b->getInList();
+    const auto cBack = c->getInList();
+    ASSERT_NE(std::find(aBack.begin(), aBack.end(), _target), aBack.end());
+    ASSERT_NE(std::find(bBack.begin(), bBack.end(), _target), bBack.end());
+    ASSERT_EQ(std::find(cBack.begin(), cBack.end(), _target), cBack.end());
+    int before = 0;
+    int after = 0;
+    fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == _target && &property == links) ++before;
+        });
+    fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == _target && &property == links) ++after;
+        });
+    PyObjectRef invalid(Py_BuildValue("{i:O,i:O}", 0, pc.get(), 1, Py_None));
+    ASSERT_NE(invalid.get(), nullptr);
+    const int status = PyObject_SetAttrString(owner.get(), "Links", invalid.get());
+    const bool valueError = PyErr_ExceptionMatches(PyExc_ValueError);
+    PyErr_Clear();
+    EXPECT_EQ(status, -1);
+    EXPECT_TRUE(valueError);
+    EXPECT_EQ(links->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+    EXPECT_EQ(a->getInList(), aBack);
+    EXPECT_EQ(b->getInList(), bBack);
+    EXPECT_EQ(c->getInList(), cBack);
+    EXPECT_EQ(before, 0);
+    EXPECT_EQ(after, 0);
+    PyObjectRef valid(Py_BuildValue("{i:O,i:O}", 0, pc.get(), -1, pa.get()));
+    ASSERT_NE(valid.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Links", valid.get()), 0);
+    EXPECT_EQ(links->getValues(), (std::vector<App::DocumentObject*> {c, b, a}));
+    EXPECT_NE(std::find(c->getInList().begin(), c->getInList().end(), _target), c->getInList().end());
+    EXPECT_GT(before, 0);
+    EXPECT_GT(after, 0);
+    // The concrete mutator accepts a null assignment when it is already a no-op.
+    links->setSize(4);
+    PyObjectRef sameNull(Py_BuildValue("{i:O}", 3, Py_None));
+    ASSERT_NE(sameNull.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Links", sameNull.get()), 0);
+    EXPECT_EQ(links->getValues().back(), nullptr);
+    PyObjectRef customAdded(PyObject_CallMethod(owner.get(), "addProperty", "ss",
+        "App::ConversionBoundaryTest::LinkListOverride", "CustomLinks"));
+    ASSERT_NE(customAdded.get(), nullptr);
+    auto* subclass = dynamic_cast<App::ConversionBoundaryTest::LinkListOverride*>(
+        _target->getPropertyByName("CustomLinks"));
+    ASSERT_NE(subclass, nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "CustomLinks", initial.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "CustomLinks", invalid.get()), 0);
+    EXPECT_EQ(subclass->calls, 2);
+    PyObjectRef customResult(PyObject_GetAttrString(owner.get(), "CustomLinks"));
+    PyObjectRef customExpected(Py_BuildValue("[OO]", pc.get(), pb.get()));
+    ASSERT_NE(customResult.get(), nullptr);
+    ASSERT_NE(customExpected.get(), nullptr);
+    EXPECT_EQ(PyObject_RichCompareBool(customResult.get(), customExpected.get(), Py_EQ), 1);
+    PyObjectRef clear(Py_BuildValue("[O]", Py_None));
+    ASSERT_NE(clear.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Links", clear.get()), 0);
+    EXPECT_TRUE(links->getValues().empty());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       registeredLinkListVariantsPreflightAndPreserveNotificationOrdering)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef owner(_target->getPyObject());
+    ASSERT_NE(owner.get(), nullptr);
+    auto* a = _document->addObject<App::FeatureTest>("VariantA");
+    auto* b = _document->addObject<App::FeatureTest>("VariantB");
+    auto* c = _document->addObject<App::FeatureTest>("VariantC");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    PyObjectRef pa(a->getPyObject()), pb(b->getPyObject()), pc(c->getPyObject());
+    ASSERT_NE(pa.get(), nullptr);
+    ASSERT_NE(pb.get(), nullptr);
+    ASSERT_NE(pc.get(), nullptr);
+    const char* types[] = {"App::PropertyLinkListGlobal", "App::PropertyLinkListChild",
+                           "App::PropertyLinkListHidden"};
+    for (int i = 0; i < 3; ++i) {
+        SCOPED_TRACE(types[i]);
+        const bool hidden = i == 2;
+        const std::string name = "VariantLinks" + std::to_string(i);
+        PyObjectRef added(PyObject_CallMethod(owner.get(), "addProperty", "ss", types[i], name.c_str()));
+        ASSERT_NE(added.get(), nullptr);
+        auto* links = dynamic_cast<App::PropertyLinkList*>(_target->getPropertyByName(name.c_str()));
+        ASSERT_NE(links, nullptr);
+        PyObjectRef initial(Py_BuildValue("[OO]", pa.get(), pb.get()));
+        ASSERT_NE(initial.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), initial.get()), 0);
+        const auto aBack = a->getInList();
+        const auto bBack = b->getInList();
+        const auto cBack = c->getInList();
+        auto hasOwner = [&](const auto& list) {
+            return std::find(list.begin(), list.end(), _target) != list.end();
+        };
+        EXPECT_EQ(hasOwner(aBack), !hidden);
+        EXPECT_EQ(hasOwner(bBack), !hidden);
+        EXPECT_FALSE(hasOwner(cBack));
+        int before = 0, after = 0;
+        fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != links) return;
+                ++before;
+                EXPECT_EQ(links->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+                EXPECT_EQ(a->getInList(), aBack);
+                EXPECT_EQ(b->getInList(), bBack);
+                EXPECT_EQ(c->getInList(), cBack);
+            });
+        fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != links) return;
+                ++after;
+                EXPECT_EQ(links->getValues(), (std::vector<App::DocumentObject*> {c, a}));
+                EXPECT_EQ(hasOwner(a->getInList()), !hidden);
+                EXPECT_FALSE(hasOwner(b->getInList()));
+                EXPECT_EQ(hasOwner(c->getInList()), !hidden);
+            });
+        PyObjectRef invalid(Py_BuildValue("{i:O,i:O}", 0, pc.get(), 1, Py_None));
+        ASSERT_NE(invalid.get(), nullptr);
+        EXPECT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), invalid.get()), -1);
+        EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_ValueError));
+        PyErr_Clear();
+        PyObjectRef current(PyObject_GetAttrString(owner.get(), name.c_str()));
+        ASSERT_NE(current.get(), nullptr);
+        EXPECT_EQ(PyObject_RichCompareBool(current.get(), initial.get(), Py_EQ), 1);
+        EXPECT_EQ(a->getInList(), aBack);
+        EXPECT_EQ(b->getInList(), bBack);
+        EXPECT_EQ(c->getInList(), cBack);
+        EXPECT_EQ(before, 0);
+        EXPECT_EQ(after, 0);
+        PyObjectRef valid(Py_BuildValue("{i:O,i:O}", 0, pc.get(), 1, pa.get()));
+        ASSERT_NE(valid.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), valid.get()), 0);
+        PyObjectRef result(PyObject_GetAttrString(owner.get(), name.c_str()));
+        PyObjectRef expected(Py_BuildValue("[OO]", pc.get(), pa.get()));
+        ASSERT_NE(result.get(), nullptr);
+        ASSERT_NE(expected.get(), nullptr);
+        EXPECT_EQ(PyObject_RichCompareBool(result.get(), expected.get(), Py_EQ), 1);
+        EXPECT_EQ(before, 1);
+        EXPECT_EQ(after, 1);
+        beforeConnection.disconnect();
+        afterConnection.disconnect();
+        PyObjectRef clear(PyList_New(0));
+        ASSERT_NE(clear.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), clear.get()), 0);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       quantityVectorMatrixAndUnicodeEnumRejectInvalidInputBeforeEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    PyObjectRef quantity(PyLong_FromLong(23));
+    PyObjectRef vector(Py_BuildValue("(lll)", 4L, 5L, 6L));
+    ASSERT_NE(quantity.get(), nullptr);
+    ASSERT_NE(vector.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "QuantityLength", quantity.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Vector", vector.get()), 0);
+    PyObjectRef initialVectors(Py_BuildValue("[(lll)(lll)]", 1L, 2L, 3L, 4L, 5L, 6L));
+    ASSERT_NE(initialVectors.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "VectorList", initialVectors.get()), 0);
+    const auto matrixBefore = _target->Matrix.getValue();
+    const auto vecBefore = _target->Vector.getValue();
+    const auto listBefore = _target->VectorList.getValues();
+    const auto quantityBefore = _target->QuantityLength.getValue();
+    const auto angleBefore = _target->Angle.getValue();
+    const auto enumBefore = _target->Enum.getValue();
+    const auto enumNames = _target->Enum.getEnumVector();
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const auto undos = _document->getAvailableUndos();
+    const auto fileState = _document->getFileChangeState();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    const auto reject = [&](const char* name, PyObject* input, PyObject* error) {
+        const int status = PyObject_SetAttrString(target.get(), name, input);
+        const bool matched = PyErr_ExceptionMatches(error);
+        PyErr_Clear();
+        EXPECT_EQ(status, -1) << name;
+        EXPECT_TRUE(matched) << name;
+        EXPECT_DOUBLE_EQ(_target->QuantityLength.getValue(), quantityBefore);
+        const auto vec = _target->Vector.getValue();
+        EXPECT_DOUBLE_EQ(vec.x, vecBefore.x);
+        EXPECT_DOUBLE_EQ(vec.y, vecBefore.y);
+        EXPECT_DOUBLE_EQ(vec.z, vecBefore.z);
+        EXPECT_DOUBLE_EQ(_target->Angle.getValue(), angleBefore);
+        const auto& list = _target->VectorList.getValues();
+        ASSERT_EQ(list.size(), listBefore.size());
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            EXPECT_DOUBLE_EQ(list[i].x, listBefore[i].x);
+            EXPECT_DOUBLE_EQ(list[i].y, listBefore[i].y);
+            EXPECT_DOUBLE_EQ(list[i].z, listBefore[i].z);
+        }
+        const auto& actual = _target->Matrix.getValue();
+        for (int x = 0; x < 4; ++x) {
+            for (int y = 0; y < 4; ++y) {
+                EXPECT_DOUBLE_EQ(actual[x][y], matrixBefore[x][y]);
+            }
+        }
+        EXPECT_EQ(_target->Enum.getValue(), enumBefore);
+        EXPECT_EQ(_target->Enum.getEnumVector(), enumNames);
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(_document->getFileChangeState(), fileState);
+        EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        EXPECT_EQ(beforeSignals, 0);
+        EXPECT_EQ(afterSignals, 0);
+    };
+    char positive[] = "99999999999999999999999999999999999999999999999999999";
+    char negative[] = "-99999999999999999999999999999999999999999999999999999";
+    PyObjectRef tooLarge(PyLong_FromString(positive, nullptr, 10));
+    PyObjectRef tooSmall(PyLong_FromString(negative, nullptr, 10));
+    ASSERT_NE(tooLarge.get(), nullptr);
+    ASSERT_NE(tooSmall.get(), nullptr);
+    for (PyObject* overflow : {tooLarge.get(), tooSmall.get()}) {
+        reject("QuantityLength", overflow, PyExc_OverflowError);
+        reject("Angle", overflow, PyExc_OverflowError);
+        for (int bad = 0; bad < 3; ++bad) {
+            PyObjectRef tuple(PyTuple_New(3));
+            ASSERT_NE(tuple.get(), nullptr);
+            for (int i = 0; i < 3; ++i) {
+                PyObject* value = i == bad ? overflow : PyLong_FromLong(i + 1);
+                ASSERT_NE(value, nullptr);
+                if (i == bad) Py_INCREF(value);
+                PyTuple_SET_ITEM(tuple.get(), i, value);
+            }
+            reject("Vector", tuple.get(), PyExc_OverflowError);
+            PyObjectRef list(Py_BuildValue("[(lll)O]", 1L, 2L, 3L, tuple.get()));
+            ASSERT_NE(list.get(), nullptr);
+            reject("VectorList", list.get(), PyExc_OverflowError);
+            reject("VectorList", tuple.get(), PyExc_OverflowError);
+            PyObjectRef indexed(PyDict_New());
+            PyObjectRef firstKey(PyLong_FromLong(0));
+            PyObjectRef secondKey(PyLong_FromLong(1));
+            PyObjectRef firstVector(Py_BuildValue("(lll)", 7L, 8L, 9L));
+            ASSERT_NE(indexed.get(), nullptr);
+            ASSERT_NE(firstKey.get(), nullptr);
+            ASSERT_NE(secondKey.get(), nullptr);
+            ASSERT_NE(firstVector.get(), nullptr);
+            ASSERT_EQ(PyDict_SetItem(indexed.get(), firstKey.get(), firstVector.get()), 0);
+            ASSERT_EQ(PyDict_SetItem(indexed.get(), secondKey.get(), tuple.get()), 0);
+            reject("VectorList", indexed.get(), PyExc_OverflowError);
+            PyObjectRef badKey(PyDict_New());
+            ASSERT_NE(badKey.get(), nullptr);
+            ASSERT_EQ(PyDict_SetItem(badKey.get(), firstKey.get(), firstVector.get()), 0);
+            ASSERT_EQ(PyDict_SetItem(badKey.get(), overflow, firstVector.get()), 0);
+            reject("VectorList", badKey.get(), PyExc_OverflowError);
+        }
+        for (int bad = 0; bad < 16; ++bad) {
+            PyObjectRef tuple(PyTuple_New(16));
+            ASSERT_NE(tuple.get(), nullptr);
+            for (int i = 0; i < 16; ++i) {
+                PyObject* value = i == bad ? overflow : PyLong_FromLong(i + 1);
+                ASSERT_NE(value, nullptr);
+                if (i == bad) Py_INCREF(value);
+                PyTuple_SET_ITEM(tuple.get(), i, value);
+            }
+            reject("Matrix", tuple.get(), PyExc_OverflowError);
+        }
+    }
+    PyObjectRef surrogate(PyUnicode_FromOrdinal(0xd800));
+    ASSERT_NE(surrogate.get(), nullptr);
+    reject("Enum", surrogate.get(), PyExc_UnicodeEncodeError);
+    reject("QuantityLength", surrogate.get(), PyExc_UnicodeEncodeError);
+    PyObjectRef labels(Py_BuildValue("[sO]", "Valid", surrogate.get()));
+    ASSERT_NE(labels.get(), nullptr);
+    reject("Enum", labels.get(), PyExc_UnicodeEncodeError);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       quantityVectorAndMatrixPreserveValidSignedBoundaries)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    for (long value : {std::numeric_limits<long>::lowest(), -1L,
+                       std::numeric_limits<long>::max()}) {
+        PyObjectRef number(PyLong_FromLong(value));
+        PyObjectRef vector(Py_BuildValue("(lll)", value, -1L, 0L));
+        PyObjectRef matrix(PyTuple_New(16));
+        ASSERT_NE(number.get(), nullptr);
+        ASSERT_NE(vector.get(), nullptr);
+        ASSERT_NE(matrix.get(), nullptr);
+        for (int i = 0; i < 16; ++i) {
+            PyObject* item = PyLong_FromLong(i == 15 ? value : -1L);
+            ASSERT_NE(item, nullptr);
+            PyTuple_SET_ITEM(matrix.get(), i, item);
+        }
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "QuantityLength", number.get()), 0);
+        EXPECT_DOUBLE_EQ(_target->QuantityLength.getValue(), static_cast<double>(value));
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "Vector", vector.get()), 0);
+        EXPECT_DOUBLE_EQ(_target->Vector.getValue().x, static_cast<double>(value));
+        EXPECT_DOUBLE_EQ(_target->Vector.getValue().y, -1.0);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "VectorList", vector.get()), 0);
+        ASSERT_EQ(_target->VectorList.getValues().size(), 1U);
+        EXPECT_DOUBLE_EQ(_target->VectorList.getValues()[0].x, static_cast<double>(value));
+        PyObjectRef updates(PyDict_New());
+        PyObjectRef key(PyLong_FromLong(0));
+        ASSERT_NE(updates.get(), nullptr);
+        ASSERT_NE(key.get(), nullptr);
+        ASSERT_EQ(PyDict_SetItem(updates.get(), key.get(), vector.get()), 0);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "VectorList", updates.get()), 0);
+        EXPECT_DOUBLE_EQ(_target->VectorList.getValues()[0].x, static_cast<double>(value));
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "Matrix", matrix.get()), 0);
+        EXPECT_DOUBLE_EQ(_target->Matrix.getValue()[3][3], static_cast<double>(value));
+        EXPECT_DOUBLE_EQ(_target->Matrix.getValue()[0][0], -1.0);
+        EXPECT_EQ(PyErr_Occurred(), nullptr);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       quantityAndEnumerationAcceptValidUnicode)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef quantity(PyUnicode_FromString("2 mm"));
+    PyObjectRef labels(Py_BuildValue("[ss]", "First", "\xc3\xa9"));
+    PyObjectRef selection(PyUnicode_FromString("\xc3\xa9"));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(quantity.get(), nullptr);
+    ASSERT_NE(labels.get(), nullptr);
+    ASSERT_NE(selection.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "QuantityLength", quantity.get()), 0);
+    EXPECT_DOUBLE_EQ(_target->QuantityLength.getValue(), 2.0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", labels.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", selection.get()), 0);
+    EXPECT_STREQ(_target->Enum.getValueAsString(), "\xc3\xa9");
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       wholeAndIndexedListRoutesDispatchVirtualSettersWithOrderedNotifications)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* feature = _document->addObject<App::ConversionBoundaryTest::Feature>("SetterProbe");
+    ASSERT_NE(feature, nullptr);
+    PyObjectRef owner(feature->getPyObject());
+    ASSERT_NE(owner.get(), nullptr);
+    auto& prop = feature->Probe;
+    prop.conversions = prop.wholeCalls = prop.indexedCalls = 0;
+    std::vector<long> oldValues {1};
+    std::vector<long> newValues {2, 3};
+    int before = 0, after = 0;
+    fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == feature && &property == &prop) {
+                ++before;
+                EXPECT_EQ(prop.getValues(), oldValues);
+            }
+        });
+    fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == feature && &property == &prop) {
+                ++after;
+                EXPECT_EQ(prop.getValues(), newValues);
+            }
+        });
+    PyObjectRef whole(Py_BuildValue("[ll]", 2L, 3L));
+    ASSERT_NE(whole.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Probe", whole.get()), 0);
+    EXPECT_EQ(prop.getValues(), newValues);
+    EXPECT_EQ(prop.conversions, 2);
+    EXPECT_EQ(prop.wholeCalls, 1);
+    EXPECT_EQ(prop.indexedCalls, 0);
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+
+    oldValues = newValues;
+    newValues = {4, 5};
+    before = after = 0;
+    prop.conversions = prop.wholeCalls = prop.indexedCalls = 0;
+    PyObjectRef indexed(Py_BuildValue("{i:l,i:l}", 0, 4L, 1, 5L));
+    ASSERT_NE(indexed.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Probe", indexed.get()), 0);
+    EXPECT_EQ(prop.getValues(), newValues);
+    EXPECT_EQ(prop.conversions, 2);
+    EXPECT_EQ(prop.wholeCalls, 0);
+    EXPECT_EQ(prop.indexedCalls, 2);
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       wholeLinkListsPublishFinalBacklinksAndRejectInvalidReplacement)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef owner(_target->getPyObject());
+    auto* a = _document->addObject<App::FeatureTest>("WholeA");
+    auto* b = _document->addObject<App::FeatureTest>("WholeB");
+    auto* c = _document->addObject<App::FeatureTest>("WholeC");
+    ASSERT_NE(owner.get(), nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    PyObjectRef pa(a->getPyObject()), pb(b->getPyObject()), pc(c->getPyObject());
+    ASSERT_NE(pa.get(), nullptr);
+    ASSERT_NE(pb.get(), nullptr);
+    ASSERT_NE(pc.get(), nullptr);
+    const char* types[] = {"App::PropertyLinkList", "App::PropertyLinkListGlobal",
+                           "App::PropertyLinkListChild", "App::PropertyLinkListHidden",
+                           "App::ConversionBoundaryTest::LinkListOverride"};
+    for (int i = 0; i < 5; ++i) {
+        SCOPED_TRACE(types[i]);
+        const bool hidden = i == 3;
+        const std::string name = "WholeLinks" + std::to_string(i);
+        auto* prop = dynamic_cast<App::PropertyLinkList*>(
+            _target->addDynamicProperty(types[i], name.c_str()));
+        ASSERT_NE(prop, nullptr);
+        PyObjectRef initial(Py_BuildValue("[OO]", pa.get(), pb.get()));
+        ASSERT_NE(initial.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), initial.get()), 0);
+        const auto aBack = a->getInList(), bBack = b->getInList(), cBack = c->getInList();
+        const auto hasOwner = [&](const auto& list) {
+            return std::find(list.begin(), list.end(), _target) != list.end();
+        };
+        EXPECT_EQ(hasOwner(aBack), !hidden);
+        EXPECT_EQ(hasOwner(bBack), !hidden);
+        EXPECT_FALSE(hasOwner(cBack));
+        int before = 0, after = 0;
+        fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != prop) return;
+                ++before;
+                EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+                EXPECT_EQ(a->getInList(), aBack);
+                EXPECT_EQ(b->getInList(), bBack);
+                EXPECT_EQ(c->getInList(), cBack);
+            });
+        fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != prop) return;
+                ++after;
+                EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {c, a}));
+                EXPECT_EQ(hasOwner(a->getInList()), !hidden);
+                EXPECT_FALSE(hasOwner(b->getInList()));
+                EXPECT_EQ(hasOwner(c->getInList()), !hidden);
+            });
+        PyObjectRef invalid(Py_BuildValue("[OO]", pc.get(), Py_None));
+        ASSERT_NE(invalid.get(), nullptr);
+        EXPECT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), invalid.get()), -1);
+        EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_ValueError));
+        PyErr_Clear();
+        EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+        EXPECT_EQ(a->getInList(), aBack);
+        EXPECT_EQ(b->getInList(), bBack);
+        EXPECT_EQ(c->getInList(), cBack);
+        EXPECT_EQ(before, 0);
+        EXPECT_EQ(after, 0);
+        PyObjectRef replacement(Py_BuildValue("[OO]", pc.get(), pa.get()));
+        ASSERT_NE(replacement.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), replacement.get()), 0);
+        EXPECT_EQ(before, 1);
+        EXPECT_EQ(after, 1);
+        beforeConnection.disconnect();
+        afterConnection.disconnect();
+        PyObjectRef clear(PyList_New(0));
+        ASSERT_NE(clear.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), clear.get()), 0);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       derivedNativeListsKeepIndexedVirtualDispatchThroughPythonBinding)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* feature = _document->addObject<App::ConversionBoundaryTest::Feature>("DerivedLists");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_EQ(feature->Inherited.getTypeId(), App::PropertyIntegerList::getClassTypeId());
+    ASSERT_NE(feature->Registered.getTypeId(), App::PropertyIntegerList::getClassTypeId());
+    PyObjectRef target(feature->getPyObject());
+    PyObjectRef updates(Py_BuildValue("{l:l,l:l}", 0L, 42L, -1L, 43L));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(updates.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Inherited", updates.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Registered", updates.get()), 0);
+    EXPECT_EQ(feature->Inherited.calls, 1);
+    EXPECT_EQ(feature->Registered.calls, 1);
+    EXPECT_EQ(feature->Inherited.getValues(), (std::vector<long> {42L, 43L}));
+    EXPECT_EQ(feature->Registered.getValues(), (std::vector<long> {42L, 43L}));
+    ASSERT_EQ(feature->InheritedColour.getTypeId(), App::PropertyColorList::getClassTypeId());
+    ASSERT_NE(feature->RegisteredColour.getTypeId(), App::PropertyColorList::getClassTypeId());
+    PyObjectRef scalar(PyLong_FromLong(123));
+    ASSERT_NE(scalar.get(), nullptr);
+    for (const char* name : {"InheritedColour", "RegisteredColour"}) {
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), name, scalar.get()), 0) << name;
+    }
+    EXPECT_EQ(feature->InheritedColour.calls, 1);
+    EXPECT_EQ(feature->RegisteredColour.calls, 1);
+    const auto checkColors = [](const auto& property, bool indexed) {
+        const auto& values = property.getValues();
+        ASSERT_EQ(values.size(), indexed ? 2U : 1U);
+        const auto check = [](const auto& color, float r, float g, float b, float a) {
+            EXPECT_FLOAT_EQ(color.r, r);
+            EXPECT_FLOAT_EQ(color.g, g);
+            EXPECT_FLOAT_EQ(color.b, b);
+            EXPECT_FLOAT_EQ(color.a, a);
+        };
+        if (indexed) {
+            check(values[0], 0.1F, 0.2F, 0.3F, 0.4F);
+            check(values[1], 0.5F, 0.6F, 0.7F, 0.8F);
+        }
+        else {
+            check(values[0], 0.25F, 0.5F, 0.75F, 1.0F);
+        }
+    };
+    checkColors(feature->InheritedColour, false);
+    checkColors(feature->RegisteredColour, false);
+    PyObjectRef colorUpdates(Py_BuildValue("{i:(ffff),i:(ffff)}", 0, 0.1, 0.2, 0.3, 0.4,
+                                           -1, 0.5, 0.6, 0.7, 0.8));
+    ASSERT_NE(colorUpdates.get(), nullptr);
+    for (const char* name : {"InheritedColour", "RegisteredColour"}) {
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), name, colorUpdates.get()), 0) << name;
+        PyObjectRef actual(PyObject_GetAttrString(target.get(), name));
+        ASSERT_NE(actual.get(), nullptr);
+        EXPECT_EQ(PySequence_Size(actual.get()), 2);
+    }
+    EXPECT_EQ(feature->InheritedColour.calls, 2);
+    EXPECT_EQ(feature->RegisteredColour.calls, 2);
+    checkColors(feature->InheritedColour, true);
+    checkColors(feature->RegisteredColour, true);
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       sharedIndexedListRejectsOverflowAndInvalidValuesBeforeEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* feature = _document->addObject<App::ConversionBoundaryTest::Feature>("SharedListProbe");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_NE(feature->addDynamicProperty("App::PropertyPlacementList", "Placements"), nullptr);
+    PyObjectRef target(feature->getPyObject());
+    PyObjectRef globals(PyDict_New());
+    PyObjectRef app(PyImport_ImportModule("FreeCAD"));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(globals.get(), nullptr);
+    ASSERT_NE(app.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItemString(globals.get(), "__builtins__", PyEval_GetBuiltins()), 0);
+    ASSERT_EQ(PyDict_SetItemString(globals.get(), "App", app.get()), 0);
+    const auto eval = [&](const char* expression) {
+        return PyRun_String(expression, Py_eval_input, globals.get(), globals.get());
+    };
+    PyObjectRef placements(eval("[App.Placement(App.Vector(1,0,0), App.Rotation()), App.Placement(App.Vector(2,0,0), App.Rotation())]"));
+    PyObjectRef integers(eval("[1,2]"));
+    ASSERT_NE(placements.get(), nullptr);
+    ASSERT_NE(integers.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Placements", placements.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Registered", integers.get()), 0);
+    int before = 0;
+    int after = 0;
+    fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) { if (&object == feature) ++before; });
+    fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) { if (&object == feature) ++after; });
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("SharedListProbe"),
+        App::DocumentRevisionKey::objectStructure("SharedListProbe"),
+        App::DocumentRevisionKey::documentStructure(),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    for (const auto& test : {std::pair<const char*, const char*> {"Placements", "{2**70: App.Placement()}"},
+                             {"Placements", "{0: App.Placement(), 1: 'bad'}"},
+                             {"Registered", "{2**70: 9}"},
+                             {"Registered", "{0: 9, 1: 'bad'}"}}) {
+        SCOPED_TRACE(test.second);
+        PyObjectRef input(eval(test.second));
+        ASSERT_NE(input.get(), nullptr);
+        EXPECT_EQ(PyObject_SetAttrString(target.get(), test.first, input.get()), -1);
+        EXPECT_NE(PyErr_Occurred(), nullptr);
+        if (std::string(test.second).find("2**70") != std::string::npos) {
+            EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_OverflowError));
+        }
+        PyErr_Clear();
+        EXPECT_EQ(before, 0);
+        EXPECT_EQ(after, 0);
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        EXPECT_EQ(feature->Registered.getValues(), (std::vector<long> {1, 2}));
+        PyObjectRef actual(PyObject_GetAttrString(target.get(), "Placements"));
+        ASSERT_NE(actual.get(), nullptr);
+        ASSERT_EQ(PyList_Size(actual.get()), 2);
+        for (Py_ssize_t i = 0; i < 2; ++i) {
+            PyObjectRef base(PyObject_GetAttrString(PyList_GetItem(actual.get(), i), "Base"));
+            ASSERT_NE(base.get(), nullptr);
+            PyObjectRef x(PyObject_GetAttrString(base.get(), "x"));
+            ASSERT_NE(x.get(), nullptr);
+            EXPECT_DOUBLE_EQ(PyFloat_AsDouble(x.get()), static_cast<double>(i + 1));
+        }
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       allBuiltInListIndexedRoutesPreserveValuesOrderAndFailureAtomicity)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    ASSERT_NE(_target->addDynamicProperty("App::PropertyIntPairList", "PairProbe"), nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef globals(PyDict_New());
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(globals.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItemString(globals.get(), "__builtins__", PyEval_GetBuiltins()), 0);
+    const auto eval = [&](const char* expression) {
+        return PyRun_String(expression, Py_eval_input, globals.get(), globals.get());
+    };
+    PyObjectRef normalize(eval("lambda v: tuple((x.x,x.y,x.z) if hasattr(x,'x') else tuple(x) if isinstance(x,(tuple,list)) else x for x in v)"));
+    ASSERT_NE(normalize.get(), nullptr);
+    struct Case {
+        const char* name;
+        const char* initial;
+        const char* replace;
+        const char* append;
+        const char* afterReplace;
+        const char* afterAppend;
+        const char* badValue;
+        const char* badKey;
+        const char* fallback;
+        const char* afterFallback;
+    };
+    const Case cases[] = {
+        {"IntegerList", "[1,2]", "{0:9}", "{2:7,-1:8}", "(9,2)", "(9,2,7,8)", "{0:3,1:object()}", "{0:3,'bad':4}", "[5,6]", "(5,6)"},
+        {"PairProbe", "[(1,2),(3,4)]", "{0:(9,8)}", "{2:(7,6),-1:(5,4)}", "((9,8),(3,4))", "((9,8),(3,4),(7,6),(5,4))", "{0:(2,1),1:object()}", "{0:(2,1),'bad':(4,3)}", "[(4,3),(2,1)]", "((4,3),(2,1))"},
+        {"FloatList", "[1.0,2.0]", "{0:9.0}", "{2:7.0,-1:8.0}", "(9.0,2.0)", "(9.0,2.0,7.0,8.0)", "{0:3.0,1:object()}", "{0:3.0,'bad':4.0}", "[5.0,6.0]", "(5.0,6.0)"},
+        {"BoolList", "[True,False]", "{0:False}", "{2:True,-1:False}", "(False,False)", "(False,False,True,False)", "{0:True,1:object()}", "{0:True,'bad':False}", "[True,True]", "(True,True)"},
+        {"ColourList", "[(0.,0.,0.,1.),(1.,1.,1.,1.)]", "{0:(1.,0.,0.,1.)}", "{2:(0.,1.,0.,1.),-1:(0.,0.,1.,0.)}", "((1.,0.,0.,1.),(1.,1.,1.,1.))", "((1.,0.,0.,1.),(1.,1.,1.,1.),(0.,1.,0.,1.),(0.,0.,1.,0.))", "{0:(0.,0.,0.,0.),1:object()}", "{0:(0.,0.,0.,0.),'bad':(1.,1.,1.,1.)}", "[(0.,1.,1.,1.),(1.,0.,1.,1.)]", "((0.,1.,1.,1.),(1.,0.,1.,1.))"},
+        {"StringList", "['a','b']", "{0:'c'}", "{2:'d',-1:'e'}", "('c','b')", "('c','b','d','e')", "{0:'changed',1:object()}", "{0:'changed','bad':'x'}", "['f','g']", "('f','g')"},
+        {"VectorList", "[(1,2,3),(4,5,6)]", "{0:(9,8,7)}", "{2:(6,5,4),-1:(3,2,1)}", "((9.,8.,7.),(4.,5.,6.))", "((9.,8.,7.),(4.,5.,6.),(6.,5.,4.),(3.,2.,1.))", "{0:(3,4,5),1:object()}", "{0:(3,4,5),'bad':(1,2,3)}", "[(6,7,8),(9,10,11)]", "((6.,7.,8.),(9.,10.,11.))"},
+    };
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::documentStructure(),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    const auto write = [&](const char* name, const char* expression, bool success) {
+        PyObjectRef input(eval(expression));
+        if (!input.get()) { PyErr_Clear(); ADD_FAILURE() << expression; return; }
+        const int status = PyObject_SetAttrString(target.get(), name, input.get());
+        const bool hadError = PyErr_Occurred() != nullptr;
+        PyErr_Clear();
+        EXPECT_EQ(status, success ? 0 : -1) << name << ' ' << expression;
+        EXPECT_EQ(hadError, !success) << name << ' ' << expression;
+    };
+    const auto check = [&](const char* name, const char* expression) {
+        PyObjectRef actual(PyObject_GetAttrString(target.get(), name));
+        if (!actual.get()) { PyErr_Clear(); ADD_FAILURE() << name; return; }
+        PyObjectRef normalized(PyObject_CallFunctionObjArgs(normalize.get(), actual.get(), nullptr));
+        PyObjectRef expected(eval(expression));
+        if (!normalized.get() || !expected.get()) { PyErr_Clear(); ADD_FAILURE() << name; return; }
+        const int equal = PyObject_RichCompareBool(normalized.get(), expected.get(), Py_EQ);
+        if (equal < 0) PyErr_Clear();
+        EXPECT_EQ(equal, 1) << name << " expected " << expression;
+    };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.name);
+        write(item.name, item.initial, true);
+        beforeSignals = afterSignals = 0;
+        write(item.name, item.replace, true);
+        check(item.name, item.afterReplace);
+        EXPECT_GT(beforeSignals, 0);
+        EXPECT_GT(afterSignals, 0);
+        beforeSignals = afterSignals = 0;
+        write(item.name, item.append, true);
+        check(item.name, item.afterAppend);
+        EXPECT_GT(beforeSignals, 0);
+        EXPECT_GT(afterSignals, 0);
+        const auto revisions = _document->collaborationRevisions().capture(keys);
+        const int undos = _document->getAvailableUndos();
+        const int redos = _document->getAvailableRedos();
+        const auto fileState = _document->getFileChangeState();
+        const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+        beforeSignals = afterSignals = 0;
+        for (const char* bad : {item.badValue, item.badKey}) {
+            write(item.name, bad, false);
+            check(item.name, item.afterAppend);
+            EXPECT_EQ(beforeSignals, 0);
+            EXPECT_EQ(afterSignals, 0);
+            EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+            EXPECT_EQ(_document->getAvailableUndos(), undos);
+            EXPECT_EQ(_document->getAvailableRedos(), redos);
+            EXPECT_EQ(_document->getFileChangeState(), fileState);
+            EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        }
+        write(item.name, "{}", true);
+        check(item.name, "()");
+        EXPECT_GT(beforeSignals, 0);
+        EXPECT_GT(afterSignals, 0);
+        beforeSignals = afterSignals = 0;
+        write(item.name, item.fallback, true);
+        check(item.name, item.afterFallback);
+        EXPECT_GT(beforeSignals, 0);
+        EXPECT_GT(afterSignals, 0);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       unicodePropertiesRejectSurrogatesBeforeEffectsAndAcceptValidInput)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    ASSERT_NE(_target->addDynamicProperty("App::PropertyUUID", "UUIDProbe"), nullptr);
+    ASSERT_NE(_target->addDynamicProperty("App::PropertyMap", "MapProbe"), nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef unicode(PyUnicode_FromString("caf\xc3\xa9"));
+    PyObjectRef uuid(PyUnicode_FromString("123e4567-e89b-12d3-a456-426614174000"));
+    PyObjectRef bits(PyUnicode_FromString("101"));
+    PyObjectRef list(Py_BuildValue("[OO]", unicode.get(), unicode.get()));
+    PyObjectRef map(PyDict_New());
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(unicode.get(), nullptr);
+    ASSERT_NE(uuid.get(), nullptr);
+    ASSERT_NE(bits.get(), nullptr);
+    ASSERT_NE(list.get(), nullptr);
+    ASSERT_NE(map.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItem(map.get(), unicode.get(), unicode.get()), 0);
+    const std::array<std::pair<const char*, PyObject*>, 6> cases {{
+        {"Path", unicode.get()}, {"String", unicode.get()}, {"UUIDProbe", uuid.get()},
+        {"StringList", list.get()}, {"MapProbe", map.get()}, {"BoolList", bits.get()}}};
+    for (const auto& [name, value] : cases) {
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), name, value), 0) << name;
+        EXPECT_EQ(PyErr_Occurred(), nullptr);
+    }
+    std::vector<PyObjectRef*> snapshots;
+    std::vector<std::unique_ptr<PyObjectRef>> owners;
+    for (const auto& [name, value] : cases) {
+        (void)value;
+        owners.push_back(std::make_unique<PyObjectRef>(PyObject_GetAttrString(target.get(), name)));
+        ASSERT_NE(owners.back()->get(), nullptr);
+        snapshots.push_back(owners.back().get());
+    }
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[0]->get(), unicode.get(), Py_EQ), 1);
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[1]->get(), unicode.get(), Py_EQ), 1);
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[2]->get(), uuid.get(), Py_EQ), 1);
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[3]->get(), list.get(), Py_EQ), 1);
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[4]->get(), map.get(), Py_EQ), 1);
+    PyObjectRef expectedBits(Py_BuildValue("(OOO)", Py_True, Py_False, Py_True));
+    ASSERT_NE(expectedBits.get(), nullptr);
+    EXPECT_EQ(PyObject_RichCompareBool(snapshots[5]->get(), expectedBits.get(), Py_EQ), 1);
+    _document->openTransaction("Unicode rejection");
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::documentStructure(),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    const int redos = _document->getAvailableRedos();
+    const auto fileState = _document->getFileChangeState();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    PyObjectRef bad(PyUnicode_FromOrdinal(0xd800));
+    ASSERT_NE(bad.get(), nullptr);
+    const auto reject = [&](const char* name, PyObject* value) {
+        const int status = PyObject_SetAttrString(target.get(), name, value);
+        const bool expected = PyErr_ExceptionMatches(PyExc_UnicodeEncodeError);
+        PyErr_Clear();
+        EXPECT_EQ(status, -1) << name;
+        EXPECT_TRUE(expected) << name;
+        for (std::size_t i = 0; i < cases.size(); ++i) {
+            PyObjectRef current(PyObject_GetAttrString(target.get(), cases[i].first));
+            ASSERT_NE(current.get(), nullptr);
+            EXPECT_EQ(PyObject_RichCompareBool(current.get(), snapshots[i]->get(), Py_EQ), 1)
+                << cases[i].first;
+        }
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(_document->getAvailableRedos(), redos);
+        EXPECT_EQ(_document->getFileChangeState(), fileState);
+        EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        EXPECT_EQ(beforeSignals, 0);
+        EXPECT_EQ(afterSignals, 0);
+    };
+    for (const char* name : {"Path", "String", "UUIDProbe", "BoolList"}) {
+        reject(name, bad.get());
+    }
+    PyObjectRef changedString(PyUnicode_FromString("changed"));
+    ASSERT_NE(changedString.get(), nullptr);
+    PyObjectRef badList(Py_BuildValue("[OO]", changedString.get(), bad.get()));
+    PyObjectRef indexed(PyDict_New());
+    PyObjectRef zero(PyLong_FromLong(0));
+    PyObjectRef one(PyLong_FromLong(1));
+    PyObjectRef badKeyMap(PyDict_New());
+    PyObjectRef badValueMap(PyDict_New());
+    ASSERT_NE(badList.get(), nullptr);
+    ASSERT_NE(indexed.get(), nullptr);
+    ASSERT_NE(zero.get(), nullptr);
+    ASSERT_NE(one.get(), nullptr);
+    ASSERT_NE(badKeyMap.get(), nullptr);
+    ASSERT_NE(badValueMap.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItem(indexed.get(), zero.get(), changedString.get()), 0);
+    ASSERT_EQ(PyDict_SetItem(indexed.get(), one.get(), bad.get()), 0);
+    ASSERT_EQ(PyDict_SetItem(badKeyMap.get(), unicode.get(), unicode.get()), 0);
+    ASSERT_EQ(PyDict_SetItem(badKeyMap.get(), bad.get(), unicode.get()), 0);
+    ASSERT_EQ(PyDict_SetItem(badValueMap.get(), unicode.get(), unicode.get()), 0);
+    PyObjectRef other(PyUnicode_FromString("other"));
+    ASSERT_NE(other.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItem(badValueMap.get(), other.get(), bad.get()), 0);
+    reject("StringList", badList.get());
+    reject("StringList", indexed.get());
+    reject("MapProbe", badKeyMap.get());
+    reject("MapProbe", badValueMap.get());
+    PyObjectRef validIndex(Py_BuildValue("{i:O,i:O}", 0, other.get(), -1, unicode.get()));
+    ASSERT_NE(validIndex.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "StringList", validIndex.get()), 0);
+    PyObjectRef updated(PyObject_GetAttrString(target.get(), "StringList"));
+    PyObjectRef expected(Py_BuildValue("[OOO]", other.get(), unicode.get(), unicode.get()));
+    ASSERT_NE(updated.get(), nullptr);
+    ASSERT_NE(expected.get(), nullptr);
+    EXPECT_EQ(PyObject_RichCompareBool(updated.get(), expected.get(), Py_EQ), 1);
+    EXPECT_GT(beforeSignals, 0);
+    EXPECT_GT(afterSignals, 0);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       integerAndFloatBindingsRejectOverflowBeforeAnyModelEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* percent = dynamic_cast<App::PropertyPercent*>(
+        _target->addDynamicProperty("App::PropertyPercent", "PercentProbe"));
+    ASSERT_NE(percent, nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef initial(PyLong_FromLong(42));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(initial.get(), nullptr);
+    const char* names[] = {"Integer", "ConstraintInt", "PercentProbe", "Float", "ConstraintFloat"};
+    for (const char* name : names) {
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), name, initial.get()), 0) << name;
+    }
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectProperty("Target", "Integer"),
+        App::DocumentRevisionKey::objectProperty("Target", "Float"),
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::documentStructure(),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    const auto fileState = _document->getFileChangeState();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    char positive[] = "999999999999999999999999999999999999999999999999999999999999999999";
+    char negative[] = "-999999999999999999999999999999999999999999999999999999999999999999";
+    PyObjectRef tooLarge(PyLong_FromString(positive, nullptr, 10));
+    PyObjectRef tooSmall(PyLong_FromString(negative, nullptr, 10));
+    ASSERT_NE(tooLarge.get(), nullptr);
+    ASSERT_NE(tooSmall.get(), nullptr);
+    for (const char* name : names) {
+        for (PyObject* value : {tooLarge.get(), tooSmall.get()}) {
+            SCOPED_TRACE(name);
+            const int status = PyObject_SetAttrString(target.get(), name, value);
+            const bool overflow = PyErr_ExceptionMatches(PyExc_OverflowError);
+            PyErr_Clear();
+            EXPECT_EQ(status, -1);
+            EXPECT_TRUE(overflow);
+            EXPECT_EQ(_target->Integer.getValue(), 42);
+            EXPECT_EQ(_target->ConstraintInt.getValue(), 42);
+            EXPECT_EQ(percent->getValue(), 42);
+            EXPECT_DOUBLE_EQ(_target->Float.getValue(), 42.0);
+            EXPECT_DOUBLE_EQ(_target->ConstraintFloat.getValue(), 42.0);
+            EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+            EXPECT_EQ(_document->getAvailableUndos(), undos);
+            EXPECT_EQ(_document->getFileChangeState(), fileState);
+            EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+            EXPECT_EQ(beforeSignals, 0);
+            EXPECT_EQ(afterSignals, 0);
+        }
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       integerAndFloatBindingsPreserveValidLongBoundsAndClamping)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* percent = dynamic_cast<App::PropertyPercent*>(
+        _target->addDynamicProperty("App::PropertyPercent", "PercentProbe"));
+    ASSERT_NE(percent, nullptr);
+    PyObjectRef target(_target->getPyObject());
+    ASSERT_NE(target.get(), nullptr);
+    for (const long value : {std::numeric_limits<long>::lowest(), -1L,
+                             std::numeric_limits<long>::max()}) {
+        PyObjectRef pyValue(PyLong_FromLong(value));
+        ASSERT_NE(pyValue.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "Integer", pyValue.get()), 0);
+        EXPECT_EQ(_target->Integer.getValue(), value);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "Float", pyValue.get()), 0);
+        EXPECT_DOUBLE_EQ(_target->Float.getValue(), static_cast<double>(value));
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "ConstraintInt", pyValue.get()), 0);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "PercentProbe", pyValue.get()), 0);
+        ASSERT_EQ(PyObject_SetAttrString(target.get(), "ConstraintFloat", pyValue.get()), 0);
+        const long clipped = std::clamp(value, 0L, 100L);
+        EXPECT_EQ(_target->ConstraintInt.getValue(), clipped);
+        EXPECT_EQ(percent->getValue(), clipped);
+        EXPECT_DOUBLE_EQ(_target->ConstraintFloat.getValue(), static_cast<double>(clipped));
+        EXPECT_EQ(PyErr_Occurred(), nullptr);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       integerListAndSetBindingsValidateEveryElementBeforeAnyModelEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* set = dynamic_cast<App::PropertyIntegerSet*>(
+        _target->addDynamicProperty("App::PropertyIntegerSet", "IntegerSetProbe"));
+    ASSERT_NE(set, nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef initial(Py_BuildValue("[lll]", 10L, 20L, 30L));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(initial.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerList", initial.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerSetProbe", initial.get()), 0);
+    const auto listBefore = _target->IntegerList.getValues();
+    const auto setBefore = set->getValues();
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::documentStructure(),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    char positive[] = "999999999999999999999999999999999999999999999999999999999999999999";
+    char negative[] = "-999999999999999999999999999999999999999999999999999999999999999999";
+    PyObjectRef tooLarge(PyLong_FromString(positive, nullptr, 10));
+    PyObjectRef tooSmall(PyLong_FromString(negative, nullptr, 10));
+    ASSERT_NE(tooLarge.get(), nullptr);
+    ASSERT_NE(tooSmall.get(), nullptr);
+    const auto reject = [&](const char* name, PyObject* value, PyObject* exception) {
+        const int status = PyObject_SetAttrString(target.get(), name, value);
+        const bool expected = PyErr_ExceptionMatches(exception);
+        PyErr_Clear();
+        EXPECT_EQ(status, -1) << name;
+        EXPECT_TRUE(expected) << name;
+        EXPECT_EQ(_target->IntegerList.getValues(), listBefore);
+        EXPECT_EQ(set->getValues(), setBefore);
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(beforeSignals, 0);
+        EXPECT_EQ(afterSignals, 0);
+    };
+    for (PyObject* overflow : {tooLarge.get(), tooSmall.get()}) {
+        reject("IntegerList", overflow, PyExc_OverflowError);
+        reject("IntegerSetProbe", overflow, PyExc_OverflowError);
+        for (int position = 0; position < 3; ++position) {
+            PyObjectRef items(PyList_New(3));
+            ASSERT_NE(items.get(), nullptr);
+            for (int index = 0; index < 3; ++index) {
+                PyObject* item = index == position ? overflow : PyLong_FromLong(index + 1);
+                ASSERT_NE(item, nullptr);
+                if (index == position) Py_INCREF(item);
+                PyList_SET_ITEM(items.get(), index, item);
+            }
+            reject("IntegerList", items.get(), PyExc_OverflowError);
+            reject("IntegerSetProbe", items.get(), PyExc_OverflowError);
+        }
+        PyObjectRef indexed(PyDict_New());
+        PyObjectRef zero(PyLong_FromLong(0));
+        PyObjectRef one(PyLong_FromLong(1));
+        PyObjectRef valid(PyLong_FromLong(77));
+        ASSERT_NE(indexed.get(), nullptr);
+        ASSERT_NE(zero.get(), nullptr);
+        ASSERT_NE(one.get(), nullptr);
+        ASSERT_NE(valid.get(), nullptr);
+        ASSERT_EQ(PyDict_SetItem(indexed.get(), zero.get(), valid.get()), 0);
+        ASSERT_EQ(PyDict_SetItem(indexed.get(), one.get(), overflow), 0);
+        reject("IntegerList", indexed.get(), PyExc_OverflowError);
+        PyObjectRef badKey(PyDict_New());
+        ASSERT_NE(badKey.get(), nullptr);
+        ASSERT_EQ(PyDict_SetItem(badKey.get(), overflow, valid.get()), 0);
+        reject("IntegerList", badKey.get(), PyExc_OverflowError);
+    }
+    PyObjectRef badType(PyDict_New());
+    PyObjectRef zero(PyLong_FromLong(0));
+    PyObjectRef one(PyLong_FromLong(1));
+    PyObjectRef valid(PyLong_FromLong(77));
+    PyObjectRef invalid(PyUnicode_FromString("not an integer"));
+    ASSERT_NE(badType.get(), nullptr);
+    ASSERT_NE(zero.get(), nullptr);
+    ASSERT_NE(one.get(), nullptr);
+    ASSERT_NE(valid.get(), nullptr);
+    ASSERT_NE(invalid.get(), nullptr);
+    ASSERT_EQ(PyDict_SetItem(badType.get(), zero.get(), valid.get()), 0);
+    ASSERT_EQ(PyDict_SetItem(badType.get(), one.get(), invalid.get()), 0);
+    reject("IntegerList", badType.get(), PyExc_TypeError);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       integerListAndSetBindingsPreserveValidLongBounds)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* set = dynamic_cast<App::PropertyIntegerSet*>(
+        _target->addDynamicProperty("App::PropertyIntegerSet", "IntegerSetProbe"));
+    ASSERT_NE(set, nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef values(Py_BuildValue("[lll]", std::numeric_limits<long>::lowest(), -1L,
+                                     std::numeric_limits<long>::max()));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(values.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerList", values.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerSetProbe", values.get()), 0);
+    const std::vector<long> expected {std::numeric_limits<long>::lowest(), -1L,
+                                      std::numeric_limits<long>::max()};
+    EXPECT_EQ(_target->IntegerList.getValues(), expected);
+    EXPECT_EQ(set->getValues(), (std::set<long>(expected.begin(), expected.end())));
+    PyObjectRef indexed(Py_BuildValue("{l:l,l:l}", 0L, 9L, -1L, 8L));
+    ASSERT_NE(indexed.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerList", indexed.get()), 0);
+    EXPECT_EQ(_target->IntegerList.getValues(),
+              (std::vector<long> {9L, -1L, std::numeric_limits<long>::max(), 8L}));
+    PyObjectRef minusOne(PyLong_FromLong(-1));
+    ASSERT_NE(minusOne.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerList", minusOne.get()), 0);
+    EXPECT_EQ(_target->IntegerList.getValues(), (std::vector<long> {-1}));
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "IntegerSetProbe", minusOne.get()), 0);
+    EXPECT_EQ(set->getValues(), (std::set<long> {-1}));
+    EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       boolFloatColorAndPairListsRejectInvalidElementsWithoutPartialEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* pairs = dynamic_cast<App::PropertyIntPairList*>(
+        _target->addDynamicProperty("App::PropertyIntPairList", "PairProbe"));
+    ASSERT_NE(pairs, nullptr);
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef numbers(Py_BuildValue("[lll]", 1L, 0L, 1L));
+    PyObjectRef colors(Py_BuildValue("[(iii)(iii)]", 1, 2, 3, 4, 5, 6));
+    PyObjectRef initialPairs(Py_BuildValue("[(ll)(ll)]", 1L, 2L, 3L, 4L));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(numbers.get(), nullptr);
+    ASSERT_NE(colors.get(), nullptr);
+    ASSERT_NE(initialPairs.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "BoolList", numbers.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "FloatList", numbers.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "ColourList", colors.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "PairProbe", initialPairs.get()), 0);
+    const auto boolBefore = _target->BoolList.getValues();
+    const auto floatBefore = _target->FloatList.getValues();
+    PyObjectRef colorsBefore(PyObject_GetAttrString(target.get(), "ColourList"));
+    const auto pairsBefore = pairs->getValues();
+    ASSERT_NE(colorsBefore.get(), nullptr);
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    const auto fileState = _document->getFileChangeState();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    char positive[] = "999999999999999999999999999999999999999999999999999999999999999999";
+    char negative[] = "-999999999999999999999999999999999999999999999999999999999999999999";
+    PyObjectRef tooLarge(PyLong_FromString(positive, nullptr, 10));
+    PyObjectRef tooSmall(PyLong_FromString(negative, nullptr, 10));
+    ASSERT_NE(tooLarge.get(), nullptr);
+    ASSERT_NE(tooSmall.get(), nullptr);
+    const auto reject = [&](const char* name, PyObject* value,
+                            PyObject* expectedException = PyExc_OverflowError) {
+        const int status = PyObject_SetAttrString(target.get(), name, value);
+        const bool expected = PyErr_ExceptionMatches(expectedException);
+        PyErr_Clear();
+        EXPECT_EQ(status, -1) << name;
+        EXPECT_TRUE(expected) << name;
+        EXPECT_EQ(_target->BoolList.getValues(), boolBefore);
+        EXPECT_EQ(_target->FloatList.getValues(), floatBefore);
+        PyObjectRef colorsAfter(PyObject_GetAttrString(target.get(), "ColourList"));
+        ASSERT_NE(colorsAfter.get(), nullptr);
+        EXPECT_EQ(PyObject_RichCompareBool(colorsBefore.get(), colorsAfter.get(), Py_EQ), 1);
+        EXPECT_EQ(pairs->getValues(), pairsBefore);
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(_document->getFileChangeState(), fileState);
+        EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        EXPECT_EQ(beforeSignals, 0);
+        EXPECT_EQ(afterSignals, 0);
+    };
+    for (PyObject* overflow : {tooLarge.get(), tooSmall.get()}) {
+        PyObjectRef numbersBad(Py_BuildValue("[lO]", 1L, overflow));
+        PyObjectRef colorsBad(Py_BuildValue("[(iii)(Oii)]", 1, 2, 3, overflow, 5, 6));
+        PyObjectRef pairsBad(Py_BuildValue("[(ll)(Ol)]", 1L, 2L, overflow, 4L));
+        ASSERT_NE(numbersBad.get(), nullptr);
+        ASSERT_NE(colorsBad.get(), nullptr);
+        ASSERT_NE(pairsBad.get(), nullptr);
+        reject("BoolList", overflow);
+        reject("FloatList", overflow);
+        reject("ColourList", overflow);
+        reject("BoolList", numbersBad.get());
+        reject("FloatList", numbersBad.get());
+        reject("ColourList", colorsBad.get());
+        reject("PairProbe", pairsBad.get());
+        PyObjectRef validNumber(PyLong_FromLong(0));
+        PyObjectRef validColor(Py_BuildValue("(iii)", 7, 8, 9));
+        PyObjectRef invalidColor(Py_BuildValue("(Oii)", overflow, 2, 3));
+        PyObjectRef validPair(Py_BuildValue("(ll)", 7L, 8L));
+        PyObjectRef invalidPair(Py_BuildValue("(Ol)", overflow, 2L));
+        ASSERT_NE(validNumber.get(), nullptr);
+        ASSERT_NE(validColor.get(), nullptr);
+        ASSERT_NE(invalidColor.get(), nullptr);
+        ASSERT_NE(validPair.get(), nullptr);
+        ASSERT_NE(invalidPair.get(), nullptr);
+        const auto indexedReject = [&](const char* name, PyObject* first, PyObject* second) {
+            PyObjectRef indexed(PyDict_New());
+            PyObjectRef zero(PyLong_FromLong(0));
+            PyObjectRef one(PyLong_FromLong(1));
+            ASSERT_NE(indexed.get(), nullptr);
+            ASSERT_NE(zero.get(), nullptr);
+            ASSERT_NE(one.get(), nullptr);
+            ASSERT_EQ(PyDict_SetItem(indexed.get(), zero.get(), first), 0);
+            ASSERT_EQ(PyDict_SetItem(indexed.get(), one.get(), second), 0);
+            reject(name, indexed.get());
+        };
+        indexedReject("BoolList", validNumber.get(), overflow);
+        indexedReject("FloatList", validNumber.get(), overflow);
+        indexedReject("ColourList", validColor.get(), invalidColor.get());
+        indexedReject("PairProbe", validPair.get(), invalidPair.get());
+    }
+    PyObjectRef invalidType(PyUnicode_FromString("invalid element"));
+    PyObjectRef validNumber(PyLong_FromLong(0));
+    PyObjectRef validColor(Py_BuildValue("(iii)", 7, 8, 9));
+    PyObjectRef validPair(Py_BuildValue("(ll)", 7L, 8L));
+    PyObjectRef zero(PyLong_FromLong(0));
+    PyObjectRef one(PyLong_FromLong(1));
+    ASSERT_NE(invalidType.get(), nullptr);
+    ASSERT_NE(validNumber.get(), nullptr);
+    ASSERT_NE(validColor.get(), nullptr);
+    ASSERT_NE(validPair.get(), nullptr);
+    ASSERT_NE(zero.get(), nullptr);
+    ASSERT_NE(one.get(), nullptr);
+    for (const auto& entry : {std::pair<const char*, PyObject*> {"BoolList", validNumber.get()},
+                              {"FloatList", validNumber.get()},
+                              {"ColourList", validColor.get()},
+                              {"PairProbe", validPair.get()}}) {
+        PyObjectRef indexed(PyDict_New());
+        ASSERT_NE(indexed.get(), nullptr);
+        ASSERT_EQ(PyDict_SetItem(indexed.get(), zero.get(), entry.second), 0);
+        ASSERT_EQ(PyDict_SetItem(indexed.get(), one.get(), invalidType.get()), 0);
+        reject(entry.first, indexed.get(), PyExc_TypeError);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       colorAndEnumerationBindingsRejectOverflowBeforeAnyModelEffects)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef enumInitial(PyLong_FromLong(2));
+    PyObjectRef colorInitial(Py_BuildValue("(iii)", 5, 6, 7));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(enumInitial.get(), nullptr);
+    ASSERT_NE(colorInitial.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", enumInitial.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Colour", colorInitial.get()), 0);
+    const auto enumBefore = _target->Enum.getValue();
+    const auto enumNamesBefore = _target->Enum.getEnumVector();
+    const auto colorBefore = _target->Colour.getValue();
+    const auto keys = std::vector<App::DocumentRevisionKey> {
+        App::DocumentRevisionKey::objectModel("Target"),
+        App::DocumentRevisionKey::objectStructure("Target"),
+        App::DocumentRevisionKey::unknownModelMutation()};
+    const auto revisions = _document->collaborationRevisions().capture(keys);
+    const int undos = _document->getAvailableUndos();
+    const auto fileState = _document->getFileChangeState();
+    const auto fileChanges = _document->getPendingFileChanges().toUnderlyingType();
+    int beforeSignals = 0;
+    int afterSignals = 0;
+    fastsignals::scoped_connection before = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++beforeSignals;
+        });
+    fastsignals::scoped_connection after = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property&) {
+            if (&object == _target) ++afterSignals;
+        });
+    char positive[] = "999999999999999999999999999999999999999999999999999999999999999999";
+    char negative[] = "-999999999999999999999999999999999999999999999999999999999999999999";
+    PyObjectRef tooLarge(PyLong_FromString(positive, nullptr, 10));
+    PyObjectRef tooSmall(PyLong_FromString(negative, nullptr, 10));
+    ASSERT_NE(tooLarge.get(), nullptr);
+    ASSERT_NE(tooSmall.get(), nullptr);
+    const auto reject = [&](const char* name, PyObject* value) {
+        const int status = PyObject_SetAttrString(target.get(), name, value);
+        const bool overflow = PyErr_ExceptionMatches(PyExc_OverflowError);
+        PyErr_Clear();
+        EXPECT_EQ(status, -1) << name;
+        EXPECT_TRUE(overflow) << name;
+        EXPECT_EQ(_target->Enum.getValue(), enumBefore);
+        EXPECT_EQ(_target->Enum.getEnumVector(), enumNamesBefore);
+        const auto current = _target->Colour.getValue();
+        EXPECT_FLOAT_EQ(current.r, colorBefore.r);
+        EXPECT_FLOAT_EQ(current.g, colorBefore.g);
+        EXPECT_FLOAT_EQ(current.b, colorBefore.b);
+        EXPECT_FLOAT_EQ(current.a, colorBefore.a);
+        EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+        EXPECT_EQ(_document->getAvailableUndos(), undos);
+        EXPECT_EQ(_document->getFileChangeState(), fileState);
+        EXPECT_EQ(_document->getPendingFileChanges().toUnderlyingType(), fileChanges);
+        EXPECT_EQ(beforeSignals, 0);
+        EXPECT_EQ(afterSignals, 0);
+    };
+    for (PyObject* overflow : {tooLarge.get(), tooSmall.get()}) {
+        reject("Enum", overflow);
+        PyObjectRef enumSequence(Py_BuildValue("([ss]O)", "First", "Second", overflow));
+        ASSERT_NE(enumSequence.get(), nullptr);
+        reject("Enum", enumSequence.get());
+        reject("Colour", overflow);
+        for (int position = 0; position < 4; ++position) {
+            PyObjectRef tuple(PyTuple_New(4));
+            ASSERT_NE(tuple.get(), nullptr);
+            for (int index = 0; index < 4; ++index) {
+                PyObject* item = index == position ? overflow : PyLong_FromLong(index + 1);
+                ASSERT_NE(item, nullptr);
+                if (index == position) Py_INCREF(item);
+                PyTuple_SET_ITEM(tuple.get(), index, item);
+            }
+            reject("Colour", tuple.get());
+        }
+    }
+    PyObjectRef minusOne(PyLong_FromLong(-1));
+    ASSERT_NE(minusOne.get(), nullptr);
+    reject("Colour", minusOne.get());
+    PyObjectRef maxIndex(PyLong_FromLong(std::numeric_limits<long>::max()));
+    ASSERT_NE(maxIndex.get(), nullptr);
+    PyObjectRef badSelection(Py_BuildValue("([ss]O)", "First", "Second", maxIndex.get()));
+    ASSERT_NE(badSelection.get(), nullptr);
+    const int selectionStatus = PyObject_SetAttrString(target.get(), "Enum", badSelection.get());
+    const bool rangeError = PyErr_ExceptionMatches(PyExc_ValueError);
+    PyErr_Clear();
+    EXPECT_EQ(selectionStatus, -1);
+    EXPECT_TRUE(rangeError);
+    EXPECT_EQ(_target->Enum.getValue(), enumBefore);
+    EXPECT_EQ(_target->Enum.getEnumVector(), enumNamesBefore);
+    EXPECT_EQ(_document->collaborationRevisions().capture(keys), revisions);
+    EXPECT_EQ(beforeSignals, 0);
+    EXPECT_EQ(afterSignals, 0);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       validBoolFloatColorAndEnumerationValuesPreserveExistingBehavior)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef target(_target->getPyObject());
+    PyObjectRef negative(PyLong_FromLong(-1));
+    PyObjectRef values(Py_BuildValue("[lll]", std::numeric_limits<long>::lowest(), -1L,
+                                     std::numeric_limits<long>::max()));
+    PyObjectRef color(Py_BuildValue("(iiii)", 0, 127, 255, 64));
+    PyObjectRef index(PyLong_FromLong(3));
+    ASSERT_NE(target.get(), nullptr);
+    ASSERT_NE(negative.get(), nullptr);
+    ASSERT_NE(values.get(), nullptr);
+    ASSERT_NE(color.get(), nullptr);
+    ASSERT_NE(index.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "FloatList", values.get()), 0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "BoolList", values.get()), 0);
+    EXPECT_EQ(_target->FloatList.getValues().size(), 3U);
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[0], static_cast<double>(std::numeric_limits<long>::lowest()));
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[1], -1.0);
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[2], static_cast<double>(std::numeric_limits<long>::max()));
+    EXPECT_TRUE(_target->BoolList.getValues().test(0));
+    EXPECT_TRUE(_target->BoolList.getValues().test(1));
+    EXPECT_TRUE(_target->BoolList.getValues().test(2));
+    PyObjectRef indexed(Py_BuildValue("{l:l,l:l}", 0L, 0L, -1L, 7L));
+    ASSERT_NE(indexed.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "FloatList", indexed.get()), 0);
+    ASSERT_EQ(_target->FloatList.getValues().size(), 4U);
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[0], 0.0);
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[3], 7.0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "BoolList", indexed.get()), 0);
+    ASSERT_EQ(_target->BoolList.getValues().size(), 4U);
+    EXPECT_FALSE(_target->BoolList.getValues().test(0));
+    EXPECT_TRUE(_target->BoolList.getValues().test(3));
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "FloatList", negative.get()), 0);
+    ASSERT_EQ(_target->FloatList.getValues().size(), 1U);
+    EXPECT_DOUBLE_EQ(_target->FloatList.getValues()[0], -1.0);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "BoolList", negative.get()), 0);
+    ASSERT_EQ(_target->BoolList.getValues().size(), 1U);
+    EXPECT_TRUE(_target->BoolList.getValues().test(0));
+    PyObjectRef packedMax(PyLong_FromUnsignedLong(std::numeric_limits<unsigned long>::max()));
+    ASSERT_NE(packedMax.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Colour", packedMax.get()), 0);
+    Base::Color packedExpected;
+    packedExpected.setPackedValue(static_cast<std::uint32_t>(std::numeric_limits<unsigned long>::max()));
+    const auto packedActual = _target->Colour.getValue();
+    EXPECT_FLOAT_EQ(packedActual.r, packedExpected.r);
+    EXPECT_FLOAT_EQ(packedActual.g, packedExpected.g);
+    EXPECT_FLOAT_EQ(packedActual.b, packedExpected.b);
+    EXPECT_FLOAT_EQ(packedActual.a, packedExpected.a);
+    PyObjectRef negativeComponent(Py_BuildValue("(lll)", -1L, 0L, 0L));
+    ASSERT_NE(negativeComponent.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Colour", negativeComponent.get()), 0);
+    EXPECT_FLOAT_EQ(_target->Colour.getValue().r, -1.0F / 255.0F);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Colour", color.get()), 0);
+    const auto current = _target->Colour.getValue();
+    EXPECT_FLOAT_EQ(current.r, 0.0F);
+    EXPECT_FLOAT_EQ(current.g, 127.0F / 255.0F);
+    EXPECT_FLOAT_EQ(current.b, 1.0F);
+    EXPECT_FLOAT_EQ(current.a, 64.0F / 255.0F);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", index.get()), 0);
+    EXPECT_EQ(_target->Enum.getValue(), 3);
+    PyObjectRef enumSequence(Py_BuildValue("([sss]i)", "First", "Second", "Third", 1));
+    ASSERT_NE(enumSequence.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", enumSequence.get()), 0);
+    EXPECT_EQ(_target->Enum.getValue(), 1);
+    EXPECT_EQ(_target->Enum.getEnumVector(), (std::vector<std::string> {"First", "Second", "Third"}));
+    const int status = PyObject_SetAttrString(target.get(), "Enum", negative.get());
+    const bool rangeError = PyErr_ExceptionMatches(PyExc_ValueError);
+    PyErr_Clear();
+    EXPECT_EQ(status, -1);
+    EXPECT_TRUE(rangeError);
+}
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        inheritedPersistenceReleasesBytearrayExportsAfterSuccessAndInvalidRestore)

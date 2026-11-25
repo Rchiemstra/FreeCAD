@@ -31,6 +31,27 @@
 #include "Expression.h"
 
 
+namespace
+{
+long checkedPythonLong(PyObject* value)
+{
+    const long converted = PyLong_AsLong(value);
+    if (converted == -1 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+
+double checkedPythonFloat(PyObject* value)
+{
+    const double converted = PyFloat_AsDouble(value);
+    if (converted == -1.0 && PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return converted;
+}
+}  // namespace
+
 using namespace App;
 using namespace Base;
 using namespace std;
@@ -68,13 +89,17 @@ Base::Quantity PropertyQuantity::createQuantityFromPy(PyObject* value)
     Base::Quantity quant;
 
     if (PyUnicode_Check(value)) {
-        quant = Quantity::parse(PyUnicode_AsUTF8(value));
+        const char* encoded = PyUnicode_AsUTF8(value);
+        if (!encoded) {
+            throw Py::Exception();
+        }
+        quant = Quantity::parse(encoded);
     }
     else if (PyFloat_Check(value)) {
-        quant = Quantity(PyFloat_AsDouble(value), _Unit);
+        quant = Quantity(checkedPythonFloat(value), _Unit);
     }
     else if (PyLong_Check(value)) {
-        quant = Quantity(double(PyLong_AsLong(value)), _Unit);
+        quant = Quantity(double(checkedPythonLong(value)), _Unit);
     }
     else if (PyObject_TypeCheck(value, &(QuantityPy::Type))) {
         Base::QuantityPy* pcObject = static_cast<Base::QuantityPy*>(value);

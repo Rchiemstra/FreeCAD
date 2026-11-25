@@ -3325,3 +3325,37 @@ class DocumentLifecycleDuringCommit(unittest.TestCase):
                 )
                 self.assertTrue(result["committed"], result)
                 self.assertIsNotNone(self.doc.getObject("After_" + operation))
+
+
+class DocumentLinkListIndexedAssignment(unittest.TestCase):
+    def testRegisteredVariantsAreAtomic(self):
+        for suffix in ("Global", "Child", "Hidden"):
+            for document_property in (True, False):
+                with self.subTest(variant=suffix, document_property=document_property):
+                    doc = FreeCAD.newDocument("LinkListIndexed")
+                    try:
+                        owner = doc if document_property else doc.addObject(
+                            "App::FeaturePython", "Owner"
+                        )
+                        a = doc.addObject("App::FeaturePython", "A")
+                        b = doc.addObject("App::FeaturePython", "B")
+                        c = doc.addObject("App::FeaturePython", "C")
+                        owner.addProperty("App::PropertyLinkList" + suffix, "Links")
+                        owner.Links = [a, b]
+                        has_backlinks = not document_property and suffix != "Hidden"
+                        expected_before = [[owner] if has_backlinks else [],
+                                           [owner] if has_backlinks else [], []]
+                        self.assertEqual([a.InList, b.InList, c.InList], expected_before)
+                        with self.assertRaises(ValueError):
+                            owner.Links = {0: c, 1: None}
+                        self.assertEqual(owner.Links, [a, b])
+                        self.assertEqual([a.InList, b.InList, c.InList], expected_before)
+                        owner.Links = {0: c, 1: a}
+                        self.assertEqual(owner.Links, [c, a])
+                        self.assertEqual(
+                            [a.InList, b.InList, c.InList],
+                            [[owner] if has_backlinks else [], [],
+                             [owner] if has_backlinks else []],
+                        )
+                    finally:
+                        FreeCAD.closeDocument(doc.Name)
