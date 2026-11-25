@@ -8,11 +8,8 @@ from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
 from DocumentCommandHandle import DocumentCommandHandle
 from RecomputeHandle import RecomputeHandle
-from typing import TYPE_CHECKING, Final, Literal, overload, Union
+from typing import Final, Literal, overload, Union
 from collections.abc import Callable, Sequence
-
-if TYPE_CHECKING:
-    from Part import Feature as _PartFeature
 
 
 class Document(PropertyContainer):
@@ -408,18 +405,6 @@ class Document(PropertyContainer):
         """Return advisory session metadata, or None when the ID is unknown."""
         ...
 
-    @overload
-    def addObject(
-        self,
-        type: Literal["Part::Feature"],
-        name: str = None,
-        objProxy: object = None,
-        viewProxy: object = None,
-        attach: bool = False,
-        viewType: str = None,
-    ) -> _PartFeature: ...
-
-    @overload
     def addObject(
         self,
         type: str,
