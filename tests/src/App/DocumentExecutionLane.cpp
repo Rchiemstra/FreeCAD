@@ -7,6 +7,7 @@
 #include <App/Document.h>
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
+#include <App/DocumentRecomputeCoordinator.h>
 #include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
 #include <App/DocumentWouldBlock.h>
@@ -436,6 +437,63 @@ TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsRecompute)
     } while (std::chrono::steady_clock::now() < deadline);
 
     EXPECT_TRUE(snapshot.terminal());
+}
+
+TEST_F(DocumentExecutionLaneTest, SkipRecomputePreservesAdmissionId)
+{
+    auto handle = doc()->executionHandle();
+    App::DocumentCommandSubmitOutcome outcome;
+    App::DocumentCommandSnapshot admitted;
+    auto skipped = std::make_shared<std::atomic<unsigned>>(0);
+    ::fastsignals::scoped_connection skipConnection = doc()->signalSkipRecompute.connect(
+        [skipped](const App::Document&, const std::vector<App::DocumentObject*>&) { ++*skipped; });
+    // Keep the owner in this dispatch until the admission observation is read.
+    doc()->executionLane()->dispatchToOwner([&] {
+        doc()->setStatus(App::Document::SkipRecompute, true);
+        outcome = handle.trySubmit(makeRecomputeCommand("skip-admission"));
+        if (outcome.result == App::DocumentCommandSubmitResult::Accepted) {
+            admitted = App::DocumentCommandHandle(outcome.commandId, handle.identity()).status();
+        }
+    });
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(admitted.recompute.has_value());
+    ASSERT_NE(admitted.recompute->id, 0U);
+    EXPECT_EQ(admitted.state, App::DocumentCommandState::Running);
+    const auto admissionId = static_cast<App::DocumentRecomputeId>(admitted.recompute->id);
+    App::RecomputeHandle publicHandle(*doc(), admissionId);
+
+    App::DocumentCommandHandle command(outcome.commandId, handle.identity());
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    auto terminal = command.status();
+    while (!terminal.terminal() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        terminal = command.status();
+    }
+    ASSERT_EQ(terminal.state, App::DocumentCommandState::Completed) << terminal.diagnostic;
+    ASSERT_TRUE(terminal.recompute.has_value());
+    EXPECT_EQ(terminal.recompute->id, admitted.recompute->id);
+    EXPECT_EQ(terminal.recompute->state, App::DocumentCommandRecomputeState::Completed);
+    EXPECT_EQ(terminal.recompute->totalFeatures, 0U);
+    EXPECT_EQ(skipped->load(), 1U);
+
+    const auto observed = publicHandle.status();
+    EXPECT_EQ(publicHandle.id(), admissionId);
+    EXPECT_EQ(observed.id, admissionId);
+    EXPECT_EQ(observed.state, App::DocumentRecomputeState::Completed) << observed.diagnostic;
+    EXPECT_EQ(observed.totalFeatures, 0U);
+    const auto job = doc()->recomputeCoordinator().status(admissionId);
+    ASSERT_TRUE(job.has_value());
+    EXPECT_EQ(job->id, admissionId);
+    EXPECT_EQ(job->state, App::DocumentRecomputeState::Completed);
+
+    skipConnection.disconnect();
+    closeDocumentAllowingLaneWait(_docName.c_str());
+    ASSERT_EQ(App::GetApplication().getDocument(_docName.c_str()), nullptr);
+    _doc = nullptr;
+    const auto closed = publicHandle.status();
+    EXPECT_EQ(closed.id, admissionId);
+    EXPECT_EQ(closed.state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(closed.diagnostic, "recompute document is no longer live");
 }
 
 TEST_F(DocumentExecutionLaneTest, IdenticalRecomputeSharesHandle)
