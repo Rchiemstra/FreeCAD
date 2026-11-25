@@ -509,6 +509,26 @@ void Application::setupPythonException(PyObject* module)
 //**************************************************************************
 // Interface
 
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+std::size_t Internal::documentConstructionLifetimeCountForTesting()
+{
+    auto& app = GetApplication();
+    std::lock_guard lock(app._collaborationServiceLifetimeMutex);
+    return app._collaborationServiceLifetimeGates.size();
+}
+std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
+Internal::documentConstructionGateForTesting(Document& doc)
+{
+    return GetApplication().collaborationServiceLifetimeGate(doc.collaborationService());
+}
+bool Internal::documentConstructionRegisteredForTesting(const DocumentCollaborationService* service)
+{
+    auto& app = GetApplication();
+    std::lock_guard lock(app._collaborationServiceLifetimeMutex);
+    return app._collaborationServiceLifetimeGates.contains(service);
+}
+#endif
+
 Document* Application::newDocument(const char * proposedName, const char * proposedLabel, DocumentInitFlags CreateFlags)
 {
     enforceCollaborationLifecycleMutationAllowed();

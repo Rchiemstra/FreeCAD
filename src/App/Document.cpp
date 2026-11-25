@@ -4000,6 +4000,40 @@ void Document::onBeforeChange(const Property* prop)
     }
 }
 
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+namespace App::Internal {
+thread_local DocumentConstructionTestHook constructionTestHook = nullptr;
+thread_local void* constructionTestContext = nullptr;
+thread_local int constructionDirectoryOutcome = 0;
+void setDocumentConstructionDirectoryOutcomeForTesting(int outcome) noexcept
+{
+    constructionDirectoryOutcome = outcome;
+}
+void setDocumentConstructionTestHook(DocumentConstructionTestHook hook, void* context) noexcept
+{
+    constructionTestHook = hook;
+    constructionTestContext = context;
+}
+}
+#endif
+
+namespace {
+// This scope is present only while a Document constructor runs. The path is
+// copied before mkdir, so cleanup needs no allocation to discover its target.
+struct ConstructionDirectory {
+    Document* document;
+    ConstructionDirectory* previous;
+    struct Entry { std::string path; bool created = false; };
+    std::vector<Entry> entries;
+    explicit ConstructionDirectory(Document* doc) noexcept;
+    ~ConstructionDirectory();
+};
+thread_local ConstructionDirectory* constructingDirectory = nullptr;
+ConstructionDirectory::ConstructionDirectory(Document* doc) noexcept
+    : document(doc), previous(constructingDirectory) { constructingDirectory = this; }
+ConstructionDirectory::~ConstructionDirectory() { constructingDirectory = previous; }
+}
+
 void Document::onChanged(const Property* prop)
 {
     const bool suppressBookkeepingProperty =
@@ -4053,6 +4087,11 @@ void Document::onChanged(const Property* prop)
         std::string old_dir = this->TransientDir.getStrValue();
         Base::FileInfo TransDirNew(new_dir);
         Base::FileInfo TransDirOld(old_dir);
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+        if (Internal::constructionTestHook && constructingDirectory
+            && constructingDirectory->document == this)
+            Internal::constructionTestHook(*this, 3, new_dir.c_str(), Internal::constructionTestContext);
+#endif
         // this directory should not exist
         if (!TransDirNew.exists()) {
             if (TransDirOld.exists()) {
@@ -4066,11 +4105,58 @@ void Document::onChanged(const Property* prop)
                 }
             }
             else {
-                if (!TransDirNew.createDirectories()) {
+                bool available = false;
+                auto* owner = constructingDirectory;
+                if (owner && owner->document == this) {
+                    // Create the parent first, then claim the final component
+                    // atomically. createDirectories() alone reports an existing
+                    // directory as success and cannot prove ownership.
+                    owner->entries.push_back({new_dir, false});
+                    Base::FileInfo parent(TransDirNew.dirPath());
+                    if (parent.createDirectories() || parent.exists()) {
+                        std::error_code error;
+                        bool created = false;
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+                        if (Internal::constructionTestHook)
+                            Internal::constructionTestHook(*this, 6, new_dir.c_str(), Internal::constructionTestContext);
+                        const int outcome = std::exchange(Internal::constructionDirectoryOutcome, 0);
+                        if (outcome == 1) {
+                            // Simulate a competing claim without touching its path.
+                        }
+                        else if (outcome == 2) {
+                            error = std::make_error_code(std::errc::permission_denied);
+                        }
+                        else
+#endif
+                        {
+                            created = fs::create_directory(Base::FileInfo::stringToPath(new_dir), error);
+                        }
+                        owner->entries.back().created = created;
+                        available = created;
+                        if (!created && (!error || error == std::errc::file_exists)) {
+                            // A concurrent creator won the claim. Never adopt its path.
+                            Base::Uuid id;
+                            this->Uid.setValue(id);
+                            return;
+                        }
+                    }
+                }
+                else {
+                    available = TransDirNew.createDirectories();
+                }
+                if (!available) {
                     Base::Console().warning("Failed to create '{}'\n", new_dir);
                 }
                 else {
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+                    if (owner && owner->document == this && Internal::constructionTestHook)
+                        Internal::constructionTestHook(*this, 4, new_dir.c_str(), Internal::constructionTestContext);
+#endif
                     this->TransientDir.setValue(new_dir);
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+                    if (owner && owner->document == this && Internal::constructionTestHook)
+                        Internal::constructionTestHook(*this, 5, new_dir.c_str(), Internal::constructionTestContext);
+#endif
                 }
             }
         }
@@ -4187,10 +4273,20 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 //--------------------------------------------------------------------------
 // constructor
 //--------------------------------------------------------------------------
+
 Document::Document(const char* documentName, const char* documentLabel)
-    : d(new DocumentP), myName(documentName)
+    : d(nullptr), myName(documentName)
 {
+    auto state = std::make_unique<DocumentP>();
+    d = state.get();
+    bool pythonWrapperCreated = false;
+    ConstructionDirectory directory(this);
+    try {
     d->collaborationService.reset(new DocumentCollaborationService(*this));
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+    if (Internal::constructionTestHook)
+        Internal::constructionTestHook(*this, 1, nullptr, Internal::constructionTestContext);
+#endif
     d->recomputeCoordinator.reset(new DocumentRecomputeCoordinator(*d->collaborationService));
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
@@ -4201,6 +4297,11 @@ Document::Document(const char* documentName, const char* documentLabel)
     setAutoCreated(false);
     Base::PyGILStateLocker lock;
     d->DocumentPythonObject = Py::Object(new DocumentPy(this), true);
+    pythonWrapperCreated = true;
+#ifdef FREECAD_DOCUMENTFILEWRITER_TEST_API
+    if (Internal::constructionTestHook)
+        Internal::constructionTestHook(*this, 2, nullptr, Internal::constructionTestContext);
+#endif
 
 #ifdef FC_LOGUPDATECHAIN
     Console().log("+App::Document: {}\n", this);
@@ -4297,6 +4398,41 @@ Document::Document(const char* documentName, const char* documentLabel)
                       "Link of the tip object of the document");
     Uid.touch();
     d->suppressFileChangeTracking = false;
+    state.release();
+    }
+    catch (...) {
+        for (auto it = directory.entries.rbegin(); it != directory.entries.rend(); ++it) {
+            if (it->created) {
+                try {
+                    Base::FileInfo(it->path).deleteDirectoryRecursive();
+                }
+                catch (...) {
+                    // Preserve the original construction exception.
+                }
+            }
+        }
+        // This document was never published, so no admission can have begun.
+        // Retained test/lifetime gate references must no longer expose it.
+        if (auto* service = d->collaborationService.get()) {
+            auto& app = GetApplication();
+            auto gate = app.collaborationServiceLifetimeGate(*service);
+            if (gate) {
+                std::lock_guard guard(gate->mutex);
+                gate->sealed = true;
+                gate->document = nullptr;
+            }
+            app.unregisterCollaborationServiceLifetime(service);
+        }
+        // DocumentP owns the Python reference. Invalidate any retained wrapper
+        // and release it while the GIL is held, before base members unwind.
+        Base::PyGILStateLocker lock;
+        if (pythonWrapperCreated) {
+            static_cast<Base::PyObjectBase*>(d->DocumentPythonObject.ptr())->setInvalid();
+        }
+        state.reset();
+        d = nullptr;
+        throw;
+    }
 }
 
 void Document::onPropertyStatusChanged(const Property& property, const unsigned long oldStatus)
