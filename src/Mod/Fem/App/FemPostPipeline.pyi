@@ -9,7 +9,7 @@ from Base.Unit import Unit
 from Fem.FemPostObject import FemPostObject
 from App.DocumentObject import DocumentObject
 
-vtkAlgorithm: TypeAlias = object
+from vtkmodules.vtkCommonExecutionModel import vtkAlgorithm
 
 @export(
     Include="Mod/Fem/App/FemPostPipeline.h",

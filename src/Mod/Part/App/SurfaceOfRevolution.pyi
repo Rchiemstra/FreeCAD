@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export
+from Base.Metadata import export, typing_only
 from Base.Placement import Placement
 from Base.Vector import Vector
 from GeometrySurface import GeometrySurface
@@ -34,7 +34,7 @@ class SurfaceOfRevolution(GeometrySurface):
     BasisCurve: GeometryCurve
     """Sets or gets the basic curve."""
 
-    @overload
+    @typing_only
     def __init__(
-        self, location: Placement, direction: Vector, basis_curve: GeometryCurve
+        self, basis_curve: GeometryCurve, location: Vector, direction: Vector, /
     ) -> None: ...

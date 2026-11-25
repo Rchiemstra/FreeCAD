@@ -5,7 +5,8 @@ from __future__ import annotations
 from Base.Metadata import export, deprecated_attributes
 from Base.Vector import Vector
 from TrimmedCurve import TrimmedCurve
-from typing import overload
+from abc import ABC, abstractmethod
+from Base.Metadata import typing_only
 
 @export(
     Father="TrimmedCurvePy",
@@ -23,7 +24,7 @@ from typing import overload
         "replacement": "Location",
     },
 )
-class ArcOfConic(TrimmedCurve):
+class ArcOfConic(TrimmedCurve, ABC):
     """
     Describes a portion of a conic
 
@@ -31,7 +32,8 @@ class ArcOfConic(TrimmedCurve):
     Licence: LGPL
     """
 
-    @overload
+    @typing_only
+    @abstractmethod
     def __init__(self) -> None: ...
 
     Location: Vector = ...

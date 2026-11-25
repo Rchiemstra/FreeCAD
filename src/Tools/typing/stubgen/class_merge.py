@@ -16,6 +16,7 @@ this one handles class bodies, imports, aliases, and class placement.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 from pathlib import Path
 
@@ -69,6 +70,79 @@ def keep_public_stub_decorator(decorator: ast.expr) -> bool:
     return name in PUBLIC_STUB_DECORATORS or full_name.endswith(".setter")
 
 
+def normalize_class_overloads(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Remove runtime implementations from adjacent stub overload groups.
+
+    A lone overload is only collapsible when it has the same signature and
+    public decorators as its implementation. Leave ambiguous input intact
+    rather than silently dropping a callable signature.
+    """
+    def is_overload(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        return any(decorator_name(d) in {"overload", "typing.overload", "typing_extensions.overload"}
+                   for d in node.decorator_list)
+
+    def other_decorators(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+        return [ast.dump(d, include_attributes=False) for d in node.decorator_list
+                if decorator_name(d) not in {"overload", "typing.overload", "typing_extensions.overload"}]
+
+    result: list[ast.stmt] = []
+    i = 0
+    while i < len(body):
+        item = body[i]
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) or not is_overload(item):
+            result.append(item)
+            i += 1
+            continue
+        group = []
+        while i < len(body):
+            candidate = body[i]
+            if not isinstance(candidate, type(item)) or candidate.name != item.name or not is_overload(candidate):
+                break
+            group.append(candidate)
+            i += 1
+        implementation = body[i] if i < len(body) else None
+        if isinstance(implementation, type(item)) and implementation.name == item.name and not is_overload(implementation):
+            i += 1
+            if any(other_decorators(v) != other_decorators(implementation) for v in group):
+                result.extend(group)
+                result.append(implementation)
+                continue
+            if len(group) == 1:
+                variant = group[0]
+                # An unannotated **kwargs-only binding declaration describes the
+                # implementation mechanism, not an additional public call form.
+                args = implementation.args
+                generic_kwargs = (not args.posonlyargs and len(args.args) == 1
+                    and not args.kwonlyargs and args.vararg is None
+                    and args.kwarg is not None and args.kwarg.annotation is None)
+                if (generic_kwargs and getattr(variant, "_typing_only_signature", False)
+                    and (ast.dump(variant.returns, include_attributes=False) if variant.returns else None)
+                    == (ast.dump(implementation.returns, include_attributes=False) if implementation.returns else None)
+                    and args.args[0].annotation is None):
+                    variant.decorator_list = [d for d in variant.decorator_list
+                        if decorator_name(d) not in {"overload", "typing.overload", "typing_extensions.overload"}]
+                    if ast.get_docstring(implementation, clean=False) and not ast.get_docstring(variant, clean=False):
+                        variant.body.insert(0, copy.deepcopy(implementation.body[0]))
+                    result.append(variant)
+                elif (ast.dump(variant.args, include_attributes=False) != ast.dump(implementation.args, include_attributes=False)
+                    or ast.dump(variant.returns, include_attributes=False) != ast.dump(implementation.returns, include_attributes=False)):
+                    result.extend(group)
+                    result.append(implementation)
+                else:
+                    result.append(implementation)
+            else:
+                # Keep documentation visible on the first public signature.
+                doc = ast.get_docstring(implementation, clean=False)
+                if doc is not None and ast.get_docstring(group[0], clean=False) is None:
+                    group[0].body.insert(0, copy.deepcopy(implementation.body[0]))
+                result.extend(group)
+        else:
+            # A conditional or separately emitted declaration can complete this
+            # group; leave it unchanged when there is no adjacent implementation.
+            result.extend(group)
+    return result
+
+
 class PublicClassStubTransformer(ast.NodeTransformer):
     def __init__(
         self,
@@ -77,8 +151,10 @@ class PublicClassStubTransformer(ast.NodeTransformer):
         renames: dict[str, str],
         public_base_names: set[str],
         public_base_modules: set[str],
+        annotation_owners: dict[str, str] | None = None,
     ):
         self.module_name = module_name
+        self.annotation_owners = annotation_owners or {}
         self.public_symbol = public_symbol
         self.renames = renames
         self.public_base_names = public_base_names
@@ -276,8 +352,9 @@ class PublicClassStubTransformer(ast.NodeTransformer):
             if isinstance(child, ast.Name) and child.id in self.shadowed_annotation_names
         }
         if shadowed_names:
-            self.annotation_module_roots_needed.add(self.module_name.split(".", 1)[0])
-            qualified = QualifyAnnotationNames(self.module_name, shadowed_names).visit(
+            owners = {name: self.annotation_owners.get(name, self.module_name) for name in shadowed_names}
+            self.annotation_module_roots_needed.update(owner.split(".", 1)[0] for owner in owners.values())
+            qualified = QualifyAnnotationNames(owners).visit(
                 copy.deepcopy(rewritten)
             )
             return ast.Constant(value=ast.unparse(qualified))
@@ -320,13 +397,14 @@ class PublicClassStubTransformer(ast.NodeTransformer):
                     flattened.extend(item.body)
                 else:
                     flattened.append(item)
-            node.body = flattened
+            node.body = normalize_class_overloads(flattened)
         finally:
             self.class_depth -= 1
             self.current_deprecated_attributes = previous_deprecated_attributes
         return node
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        node._typing_only_signature = any(decorator_name(d) == "typing_only" for d in node.decorator_list)
         node.decorator_list = self.public_decorators(node.decorator_list)
         node.args = self.visit(node.args)
         node.returns = self.rewrite_annotation(node.returns)
@@ -363,19 +441,18 @@ class PublicClassStubTransformer(ast.NodeTransformer):
 
 
 class QualifyAnnotationNames(ast.NodeTransformer):
-    def __init__(self, module_name: str, names: set[str]):
-        self.module_name = module_name
-        self.names = names
+    def __init__(self, owners: dict[str, str]):
+        self.owners = owners
 
     def qualified_name_expr(self, name: str) -> ast.expr:
-        head, *tail = self.module_name.split(".")
+        head, *tail = self.owners[name].split(".")
         expr: ast.expr = ast.Name(id=head, ctx=ast.Load())
         for part in tail:
             expr = ast.Attribute(value=expr, attr=part, ctx=ast.Load())
         return ast.Attribute(value=expr, attr=name, ctx=ast.Load())
 
     def visit_Name(self, node: ast.Name) -> ast.expr:
-        if node.id in self.names:
+        if node.id in self.owners:
             return ast.copy_location(self.qualified_name_expr(node.id), node)
         return node
 
@@ -840,14 +917,43 @@ def public_class_stub_source(
             case _:
                 continue
 
+    annotation_owners = {name: "builtins" for name in dir(builtins)}
+    annotation_owners.update({name: module_name for name in module_symbols})
+    for name, binding in import_bindings.items():
+        target = binding_import_target(binding, import_targets)
+        if target and target[1] == name:
+            annotation_owners[name] = target[0]
+
     transformer = PublicClassStubTransformer(
         module_name,
         symbol,
         renames,
         public_base_names,
         public_base_modules,
+        annotation_owners,
     )
     transformed = transformer.visit(node)
+    # The native binding specs use one-element tuple annotations here, while
+    # the multiframe C++ implementation accepts tuples of arbitrary length and
+    # numeric frame values. Correct the public contracts without changing the
+    # binding generator's signatures and documentation.
+    if klass.source == "src/Mod/Fem/App/FemPostPipeline.pyi":
+        for method in transformed.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if method.name not in {"read", "load"}:
+                continue
+            for arg in (*method.args.posonlyargs, *method.args.args):
+                if arg.arg not in {"files", "values", "result"} or arg.annotation is None:
+                    continue
+                for part in ast.walk(arg.annotation):
+                    if (isinstance(part, ast.Subscript) and isinstance(part.value, ast.Name)
+                        and part.value.id == "tuple" and not isinstance(part.slice, ast.Tuple)):
+                        part.slice = ast.Tuple(elts=[part.slice, ast.Constant(value=Ellipsis)], ctx=ast.Load())
+                if method.name == "read" and arg.arg == "values":
+                    for part in ast.walk(arg.annotation):
+                        if isinstance(part, ast.Name) and part.id == "int":
+                            part.id = "float"
     ast.fix_missing_locations(transformed)
     import_lines = list(
         referenced_import_lines(
@@ -859,6 +965,14 @@ def public_class_stub_source(
             internal_roots,
         )
     )
+    # These private aliases are used by binding specifications but are not
+    # themselves exported by the native class merger.
+    support = {
+        "src/Mod/Mesh/App/Mesh.pyi": "from FreeCAD import _VectorInput",
+        "src/Mod/TechDraw/App/CosmeticEdge.pyi": "from FreeCAD import Vector as PyCXXVector",
+    }.get(klass.source)
+    if support and support not in import_lines:
+        import_lines.append(support)
     if transformer.needs_deprecated_import and DEPRECATED_IMPORT_LINE not in import_lines:
         import_lines.append(DEPRECATED_IMPORT_LINE)
     for root_name in sorted(transformer.annotation_module_roots_needed):

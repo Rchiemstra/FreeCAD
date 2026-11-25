@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Base.Metadata import export
+from Base.Metadata import export, typing_only
 from Part.ArcOfConic import ArcOfConic
 from typing import Final
 
@@ -31,3 +31,6 @@ class ArcOfHyperbola(ArcOfConic):
 
     Hyperbola: Final[object] = None
     """The internal hyperbola representation"""
+
+    @typing_only
+    def __init__(self, hyperbola: "Part.Hyperbola", u1: float, u2: float, sense: bool = ..., /) -> None: ...

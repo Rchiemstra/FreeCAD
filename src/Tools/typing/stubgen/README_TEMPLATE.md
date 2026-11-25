@@ -24,6 +24,15 @@ pip install freecad-typings
 uv add freecad-typings
 ```
 
+For FEM APIs that exchange VTK objects, install the optional VTK typing dependency:
+
+```sh
+pip install "freecad-typings[vtk]"
+```
+
+These APIs require a FreeCAD build with Python VTK support. Without VTK installed,
+configure your type checker to ignore missing VTK imports if it reports them.
+
 ## Modules
 
 The stubs cover the public FreeCAD Python modules, including `FreeCAD`,
