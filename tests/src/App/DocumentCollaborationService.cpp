@@ -202,6 +202,16 @@ public:
 class DocumentStructuralCompatibilityTestAccess
 {
 public:
+    static bool withWriterScope(Document& document, const std::function<void()>& action)
+    {
+        Document::CollaborationWriterScope writer(&document);
+        if (!writer) {
+            return false;
+        }
+        action();
+        return true;
+    }
+
     static bool commitCoordinatorTransaction(Document& document)
     {
         return document.commitCollaborationCommitTransaction(true);
@@ -4011,6 +4021,23 @@ TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandle
     Py_DECREF(revisionKeys);
     Py_DECREF(session);
     Py_DECREF(pythonDocument);
+}
+
+TEST_F(DocumentCollaborationServiceTest, PreparedEditRefusesActiveCooperatingWriterBeforeEffects)
+{
+    auto prepared = prepare("writer-boundary", "After");
+    const auto before = _target->Label.getStrValue();
+    ASSERT_TRUE(Internal::DocumentStructuralCompatibilityTestAccess::withWriterScope(
+        *_document, [&] {
+        const auto result = _document->collaborationService().commitEdit(
+            _session.sessionId(), prepared);
+        EXPECT_EQ(result.status, DocumentCommitStatus::Busy);
+        EXPECT_EQ(_target->Label.getStrValue(), before);
+    }));
+    const auto result = _document->collaborationService().commitEdit(
+        _session.sessionId(), prepared);
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
 }
 
 TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundary)

@@ -270,6 +270,7 @@ struct DocumentP
     std::atomic<unsigned int> collaborationStableNotificationDepth {0};
     std::atomic<unsigned int> collaborationRecomputeTeardownDepth {0};
     std::recursive_mutex collaborationCommitMutex;
+    std::atomic_flag collaborationWriter = ATOMIC_FLAG_INIT;
     // Serializes commit-barrier graph/dependency mutations (exclusive lock)
     // against concurrent getMutationReadiness() -> mustExecute() readers (shared lock)
     // without contending on collaborationCommitMutex or refusing concurrent readers.

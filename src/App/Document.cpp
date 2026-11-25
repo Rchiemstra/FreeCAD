@@ -961,6 +961,18 @@ void Document::setCollaborationRevisionPublicationSuppressed(bool suppressed) no
     d->suppressCollaborationRevisionPublication = suppressed;
 }
 
+Document::CollaborationWriterScope::CollaborationWriterScope(Document* document) noexcept
+    : _document(document)
+    , _admitted(!document || !document->d->collaborationWriter.test_and_set(std::memory_order_acquire))
+{}
+
+Document::CollaborationWriterScope::~CollaborationWriterScope()
+{
+    if (_document && _admitted) {
+        _document->d->collaborationWriter.clear(std::memory_order_release);
+    }
+}
+
 std::recursive_mutex& Document::collaborationCommitMutex() noexcept
 {
     return d->collaborationCommitMutex;

@@ -2,6 +2,7 @@
 
 #include "DocumentCommitCoordinator.h"
 #include "private/PreparedLabelReferenceUpdates.h"
+#include "private/CollaborativeWriterOperation.h"
 #include "NativeRecomputeErrors.h"
 
 #include "CollaborativeOperation.h"
@@ -953,6 +954,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             "collaboration commit was not dispatched to the document owner thread"
         );
     }
+    // This coordinates with participating ordinary writers. Other mutation
+    // paths still need migration before this can guarantee a general fence.
+    std::optional<Document::CollaborationWriterScope> writer;
+    if (requireDetachedPreparationSupport) {
+        writer.emplace(&_document);
+        if (!*writer) {
+            return makeResult(DocumentCommitStatus::Busy, edit,
+                              "a document writer is already active");
+        }
+    }
     std::lock_guard<std::recursive_mutex> serialized(_document.collaborationCommitMutex());
 
     if (auto rejected = rejectCommitPrerequisites(
@@ -1337,22 +1348,31 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     Internal::NativeRecomputeRequests freshRecomputeRequests;
     try {
         Internal::NativeRecomputeRequestCapture capture(_document, freshRecomputeRequests);
+        const auto applyOperation = [&] {
+            if (writer) {
+                CollaborationWriterCapability capability(_document);
+                Internal::applyCollaborativeOperation(operation, _document, &capability);
+            }
+            else {
+                Internal::applyCollaborativeOperation(operation, _document, nullptr);
+            }
+        };
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
             if (structuralCompatibility) {
                 auto grant = _document.openCollaborationStructuralMutationGrant();
-                operation.apply(_document);
+                applyOperation();
             }
             else {
-                operation.apply(_document);
+                applyOperation();
             }
         }
         else if (structuralCompatibility) {
             auto grant = _document.openCollaborationStructuralMutationGrant();
-            operation.apply(_document);
+            applyOperation();
         }
         else {
-            operation.apply(_document);
+            applyOperation();
         }
     }
     catch (const Base::Exception& exception) {

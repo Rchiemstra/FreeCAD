@@ -45,6 +45,7 @@
 #include <App/DynamicProperty.h>
 #include <App/private/CollaborationStructuralMutationRecorder.h>
 #include <App/ExpressionParser.h>
+#include <App/Range.h>
 #include <App/FeaturePythonPyImp.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
@@ -462,6 +463,24 @@ void Sheet::setCell(const char* address, const char* contents)
     setCell(CellAddress(address), contents);
 }
 
+void Sheet::setRangeFromPython(const char* address, const char* contents)
+{
+    App::Document::CollaborationWriterScope writer(getDocument());
+    if (!writer) {
+        throw Base::RuntimeError("document writer is busy");
+    }
+    std::string cellAddress = getAddressFromAlias(address).c_str();
+    if (!cellAddress.empty()) {
+        setCellAdmitted(CellAddress(cellAddress.c_str()), contents);
+    }
+    else {
+        Range rangeIter(address);
+        do {
+            setCellAdmitted(CellAddress(rangeIter.address().c_str()), contents);
+        } while (rangeIter.next());
+    }
+}
+
 /**
  * Set cell at \a address to \a value. If a merged cell is specified, the upper right corner of the
  * merged cell must be specified.
@@ -473,15 +492,30 @@ void Sheet::setCell(const char* address, const char* contents)
 
 void Sheet::setCell(CellAddress address, const char* value)
 {
+    App::Document::CollaborationWriterScope writer(getDocument());
+    if (!writer) {
+        throw Base::RuntimeError("document writer is busy");
+    }
+    setCellAdmitted(address, value);
+}
+
+void Sheet::setCellWithWriterCapability(
+    CellAddress address, const char* value, const App::CollaborationWriterCapability& capability)
+{
+    if (!capability.permits(getDocument())) {
+        throw Base::RuntimeError("invalid document writer capability");
+    }
+    setCellAdmitted(address, value);
+}
+
+void Sheet::setCellAdmitted(CellAddress address, const char* value)
+{
     assert(value);
-
-
     if (*value == '\0') {
         clear(address, false);
         return;
     }
-
-    setContent(address, value);
+    cells.setContent(address, value);
 }
 
 /**
@@ -1607,8 +1641,21 @@ void Sheet::removeRows(int row, int count)
  * @param value New value
  */
 
+void Sheet::setContentWithWriterCapability(
+    CellAddress address, const char* value, const App::CollaborationWriterCapability& capability)
+{
+    if (!capability.permits(getDocument())) {
+        throw Base::RuntimeError("invalid document writer capability");
+    }
+    cells.setContent(address, value);
+}
+
 void Sheet::setContent(CellAddress address, const char* value)
 {
+    App::Document::CollaborationWriterScope writer(getDocument());
+    if (!writer) {
+        throw Base::RuntimeError("document writer is busy");
+    }
     cells.setContent(address, value);
 }
 

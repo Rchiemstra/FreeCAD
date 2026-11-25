@@ -501,6 +501,13 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
         return outcome;
     }
 
+    // Fail closed until every ordinary writer participates in the shared fence.
+    if (!command.expectedRevisions.empty()) {
+        outcome.result = DocumentCommandSubmitResult::Unsupported;
+        outcome.diagnostic = "revision-fenced lane commands require writer exclusion";
+        return outcome;
+    }
+
     std::lock_guard lock(_mutex);
     if (_shutdownRequested || !_ownerDocumentAlive || _applicationClosing) {
         outcome.result = DocumentCommandSubmitResult::Closed;
