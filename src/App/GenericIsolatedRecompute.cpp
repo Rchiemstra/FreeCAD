@@ -13,6 +13,7 @@
 #include "ObjectIdentifier.h"
 #include "PropertyLinks.h"
 #include "PropertyPythonObject.h"
+#include "PropertyCleanup.h"
 #include "private/CollaborativeOperationRegistryInternal.h"
 
 #include <Base/Exception.h>
@@ -1621,6 +1622,7 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const std::map<std::string, std::string>& expectedOutputs,
     const bool authoritativeTransientSchema)
 {
+    App::PropertyCleanupBoundary cleanup;
     const auto& section = requireSection(archive, "recompute.outputs", 1);
     BinaryReader reader(section.bytes);
     if (reader.u32() != ProtocolMagic || reader.u32() != ProtocolVersion
@@ -2219,6 +2221,7 @@ App::GeometryArchive executeGenericRecompute(
     const App::GeometryArchive& input,
     const std::stop_token stopToken)
 {
+    App::PropertyCleanupBoundary cleanup;
     if (stopToken.stop_requested()) {
         throw std::runtime_error("generic recompute cancelled before document import");
     }

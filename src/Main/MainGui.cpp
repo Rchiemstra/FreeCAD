@@ -370,7 +370,15 @@ int main(int argc, char** argv)
     Base::Console().log("{} terminating...\n", App::Application::getExecutableName());
 
     // cleans up
-    App::Application::destruct();
+    try { App::Application::destruct(); }
+    catch (const Base::Exception& e) {
+        std::fprintf(stderr, "Application finalization failed: %s\n", e.what());
+        return 1;
+    }
+    catch (...) {
+        std::fprintf(stderr, "Application finalization failed\n");
+        return 1;
+    }
 
     Base::Console().log("{} completely terminated\n", App::Application::getExecutableName());
 

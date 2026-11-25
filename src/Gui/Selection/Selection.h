@@ -910,6 +910,7 @@ protected:
     bool clarifySelectionActive {false};
 
     SelectionStyle selectionStyle;
+    fastsignals::scoped_connection appDeletedObjectConnection;
     std::deque<SelectionChanges> NotificationQueue;
     bool Notifying {false};
 };

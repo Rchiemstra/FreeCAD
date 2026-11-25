@@ -4,8 +4,12 @@
 
 #include "App/Application.h"
 #include "App/PreparedEditExecutor.h"
+#include "App/PropertyPythonObject.h"
+#include "App/Property.h"
+#include <src/App/InitApplication.h>
 
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 
 #include <algorithm>
 #include <array>
@@ -13,6 +17,8 @@
 #include <barrier>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -370,6 +376,18 @@ TEST(PreparedEditExecutorTest, exposesBoundedPoolConfiguration)
     EXPECT_EQ(configuredExecutor.queueCapacity(), 7U);
     EXPECT_THROW(PreparedEditExecutor(1, 0), std::invalid_argument);
 }
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST(PreparedEditExecutorTest, CleanerRegistrationFailureIsReportedByConstructor)
+{
+    tests::initApplication();
+    Internal::failNextPreparedCleanerRegistrationForTesting();
+    EXPECT_THROW((PreparedEditExecutor {2, 8}), std::bad_alloc);
+    // A different executor can still start after all failed-start workers joined.
+    PreparedEditExecutor next {1, 8};
+    EXPECT_EQ(next.workerCount(), 1);
+}
+#endif
 
 TEST(PreparedEditExecutorTest, rejectsInlineAndIsolatedProcessPolicies)
 {
@@ -780,3 +798,56 @@ TEST(PreparedEditExecutorTest, ShutdownStopsRunningWorkAndSkipsQueuedWork)
     EXPECT_TRUE(runningControl->sawStop());
     EXPECT_FALSE(queuedTaskRan);
 }
+
+#if GTEST_HAS_DEATH_TEST
+TEST(PreparedEditExecutorTest, PoolJoinReleasesGilForRetiredPythonProperty)
+{
+    const auto previousStyle = GTEST_FLAG_GET(death_test_style);
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT({
+        std::mutex watchdogMutex;
+        std::condition_variable watchdogChanged;
+        bool done = false;
+        std::thread watchdog([&] {
+            std::unique_lock lock(watchdogMutex);
+            if (!watchdogChanged.wait_for(lock, 10s, [&] { return done; })) std::_Exit(91);
+        });
+        tests::initApplication();
+        {
+            Base::PyGILStateLocker gil;
+            PyObject* globals = PyDict_New();
+            if (!globals) std::_Exit(92);
+            PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+            PyObject* evaluated = PyRun_String(
+                "released = []\n"
+                "class Probe:\n"
+                "    def __del__(self): released.append('finalized')\n"
+                "probe = Probe()\n", Py_file_input, globals, globals);
+            if (!evaluated) std::_Exit(93);
+            Py_DECREF(evaluated);
+            auto* property = new App::PropertyPythonObject;
+            property->setPyObject(PyDict_GetItemString(globals, "probe"));
+            if (PyDict_DelItemString(globals, "probe") != 0) std::_Exit(94);
+            auto executor = std::make_unique<PreparedEditExecutor>(1, 2);
+            std::promise<void> retired;
+            auto reported = retired.get_future();
+            (void)submit(*executor, [property, &retired](std::stop_token) {
+                App::Property::destroy(property);
+                retired.set_value();
+                return makeOperation();
+            });
+            reported.get();
+            // Worker cleanup requires this GIL; executor destruction joins.
+            executor.reset();
+            if (PyList_Size(PyDict_GetItemString(globals, "released")) != 1) std::_Exit(95);
+            Py_DECREF(globals);
+        }
+        App::Application::destruct();
+        { std::lock_guard lock(watchdogMutex); done = true; }
+        watchdogChanged.notify_all();
+        watchdog.join();
+        std::_Exit(0);
+    }, ::testing::ExitedWithCode(0), "");
+    GTEST_FLAG_SET(death_test_style, previousStyle);
+}
+#endif

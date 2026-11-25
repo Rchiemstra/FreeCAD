@@ -61,9 +61,24 @@ DocumentIdentity CollaborationRegistry::registerDocument(const Document& documen
         allocateLifecycleEpoch(),
         DocumentLifecycleState::Live,
     };
-    _byDocument.emplace(&document, identity);
-    _byInstance.emplace(identity.instanceId, identity);
+    auto [entry, inserted] = _byDocument.emplace(&document, identity);
+    try {
+        _byInstance.emplace(identity.instanceId, identity);
+    }
+    catch (...) {
+        if (inserted) _byDocument.erase(entry);
+        throw;
+    }
     return identity;
+}
+
+void CollaborationRegistry::discardUnpublishedDocument(const Document& document) noexcept
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _byDocument.find(&document);
+    if (found == _byDocument.end()) return;
+    _byInstance.erase(found->second.instanceId);
+    _byDocument.erase(found);
 }
 
 std::optional<DocumentIdentity> CollaborationRegistry::identity(const Document& document) const

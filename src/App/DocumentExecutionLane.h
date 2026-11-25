@@ -46,6 +46,9 @@ namespace Internal
 {
 class DocumentExecutionLaneTestAccess;
 struct CollaborationServiceLifetimeGate;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+AppExport void failNextLaneStartupForTesting() noexcept;
+#endif
 }  // namespace Internal
 
 /**
@@ -131,6 +134,11 @@ public:
     static std::shared_ptr<DocumentExecutionLane> create(
         Document& document,
         DocumentRevisionIdentityBinding identity);
+
+    // Application teardown seals lane creation, requests stop, and waits for
+    // every owner thread including already-detached threads and their TLS.
+    static void shutdownAllBeforeInterpreterFinalization();
+    [[nodiscard]] static bool isCurrentThreadAnyOwner() noexcept;
 
     DocumentExecutionLane(const DocumentExecutionLane&) = delete;
     DocumentExecutionLane& operator=(const DocumentExecutionLane&) = delete;

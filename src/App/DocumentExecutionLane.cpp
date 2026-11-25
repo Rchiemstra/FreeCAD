@@ -12,6 +12,7 @@
 #include "DocumentObject.h"
 #include "DocumentWouldBlock.h"
 #include "Property.h"
+#include "PropertyCleanup.h"
 #include "RecomputeHandle.h"
 
 #include <Base/Exception.h>
@@ -32,7 +33,17 @@ namespace App
 namespace DocumentExecutionLaneDetail
 {
 thread_local bool g_guiDispatchPumpActive = false;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::atomic_bool failNextStartup {false};
+#endif
 }  // namespace DocumentExecutionLaneDetail
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void Internal::failNextLaneStartupForTesting() noexcept
+{
+    DocumentExecutionLaneDetail::failNextStartup.store(true);
+}
+#endif
 
 bool documentExecutionLaneGuiDispatchPumpActive() noexcept
 {
@@ -160,11 +171,30 @@ std::chrono::milliseconds DocumentExecutionLane::guiSyncAdmissionTimeout() const
 namespace
 {
 
+// Kept outside DocumentExecutionLane: its original public inline templates
+// access the lane's members by offset in already-compiled consumers.
+struct LaneThreadState
+{
+    std::promise<void> exitPromise;
+    std::shared_future<void> exitCompletion {exitPromise.get_future().share()};
+    // Protected by the lane's _mutex, like _threadReady.
+    std::exception_ptr startupFailure;
+};
+
 struct LaneRegistry
 {
+    struct Entry {
+        std::weak_ptr<DocumentExecutionLane> lane;
+        std::shared_ptr<LaneThreadState> threadState;
+        bool ready {false};
+    };
     std::mutex mutex;
-    std::unordered_map<DocumentInstanceId, std::weak_ptr<DocumentExecutionLane>> lanes;
+    std::unordered_map<DocumentInstanceId, Entry> lanes;
+    std::vector<std::shared_future<void>> exits;
+    bool closing {false};
 };
+
+thread_local const DocumentExecutionLane* currentLaneOwner = nullptr;
 
 LaneRegistry& getLaneRegistry()
 {
@@ -172,11 +202,19 @@ LaneRegistry& getLaneRegistry()
     return *registry;
 }
 
-void registerLane(const std::shared_ptr<DocumentExecutionLane>& lane)
+void registerLane(const std::shared_ptr<DocumentExecutionLane>& lane,
+                  const std::shared_ptr<LaneThreadState>& state)
 {
     auto& registry = getLaneRegistry();
     std::lock_guard lock(registry.mutex);
-    registry.lanes[lane->identity().documentInstanceId] = lane;
+    if (registry.closing) throw Base::RuntimeError("document lane creation during shutdown");
+    std::erase_if(registry.exits, [](const auto& item) {
+        return item.wait_for(std::chrono::seconds::zero()) == std::future_status::ready;
+    });
+    const auto id = lane->identity().documentInstanceId;
+    registry.lanes[id] = {lane, state, false};
+    try { registry.exits.push_back(state->exitCompletion); }
+    catch (...) { registry.lanes.erase(id); throw; }
 }
 
 void unregisterLane(DocumentInstanceId instanceId)
@@ -262,11 +300,19 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::create(
     Document& document,
     DocumentRevisionIdentityBinding identity)
 {
+    auto threadState = std::make_shared<LaneThreadState>();
     auto lane = std::shared_ptr<DocumentExecutionLane>(
         new DocumentExecutionLane(document, identity));
     lane->_handleState->lane = lane;
-    registerLane(lane);
+    registerLane(lane, threadState);
     lane->startOwnerThread();
+    {
+        auto& registry = getLaneRegistry();
+        std::lock_guard lock(registry.mutex);
+        if (registry.closing)
+            throw Base::RuntimeError("document lane startup interrupted by shutdown");
+        registry.lanes.at(identity.documentInstanceId).ready = true;
+    }
     return lane;
 }
 
@@ -278,7 +324,7 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::find(DocumentInsta
     if (found == registry.lanes.end()) {
         return nullptr;
     }
-    return found->second.lock();
+    return found->second.ready ? found->second.lane.lock() : nullptr;
 }
 
 DocumentExecutionLane::DocumentExecutionLane(Document& document, DocumentRevisionIdentityBinding identity)
@@ -296,22 +342,92 @@ DocumentExecutionLane::DocumentExecutionLane(Document& document, DocumentRevisio
 
 void DocumentExecutionLane::startOwnerThread()
 {
+    std::shared_ptr<LaneThreadState> threadState;
+    {
+        auto& registry = getLaneRegistry();
+        std::lock_guard lock(registry.mutex);
+        threadState = registry.lanes.at(_identity.documentInstanceId).threadState;
+    }
     // Pin `*this` before spawning so a fast GUI-thread closeDocument() cannot
     // reset DocumentP::executionLane and destroy `_workAvailable`/`_mutex`
     // while the owner thread is still running.
-    _thread = std::thread([this, self = shared_from_this()] {
-        _ownerThreadId = std::this_thread::get_id();
-        _document.bindCollaborationOwnerThread(_ownerThreadId);
-        {
-            std::lock_guard lock(_mutex);
-            _threadReady = true;
-        }
-        _workAvailable.notify_all();
-        threadMain();
-    });
+    try {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (DocumentExecutionLaneDetail::failNextStartup.exchange(false)) throw std::bad_alloc();
+#endif
+        _thread = std::thread([this, self = shared_from_this(), threadState] {
+            try {
+                threadState->exitPromise.set_value_at_thread_exit();
+                initializeManagedPropertyCleanup(true);
+                currentLaneOwner = this;
+                _ownerThreadId = std::this_thread::get_id();
+                _document.bindCollaborationOwnerThread(_ownerThreadId);
+            }
+            catch (...) {
+                const auto failure = std::current_exception();
+                try { threadState->exitPromise.set_exception(failure); } catch (...) {}
+                {
+                    std::lock_guard lock(_mutex);
+                    threadState->startupFailure = failure;
+                    _threadReady = true;
+                }
+                _workAvailable.notify_all();
+                return;
+            }
+            {
+                std::lock_guard lock(_mutex);
+                _threadReady = true;
+            }
+            _workAvailable.notify_all();
+            threadMain();
+        });
+    }
+    catch (...) {
+        try { threadState->exitPromise.set_exception(std::current_exception()); } catch (...) {}
+        throw;
+    }
 
     std::unique_lock lock(_mutex);
     _workAvailable.wait(lock, [this] { return _threadReady; });
+    const auto failure = threadState->startupFailure;
+    lock.unlock();
+    if (failure) {
+        joinThread();
+        std::rethrow_exception(failure);
+    }
+}
+
+bool DocumentExecutionLane::isCurrentThreadAnyOwner() noexcept
+{
+    return currentLaneOwner != nullptr;
+}
+
+void DocumentExecutionLane::shutdownAllBeforeInterpreterFinalization()
+{
+    if (currentLaneOwner)
+        throw Base::RuntimeError("application finalization cannot wait for its own document lane");
+    std::vector<std::shared_ptr<DocumentExecutionLane>> lanes;
+    std::vector<std::shared_future<void>> exits;
+    {
+        auto& registry = getLaneRegistry();
+        std::lock_guard lock(registry.mutex);
+        exits = registry.exits;
+        lanes.reserve(registry.lanes.size());
+        for (const auto& [id, entry] : registry.lanes) {
+            (void)id;
+            if (auto lane = entry.lane.lock()) lanes.push_back(std::move(lane));
+        }
+        registry.closing = true;
+    }
+    for (const auto& lane : lanes) lane->requestShutdown("application finalization");
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+    for (const auto& exit : exits) {
+        while (exit.wait_for(std::chrono::milliseconds(2)) != std::future_status::ready) {
+            if (DocumentWouldBlock::isGuiThread())
+                MainThreadSignalConfig::serviceMarshalledTasks(std::chrono::milliseconds(2));
+        }
+    }
 }
 
 DocumentExecutionLane::~DocumentExecutionLane()
@@ -765,6 +881,8 @@ void DocumentExecutionLane::joinThread()
 {
     if (_thread.joinable()) {
         if (_thread.get_id() != std::this_thread::get_id()) {
+            std::optional<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
             _thread.join();
         }
         else {

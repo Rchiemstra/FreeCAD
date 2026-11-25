@@ -41,6 +41,7 @@
 # include <boost/scope_exit.hpp>
 # include <chrono>
 #include <format>
+#include <tuple>
 # include <optional>
 # include <memory>
 # include <utility>
@@ -125,6 +126,7 @@
 #include "Services.h"
 #include "Document.h"
 #include "DocumentExecutionLane.h"
+#include "PropertyCleanup.h"
 #include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
 #include "DocumentObjectGroup.h"
@@ -328,7 +330,7 @@ Application::Application(std::map<std::string,std::string> &mConfig)
     mpcPramManager["System parameter"] = _pcSysParamMngr;
     mpcPramManager["User parameter"] = _pcUserParamMngr;
 
-    _preparedEditExecutor = std::make_unique<PreparedEditExecutor>();
+    _preparedEditExecutor.reset(new PreparedEditExecutor(0, 64, true));
     _geometryJobManager = std::make_unique<GeometryJobManager>();
     if (!Internal::geometryWorkerRequested()) {
         _geometryJobManager->startProcessBackend(
@@ -341,6 +343,38 @@ Application::~Application()
 {
     _geometryJobManager.reset();
     _preparedEditExecutor.reset();
+}
+
+void Application::releaseCleanupObservers()
+{
+    // All callback-bearing Application members are cleared while DocMap and
+    // the singleton are still alive. A property finalizer may reconnect a
+    // slot, so repeat until the drain leaves every member signal empty.
+    auto signals = std::tie(
+        signalNewDocument, signalBeforeCloseDocumentAdmission,
+        signalBeforeCloseDocumentLifecycleAdmission, signalDeleteDocument,
+        signalDeletedDocument, signalRelabelDocument, signalRenameDocument,
+        signalActiveDocument, signalSaveDocument, signalStartRestoreDocument,
+        signalFinishRestoreDocument, signalPendingReloadDocument,
+        signalStartSaveDocument, signalFinishSaveDocument, signalUndoDocument,
+        signalUndo, signalRedoDocument, signalRedo, signalBeforeOpenTransaction,
+        signalBeforeCloseTransaction, signalCloseTransaction, signalShowHidden,
+        signalStartOpenDocument, signalFinishOpenDocument,
+        signalBeforeChangeDocument, signalChangedDocument, signalNewObject,
+        signalDeletedObject, signalBeforeChangeObject, signalChangedObject,
+        signalRelabelObject, signalActivatedObject, signalBeforeRecomputeDocument,
+        signalRecomputed, signalObjectRecomputed, signalOpenTransaction,
+        signalCommitTransaction, signalAbortTransaction, signalAppendDynamicProperty,
+        signalRenameDynamicProperty, signalMoveDynamicProperty,
+        signalRemoveDynamicProperty, signalChangePropertyEditor,
+        signalBeforeAddingDynamicExtension, signalAddedDynamicExtension);
+    bool empty;
+    do {
+        std::apply([](auto&... signal) { (signal.disconnect_all_slots(), ...); }, signals);
+        drainRetiredPropertiesAtQuiescence();
+        empty = std::apply([](const auto&... signal) { return (signal.empty() && ...); },
+                           signals);
+    } while (!empty);
 }
 
 void Application::setupPythonTypes()
@@ -511,6 +545,8 @@ void Application::setupPythonException(PyObject* module)
 
 Document* Application::newDocument(const char * proposedName, const char * proposedLabel, DocumentInitFlags CreateFlags)
 {
+    if (shutdownState() != ShutdownState::Running)
+        throw Base::RuntimeError("application shutdown is incomplete; new documents are unavailable");
     enforceCollaborationLifecycleMutationAllowed();
 
     bool isUsingDefaultName = Base::Tools::isNullOrEmpty(proposedName);
@@ -552,16 +588,41 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     // create the FreeCAD document
     // Observers may schedule owner-thread work as soon as the document is published.
     // Install the bootstrap label as constructor state before exposing the document.
-    auto doc = new Document(name.c_str(), label.c_str());
+    auto deleteUnpublishedDocument = [](Document* value) { delete value; };
+    std::unique_ptr<Document, decltype(deleteUnpublishedDocument)> ownedDocument(
+        new Document(name.c_str(), label.c_str()), deleteUnpublishedDocument);
+    auto* doc = ownedDocument.get();
     doc->setStatus(Document::TempDoc, CreateFlags.temporary);
 
-    // add the document to the internal list
-    DocMap[name] = doc;
-    const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
-    doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
-                                                       collaborationIdentity.lifecycleEpoch);
-    doc->startExecutionLane(
-        {collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch});
+    // Construct the owner's exit completion and start its thread before
+    // exposing the document. Roll back the unpublished identity without any
+    // allocation if registration, startup or map insertion fails.
+    try {
+        const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
+        doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
+                                                           collaborationIdentity.lifecycleEpoch);
+        doc->startExecutionLane(
+            {collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch});
+        if (!DocMap.emplace(name, doc).second)
+            throw Base::RuntimeError("document name became unavailable during startup");
+    }
+    catch (...) {
+        auto* service = &doc->collaborationService();
+        auto gate = collaborationServiceLifetimeGate(*service);
+        if (gate) {
+            std::lock_guard lock(gate->mutex);
+            gate->sealed = true;
+        }
+        _collaborationRegistry->discardUnpublishedDocument(*doc);
+        ownedDocument.reset();
+        if (gate) {
+            std::lock_guard lock(gate->mutex);
+            gate->document = nullptr;
+        }
+        unregisterCollaborationServiceLifetime(service);
+        throw;
+    }
+    ownedDocument.release();
     doc->setCollaborationRevisionPublicationSuppressed(false);
 
     //NOLINTBEGIN
@@ -2301,8 +2362,118 @@ void Application::cleanupUnits()
     }
 }
 
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+namespace {
+std::atomic<bool> failAfterCleanupSeal {false};
+std::atomic<void (*)()> postInitialFinalizationCloseHook {nullptr};
+}
+void App::Internal::failNextFinalizationAfterSealForTesting() noexcept
+{
+    failAfterCleanupSeal.store(true);
+}
+void App::Internal::setPostInitialFinalizationCloseHookForTesting(void (*hook)()) noexcept
+{
+    postInitialFinalizationCloseHook.store(hook);
+}
+#endif
+
+void Application::preflightForShutdown()
+{
+    if (DocumentExecutionLane::isCurrentThreadAnyOwner())
+        throw Base::RuntimeError("application finalization cannot run on a document owner");
+    if (!propertyCleanupIsQuiescent())
+        throw Base::RuntimeError("application finalization requires a quiescent property boundary");
+    if (_pcSingleton->_shutdownPrepared)
+        return;
+    if (_pcSingleton->_shutdownPreflightHeld)
+        throw Base::RuntimeError("application finalization preflight is already active");
+    if (!preparePropertyCleanupFinalization())
+        throw Base::RuntimeError("application finalization requires registered foreign property threads to exit");
+    try {
+        waitForPropertyCleanupDrains();
+        _pcSingleton->_shutdownPreflightHeld = true;
+    }
+    catch (...) {
+        cancelPropertyCleanupFinalization();
+        throw;
+    }
+}
+
+void Application::cancelShutdownPreflight() noexcept
+{
+    if (_pcSingleton && _pcSingleton->_shutdownPreflightHeld) {
+        _pcSingleton->_shutdownPreflightHeld = false;
+        cancelPropertyCleanupFinalization();
+    }
+}
+
+void Application::prepareForShutdown()
+{
+    if (DocumentExecutionLane::isCurrentThreadAnyOwner())
+        throw Base::RuntimeError("application finalization cannot run on a document owner");
+    if (!propertyCleanupIsQuiescent())
+        throw Base::RuntimeError("application finalization requires a quiescent property boundary");
+    if (_pcSingleton->_shutdownPrepared)
+        return;
+    if (!_pcSingleton->_shutdownPreflightHeld)
+        preflightForShutdown();
+    bool stopping = false;
+    try {
+        _pcSingleton->_shutdownState.store(ShutdownState::Stopping);
+        stopping = true;
+        // Preflight precedes closing documents so a refused finalization leaves
+        // a command-line embedding's document identities intact.
+        _pcSingleton->closeAllDocuments();
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (auto hook = postInitialFinalizationCloseHook.load()) hook();
+#endif
+        DocumentExecutionLane::shutdownAllBeforeInterpreterFinalization();
+        // The first close can refuse an active command; its owner has now
+        // stopped. Do not tear down services while any document remains.
+        _pcSingleton->closeAllDocuments();
+        if (!_pcSingleton->DocMap.empty())
+            throw Base::RuntimeError("application shutdown is incomplete: documents or lanes may have been stopped; resolve the obstruction and retry finalization");
+        _pcSingleton->_preparedEditExecutor->shutdownAndJoin();
+        // Drain joined owners and retained callbacks while the GUI still
+        // exists. Admission stays closed until final App destruction; the
+        // shutdown thread retains cleaner drain authority for GUI teardown.
+        if (!finishPropertyCleanupFinalization())
+            throw Base::RuntimeError("application finalization found an active property callback");
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (failAfterCleanupSeal.exchange(false)) throw std::bad_alloc();
+#endif
+        _pcSingleton->releaseCleanupObservers();
+        _pcSingleton->_preparedEditExecutor->discardRetainedJobs();
+        _pcSingleton->releaseCleanupObservers();
+        _pcSingleton->_shutdownPreflightHeld = false;
+        _pcSingleton->_shutdownPrepared = true;
+    }
+    catch (...) {
+        cancelShutdownPreflight();
+        if (stopping) _pcSingleton->_shutdownState.store(ShutdownState::Incomplete);
+        throw;
+    }
+}
+
 void Application::destruct()
 {
+    prepareForShutdown();
+    auto markIncomplete = [](Application* app) noexcept {
+        app->_shutdownState.store(ShutdownState::Incomplete);
+    };
+    std::unique_ptr<Application, decltype(markIncomplete)> incompleteOnFailure(_pcSingleton, markIncomplete);
+    try {
+        if (!finishPropertyCleanupFinalization())
+            throw Base::RuntimeError("application finalization found an active property callback");
+        _pcSingleton->releaseCleanupObservers();
+        _pcSingleton->_preparedEditExecutor->discardRetainedJobs();
+        _pcSingleton->releaseCleanupObservers();
+    }
+    catch (...) {
+        cancelPropertyCleanupFinalization();
+        _pcSingleton->_shutdownPrepared = false;
+        throw;
+    }
     // saving system parameter
     if (_pcSysParamMngr->IgnoreSave()) {
         Base::Console().warning("Discard system parameter\n");
@@ -2344,10 +2515,19 @@ void Application::destruct()
 #endif
 
     CleanupProcess::callCleanup();
+    _pcSingleton->releaseCleanupObservers();
+    stopPropertyCleanupReaper();
+
+    // Both services remain available through all observer and retained-job
+    // finalizers. Their remaining members contain native value state only.
+    _pcSingleton->_geometryJobManager.reset();
+    _pcSingleton->_preparedEditExecutor.reset();
 
     // not initialized or double destruct!
     assert(_pcSingleton);
+    incompleteOnFailure.release();
     delete _pcSingleton;
+    _pcSingleton = nullptr;
 
     // We must detach from console and delete the observer to save our file
     destructObserver();

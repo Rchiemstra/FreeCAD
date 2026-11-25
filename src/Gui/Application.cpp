@@ -34,6 +34,8 @@
 #include <QLocale>
 #include <QMessageBox>
 #include <QMessageLogContext>
+#include <QPlainTextEdit>
+#include <QTextDocument>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QScreen>
@@ -696,19 +698,20 @@ Application::Application(bool GUIenabled)
         App::MainThreadSignalConfig::setServiceHook(&qtServiceMarshalledTasks);
         installDocumentPresentationBoundaryHook();
 
+        appConnections.reserve(6);
         // NOLINTBEGIN
-        App::GetApplication().signalNewDocument.connect(
-            std::bind(&Gui::Application::slotNewDocument, this, sp::_1, sp::_2));
-        App::GetApplication().signalDeleteDocument.connect(
-            std::bind(&Gui::Application::slotDeleteDocument, this, sp::_1));
-        App::GetApplication().signalRenameDocument.connect(
-            std::bind(&Gui::Application::slotRenameDocument, this, sp::_1));
-        App::GetApplication().signalActiveDocument.connect(
-            std::bind(&Gui::Application::slotActiveDocument, this, sp::_1));
-        App::GetApplication().signalRelabelDocument.connect(
-            std::bind(&Gui::Application::slotRelabelDocument, this, sp::_1));
-        App::GetApplication().signalShowHidden.connect(
-            std::bind(&Gui::Application::slotShowHidden, this, sp::_1));
+        appConnections.emplace_back(App::GetApplication().signalNewDocument.connect(
+            std::bind(&Gui::Application::slotNewDocument, this, sp::_1, sp::_2)));
+        appConnections.emplace_back(App::GetApplication().signalDeleteDocument.connect(
+            std::bind(&Gui::Application::slotDeleteDocument, this, sp::_1)));
+        appConnections.emplace_back(App::GetApplication().signalRenameDocument.connect(
+            std::bind(&Gui::Application::slotRenameDocument, this, sp::_1)));
+        appConnections.emplace_back(App::GetApplication().signalActiveDocument.connect(
+            std::bind(&Gui::Application::slotActiveDocument, this, sp::_1)));
+        appConnections.emplace_back(App::GetApplication().signalRelabelDocument.connect(
+            std::bind(&Gui::Application::slotRelabelDocument, this, sp::_1)));
+        appConnections.emplace_back(App::GetApplication().signalShowHidden.connect(
+            std::bind(&Gui::Application::slotShowHidden, this, sp::_1)));
         // NOLINTEND
         // install the last active language
         ParameterGrp::handle hPGrp = App::GetApplication().GetUserParameter().GetGroup("BaseApp");
@@ -900,6 +903,8 @@ Application::Application(bool GUIenabled)
 
 Application::~Application()
 {
+    // App can outlive Gui and release retained observer captures later.
+    appConnections.clear();
     // Retire the application-owned wake before teardown can service Qt events.
     d->cancelDeferredDocumentActivation();
     d->deferredDocumentActivationTimer.reset();
@@ -2434,33 +2439,95 @@ void Application::updateActions(bool delay)
 
 void Application::tryClose(QCloseEvent* e)
 {
-    e->setAccepted(getMainWindow()->closeAllDocuments(false));
+    // Preflight may service marshalled GUI callbacks while waiting for a
+    // cleaner drain. Those callbacks can enter nested event loops, so block
+    // new file-open delivery before reserving the cleanup registry.
+    auto* qtGui = qobject_cast<GUIApplication*>(qApp);
+    if (qtGui) qtGui->beginCloseAttempt();
+    const auto endCloseAttempt = qScopeGuard([qtGui] {
+        if (qtGui) qtGui->endCloseAttempt();
+    });
+    try {
+        // Reserve before canClose() can submit a save or close any view.
+        App::Application::preflightForShutdown();
+    }
+    catch (const Base::Exception& ex) {
+        Base::Console().error("Application shutdown refused: {}\n", ex.what());
+        getMainWindow()->statusBar()->showMessage(QObject::tr("Shutdown refused; resolve the obstruction and close again."));
+        e->ignore();
+        return;
+    }
+    catch (const std::exception& ex) {
+        Base::Console().error("Application shutdown failed: {}\n", ex.what());
+        e->ignore();
+        return;
+    }
+    catch (...) {
+        Base::Console().error("Application shutdown failed with an unknown error\n");
+        e->ignore();
+        return;
+    }
+    // Only the invocation that acquired preflight owns its cancellation.
+    // A nested refused close must not release an outer reservation.
+    const auto cancelPreflight = qScopeGuard([] {
+        App::Application::cancelShutdownPreflight();
+    });
+    // A session manager that disallows interaction must not open save
+    // dialogs. Still reserve first and ask passive views before App teardown.
+    e->setAccepted(qtGui && qtGui->isSessionCloseWithoutInteraction()
+                       ? true : getMainWindow()->closeAllDocuments(false));
     if (!e->isAccepted()) {
         return;
     }
 
     // ask all passive views if closable
     for (std::list<Gui::BaseView*>::iterator It = d->passive.begin(); It != d->passive.end(); ++It) {
-        e->setAccepted((*It)->canClose());
+        auto* editor = dynamic_cast<Gui::EditorView*>(*It);
+        if (qtGui && qtGui->isSessionCloseWithoutInteraction() && editor) {
+            // A modified passive editor needs a user decision; calling its
+            // interactive canClose() here would show a forbidden modal or save.
+            e->setAccepted(!editor->getEditor()->document()->isModified());
+        }
+        else {
+            e->setAccepted((*It)->canClose());
+        }
         if (!e->isAccepted()) {
             return;
         }
     }
 
     if (e->isAccepted()) {
+        try {
+            // Perform the App preflight and close/retry while GUI documents,
+            // MainWindow and the GUI callback targets are still alive.
+            App::Application::prepareForShutdown();
+        }
+        catch (const Base::Exception& ex) {
+            Base::Console().error("Application shutdown refused: {}\n", ex.what());
+            getMainWindow()->statusBar()->showMessage(QObject::tr("Shutdown refused; resolve the obstruction and close again."));
+            e->ignore();
+            return;
+        }
+        catch (const std::exception& ex) {
+            Base::Console().error("Application shutdown failed: {}\n", ex.what());
+            getMainWindow()->statusBar()->showMessage(QObject::tr("Shutdown failed; see the report view."));
+            e->ignore();
+            return;
+        }
+        catch (...) {
+            Base::Console().error("Application shutdown failed with an unknown error\n");
+            getMainWindow()->statusBar()->showMessage(QObject::tr("Shutdown failed; see the report view."));
+            e->ignore();
+            return;
+        }
         d->isClosing = true;
-
-        std::map<const App::Document*, Gui::Document*>::iterator It;
-
-        // detach the passive views
-        // SetActiveDocument(0);
+        // Closing a document detaches its passive references; close the
+        // remaining application views before leaving the GUI event loop.
         std::list<Gui::BaseView*>::iterator itp = d->passive.begin();
         while (itp != d->passive.end()) {
             (*itp)->onClose();
             itp = d->passive.begin();
         }
-
-        App::GetApplication().closeAllDocuments();
     }
 }
 
@@ -3272,13 +3339,11 @@ void runEventLoop(GUISingleApplication& mainApp)
     catch (const std::exception& e) {
         // catching nasty stuff coming out of the event loop
         Base::Console().error("Event loop left through unhandled exception: {}\n", e.what());
-        App::Application::destructObserver();
         throw;
     }
     catch (...) {
         // catching nasty stuff coming out of the event loop
         Base::Console().error("Event loop left through unknown unhandled exception\n");
-        App::Application::destructObserver();
         throw;
     }
 }
@@ -3347,9 +3412,6 @@ void Application::runApplication()
     MainWindow mw;
     mw.setProperty("QuitOnClosed", true);
 
-    // Destroy deferred views while their GUI and Python owners are still alive.
-    auto shutdownGuard = qScopeGuard([&app]() { app.shutdown(); });
-
     // https://forum.freecad.org/viewtopic.php?f=3&t=15540
     // Needs to be set after app is created to override platform defaults (qt commit a2aa1f81a81)
     QApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
@@ -3358,33 +3420,63 @@ void Application::runApplication()
     SoDebugError::setHandlerCallback(messageHandlerCoin, 0);
 #endif
 
-    StartupPostProcess postProcess(&mw, app, &mainApp);
-    postProcess.execute();
+    std::exception_ptr eventLoopFailure;
+    try {
+        StartupPostProcess postProcess(&mw, app, &mainApp);
+        postProcess.execute();
+        init3DMouse(&mw, &mainApp);
+        Instance->d->startingUp = false;
+        QTimer::singleShot(0, &mw, SLOT(delayedStartup()));
+        Base::Console().log("Init: Entering event loop\n");
+        Gui::getMainWindow()->setProperty("eventLoop", true);
+        runEventLoop(mainApp);
+        Base::Console().log("Finish: Event loop left\n");
+    }
+    catch (...) {
+        eventLoopFailure = std::current_exception();
+    }
 
-    init3DMouse(&mw, &mainApp);
-
-    Instance->d->startingUp = false;
-
-    // gets called once we start the event loop
-    QTimer::singleShot(0, &mw, SLOT(delayedStartup()));
-
-    // run the Application event loop
-    Base::Console().log("Init: Entering event loop\n");
-
-    // boot phase reference point
-    // https://forum.freecad.org/viewtopic.php?f=10&t=21665
-    Gui::getMainWindow()->setProperty("eventLoop", true);
-
-    runEventLoop(mainApp);
-
-    Base::Console().log("Finish: Event loop left\n");
+    // A programmatic quit or startup exception can bypass MainWindow::closeEvent.
+    // Never unwind the GUI stack on a refused preflight: keep the GUI and App
+    // alive and let the owner resolve the obstruction and request close again.
+    for (;;) {
+        try {
+            app.shutdown();
+            break;
+        }
+        catch (const Base::Exception& ex) {
+            Base::Console().error("Application shutdown refused: {}\n", ex.what());
+        }
+        catch (const std::exception& ex) {
+            Base::Console().error("Application shutdown failed: {}\n", ex.what());
+        }
+        catch (...) {
+            Base::Console().error("Application shutdown failed with an unknown error\n");
+        }
+        mw.show();
+        mw.statusBar()->showMessage(QObject::tr("Shutdown refused; resolve the obstruction and close again."));
+        try {
+            QApplication::exec();
+        }
+        catch (...) {
+            if (!eventLoopFailure) eventLoopFailure = std::current_exception();
+        }
+    }
+    if (eventLoopFailure) std::rethrow_exception(eventLoopFailure);
 }
 
 void Application::shutdown()
 {
+    // Programmatic quit and startup failure can enter here without a
+    // MainWindow close event. Cover the preflight wait as well as teardown.
+    auto* qtGui = qobject_cast<GUIApplication*>(qApp);
+    if (qtGui) qtGui->beginCloseAttempt();
+    const auto endCloseAttempt = qScopeGuard([qtGui] {
+        if (qtGui) qtGui->endCloseAttempt();
+    });
+    App::Application::prepareForShutdown();
     AutoSaver::shutdownRecoveryWrites();
     d->isClosing = true;
-    App::GetApplication().closeAllDocuments();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 

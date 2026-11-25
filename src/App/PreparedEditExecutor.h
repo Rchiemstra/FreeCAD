@@ -19,6 +19,9 @@ class DocumentCollaborationService;
 namespace Internal
 {
 class PreparedEditExecutorTestAccess;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+AppExport void failNextPreparedCleanerRegistrationForTesting() noexcept;
+#endif
 }
 
 using PreparedEditExecutionId = std::uint64_t;
@@ -89,13 +92,19 @@ public:
 
 private:
     friend class DocumentCollaborationService;
+    friend class Application;
     friend class Internal::PreparedEditExecutorTestAccess;
+
+    PreparedEditExecutor(std::size_t workerCount, std::size_t queueCapacity,
+                         bool applicationOwned);
 
     [[nodiscard]] PreparedEditExecutionId
     submit(CollaborativeOperationPreparation::DetachedTask task,
            PreparationPolicy policy);
     /** Disown a job without joining its task; a running job reaps itself. */
     [[nodiscard]] bool abandon(PreparedEditExecutionId id);
+    void shutdownAndJoin();
+    void discardRetainedJobs();
 
     class Impl;
     std::unique_ptr<Impl> _impl;

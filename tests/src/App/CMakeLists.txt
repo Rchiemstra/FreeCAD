@@ -51,6 +51,7 @@ add_executable(App_tests_run
         PropertyFile.cpp
         Property.h
         Property.cpp
+        PropertyCleaner.cpp
         PropertyTouchPublication.cpp
         PropertyExpressionEngine.cpp
         RecomputeHandle.cpp

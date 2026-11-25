@@ -23,17 +23,32 @@
  ***************************************************************************/
 
 #include <cassert>
+#include <algorithm>
 #include <array>
+#include <exception>
+#include <iterator>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <tuple>
+#include <thread>
+#include <vector>
+#include <chrono>
+#include <future>
 
 #include <atomic>
 #include <Base/Tools.h>
+#include <Base/Interpreter.h>
 #include <Base/Writer.h>
 #include <CXX/Objects.hxx>
 
 #include "Property.h"
+#include "PropertyCleanup.h"
 #include "PropertyTouchPublication.h"
 #include "Document.h"
+#include "DocumentWouldBlock.h"
+#include "MainThreadSignal.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
@@ -333,47 +348,395 @@ namespace App
  */
 struct PropertyCleaner
 {
-    explicit PropertyCleaner(Property* p)
-        : prop(p)
-    {
-        ++_PropCleanerCounter;
-    }
-    ~PropertyCleaner()
-    {
-        if (--_PropCleanerCounter) {
-            return;
-        }
-        bool found = false;
-        while (!_RemovedProps.empty()) {
-            auto p = _RemovedProps.back();
-            _RemovedProps.pop_back();
-            if (p != prop) {
-                p->setContainer(nullptr);
-                delete p;
-            }
-            else {
-                found = true;
-            }
-        }
-
-        if (found) {
-            _RemovedProps.push_back(prop);
-        }
-    }
-    static void add(Property* prop)
-    {
-        _RemovedProps.push_back(prop);
-    }
-
+    struct Entry {
+        Property* property;
+        PropertyCleanupBoundary* boundary;
+    };
+    struct State {
+        std::vector<Entry> removed;
+        std::atomic<unsigned> active {0};
+        std::atomic<bool> sealed {false};
+        int guards {0}; // Only the owner thread reads or writes this.
+        bool managed {false};
+        std::shared_future<void> ownerCompletion;
+        std::thread::id owner {std::this_thread::get_id()};
+    };
+    explicit PropertyCleaner(Property* p);
+    ~PropertyCleaner();
+    static State& state();
+    static void beginUse(State& state);
+    static void endUse(State& state) noexcept;
+    static void add(Property* prop);
     Property* prop;
-
-    static std::vector<Property*> _RemovedProps;
-    static int _PropCleanerCounter;
+    State* owner;
 };
 }  // namespace App
 
-std::vector<Property*> PropertyCleaner::_RemovedProps;
-int PropertyCleaner::_PropCleanerCounter = 0;
+namespace {
+using CleanerState = App::PropertyCleaner::State;
+struct CleanerRegistry;
+void reapExitedCleanerStates(CleanerRegistry& registry) noexcept;
+struct CleanerRegistry {
+    CleanerRegistry(): reaper([this] { reapExitedCleanerStates(*this); }) {}
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<std::shared_ptr<CleanerState>> states;
+    std::size_t drains {0};
+    bool closing {false};
+    bool stopReaper {false};
+    std::thread reaper;
+};
+CleanerRegistry& cleanerRegistry()
+{
+    static auto* registry = new CleanerRegistry;
+    return *registry;
+}
+thread_local bool managedCleanerThread = false;
+thread_local bool cleanerDrainAuthority = false;
+thread_local bool insideExitDrain = false;
+thread_local CleanerState* cleanerLocalState = nullptr;
+thread_local CleanerState* cleanerDrainState = nullptr;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::atomic<void (*)()> cleanupDrainWaitHook {nullptr};
+#endif
+
+void drainState(CleanerState& state) noexcept
+{
+    PyObject* errorType = nullptr;
+    PyObject* errorValue = nullptr;
+    PyObject* errorTraceback = nullptr;
+    const bool preserveError = Py_IsInitialized() && PyGILState_Check();
+    if (preserveError) PyErr_Fetch(&errorType, &errorValue, &errorTraceback);
+    while (!state.removed.empty()) {
+        auto* property = state.removed.back().property;
+        state.removed.pop_back();
+        property->setContainer(nullptr);
+        delete property;
+    }
+    if (preserveError) {
+        PyErr_Clear();
+        PyErr_Restore(errorType, errorValue, errorTraceback);
+    }
+}
+
+struct CleanerThreadHolder {
+    ~CleanerThreadHolder() noexcept
+    {
+        auto* state = cleanerLocalState;
+        if (!state) return;
+        auto& registry = cleanerRegistry();
+        {
+            std::lock_guard lock(registry.mutex);
+            // The registry retains the queue until true thread completion.
+            if (registry.closing) return;
+            ++registry.drains;
+        }
+        if (state->active.load(std::memory_order_acquire) != 0) std::terminate();
+        const bool previous = cleanerDrainAuthority;
+        cleanerDrainAuthority = true;
+        insideExitDrain = true;
+        drainState(*state);
+        insideExitDrain = false;
+        cleanerDrainAuthority = previous;
+        {
+            std::lock_guard lock(registry.mutex);
+            --registry.drains;
+        }
+        registry.changed.notify_all();
+    }
+};
+thread_local CleanerThreadHolder cleanerThread;
+
+void reapExitedCleanerStates(CleanerRegistry& registry) noexcept
+{
+    std::unique_lock lock(registry.mutex);
+    while (!registry.stopReaper) {
+        auto found = registry.states.end();
+        if (!registry.closing) {
+            found = std::find_if(registry.states.begin(), registry.states.end(), [](const auto& state) {
+                return state->ownerCompletion.wait_for(std::chrono::seconds(0))
+                    == std::future_status::ready;
+            });
+        }
+        if (found == registry.states.end()) {
+            registry.changed.wait_for(lock, std::chrono::milliseconds(20));
+            continue;
+        }
+        auto exited = *found;
+        registry.states.erase(found);
+        ++registry.drains;
+        lock.unlock();
+        if (exited->active.load() != 0) std::terminate();
+        cleanerDrainState = exited.get();
+        cleanerDrainAuthority = true;
+        insideExitDrain = true;
+        drainState(*exited);
+        insideExitDrain = false;
+        cleanerDrainAuthority = false;
+        cleanerDrainState = nullptr;
+        lock.lock();
+        --registry.drains;
+        registry.changed.notify_all();
+    }
+}
+}  // namespace
+
+PropertyCleaner::State& PropertyCleaner::state()
+{
+    if (cleanerDrainState) return *cleanerDrainState;
+    if (!cleanerLocalState) {
+        // The holder drains opportunistically, but state access itself uses a
+        // trivially destructible pointer retained until physical thread exit.
+        (void)&cleanerThread;
+        auto state = std::make_shared<State>();
+        state->managed = managedCleanerThread;
+        std::promise<void> completion;
+        state->ownerCompletion = completion.get_future().share();
+        completion.set_value_at_thread_exit();
+        auto& registry = cleanerRegistry();
+        std::lock_guard lock(registry.mutex);
+        // No new state may enter while finalization owns the registry. This
+        // includes public pools constructed reentrantly by a finalizer.
+        if (registry.closing)
+            throw Base::RuntimeError("property cleanup is closing");
+        registry.states.push_back(state);
+        cleanerLocalState = state.get();
+        registry.changed.notify_all();
+    }
+    return *cleanerLocalState;
+}
+
+void PropertyCleaner::beginUse(State& state)
+{
+    if (state.sealed.load() && !cleanerDrainAuthority)
+        throw Base::RuntimeError("property cleanup is closing");
+    state.active.fetch_add(1);
+    if (state.sealed.load() && !cleanerDrainAuthority) {
+        state.active.fetch_sub(1);
+        throw Base::RuntimeError("property cleanup is closing");
+    }
+}
+void PropertyCleaner::endUse(State& state) noexcept
+{ state.active.fetch_sub(1); }
+
+PropertyCleaner::PropertyCleaner(Property* p): prop(p), owner(&state())
+{
+    beginUse(*owner);
+    ++owner->guards;
+}
+PropertyCleaner::~PropertyCleaner()
+{
+    if (--owner->guards == 0) {
+        bool found = false;
+        Entry retained {nullptr, nullptr};
+        while (!owner->removed.empty()) {
+            auto entry = owner->removed.back();
+            owner->removed.pop_back();
+            if (entry.property != prop) {
+                entry.property->setContainer(nullptr);
+                delete entry.property;
+            }
+            else { found = true; retained = entry; }
+        }
+        if (found) owner->removed.push_back(retained);
+    }
+    endUse(*owner);
+}
+void PropertyCleaner::add(Property* property)
+{
+    auto& s = state();
+    beginUse(s);
+    struct Done { State& s; ~Done() { PropertyCleaner::endUse(s); } } done {s};
+    s.removed.push_back({property, PropertyCleanupBoundary::current});
+}
+
+thread_local PropertyCleanupBoundary* PropertyCleanupBoundary::current = nullptr;
+
+bool App::propertyCleanupIsQuiescent() noexcept
+{
+    return !insideExitDrain
+        && (!(cleanerDrainState ? cleanerDrainState : cleanerLocalState)
+            || (cleanerDrainState ? cleanerDrainState : cleanerLocalState)->active.load() == 0)
+        && !PropertyCleanupBoundary::current;
+}
+
+PropertyCleanupBoundary::PropertyCleanupBoundary() : previous(current)
+{
+    PropertyCleaner::beginUse(PropertyCleaner::state());
+    current = this;
+}
+
+PropertyCleanupBoundary::~PropertyCleanupBoundary() noexcept
+{
+    auto& state = PropertyCleaner::state();
+    auto& entries = state.removed;
+    if (state.guards == 0) {
+        // Remove one matching entry before deletion: finalizers can re-enter
+        // and modify the same queue, or retire another property in this job.
+        while (true) {
+            auto it = std::find_if(entries.rbegin(), entries.rend(),
+                                   [this](const auto& e) { return e.boundary == this; });
+            if (it == entries.rend()) break;
+            auto* property = it->property;
+            entries.erase(std::next(it).base());
+            property->setContainer(nullptr);
+            delete property;
+        }
+    }
+    // A nested boundary cannot drain through an active BASE guard.
+    for (auto& entry : entries) if (entry.boundary == this) entry.boundary = previous;
+    current = previous;
+    PropertyCleaner::endUse(state);
+}
+
+void App::drainRetiredPropertiesAtQuiescence() noexcept
+{
+    if (!propertyCleanupIsQuiescent()) std::terminate();
+    if (cleanerLocalState) drainState(*cleanerLocalState);
+}
+
+void App::initializeManagedPropertyCleanup(bool applicationOwned)
+{
+    managedCleanerThread = applicationOwned;
+    // Construct the holder before application TLS which may retire values.
+    (void)PropertyCleaner::state();
+}
+
+bool App::preparePropertyCleanupFinalization()
+{
+    auto& self = PropertyCleaner::state();
+    auto& registry = cleanerRegistry();
+    std::lock_guard lock(registry.mutex);
+    if (registry.closing) return false;
+    // A setter may be between aboutToSetValue and hasSetValue with no guard.
+    // Never seal a live foreign state even temporarily: its setter could have
+    // already stored a value before encountering that seal. A future marked
+    // ready means this owner's C++ thread-storage destructors have completed.
+    // Only application-owned workers are stopped and joined by shutdown.
+    for (const auto& state : registry.states) {
+        if (!state->managed && state.get() != &self
+            && (state->active.load() != 0
+                || state->ownerCompletion.wait_for(std::chrono::seconds(0))
+                    != std::future_status::ready)) {
+            return false;
+        }
+    }
+    registry.closing = true;
+    return true;
+}
+
+void App::cancelPropertyCleanupFinalization() noexcept
+{
+    auto& registry = cleanerRegistry();
+    // While admission remains closed, claim only queues whose owner's TLS
+    // completion has been signalled. Never hold the mutex across deletion.
+    while (true) {
+        std::shared_ptr<CleanerState> exited;
+        {
+            std::lock_guard lock(registry.mutex);
+            const auto found = std::find_if(registry.states.begin(), registry.states.end(),
+                [](const auto& state) {
+                    return state->ownerCompletion.wait_for(std::chrono::seconds(0))
+                        == std::future_status::ready;
+                });
+            if (found == registry.states.end()) {
+                for (const auto& state : registry.states) state->sealed.store(false);
+                registry.closing = false;
+                registry.changed.notify_all();
+                break;
+            }
+            exited = *found;
+            std::erase(registry.states, exited);
+        }
+        if (exited->active.load() != 0) std::terminate();
+        const bool previousAuthority = cleanerDrainAuthority;
+        const bool previousExitDrain = insideExitDrain;
+        cleanerDrainAuthority = true;
+        insideExitDrain = true;
+        drainState(*exited);
+        insideExitDrain = previousExitDrain;
+        cleanerDrainAuthority = previousAuthority;
+    }
+    cleanerDrainAuthority = false;
+}
+
+void App::waitForPropertyCleanupDrains()
+{
+    auto& registry = cleanerRegistry();
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (auto hook = cleanupDrainWaitHook.load()) hook();
+#endif
+    std::unique_lock lock(registry.mutex);
+    while (registry.drains != 0) {
+        registry.changed.wait_for(lock, std::chrono::milliseconds(2));
+        if (registry.drains != 0 && DocumentWouldBlock::isGuiThread()) {
+            lock.unlock();
+            MainThreadSignalConfig::serviceMarshalledTasks(std::chrono::milliseconds(2));
+            lock.lock();
+        }
+    }
+}
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void App::Internal::setCleanupDrainWaitHookForTesting(void (*hook)()) noexcept
+{
+    cleanupDrainWaitHook.store(hook);
+}
+#endif
+
+bool App::finishPropertyCleanupFinalization()
+{
+    auto& registry = cleanerRegistry();
+    {
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+        // Lane exit and cleaner completion are separate thread-exit futures;
+        // neither future's readiness implies the other is already ready.
+        // All managed owners here are application-owned and were asked to stop.
+        for (const auto& state : registry.states) {
+            if (!state->managed || state.get() == cleanerLocalState) continue;
+            while (state->ownerCompletion.wait_for(std::chrono::milliseconds(2))
+                   != std::future_status::ready) {
+                if (DocumentWouldBlock::isGuiThread())
+                    MainThreadSignalConfig::serviceMarshalledTasks(std::chrono::milliseconds(2));
+            }
+        }
+        std::unique_lock lock(registry.mutex);
+        registry.changed.wait(lock, [&] { return registry.drains == 0; });
+        // Seal before inspecting use counts, including separately owned
+        // managed workers that are not part of the Application pool.
+        for (const auto& state : registry.states) state->sealed.store(true);
+        for (const auto& state : registry.states) {
+            if (state->active.load() != 0) return false;
+        }
+    }
+    cleanerDrainAuthority = true;
+    bool pending;
+    do {
+        pending = false;
+        // closing prevents registry mutation; retained shared states remain
+        // available for cancellation until shutdown is committed.
+        for (const auto& state : registry.states) {
+            if (!state->removed.empty()) { pending = true; drainState(*state); }
+        }
+    } while (pending);
+    return true;
+}
+
+void App::stopPropertyCleanupReaper() noexcept
+{
+    auto& registry = cleanerRegistry();
+    {
+        std::lock_guard lock(registry.mutex);
+        registry.stopReaper = true;
+    }
+    registry.changed.notify_all();
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) release.emplace();
+    if (registry.reaper.joinable()) registry.reaper.join();
+}
 
 void Property::destroy(Property* p)
 {
@@ -463,6 +826,9 @@ void Property::hasSetValue()
 
 void Property::aboutToSetValue()
 {
+    auto& cleanup = PropertyCleaner::state();
+    PropertyCleaner::beginUse(cleanup);
+    struct Done { PropertyCleaner::State& s; ~Done() { PropertyCleaner::endUse(s); } } done {cleanup};
     if (father) {
         if (Document* doc = documentFromPropertyContainer(father)) {
             enforceAtomicPresentationMutationTarget(doc);

@@ -108,6 +108,9 @@ private:
     [[nodiscard]] static DocumentInstanceId allocateInstanceId();
     [[nodiscard]] static DocumentLifecycleEpoch allocateLifecycleEpoch();
 
+    // Roll back a document that never reached Application's document map.
+    void discardUnpublishedDocument(const Document& document) noexcept;
+
     [[nodiscard]] DocumentLifecycleEpoch reserveLifecycleEpoch();
     [[nodiscard]] std::optional<DocumentIdentity> advanceEpoch(
         const Document& document,
