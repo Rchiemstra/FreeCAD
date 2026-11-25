@@ -26,7 +26,8 @@ struct CollaborationServiceLifetimeGate;
  *
  * The handle never owns a document and becomes a terminal cancelled view when
  * the document closes. poll() and status() are observation-only on every thread.
- * wait() pumps coordinator work on the document owner thread only.
+ * wait() advances work on the document owner thread only. Lane-owned plans
+ * retain the lane's submission, publication and presentation lifecycle.
  */
 class AppExport RecomputeHandle
 {
@@ -46,7 +47,11 @@ public:
         std::string reason = "recompute cancelled by caller");
 
     /**
-     * Pump the coordinator until the plan is terminal or the timeout expires.
+     * Advance the recompute until terminal publication or the timeout expires.
+     *
+     * For a lane-owned command, also finish its presentation before returning a
+     * terminal result. A recursive wait from that command's submission, commit
+     * or presentation callback throws DocumentWouldBlock; use status() there.
      *
      * The timeout bounds the number of polling rounds, not the duration of one
      * round. A plan whose snapshot reports ownerThreadFeatures > 0 runs those

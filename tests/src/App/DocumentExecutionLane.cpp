@@ -5,6 +5,7 @@
 #include <App/Application.h>
 #include <App/CollaborativeOperation.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentRecomputeCoordinator.h>
@@ -24,7 +25,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
+#include <future>
+#include <functional>
 #include <optional>
 #include <map>
 #include <memory>
@@ -45,6 +50,11 @@ class DocumentExecutionLaneTestAccess
 {
 public:
     using Hook = void (*)();
+
+    static auto exchangeAdmissionHook(void (*hook)())
+    {
+        return DocumentCollaborationService::_postLifecycleAdmissionTestHook.exchange(hook);
+    }
 
     static bool isCollaborationOwnerThread(const Document& document) noexcept
     {
@@ -128,6 +138,29 @@ private:
     std::condition_variable _changed;
     std::stop_source _stopSource;
     bool _started {false};
+};
+
+// Reuse the existing lifecycle-admission hook to release preparation only
+// after RecomputeHandle::wait has entered. Other owner work cannot trigger it:
+// the callback is armed on that thread immediately around the wait call.
+struct WaitAdmissionRelease
+{
+    explicit WaitAdmissionRelease(std::function<void()> release)
+    {
+        Release = std::move(release);
+    }
+    ~WaitAdmissionRelease()
+    {
+        Release = {};
+    }
+    static void invoke()
+    {
+        auto release = std::exchange(Release, {});
+        if (release) {
+            release();
+        }
+    }
+    static inline thread_local std::function<void()> Release;
 };
 
 class LaneBlockingRecomputeStore
@@ -220,6 +253,80 @@ void waitForApplicationClosePermitted(App::DocumentExecutionLane* lane,
         std::this_thread::sleep_for(5ms);
     }
 }
+
+// A stranded owner cannot safely be detached or allowed to outlive test state.
+// Terminate this test process after the existing cleanup bound instead.
+[[noreturn]] void failStrandedOwner()
+{
+    std::fputs("Owner work did not quiesce during test cleanup; terminating process\n", stderr);
+    std::fflush(stderr);
+    std::abort();
+}
+
+template<typename T>
+class OwnerWorkCleanup
+{
+public:
+    OwnerWorkCleanup(std::shared_future<T>& result,
+                     App::DocumentExecutionLane* lane,
+                     LaneBlockingRecomputeState* blocking) noexcept
+        : _result(result), _lane(lane), _blocking(blocking)
+    {}
+
+    ~OwnerWorkCleanup()
+    {
+        finish();
+    }
+
+    void finish() noexcept
+    {
+        _blocking->release();
+        if (_result.wait_for(5s) != std::future_status::ready) {
+            failStrandedOwner();
+        }
+        // A callback may have admitted a command and returned before it ran.
+        waitForApplicationClosePermitted(_lane);
+        if (!_lane->permitsApplicationClose()) {
+            failStrandedOwner();
+        }
+    }
+
+private:
+    std::shared_future<T>& _result;
+    App::DocumentExecutionLane* _lane;
+    LaneBlockingRecomputeState* _blocking;
+};
+
+class WaiterCleanup
+{
+public:
+    WaiterCleanup(std::jthread& thread,
+                  std::future<void>& exited,
+                  LaneBlockingRecomputeState* blocking) noexcept
+        : _thread(thread), _exited(exited), _blocking(blocking)
+    {}
+
+    ~WaiterCleanup()
+    {
+        finish();
+    }
+
+    void finish() noexcept
+    {
+        _blocking->release();
+        if (_thread.joinable()) {
+            if (_exited.wait_for(5s) != std::future_status::ready) {
+                failStrandedOwner();
+            }
+            _thread.join();
+        }
+    }
+
+private:
+    std::jthread& _thread;
+    std::future<void>& _exited;
+    LaneBlockingRecomputeState* _blocking;
+};
 
 void closeDocumentAllowingLaneWait(const char* docName)
 {
@@ -348,6 +455,14 @@ protected:
     {
         if (_blocking) {
             _blocking->release();
+        }
+        auto* liveDocument = App::GetApplication().getDocument(_docName.c_str());
+        if (liveDocument && liveDocument == _doc && liveDocument->executionLane()) {
+            auto* lane = liveDocument->executionLane();
+            waitForApplicationClosePermitted(lane);
+            if (!lane->permitsApplicationClose()) {
+                failStrandedOwner();
+            }
         }
         LaneBlockingRecomputeStore::remove(_blockingToken);
         closeDocumentAllowingLaneWait(_docName.c_str());
@@ -828,27 +943,201 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitDoesNotDeadlockNonOwner)
     ASSERT_TRUE(_blocking->waitUntilStarted(5s));
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
-    const auto idSnapshot = commandHandle.status();
+    // Establish binding before starting the non-owner wait; preparation remains
+    // blocked, so the observation cannot already be terminal.
+    const auto idSnapshot = doc()->executionLane()->dispatchToOwner(
+        [commandHandle] { return commandHandle.status(); }, true, true);
     ASSERT_TRUE(idSnapshot.recompute);
     ASSERT_NE(idSnapshot.recompute->id, 0U);
     const App::DocumentRecomputeId recomputeId =
         static_cast<App::DocumentRecomputeId>(idSnapshot.recompute->id);
 
+    App::DocumentRecomputeSnapshot waited;
     std::atomic<bool> waitReturned {false};
+    std::promise<void> exited;
+    auto exitFuture = exited.get_future();
     std::jthread waiter([&] {
         App::RecomputeHandle recomputeHandle(*doc(), recomputeId);
-        static_cast<void>(recomputeHandle.wait(500ms));
+        waited = recomputeHandle.wait(500ms);
         waitReturned.store(true, std::memory_order_release);
+        exited.set_value_at_thread_exit();
     });
+    WaiterCleanup cleanup(waiter, exitFuture, _blocking.get());
 
     const auto deadline = std::chrono::steady_clock::now() + 2s;
     while (!waitReturned.load(std::memory_order_acquire)
            && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(5ms);
     }
-    EXPECT_TRUE(waitReturned.load(std::memory_order_acquire));
+    const bool returned = waitReturned.load(std::memory_order_acquire);
+    EXPECT_TRUE(returned);
+    if (returned) {
+        EXPECT_FALSE(waited.terminal());
+        EXPECT_EQ(waited.state, App::DocumentRecomputeState::Running) << waited.diagnostic;
+    }
 
+    cleanup.finish();
+    App::RecomputeHandle recomputeHandle(*doc(), recomputeId);
+    const auto completed = recomputeHandle.wait(5s);
+    EXPECT_EQ(completed.state, App::DocumentRecomputeState::Completed) << completed.diagnostic;
+    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Completed);
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitCompletesActiveCommand)
+{
+    _blocking->reset();
+    auto execution = doc()->executionHandle();
+    const auto outcome = execution.trySubmit(makeLaneBlockingRecomputeCommand());
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+    App::DocumentCommandHandle command(outcome.commandId, execution.identity());
+
+    auto entered = std::make_shared<std::promise<void>>();
+    auto waitEntered = entered->get_future();
+    struct RestoreHook
+    {
+        void (*previous)();
+        ~RestoreHook()
+        {
+            App::Internal::DocumentExecutionLaneTestAccess::exchangeAdmissionHook(previous);
+        }
+    } restore {App::Internal::DocumentExecutionLaneTestAccess::exchangeAdmissionHook(
+        &WaitAdmissionRelease::invoke)};
+    auto* owner = doc();
+    auto blocking = _blocking;
+    // The preparation is still blocked when this callable enters the dispatch
+    // drain. Only admission from inside wait() releases it.
+    auto result = owner->executionLane()->postToOwner([owner, command, entered, blocking] {
+        const auto observation = command.status();
+        if (!observation.recompute) {
+            throw std::runtime_error("active recompute has no observation");
+        }
+        const auto id = static_cast<App::DocumentRecomputeId>(observation.recompute->id);
+        if (!owner->recomputeCoordinator().status(id)) {
+            throw std::runtime_error("controlled preparation is not bound");
+        }
+        App::RecomputeHandle handle(*owner, id);
+        WaitAdmissionRelease release([blocking, entered] {
+            blocking->release();
+            entered->set_value();
+        });
+        return handle.wait(5s);
+    }).share();
+    OwnerWorkCleanup cleanup(result, owner->executionLane(), _blocking.get());
+    const auto entry = waitEntered.wait_for(5s);
+    EXPECT_EQ(entry, std::future_status::ready);
+    const auto releasedAt = std::chrono::steady_clock::now();
+    // Also release on the failure-to-enter path, before any fatal assertion.
     _blocking->release();
+    const auto promptly = result.wait_for(2s);
+    EXPECT_EQ(promptly, std::future_status::ready);
+    ASSERT_EQ(result.wait_for(5s), std::future_status::ready);
+    const auto snapshot = result.get();
+    EXPECT_LT(std::chrono::steady_clock::now() - releasedAt, 2s);
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed) << snapshot.diagnostic;
+    EXPECT_TRUE(snapshot.terminal());
+    EXPECT_EQ(snapshot.completedFeatures, 1U);
+    EXPECT_EQ(snapshot.failedFeatures, 0U);
+    const auto completed = command.status();
+    EXPECT_EQ(completed.state, App::DocumentCommandState::Completed);
+    ASSERT_TRUE(completed.recompute);
+    EXPECT_EQ(snapshot.id, completed.recompute->id);
+    // A second wait observes the retained terminal result without advancing work.
+    App::RecomputeHandle again(*owner, snapshot.id);
+    EXPECT_EQ(again.wait(0ms).state, App::DocumentRecomputeState::Completed);
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitBindsAdmittedCommand)
+{
+    auto* feature = doc()->addObject<App::FeatureTest>("PrebindingWait");
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+    const auto count = feature->ExecCount.getValue();
+    auto* owner = doc();
+    auto request = makeRecomputeCommand("prebinding-handle-wait");
+    // Submit and wait in a single owner dispatch. The enclosing threadMain
+    // cannot bind the admitted id before wait starts.
+    auto result = owner->executionLane()->postToOwner(
+        [owner, request = std::move(request)]() mutable {
+            auto* lane = owner->executionLane();
+            const auto admitted = lane->trySubmit(std::move(request));
+            if (admitted.result != App::DocumentCommandSubmitResult::Accepted) {
+                throw std::runtime_error("prebinding command admission failed");
+            }
+            const auto before = lane->commandStatus(admitted.commandId);
+            if (!before.recompute) {
+                throw std::runtime_error("admission has no recompute observation");
+            }
+            const auto id = static_cast<App::DocumentRecomputeId>(before.recompute->id);
+            EXPECT_FALSE(owner->recomputeCoordinator().status(id));
+            EXPECT_EQ(before.recompute->state, App::DocumentCommandRecomputeState::Running);
+            App::RecomputeHandle handle(*owner, id);
+            const auto snapshot = handle.wait(5s);
+            EXPECT_EQ(lane->commandStatus(admitted.commandId).state,
+                      App::DocumentCommandState::Completed);
+            return std::make_pair(
+                snapshot, App::DocumentCommandHandle(admitted.commandId, lane->identity()));
+        }).share();
+    OwnerWorkCleanup cleanup(result, owner->executionLane(), _blocking.get());
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    auto [snapshot, command] = result.get();
+    // On an unfixed build wait returns before execution; synchronize before
+    // reading live feature properties even on that failure path.
+    ASSERT_TRUE(waitForTerminal(command));
+    EXPECT_TRUE(snapshot.terminal());
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed) << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.completedFeatures, 1U);
+    EXPECT_EQ(feature->ExecCount.getValue(), count + 1);
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitRefusesCallbackReentry)
+{
+    struct Reentry
+    {
+        App::DocumentRecomputeId id {0};
+        std::atomic<int> before {0};
+        std::atomic<int> after {0};
+        void wait(App::Document& document, std::atomic<int>& rejected)
+        {
+            App::RecomputeHandle handle(document, id);
+            try {
+                static_cast<void>(handle.wait(0ms));
+                ADD_FAILURE() << "recursive wait must yield to the enclosing recompute";
+            }
+            catch (const App::DocumentWouldBlock&) {
+                ++rejected;
+            }
+        }
+    };
+    auto reentry = std::make_shared<Reentry>();
+    auto* owner = doc();
+    ::fastsignals::scoped_connection before = owner->signalBeforeRecompute.connect(
+        [owner, reentry](const App::Document&) { reentry->wait(*owner, reentry->before); });
+    ::fastsignals::scoped_connection after = owner->signalRecomputed.connect(
+        [owner, reentry](const App::Document&, const std::vector<App::DocumentObject*>&) {
+            reentry->wait(*owner, reentry->after);
+        });
+    auto request = makeRecomputeCommand("callback-reentry-wait");
+    auto result = owner->executionLane()->postToOwner(
+        [owner, reentry, request = std::move(request)]() mutable {
+            auto* lane = owner->executionLane();
+            const auto admitted = lane->trySubmit(std::move(request));
+            if (admitted.result != App::DocumentCommandSubmitResult::Accepted) {
+                throw std::runtime_error("reentry command admission failed");
+            }
+            const auto observation = lane->commandStatus(admitted.commandId);
+            if (!observation.recompute) {
+                throw std::runtime_error("reentry command has no recompute observation");
+            }
+            reentry->id = observation.recompute->id;
+            App::RecomputeHandle handle(*owner, reentry->id);
+            return handle.wait(5s);
+        }).share();
+    OwnerWorkCleanup cleanup(result, owner->executionLane(), _blocking.get());
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(result.get().state, App::DocumentRecomputeState::Completed);
+    EXPECT_EQ(reentry->before.load(), 1);
+    EXPECT_EQ(reentry->after.load(), 1);
 }
 
 TEST_F(DocumentExecutionLaneTest, StalledStatePersistsWithoutProgress)

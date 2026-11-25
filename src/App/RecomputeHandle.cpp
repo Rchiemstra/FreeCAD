@@ -170,6 +170,11 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
         if (!pinnedOwner) {
             return closedDocumentSnapshot();
         }
+        if (lane) {
+            if (auto snapshot = lane->waitForRecompute(_id, deadline)) {
+                return *snapshot;
+            }
+        }
         while (true) {
             // Pump coordinator work on the owner thread only inside wait().
             static_cast<void>(pinnedOwner->recomputeCoordinator().poll(_id));

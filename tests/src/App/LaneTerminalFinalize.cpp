@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -356,7 +358,7 @@ DocumentCommandHandle submitLaneRecompute(Document& document, const char* key)
     return DocumentCommandHandle(outcome.commandId, execution.identity());
 }
 
-DocumentCommandSnapshot waitForLaneCommand(DocumentCommandHandle& handle)
+DocumentCommandSnapshot waitForLaneCommand(const DocumentCommandHandle& handle)
 {
     const auto deadline = std::chrono::steady_clock::now() + kTimeout;
     auto snapshot = handle.status();
@@ -849,20 +851,43 @@ TEST_F(LaneTerminalFinalize, laneAndHandleWaitPublishPartialFailureOnce)
     SignalTrace trace;
     trace.watch(*document);
     PresentationProbe probe(trace.storage);
-    auto command = submitLaneRecompute(*document, "lane-and-handle-once");
-    CommandDrain drain {command};
-    const auto laneSnapshot = waitForLaneCommand(command);
-    static_cast<void>(drain);
+    struct SafeCommandDrain
+    {
+        DocumentExecutionLane* lane;
+        DocumentCommandHandle command;
+        ~SafeCommandDrain()
+        {
+            drainLaneCommand(command, "lane and handle cleanup");
+            if (!lane->permitsApplicationClose()) {
+                std::fputs("Command did not quiesce during test cleanup; terminating process\n",
+                           stderr);
+                std::fflush(stderr);
+                std::abort();
+            }
+        }
+    } drain {document->executionLane(), {}};
+    // Admit and wait in the same dispatch so the handle overlaps the active
+    // command instead of waiting until the lane has already published it.
+    const auto result = document->executionLane()->dispatchToOwner([&] {
+        drain.command = submitLaneRecompute(*document, "lane-and-handle-once");
+        auto command = drain.command;
+        const auto admission = command.status();
+        if (!admission.recompute) {
+            throw std::runtime_error("admitted recompute observation is missing");
+        }
+        RecomputeHandle handle(*document, admission.recompute->id);
+        const auto snapshot = handle.wait(std::chrono::seconds(5));
+        EXPECT_TRUE(command.status().terminal());
+        return std::make_pair(command, snapshot);
+    });
+    const auto laneSnapshot = waitForLaneCommand(result.first);
+    const auto& handleSnapshot = result.second;
     EXPECT_EQ(laneSnapshot.state, DocumentCommandState::Failed) << laneSnapshot.diagnostic;
     ASSERT_TRUE(laneSnapshot.recompute);
     ASSERT_NE(laneSnapshot.recompute->id, 0U);
-    // The lane must already have published. A following handle wait shares the
-    // one-shot claim and must not publish again. Waiting while the lane command
-    // is still active nests inside the owner pump and observes a stale snapshot.
     const int callsAfterLane = probe.calls();
-    RecomputeHandle handle(
-        *document, static_cast<DocumentRecomputeId>(laneSnapshot.recompute->id));
-    const auto handleSnapshot = handle.wait(kTimeout);
+    RecomputeHandle handle(*document, laneSnapshot.recompute->id);
+    EXPECT_EQ(handle.wait(kTimeout).state, DocumentRecomputeState::PartialFailure);
     EXPECT_EQ(handleSnapshot.state, DocumentRecomputeState::PartialFailure)
         << handleSnapshot.diagnostic;
     EXPECT_EQ(callsAfterLane, 1);

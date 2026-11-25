@@ -363,6 +363,7 @@ public:
 private:
     friend struct DocumentHandle::State;
     friend class Internal::DocumentExecutionLaneTestAccess;
+    friend class RecomputeHandle;
 
     /** True when the active command must finish before a dispatch may run. Holds _mutex. */
     [[nodiscard]] bool commandBlocksDispatchLocked(const bool allowWhileCommandActive) const
@@ -496,7 +497,12 @@ private:
     void threadMain();
     void drainDispatchQueue();
     void executeActiveCommand();
-    void executeActiveRecompute();
+    void executeActiveRecompute(
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
+    /** Owner-thread wait that leaves binding, publication and finalization with the lane. */
+    [[nodiscard]] std::optional<DocumentRecomputeSnapshot> waitForRecompute(
+        DocumentRecomputeId id, std::chrono::steady_clock::time_point deadline);
     [[nodiscard]] bool executeInstantCommand(ActiveCommand& command);
     void pumpActiveRecompute(ActiveCommand& command);
     [[nodiscard]] DocumentRecomputeSnapshot recomputeSnapshotFromObservation(
@@ -537,6 +543,9 @@ private:
     /** Thread currently inside the Close command's marshalled closeDocument(). */
     std::thread::id _marshalledCloseThread {};
 
+    // Owner-thread only. Dispatch drains are safe re-entry points; submission,
+    // coordinator polling and presentation callbacks must finish before another pump.
+    bool _advancingRecompute {false};
     std::optional<ActiveCommand> _active;
     std::unordered_map<DocumentCommandId, DocumentCommandSnapshot> _terminalSnapshots;
     /** Insertion order for _terminalSnapshots so the map can be capped. */

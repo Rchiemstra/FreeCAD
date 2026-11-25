@@ -43,6 +43,7 @@ struct RecoverySnapshotSaveOptions;
 namespace Internal
 {
 class DocumentCollaborationServiceTestAccess;
+class DocumentExecutionLaneTestAccess;
 class GenericIsolatedRecomputeAccess;
 class PreparedLabelReferenceUpdates;
 
@@ -237,6 +238,7 @@ private:
     friend class DocumentExecutionLane;
     friend class RecomputeHandle;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+    friend class Internal::DocumentExecutionLaneTestAccess;
     friend class Internal::GenericIsolatedRecomputeAccess;
     // Gui integration tests supply a serialize hook without a production GUI wait.
     friend class Gui::Test::SharedPresentationSerializeTestAccess;
