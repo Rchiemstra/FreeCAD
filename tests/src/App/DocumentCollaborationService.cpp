@@ -36,6 +36,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -197,6 +198,19 @@ public:
     {
         return service.pinDocumentAccess();
     }
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    static void failNextLifecycleOwnerInsert(bool fail)
+    {
+        DocumentCollaborationService::_failNextLifecycleOwnerInsertForTesting.store(fail);
+    }
+
+    static std::shared_ptr<CollaborationServiceLifetimeGate> lifetimeGate(
+        const DocumentCollaborationService& service)
+    {
+        return service.lifetimeGate();
+    }
+#endif
 };
 
 class DocumentStructuralCompatibilityTestAccess
@@ -894,6 +908,70 @@ private:
 
 static_assert(!std::is_constructible_v<DocumentCollaborationService, Document&>);
 static_assert(!std::is_copy_constructible_v<DocumentCollaborationService>);
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST_F(DocumentCollaborationServiceTest, lifecyclePinFailureDoesNotStrandGateOrClose)
+{
+    using Access = Internal::DocumentCollaborationServiceTestAccess;
+    auto& service = _document->collaborationService();
+    const auto gate = Access::lifetimeGate(service);
+    ASSERT_TRUE(gate);
+
+    std::size_t initialCount;
+    decltype(gate->accessOwners) initialOwners;
+    {
+        std::lock_guard lock(gate->mutex);
+        initialCount = gate->activeAccesses;
+        initialOwners = gate->accessOwners;
+        ASSERT_EQ(initialCount, 0U);
+        ASSERT_TRUE(initialOwners.empty());
+        ASSERT_EQ(initialOwners.count(std::this_thread::get_id()), 0U);
+    }
+    // On an intentionally failing candidate, repair this isolated test gate
+    // only after recording the assertion, so fixture teardown cannot hang.
+    struct RestoreTestState {
+        std::shared_ptr<Internal::CollaborationServiceLifetimeGate> gate;
+        std::size_t count;
+        decltype(gate->accessOwners) owners;
+        ~RestoreTestState()
+        {
+            Access::failNextLifecycleOwnerInsert(false);
+            Access::setPostLifecycleAdmissionHook(nullptr);
+            std::lock_guard lock(gate->mutex);
+            gate->activeAccesses = count;
+            gate->accessOwners = owners;
+            gate->changed.notify_all();
+        }
+    } restore {gate, initialCount, initialOwners};
+    const auto unchanged = [&] {
+        std::lock_guard lock(gate->mutex);
+        return gate->activeAccesses == initialCount && gate->accessOwners == initialOwners;
+    };
+
+    Access::failNextLifecycleOwnerInsert(true);
+    EXPECT_THROW(static_cast<void>(Access::pinDocumentAccess(service)), std::bad_alloc);
+    const bool allocationUnchanged = unchanged();
+    EXPECT_TRUE(allocationUnchanged);
+    if (!allocationUnchanged) return;
+
+    Access::setPostLifecycleAdmissionHook(+[] { throw std::runtime_error("pin hook failed"); });
+    EXPECT_THROW(static_cast<void>(Access::pinDocumentAccess(service)), std::runtime_error);
+    Access::setPostLifecycleAdmissionHook(nullptr);
+    const bool hookUnchanged = unchanged();
+    EXPECT_TRUE(hookUnchanged);
+    if (!hookUnchanged) return;
+
+    {
+        const auto pin = Access::pinDocumentAccess(service);
+        ASSERT_TRUE(pin);
+        std::lock_guard lock(gate->mutex);
+        EXPECT_EQ(gate->activeAccesses, initialCount + 1);
+        EXPECT_EQ(gate->accessOwners.at(std::this_thread::get_id()), 1U);
+    }
+    EXPECT_TRUE(unchanged());
+    EXPECT_TRUE(App::GetApplication().closeDocument(_documentName.c_str()));
+}
+#endif
 
 TEST_F(DocumentCollaborationServiceTest,
        idlePresentationCompatibilityHappyPathAppliesExactlyOnce)

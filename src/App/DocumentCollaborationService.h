@@ -263,6 +263,7 @@ private:
         explicit operator bool() const noexcept;
 
     private:
+        void release() noexcept;
         std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
         const Document* _document {nullptr};
         bool _pinned {false};
@@ -400,6 +401,9 @@ private:
     inline static std::atomic<AsyncTestHook> _postTakeResultTestHook {nullptr};
     inline static std::atomic<AsyncTestHook> _postCancelSessionTestHook {nullptr};
     inline static std::atomic<AsyncTestHook> _postLifecycleAdmissionTestHook {nullptr};
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    inline static std::atomic<bool> _failNextLifecycleOwnerInsertForTesting {false};
+#endif
 };
 
 }  // namespace App
