@@ -11,6 +11,10 @@ stem=$3
 set -- python3 "$script_dir/check-test-results.py" gtest --binary "$name" \
   "--filter=$filter" --executable "$binary" --log "$stem.log" "$stem.xml"
 case "$name" in
+  ViewDropDocking_tests_run)
+    # This fixture models an offscreen two-pixel window frame.
+    env QT_QPA_PLATFORM=offscreen "$@"
+    ;;
   Gui_tests_run|GuiShutdown_tests_run|*Gui*_tests_run)
     env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
       "$@"
