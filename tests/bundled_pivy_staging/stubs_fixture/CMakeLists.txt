@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.21)
+project(PivyStubFixture NONE)
+option(PIVY_GENERATE_PYI "Generate stubs" ON)
+add_library(Coin SHARED IMPORTED)
+set_target_properties(Coin PROPERTIES IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/coin-lib/libCoin.so")
+add_custom_target(pivy_coin
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/$<CONFIG>/Mod/pivy"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_BINARY_DIR}/$<CONFIG>.py" "${CMAKE_BINARY_DIR}/$<CONFIG>/Mod/pivy/_coin.fixture")
+add_custom_target(pivy)
+add_custom_target(FreeCADMainCmd)
+add_dependencies(FreeCADMainCmd pivy)
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shared" "${CMAKE_BINARY_DIR}/input/pivy")
+file(WRITE "${CMAKE_BINARY_DIR}/shared/coin.py" "from pathlib import Path\nCONFIG = Path(__file__).with_name('_coin.fixture').read_text()\n")
+file(COPY "${PIVY_SOURCE}/pivy/" DESTINATION "${CMAKE_BINARY_DIR}/input/pivy"
+    FILES_MATCHING PATTERN "*.py" PATTERN "*.pyi" PATTERN "py.typed")
+# The fixture simulates the extension and does not implement the real package API.
+file(WRITE "${CMAKE_BINARY_DIR}/input/pivy/__init__.py" "")
+foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    file(WRITE "${CMAKE_BINARY_DIR}/${config}.py" "${config}")
+endforeach()
+include("${HELPER_DIR}/StageBundledPivy.cmake")
+freecad_stage_bundled_pivy("${CMAKE_BINARY_DIR}/input/pivy" "${CMAKE_BINARY_DIR}/shared" "${CMAKE_BINARY_DIR}")
+install(DIRECTORY "${CMAKE_BINARY_DIR}/input/pivy/" DESTINATION Mod/pivy FILES_MATCHING PATTERN "*.py" PATTERN "*.pyi" PATTERN "py.typed")
+if(PIVY_GENERATE_PYI AND STUBGEN)
+    freecad_generate_bundled_pivy_stubs("${PIVY_SOURCE}" "${CMAKE_BINARY_DIR}" "${PYTHON}" "${STUBGEN}" "Mod/pivy")
+endif()

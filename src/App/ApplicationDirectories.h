@@ -53,7 +53,11 @@ namespace App {
 
         /// Given argv[0], figure out the home path. Used to initialize the AppHomePath element of
         /// the configuration map prior to instantiating this class.
-        static std::filesystem::path findHomePath(const char* sCall);
+        static std::filesystem::path findHomePath(const char* sCall, std::string* buildConfig = nullptr);
+
+        /// Recognize the marked multi-config executable layout, otherwise return an empty path.
+        static std::filesystem::path multiConfigBuildHome(const std::filesystem::path& executable,
+                                                          std::string& buildConfig);
 
         /// "Home" here is the parent directory of the actual executable file being run. It is
         /// exposed here primarily for historical compatibility reasons, and new code should almost

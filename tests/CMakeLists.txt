@@ -171,8 +171,20 @@ endforeach()
 
 # Check the normal command-line initialization, including the bundled Python binding.
 if(TARGET pivy)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES)
+        set(_bundled_pivy_package "${CMAKE_BINARY_DIR}/$<CONFIG>/Mod/pivy")
+    else()
+        set(_bundled_pivy_package "${CMAKE_BINARY_DIR}/Mod/pivy")
+    endif()
     add_test(NAME FreeCADCmd_bundled_pivy_startup
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/test_cmd_bundled_pivy_startup.py
-            $<TARGET_FILE:FreeCADMainCmd> ${CMAKE_BINARY_DIR}/Mod/pivy)
+            $<TARGET_FILE:FreeCADMainCmd> "${_bundled_pivy_package}")
+endif()
+
+# This exercises the actual executable and extensions, not just output properties.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES AND TARGET pivy AND TARGET Part)
+    add_test(NAME FreeCADCmd_multiconfig_part_pivy_imports
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/multiconfig/test_cmd_imports.py
+            $<TARGET_FILE:FreeCADMainCmd> ${CMAKE_BINARY_DIR} $<CONFIG> ${CMAKE_INSTALL_DATADIR})
 endif()

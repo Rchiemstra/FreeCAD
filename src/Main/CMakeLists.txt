@@ -89,6 +89,13 @@ target_compile_warn_error(FreeCADMainCmd)
 
 SET_BIN_DIR(FreeCADMainCmd FreeCADCmd)
 
+# This marker is build-tree-only; it is never installed.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES)
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/$<CONFIG>/bin/.freecad-build-tree"
+         CONTENT "FreeCAD multi-config build tree\n")
+endif()
+
+
 if(WIN32)
     INSTALL(TARGETS FreeCADMainCmd
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

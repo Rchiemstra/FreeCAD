@@ -122,6 +122,22 @@ private:
 namespace fs = std::filesystem;
 
 
+TEST_F(ApplicationDirectoriesTest, markedMultiConfigBuildHome)
+{
+    const auto configDir = _tempDir / "RelWithDebInfo" / "bin";
+    fs::create_directories(configDir);
+    std::string config = "stale";
+    const auto executable = configDir / "FreeCADCmd";
+    EXPECT_TRUE(App::ApplicationDirectories::multiConfigBuildHome(executable, config).empty());
+    EXPECT_TRUE(config.empty());
+    std::ofstream(configDir / ".freecad-build-tree") << "marker";
+    EXPECT_EQ(App::ApplicationDirectories::multiConfigBuildHome(executable, config).lexically_normal(),
+              (_tempDir / "").lexically_normal());
+    EXPECT_EQ(config, "RelWithDebInfo");
+    EXPECT_TRUE(App::ApplicationDirectories::multiConfigBuildHome(_tempDir / "bin" / "FreeCADCmd", config).empty());
+    EXPECT_TRUE(config.empty());
+}
+
 TEST_F(ApplicationDirectoriesTest, usingCurrentVersionConfigTrueWhenDirMatchesVersion)
 {
     // Arrange

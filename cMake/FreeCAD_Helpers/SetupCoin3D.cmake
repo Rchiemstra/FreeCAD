@@ -182,7 +182,33 @@ macro(SetupBundledCoinPivy)
         CACHE STRING "RUNPATH for bundled Pivy extension modules in FreeCAD packages" FORCE)
     set(PIVY_PACKAGE_OUTPUT_DIR "${PROJECT_BINARY_DIR}/Mod/pivy"
         CACHE PATH "Build-tree output directory for bundled Pivy" FORCE)
-    add_subdirectory("${CMAKE_SOURCE_DIR}/src/3rdParty/pivy" "${CMAKE_BINARY_DIR}/src/3rdParty/pivy")
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES)
+        option(PIVY_GENERATE_PYI "Generate .pyi stubs with mypy.stubgen when available" ON)
+        # Suppress only Pivy's shared-output command, without changing the cache.
+        function(_freecad_add_multiconfig_pivy)
+            set(PIVY_GENERATE_PYI OFF)
+            add_subdirectory("${CMAKE_SOURCE_DIR}/src/3rdParty/pivy" "${CMAKE_BINARY_DIR}/src/3rdParty/pivy")
+        endfunction()
+        _freecad_add_multiconfig_pivy()
+        include("${CMAKE_SOURCE_DIR}/cMake/FreeCAD_Helpers/StageBundledPivy.cmake")
+        freecad_stage_bundled_pivy(
+            "${CMAKE_SOURCE_DIR}/src/3rdParty/pivy/pivy"
+            "${PIVY_PACKAGE_OUTPUT_DIR}" "${PROJECT_BINARY_DIR}")
+        if (PIVY_GENERATE_PYI)
+            find_program(PIVY_STUBGEN_EXECUTABLE NAMES stubgen)
+            if (PIVY_STUBGEN_EXECUTABLE)
+                get_directory_property(_pivy_python
+                    DIRECTORY "${CMAKE_SOURCE_DIR}/src/3rdParty/pivy" DEFINITION Python_EXECUTABLE)
+                freecad_generate_bundled_pivy_stubs(
+                    "${CMAKE_SOURCE_DIR}/src/3rdParty/pivy" "${PROJECT_BINARY_DIR}"
+                    "${_pivy_python}" "${PIVY_STUBGEN_EXECUTABLE}" "${PIVY_PACKAGE_INSTALL_DIR}")
+            else ()
+                message(WARNING "stubgen is not available; Pivy .pyi stubs will not be generated")
+            endif ()
+        endif ()
+    else ()
+        add_subdirectory("${CMAKE_SOURCE_DIR}/src/3rdParty/pivy" "${CMAKE_BINARY_DIR}/src/3rdParty/pivy")
+    endif ()
     set_property(TARGET pivy_coin PROPERTY INSTALL_REMOVE_ENVIRONMENT_RPATH TRUE)
     if (NOT DEFINED PIVY_VERSION OR PIVY_VERSION STREQUAL "")
         message(FATAL_ERROR "Bundled Pivy did not define PIVY_VERSION")

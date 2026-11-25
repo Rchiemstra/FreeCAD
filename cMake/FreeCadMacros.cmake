@@ -322,6 +322,19 @@ function(SET_BIN_DIR ProjectName)
     set_target_properties(${ProjectName} PROPERTIES LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}${LIB_DIR})
     set_target_properties(${ProjectName} PROPERTIES LIBRARY_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_BINARY_DIR}${LIB_DIR})
 
+    # Linux multi-config build outputs are isolated, while install paths remain unchanged.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES)
+        foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+            string(TOUPPER "${config}" config_upper)
+            set_target_properties(${ProjectName} PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}${BIN_DIR}"
+                LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}${LIB_DIR}")
+        endforeach()
+        # The loader runs before Python can adjust its search paths. CMake also
+        # adds build RPATHs for linked third-party targets to this explicit path.
+        set_property(TARGET ${ProjectName} APPEND PROPERTY BUILD_RPATH "${CMAKE_BINARY_DIR}/$<CONFIG>/lib")
+    endif()
+
     if(WIN32)
         set_target_properties(${ProjectName} PROPERTIES DEBUG_OUTPUT_NAME ${OutputName}_d)
     elseif(RELATIVE_RPATH)
