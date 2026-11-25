@@ -37,6 +37,7 @@ add_executable(Gui_tests_run
         DockPlatformPlacement.cpp
         OverlayTitleBarDrag.cpp
         DocumentExecutionWaitTestHelpers.cpp
+        DeferredDocumentObserverDelivery.cpp
         GuiPythonGate.cpp
         # Repeated gate/observer runs must cover hooks cleared with Gui alive.
         DocumentObserverPython.cpp

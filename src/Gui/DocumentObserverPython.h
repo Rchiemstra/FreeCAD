@@ -65,6 +65,10 @@ public:
     static void installValueEventHandler();
 
 private:
+    friend class DocumentObserverPythonTestAccess;
+    friend class DocumentObserverPythonLifetimeTestAccess;
+    static void setBeforeDeferredIdentityCopyForTest(void (*hook)());
+    static std::string observerTokenForTest(PyObject* object);
     struct DeferConnectTag {};
     DocumentObserverPython(const Py::Object& obj, DeferConnectTag);
 

@@ -37,6 +37,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,6 +49,8 @@ using namespace Gui;
 
 namespace
 {
+
+thread_local void (*beforeDeferredIdentityCopyForTest)() = nullptr;
 
 struct ObserverEntry
 {
@@ -236,13 +240,18 @@ void invokeEditSlot(const Py::Object& slotCallable, const Gui::ViewProviderDocum
 }
 
 template<typename Fn>
-void admitObserverDelivery(Fn&& fn, const char* eventKind, const std::string& payloadJson)
+void admitObserverDelivery(Fn&& fn, const char* eventKind, const std::string& payloadJson,
+                           const std::string& observerToken = {})
 {
     const auto outcome = GuiPythonGate::tryAdmit(
         GuiPythonGateCallbackKind::ObserverDelivery,
         std::forward<Fn>(fn));
     if (outcome.queued()) {
+        if (!observerToken.empty() && beforeDeferredIdentityCopyForTest) {
+            beforeDeferredIdentityCopyForTest();
+        }
         GuiPythonObserverValueEvent event;
+        event.observerToken = observerToken;
         event.eventKind = eventKind;
         event.payloadJson = payloadJson;
         GuiPythonGate::enqueueObserverValueEvent(std::move(event));
@@ -272,7 +281,8 @@ void admitRegisteredObserverDelivery(
             // tryAdmit()'s existing GilTryLock scope.
         },
         eventKind,
-        payloadJson);
+        payloadJson,
+        std::to_string(registrationId));
 }
 
 }  // namespace
@@ -291,6 +301,9 @@ void DocumentObserverPython::addObserver(const Py::Object& obj)
     // Reserve capacity before connecting slots so appending the new entry
     // cannot throw or trigger observer destruction mid-mutation.
     registry.entries.reserve(registry.entries.size() + 1);
+    if (registry.nextId == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("GUI observer registration identities exhausted");
+    }
     const std::uint64_t id = registry.nextId++;
     observer->connectRegisteredSlots(id);
     registry.entries.push_back(ObserverEntry {id, std::move(observer)});
@@ -678,6 +691,20 @@ Py::Object DocumentObserverPython::callableForEventKind(std::string_view eventKi
     return Py::None();
 }
 
+void DocumentObserverPython::setBeforeDeferredIdentityCopyForTest(void (*hook)())
+{
+    beforeDeferredIdentityCopyForTest = hook;
+}
+
+std::string DocumentObserverPython::observerTokenForTest(PyObject* object)
+{
+    // Test-only access, called with the GIL held and without Python equality.
+    for (const auto& entry : observerRegistry().entries) {
+        if (entry.observer->inst.ptr() == object) return std::to_string(entry.id);
+    }
+    return {};
+}
+
 void DocumentObserverPython::installValueEventHandler()
 {
     GuiPythonGate::setObserverValueEventHandler(
@@ -694,27 +721,20 @@ void DocumentObserverPython::deliverDeferredValueEvent(const GuiPythonObserverVa
         return;
     }
 
+    if (event.observerToken.empty()) {
+        return;
+    }
     auto& registry = observerRegistry();
-    std::vector<std::uint64_t> candidateIds;
-    candidateIds.reserve(registry.entries.size());
-    for (const auto& entry : registry.entries) {
-        candidateIds.push_back(entry.id);
+    const auto it = std::find_if(registry.entries.begin(), registry.entries.end(),
+        [&event](const ObserverEntry& entry) {
+            return std::to_string(entry.id) == event.observerToken;
+        });
+    if (it == registry.entries.end()) {
+        return;
     }
-
-    for (const std::uint64_t registrationId : candidateIds) {
-        if (!Py_IsInitialized() || !PyGILState_Check()) {
-            break;
-        }
-        std::shared_ptr<DocumentObserverPython> observer =
-            findRegisteredObserver(registrationId);
-        if (!observer) {
-            continue;
-        }
-        observer->deliverValueEvent(event);
-        // `observer` drops here under the active GIL with no iterators into
-        // registry.entries held, so self-removal teardown and any Python
-        // __del__ finalizers run safely before the next registration lookup.
-    }
+    // Retain the recipient across Python callbacks, but no vector iterator.
+    std::shared_ptr<DocumentObserverPython> observer = it->observer;
+    observer->deliverValueEvent(event);
 }
 
 void DocumentObserverPython::deliverValueEvent(const GuiPythonObserverValueEvent& event)

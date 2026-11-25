@@ -39,6 +39,15 @@
 
 using namespace std::chrono_literals;
 
+namespace Gui {
+class DocumentObserverPythonLifetimeTestAccess
+{
+public:
+    static std::string token(PyObject* object)
+    { return DocumentObserverPython::observerTokenForTest(object); }
+};
+}
+
 namespace
 {
 
@@ -240,9 +249,11 @@ std::string fetchPythonError()
 
 Gui::GuiPythonObserverValueEvent makeCreatedObjectEvent(
     const std::string& documentName,
-    const std::string& objectName)
+    const std::string& objectName,
+    const std::string& token)
 {
     Gui::GuiPythonObserverValueEvent event;
+    event.observerToken = token;
     event.eventKind = "CreatedObject";
     event.payloadJson = std::string(R"({"document":")") + documentName + R"(","object":")"
         + objectName + R"("})";
@@ -425,6 +436,35 @@ protected:
         }
     }
 
+    std::string tokenFor(const char* key, bool weak = false)
+    {
+        Base::PyGILStateLocker gil;
+        Py::Object object = _ns->getItem(key);
+        if (weak) {
+            Py::Callable ref(object);
+            object = ref.apply(Py::Tuple());
+        }
+        const auto token = Gui::DocumentObserverPythonLifetimeTestAccess::token(object.ptr());
+        EXPECT_FALSE(token.empty()) << key;
+        return token;
+    }
+
+    void enqueueFor(const std::string& object, const std::string& token)
+    {
+        Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, object, token));
+    }
+
+    std::size_t pumpCount(std::size_t count)
+    {
+        std::size_t processed = 0;
+        while (processed < count) {
+            const auto one = pumpOneWithinDeadline();
+            if (!one) break;
+            processed += one;
+        }
+        return processed;
+    }
+
     // Caller must hold the GIL.
     EventLog readLogAndClear(const char* key = "log")
     {
@@ -518,8 +558,13 @@ TEST_F(GuiDocumentObserverPythonTest, DeferredDeliveryHandlesRemoveOtherSelfRemo
     // Event 1: A runs, removes B, removes itself, adds C + 64 padding observers
     // (which do not implement slotCreatedObject). Eligibility for Event 1: A and
     // D receive Event 1; removed B and newly added C do not.
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "FirstObj"));
-    EXPECT_EQ(pumpOneWithinDeadline(), 1U);
+    const auto a = tokenFor("obs_a");
+    const auto b = tokenFor("obs_b");
+    const auto d = tokenFor("obs_d");
+    enqueueFor("FirstObj", a);
+    enqueueFor("FirstObj", b);
+    enqueueFor("FirstObj", d);
+    EXPECT_EQ(pumpCount(3), 3U);
 
     EventLog firstEventLog;
     {
@@ -534,8 +579,9 @@ TEST_F(GuiDocumentObserverPythonTest, DeferredDeliveryHandlesRemoveOtherSelfRemo
     EXPECT_EQ(firstEventLog, expectedFirst);
 
     // Event 2: A and B remain ineligible; D and C are eligible and receive Event 2.
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "SecondObj"));
-    EXPECT_EQ(pumpOneWithinDeadline(), 1U);
+    enqueueFor("SecondObj", tokenFor("obs_d"));
+    enqueueFor("SecondObj", tokenFor("obs_c"));
+    EXPECT_EQ(pumpCount(2), 2U);
 
     EventLog secondEventLog;
     {
@@ -629,8 +675,15 @@ TEST_F(
     // and raises. The C++ wrapper must stay alive past A-after-self-remove and
     // exception reporting, then destroy before D runs; its __del__ finalizer
     // safely removes E and adds F.
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "FirstObj"));
-    EXPECT_EQ(pumpOneWithinDeadline(), 1U);
+    const auto a = tokenFor("weak_a", true);
+    const auto b = tokenFor("obs_b");
+    const auto d = tokenFor("obs_d");
+    const auto e = tokenFor("obs_e");
+    enqueueFor("FirstObj", a);
+    enqueueFor("FirstObj", b);
+    enqueueFor("FirstObj", d);
+    enqueueFor("FirstObj", e);
+    EXPECT_EQ(pumpCount(4), 4U);
 
     EventLog firstEventLog;
     bool tracebackRetainsA = false;
@@ -703,8 +756,10 @@ TEST_F(
 
     // Event 2: D, re-registered B, and finalizer-added F receive Event 2; removed
     // A and finalizer-removed E do not.
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "SecondObj"));
-    EXPECT_EQ(pumpOneWithinDeadline(), 1U);
+    enqueueFor("SecondObj", tokenFor("obs_d"));
+    enqueueFor("SecondObj", tokenFor("obs_b"));
+    enqueueFor("SecondObj", tokenFor("obs_f"));
+    EXPECT_EQ(pumpCount(3), 3U);
 
     EventLog secondEventLog;
     {
@@ -776,13 +831,24 @@ TEST_F(GuiDocumentObserverPythonTest, DeferredRecursiveDeliveryHonorsImmediateRe
             "Gui.addDocumentObserver(obs_d)\n"));
     }
 
-    // Queue Event 1 followed by Event 2. During Event 1, A removes B, removes itself,
-    // adds C, and recursively pumps Event 2. Event 2 must deliver to D and C only
-    // (never re-entering removed A or B), while outer Event 1 keeps A alive through
-    // A-exit, skips removed B, delivers to D, and skips C.
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "FirstObj"));
-    Gui::GuiPythonGate::enqueueObserverValueEvent(makeCreatedObjectEvent(_docName, "SecondObj"));
+    // Interleave targeted copies from two already-emitted signals. A removes
+    // itself and B, adds C and recursively pumps D's second-event copy. C must
+    // not inherit either earlier event; stale A/B copies are skipped.
+    const auto a = tokenFor("obs_a");
+    const auto b = tokenFor("obs_b");
+    const auto d = tokenFor("obs_d");
+    enqueueFor("FirstObj", a);
+    enqueueFor("SecondObj", d);
+    enqueueFor("FirstObj", b);
+    enqueueFor("SecondObj", a);
+    enqueueFor("SecondObj", b);
+    enqueueFor("FirstObj", d);
     EXPECT_EQ(pumpOneWithinDeadline(), 1U);
+    EXPECT_EQ(pumpCount(4), 4U);
+    // A later signal does include C, which was registered by A.
+    enqueueFor("FirstObj", tokenFor("obs_d"));
+    enqueueFor("FirstObj", tokenFor("obs_c"));
+    EXPECT_EQ(pumpCount(2), 2U);
 
     EventLog combinedLog;
     long recursivePumped = 0;
@@ -795,9 +861,10 @@ TEST_F(GuiDocumentObserverPythonTest, DeferredRecursiveDeliveryHonorsImmediateRe
     const EventLog expected {
         {"A-enter", "FirstObj"},
         {"D", "SecondObj"},
-        {"C", "SecondObj"},
         {"A-exit", "FirstObj"},
         {"D", "FirstObj"},
+        {"D", "FirstObj"},
+        {"C", "FirstObj"},
     };
     EXPECT_EQ(combinedLog, expected);
 }
