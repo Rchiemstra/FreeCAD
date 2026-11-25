@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from Base.Metadata import constmethod
+from Base.Metadata import constmethod, typing_only
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 
 if TYPE_CHECKING:
     from Part import Feature as _PartFeature
+    from FreeCAD import _CompatibilityMutationResult, _CompatibilityMutationWaitHandle
 
 
 class Document(PropertyContainer):
@@ -377,23 +378,51 @@ class Document(PropertyContainer):
         """
         ...
 
-    def commitCompatibilityMutationAsync(
-        self,
-        callback: Callable[[], object],
-        /,
-        *,
-        structural: bool = False,
-        recompute: bool = True,
-        postcondition: Callable[[], object] | None = None,
-        object_name: str | None = None,
-        label: str | None = None,
-    ) -> DocumentCommandHandle:
-        """Submit one compatibility mutation without waiting.
+    if TYPE_CHECKING:
+        @typing_only
+        def commitCompatibilityMutationAsync(
+            self,
+            callback: Callable[[], object],
+            /,
+            *,
+            structural: bool = False,
+            recompute: bool = True,
+            postcondition: Callable[[], object] | None = None,
+            object_name: str | None = None,
+            label: str | None = None,
+        ) -> _CompatibilityMutationResult | _CompatibilityMutationWaitHandle:
+            """Submit a mutation and return its result or a foreign-thread wait handle.
 
-        Raises when the callback cannot be encoded as a pointer-free document command.
-        ``label`` names the undo transaction, as for commitCompatibilityMutation.
-        """
-        ...
+            For an unmodified return value, test ``"status" not in result``
+            for the wait handle and ``"wait" not in result`` for the immediate
+            result. Both guards narrow in mypy and pyright. Do not mutate either
+            dictionary before the checks.
+
+            The wait handle also represents dispatch rejection; its state does not
+            guarantee acceptance. Call wait off the GUI thread, with an optional
+            positional timeout in seconds, to retrieve the result. A timeout raises
+            TimeoutError without consuming the result; retrieval consumes it once.
+            Callback and postcondition exceptions propagate unless rollback failed.
+            """
+            ...
+    else:
+        def commitCompatibilityMutationAsync(
+            self,
+            callback: Callable[[], object],
+            /,
+            *,
+            structural: bool = False,
+            recompute: bool = True,
+            postcondition: Callable[[], object] | None = None,
+            object_name: str | None = None,
+            label: str | None = None,
+        ) -> DocumentCommandHandle:
+            """Submit one compatibility mutation without waiting.
+
+            Raises when the callback cannot be encoded as a pointer-free document command.
+            ``label`` names the undo transaction, as for commitCompatibilityMutation.
+            """
+            ...
 
     def cancelEdit(
         self,
