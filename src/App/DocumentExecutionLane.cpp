@@ -1593,6 +1593,7 @@ DocumentRecomputeSnapshot DocumentExecutionLane::recomputeSnapshotFromObservatio
     snapshot.completedFeatures = observation.completedFeatures;
     snapshot.failedFeatures = observation.failedFeatures;
     snapshot.totalFeatures = observation.totalFeatures;
+    snapshot.ownerThreadFeatures = observation.ownerThreadFeatures;
     snapshot.progress = observation.progress;
     snapshot.diagnostic = observation.diagnostic;
     snapshot.features.reserve(observation.features.size());
@@ -1603,6 +1604,7 @@ DocumentRecomputeSnapshot DocumentExecutionLane::recomputeSnapshotFromObservatio
             static_cast<DocumentRecomputeFeatureState>(static_cast<int>(feature.state));
         copied.diagnostic = feature.diagnostic;
         copied.executed = feature.executed;
+        copied.ownerThreadExecution = feature.ownerThreadExecution;
         snapshot.features.push_back(std::move(copied));
     }
     return snapshot;
@@ -1618,6 +1620,7 @@ DocumentCommandRecomputeObservation DocumentExecutionLane::makeRecomputeObservat
     observation.completedFeatures = recompute.completedFeatures;
     observation.failedFeatures = recompute.failedFeatures;
     observation.totalFeatures = recompute.totalFeatures;
+    observation.ownerThreadFeatures = recompute.ownerThreadFeatures;
     observation.progress = recompute.progress;
     observation.diagnostic = recompute.diagnostic;
     observation.features.reserve(recompute.features.size());
@@ -1628,6 +1631,7 @@ DocumentCommandRecomputeObservation DocumentExecutionLane::makeRecomputeObservat
             static_cast<int>(feature.state));
         copied.diagnostic = feature.diagnostic;
         copied.executed = feature.executed;
+        copied.ownerThreadExecution = feature.ownerThreadExecution;
         observation.features.push_back(std::move(copied));
     }
     return observation;
