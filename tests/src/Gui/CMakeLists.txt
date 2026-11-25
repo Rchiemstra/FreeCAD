@@ -67,6 +67,7 @@ add_executable(Gui_tests_run
         WindowLayout.cpp
         ViewProviderDoubleClick.cpp
         NativeGesturePinchTest.cpp
+        NavigationAnimator.cpp
         SoTransformDragger.cpp
         NavigationStylePinchTest.cpp
         NavigationStyleWheelTest.cpp

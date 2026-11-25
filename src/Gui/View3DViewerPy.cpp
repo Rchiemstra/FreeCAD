@@ -225,51 +225,92 @@ Py::Object View3DInventorViewerPy::repr()
 }
 
 View3DInventorViewerPy::method_varargs_handler View3DInventorViewerPy::pycxx_handler = nullptr;
+View3DInventorViewerPy::method_varargs_handler View3DInventorViewerPy::pycxx_noargs_handler = nullptr;
 View3DInventorViewerPy::method_keyword_handler View3DInventorViewerPy::pycxx_keyword_handler = nullptr;
 
-PyObject* View3DInventorViewerPy::method_varargs_ext_handler(
-    PyObject* _self_and_name_tuple,
-    PyObject* _args
-)
+namespace
+{
+// PyCFunction callbacks must never let a C++ exception escape into CPython.
+// PyCXX normally catches its own exceptions in the inner dispatcher; retain
+// any active Python error if one reaches this outer boundary as well.
+template<typename Fn>
+PyObject* invokeViewerPythonMethod(Fn&& fn) noexcept
 {
     try {
-        return pycxx_handler(_self_and_name_tuple, _args);
+        return fn();
+    }
+    catch (const Py::BaseException&) {
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_SystemError, "PyCXX method failed without a Python error");
+        }
     }
     catch (const Base::Exception& e) {
-        throw Py::RuntimeError(e.what());
+        PyErr_SetString(PyExc_RuntimeError, e.what());
     }
     catch (const std::exception& e) {
-        throw Py::RuntimeError(e.what());
-    }
-    catch (const Py::Exception&) {
-        throw;
+        PyErr_SetString(PyExc_RuntimeError, e.what());
     }
     catch (...) {
-        throw Py::RuntimeError("Unknown C++ exception");
+        PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception");
     }
+    return nullptr;
+}
+}  // namespace
+
+bool View3DInventorViewerPy::methodTargetAlive(PyObject* selfAndName) noexcept
+{
+    // PyCXX binds a two-element tuple: the Python viewer wrapper and a
+    // capsule containing its MethodDefExt. The callable owns that tuple even
+    // after Qt destroys the viewer and marks the wrapper invalid.
+    if (!selfAndName || !PyTuple_Check(selfAndName) || PyTuple_GET_SIZE(selfAndName) != 2) {
+        PyErr_SetString(PyExc_SystemError, "Invalid viewer method binding");
+        return false;
+    }
+    PyObject* wrapped = PyTuple_GET_ITEM(selfAndName, 0);
+    PyObject* method = PyTuple_GET_ITEM(selfAndName, 1);
+    if (!PyObject_TypeCheck(wrapped, type_object()) || !PyCapsule_IsValid(method, nullptr)) {
+        PyErr_SetString(PyExc_SystemError, "Invalid viewer method binding");
+        return false;
+    }
+    if (!static_cast<View3DInventorViewerPy*>(wrapped)->_viewer) {
+        PyErr_SetString(PyExc_RuntimeError, "Cannot call method of deleted viewer");
+        return false;
+    }
+    return true;
+}
+
+PyObject* View3DInventorViewerPy::method_noargs_ext_handler(
+    PyObject* selfAndName,
+    PyObject* args
+)
+{
+    return invokeViewerPythonMethod([&]() -> PyObject* {
+        if (!methodTargetAlive(selfAndName)) return nullptr;
+        return pycxx_noargs_handler(selfAndName, args);
+    });
+}
+
+PyObject* View3DInventorViewerPy::method_varargs_ext_handler(
+    PyObject* selfAndName,
+    PyObject* args
+)
+{
+    return invokeViewerPythonMethod([&]() -> PyObject* {
+        if (!methodTargetAlive(selfAndName)) return nullptr;
+        return pycxx_handler(selfAndName, args);
+    });
 }
 
 PyObject* View3DInventorViewerPy::method_keyword_ext_handler(
-    PyObject* _self_and_name_tuple,
-    PyObject* _args,
-    PyObject* _keywords
+    PyObject* selfAndName,
+    PyObject* args,
+    PyObject* keywords
 )
 {
-    try {
-        return pycxx_keyword_handler(_self_and_name_tuple, _args, _keywords);
-    }
-    catch (const Base::Exception& e) {
-        throw Py::RuntimeError(e.what());
-    }
-    catch (const std::exception& e) {
-        throw Py::RuntimeError(e.what());
-    }
-    catch (const Py::Exception&) {
-        throw;
-    }
-    catch (...) {
-        throw Py::RuntimeError("Unknown C++ exception");
-    }
+    return invokeViewerPythonMethod([&]() -> PyObject* {
+        if (!methodTargetAlive(selfAndName)) return nullptr;
+        return pycxx_keyword_handler(selfAndName, args, keywords);
+    });
 }
 
 Py::Object View3DInventorViewerPy::getattr(const char* attr)
@@ -294,7 +335,13 @@ Py::Object View3DInventorViewerPy::getattr(const char* attr)
                     reinterpret_cast<void (*)()>(method_keyword_ext_handler)
                 );
             }
-            else {
+            else if (op->m_ml->ml_flags & METH_NOARGS) {
+                if (!pycxx_noargs_handler) {
+                    pycxx_noargs_handler = op->m_ml->ml_meth;
+                }
+                op->m_ml->ml_meth = method_noargs_ext_handler;
+            }
+            else if (op->m_ml->ml_flags & METH_VARARGS) {
                 if (!pycxx_handler) {
                     pycxx_handler = op->m_ml->ml_meth;
                 }
