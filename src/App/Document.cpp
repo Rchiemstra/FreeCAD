@@ -7620,10 +7620,10 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         throw Base::RuntimeError("document recompute is blocked during native spreadsheet cache refresh");
     }
 
-    const auto submitEmpty = [this] {
+    const auto submitEmpty = [this, admissionId] {
         DocumentRecomputeRequest request;
         request.coalescingKey = "empty-document-recompute";
-        const auto id = recomputeCoordinator().submit(std::move(request));
+        const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
         return std::make_unique<RecomputeHandle>(*this, id);
     };
 
