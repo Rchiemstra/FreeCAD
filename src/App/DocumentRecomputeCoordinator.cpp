@@ -271,6 +271,9 @@ DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
     }
 }
 
+std::atomic<DocumentRecomputeCoordinator::IdAllocationTestHook>
+    DocumentRecomputeCoordinator::_idAllocationTestHook {nullptr};
+
 DocumentRecomputeId DocumentRecomputeCoordinator::reserveAdmissionId()
 {
     std::lock_guard stateLock(_stateMutex);
@@ -317,21 +320,30 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(
             }
         }
 
-        if (admissionId != 0) {
-            std::lock_guard stateLock(_stateMutex);
-            if (_jobs.contains(admissionId)) {
-                throw std::invalid_argument("admission recompute id is already in use");
+        {
+            // Admission reservations use this same mutex without the operation lock.
+            std::unique_lock allocationLock(_stateMutex);
+            if (admissionId != 0) {
+                if (_jobs.contains(admissionId)) {
+                    throw std::invalid_argument("admission recompute id is already in use");
+                }
+                if (const auto hook = _idAllocationTestHook.load(std::memory_order_acquire)) {
+                    hook(*this, allocationLock, admissionId);
+                }
+                admittedId = admissionId;
+                if (admittedId >= _nextId) {
+                    _nextId = admittedId + 1;
+                }
             }
-            admittedId = admissionId;
-            if (admittedId >= _nextId) {
-                _nextId = admittedId + 1;
+            else {
+                if (const auto hook = _idAllocationTestHook.load(std::memory_order_acquire)) {
+                    hook(*this, allocationLock, admissionId);
+                }
+                if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+                    throw std::overflow_error("document recompute id space exhausted");
+                }
+                admittedId = _nextId++;
             }
-        }
-        else {
-            if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
-                throw std::overflow_error("document recompute id space exhausted");
-            }
-            admittedId = _nextId++;
         }
 
         std::string sessionId;
