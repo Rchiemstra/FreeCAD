@@ -696,5 +696,114 @@ class CiLogsCorpusTests(unittest.TestCase):
         self.assertIn("log-gate: FAIL", res.stderr)
 
 
+
+class FemUnattributedDiagnosticsTests(unittest.TestCase):
+    """Unstructured runner output cannot authorize a per-test exemption."""
+
+    names = (
+        "test_backslash_traversal_is_rejected",
+        "test_deep_traversal_is_rejected",
+        "test_forward_slash_traversal_is_rejected",
+        "test_legitimate_dataset_survives_a_round_trip",
+        "test_mixed_entries_document_still_opens",
+    )
+    cls = "femtest.app.test_security.TestPostDataObjectSecurity."
+    preamble = "2026-11-25 03:19:40.737 ( 739.608s) [ 72D4C30139C0] vtkReader.cxx:371 "
+    file = preamble + "ERR| vtkXMLMultiBlockDataReader (0x123): Error opening file /private/vtk_extract_datadir/datafile.vtm"
+    pipe = preamble + "ERR| vtkCompositeDataPipeline (0x123): Algorithm vtkXMLMultiBlockDataReader (0x123) returned failure for request: vtkInformation (0x123)"
+    warn = preamble + "WARN| vtkUnstructuredGrid (0x123): Attempted to ShallowCopy from null."
+    parser = preamble + "ERR| vtkXMLDataParser (0x123): Error parsing XML in stream at line 1, column 0, byte index 0: syntax error"
+    reader = preamble + "ERR| vtkXMLMultiBlockDataReader (0x123): Error parsing input file.  ReadXMLInformation aborting."
+
+    def run_gate(self, lines, baseline=BASELINE_PATH):
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "integration.log"
+            log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(CHECKER_PATH), "--format", "integration",
+                 "--baseline", str(baseline), str(log)], capture_output=True, text=True,
+            )
+
+    def records(self):
+        seq = [[self.file, self.pipe, self.warn]] * 3 + [[], [self.parser, self.reader, self.pipe, self.warn]]
+        result = []
+        for name, diagnostics in zip(self.names, seq):
+            result += [f"{name} ({self.cls}{name}) ...", *diagnostics, "ok"]
+        return result + ["test_next (Other.Test.test_next) ... ok"]
+
+    def test_untrusted_fixture_output_and_boundary_substitutions_fail(self):
+        records = self.records()
+        # Each mutation still includes the unrecognized spaced pipeline signature.
+        first_ok = records.index("ok")
+        cases = {
+            "ordinary": records,
+            "unrelated extra": records[:1] + ["Coin error: synthetic unrelated error"] + records[1:],
+            "missing expected": [x for i, x in enumerate(records) if i != 1],
+            "after explicit ok": records[:1] + ["ok"] + records[1:first_ok] + records[first_ok + 1:],
+            "next test": records[:1] + ["test_next (Other.Test.test_next) ..."] + records[1:],
+            "glued unknown test": records[:1] + ["buffered output test_other (Other.Test.test_other) ..."] + records[1:],
+            "another FEM module": records[:1] + ["test_other (femtest.other.Test.test_other) ..."] + records[1:],
+        }
+        for name, lines in cases.items():
+            with self.subTest(name=name):
+                result = self.run_gate(lines)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("log-gate: FAIL", result.stderr)
+                self.assertIn("vtkCompositeDataPipeline", result.stderr)
+        result = self.run_gate(records)
+        self.assertIn("matched=13", result.stderr)
+        self.assertIn("actual=0, baseline=6", result.stdout)
+
+    def test_existing_file_allowance_keeps_counts_and_ratchet_note(self):
+        lines = ["test_one (femtest.other.Test.test_one) ..."] + [self.file.replace("/private/", "/tmp/")] * 3 + ["ok"]
+        result = self.run_gate(lines)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("matched=3", result.stdout)
+        self.assertIn("actual=3, baseline=6", result.stdout)
+
+    def test_diagnostic_outside_test_is_still_scanned(self):
+        header = f"{self.names[0]} ({self.cls}{self.names[0]}) ..."
+        for boundary in ("ok", "test_next (Other.Test.test_next) ...",
+                         "buffered output test_other (Other.Test.test_other) ...",
+                         "test_other (femtest.other.Test.test_other) ..."):
+            with self.subTest(boundary=boundary):
+                result = self.run_gate([header, boundary, self.pipe])
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("matched=1", result.stderr)
+                self.assertIn("vtkCompositeDataPipeline", result.stderr)
+
+    def test_other_module_spaced_pipeline_uses_its_own_baseline(self):
+        signature = checker.extract_signature(self.pipe)
+        with tempfile.TemporaryDirectory() as temp:
+            baseline = Path(temp) / "baseline.json"
+            baseline.write_text(json.dumps({"schema_version": 1, "modules": {"other": {signature: 1}}}))
+            result = self.run_gate(["test_one (other.Test.test_one) ...", self.pipe, "ok"], baseline)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("matched=1", result.stdout)
+
+    @unittest.skipUnless(os.environ.get("FREECAD_PR200_ARCHIVED_LOG"), "archived PR200 log not configured")
+    def test_archived_pr200_retains_failure_and_all_diagnostics(self):
+        log = Path(os.environ["FREECAD_PR200_ARCHIVED_LOG"])
+        result = subprocess.run(
+            [sys.executable, str(CHECKER_PATH), "--format", "integration", str(log)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("matched=15", result.stderr)
+        self.assertIn("failures=2", result.stderr)
+        self.assertIn("vtkCompositeDataPipeline", result.stderr)
+        self.assertIn("Error opening file", result.stderr)
+
+    @unittest.skipUnless(os.environ.get("FREECAD_CLEAN_INTEGRATION_LOG"), "clean integration log not configured")
+    def test_clean_unaffected_integration_log(self):
+        log = Path(os.environ["FREECAD_CLEAN_INTEGRATION_LOG"])
+        result = subprocess.run(
+            [sys.executable, str(CHECKER_PATH), "--format", "integration", str(log)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("log-gate: PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
