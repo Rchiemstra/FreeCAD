@@ -21,6 +21,7 @@
 #include <src/App/InitApplication.h>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <algorithm>
@@ -30,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <stop_token>
 #include <string_view>
 #include <thread>
@@ -404,6 +406,73 @@ protected:
     App::Document* _doc {};
     std::shared_ptr<LaneBlockingRecomputeState> _blocking;
 };
+
+TEST_F(DocumentExecutionLaneTest, ResultTransferExceptionReachesFutureAndLaneContinues)
+{
+    struct ThrowOnPromiseMove
+    {
+        int moves {0};
+        ThrowOnPromiseMove() = default;
+        ThrowOnPromiseMove(const ThrowOnPromiseMove&) = delete;
+        ThrowOnPromiseMove(ThrowOnPromiseMove&& other)
+            : moves(other.moves + 1)
+        {
+            if (moves == 2) {
+                throw std::runtime_error("move into promise");
+            }
+        }
+    };
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    auto failed = lane->postToOwner([] { return ThrowOnPromiseMove {}; });
+    auto next = lane->postToOwner([] { return 42; });
+    ASSERT_EQ(failed.wait_for(5s), std::future_status::ready);
+    EXPECT_THROW(static_cast<void>(failed.get()), std::runtime_error);
+    ASSERT_EQ(next.wait_for(5s), std::future_status::ready);
+    EXPECT_EQ(next.get(), 42);
+}
+
+TEST_F(DocumentExecutionLaneTest, DispatchPreservesCallableQualifiersOnOwnedCopy)
+{
+    struct Qualified
+    {
+        int operator()() & { return 11; }
+        long operator()() const & { return 22; }
+        int operator()() && { return 33; }
+        long operator()() const && { return 44; }
+    };
+    struct MoveOnly
+    {
+        std::unique_ptr<int> value;
+        int operator()() && { return *value; }
+    };
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    Qualified mutableFn;
+    const Qualified constFn;
+    EXPECT_EQ(lane->postToOwner(mutableFn).get(), 11);
+    EXPECT_EQ(lane->postToOwner(constFn).get(), 22);
+    EXPECT_EQ(lane->postToOwner(Qualified {}).get(), 33);
+    EXPECT_EQ(lane->postToOwner(std::move(constFn)).get(), 44);
+    EXPECT_EQ(lane->postToOwner(MoveOnly {std::make_unique<int>(44)}).get(), 44);
+    EXPECT_EQ(lane->dispatchToOwner(mutableFn), 11);
+    EXPECT_EQ(lane->dispatchToOwner(constFn), 22);
+    EXPECT_EQ(lane->dispatchToOwner(Qualified {}), 33);
+    EXPECT_EQ(lane->dispatchToOwner(std::move(constFn)), 44);
+    auto ownerResults = lane->postToOwner([lane] {
+        Qualified ownerMutable;
+        const Qualified ownerConst;
+        return std::array<long, 4> {lane->dispatchToOwner(ownerMutable),
+                                    lane->dispatchToOwner(ownerConst),
+                                    lane->dispatchToOwner(Qualified {}),
+                                    lane->dispatchToOwner(std::move(ownerConst))};
+    });
+    const auto results = ownerResults.get();
+    EXPECT_EQ(results[0], 11);
+    EXPECT_EQ(results[1], 22);
+    EXPECT_EQ(results[2], 33);
+    EXPECT_EQ(results[3], 44);
+}
 
 TEST_F(DocumentExecutionLaneTest, OwnerThreadIsLaneThread)
 {

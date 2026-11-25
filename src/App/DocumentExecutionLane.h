@@ -177,6 +177,8 @@ public:
      * owner thread runs the callable as soon as it is free. Throws
      * DocumentWouldBlock if the lane is shutting down, or if an active model
      * command prevents dispatch and allowWhileCommandActive is false.
+     * The lane owns a decayed copy (or moved value) of the callable, invoked
+     * with the original argument's const/volatile and lvalue/rvalue qualifiers.
      */
     template<typename Fn>
     [[nodiscard]] auto postToOwner(Fn&& fn, const bool allowWhileCommandActive = true)
@@ -222,6 +224,8 @@ public:
      * When \p releaseGilWhileWaiting is true, releases the GIL
      * for the wait if this thread holds it (see PyGILState_Check()); the GUI
      * thread always releases it so owner-thread Python can run.
+     * Off the owner thread the lane owns a decayed copy (or moved value) of
+     * the callable, invoked with the argument's original cv/ref qualifiers.
      */
     template<typename Fn>
     auto dispatchToOwner(Fn&& fn,
@@ -384,7 +388,14 @@ private:
     ) -> std::pair<std::future<std::invoke_result_t<Fn>>, std::function<void(const std::function<void()>&)>>
     {
         using Result = std::invoke_result_t<Fn>;
-        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        using StoredFn = std::decay_t<Fn>;
+        using ConstFn = std::conditional_t<std::is_const_v<std::remove_reference_t<Fn>>,
+                                           const StoredFn, StoredFn>;
+        using QualifiedFn = std::conditional_t<std::is_volatile_v<std::remove_reference_t<Fn>>,
+                                               volatile ConstFn, ConstFn>;
+        using Invocation = std::conditional_t<std::is_lvalue_reference_v<Fn>,
+                                              QualifiedFn&, QualifiedFn&&>;
+        auto sharedFn = std::make_shared<StoredFn>(std::forward<Fn>(fn));
         auto promise = std::make_shared<std::promise<Result>>();
         auto future = promise->get_future();
         std::function<void(const std::function<void()>&)> task =
@@ -392,7 +403,7 @@ private:
                 std::exception_ptr failure;
                 if constexpr (std::is_void_v<Result>) {
                     try {
-                        (*sharedFn)();
+                        std::invoke(static_cast<Invocation>(*sharedFn));
                     }
                     catch (...) {
                         failure = std::current_exception();
@@ -409,7 +420,7 @@ private:
                 else if constexpr (std::is_reference_v<Result>) {
                     std::remove_reference_t<Result>* resultPtr = nullptr;
                     try {
-                        resultPtr = std::addressof((*sharedFn)());
+                        resultPtr = std::addressof(std::invoke(static_cast<Invocation>(*sharedFn)));
                     }
                     catch (...) {
                         failure = std::current_exception();
@@ -426,7 +437,7 @@ private:
                 else {
                     std::optional<Result> result;
                     try {
-                        result.emplace((*sharedFn)());
+                        result.emplace(std::invoke(static_cast<Invocation>(*sharedFn)));
                     }
                     catch (...) {
                         failure = std::current_exception();
@@ -437,7 +448,12 @@ private:
                         promise->set_exception(failure);
                     }
                     else {
-                        promise->set_value(std::move(*result));
+                        try {
+                            promise->set_value(std::move(*result));
+                        }
+                        catch (...) {
+                            promise->set_exception(std::current_exception());
+                        }
                     }
                 }
             };
