@@ -39,6 +39,9 @@ UNATTRIBUTED_MODULE = "<unattributed>"
 # - freecad-integration-tests (FreeCADCmd -t 0, unittest verbosity=2) emits
 #   either "test_name (Mod.Class.test_name) ... <status>" on one line, or
 #   "test_name (Mod.Class.test_name)" followed by the docstring line.
+#   This is only a best-effort module bucket, not proof that output between
+#   a header and status belongs to that test: native streams can interleave.
+#   Never use these text boundaries to exempt test-specific diagnostics.
 # - pytest (e.g. freecad-mcp-live-gui) emits module progress lines beginning
 #   with "tests/.../test_foo.py ".
 E2E_BANNER_RE = re.compile(r"^Running GUI tests for module:\s*(\S+)")
