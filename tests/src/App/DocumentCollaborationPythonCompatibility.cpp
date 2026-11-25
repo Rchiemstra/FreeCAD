@@ -92,6 +92,29 @@ public:
         if (value) App::PropertyLinkList::set1Value(index, value);
     }
 };
+class SetterProbe: public App::PropertyIntegerList
+{
+public:
+    mutable int conversions = 0;
+    int wholeCalls = 0;
+    int indexedCalls = 0;
+    void setValues(const std::vector<long>& values) override
+    {
+        ++wholeCalls;
+        App::PropertyIntegerList::setValues(values);
+    }
+    void set1Value(int index, const long& value) override
+    {
+        ++indexedCalls;
+        App::PropertyIntegerList::set1Value(index, value);
+    }
+protected:
+    long getPyValue(PyObject* value) const override
+    {
+        if (PyLong_Check(value)) ++conversions;
+        return App::PropertyIntegerList::getPyValue(value);
+    }
+};
 class RegisteredList: public App::PropertyIntegerList
 {
     TYPESYSTEM_HEADER_WITH_OVERRIDE();
@@ -139,11 +162,13 @@ class Feature: public App::FeatureTest
 public:
     Feature()
     {
+        ADD_PROPERTY(Probe, (1L));
         ADD_PROPERTY(Inherited, (1L));
         ADD_PROPERTY(Registered, (1L));
         ADD_PROPERTY(InheritedColour, (Base::Color()));
         ADD_PROPERTY(RegisteredColour, (Base::Color()));
     }
+    SetterProbe Probe;
     InheritedList Inherited;
     RegisteredList Registered;
     InheritedColor InheritedColour;
@@ -2272,6 +2297,139 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_EQ(PyObject_SetAttrString(target.get(), "Enum", selection.get()), 0);
     EXPECT_STREQ(_target->Enum.getValueAsString(), "\xc3\xa9");
     EXPECT_EQ(PyErr_Occurred(), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       wholeAndIndexedListRoutesDispatchVirtualSettersWithOrderedNotifications)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    auto* feature = _document->addObject<App::ConversionBoundaryTest::Feature>("SetterProbe");
+    ASSERT_NE(feature, nullptr);
+    PyObjectRef owner(feature->getPyObject());
+    ASSERT_NE(owner.get(), nullptr);
+    auto& prop = feature->Probe;
+    prop.conversions = prop.wholeCalls = prop.indexedCalls = 0;
+    std::vector<long> oldValues {1};
+    std::vector<long> newValues {2, 3};
+    int before = 0, after = 0;
+    fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == feature && &property == &prop) {
+                ++before;
+                EXPECT_EQ(prop.getValues(), oldValues);
+            }
+        });
+    fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == feature && &property == &prop) {
+                ++after;
+                EXPECT_EQ(prop.getValues(), newValues);
+            }
+        });
+    PyObjectRef whole(Py_BuildValue("[ll]", 2L, 3L));
+    ASSERT_NE(whole.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Probe", whole.get()), 0);
+    EXPECT_EQ(prop.getValues(), newValues);
+    EXPECT_EQ(prop.conversions, 2);
+    EXPECT_EQ(prop.wholeCalls, 1);
+    EXPECT_EQ(prop.indexedCalls, 0);
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+
+    oldValues = newValues;
+    newValues = {4, 5};
+    before = after = 0;
+    prop.conversions = prop.wholeCalls = prop.indexedCalls = 0;
+    PyObjectRef indexed(Py_BuildValue("{i:l,i:l}", 0, 4L, 1, 5L));
+    ASSERT_NE(indexed.get(), nullptr);
+    ASSERT_EQ(PyObject_SetAttrString(owner.get(), "Probe", indexed.get()), 0);
+    EXPECT_EQ(prop.getValues(), newValues);
+    EXPECT_EQ(prop.conversions, 2);
+    EXPECT_EQ(prop.wholeCalls, 0);
+    EXPECT_EQ(prop.indexedCalls, 2);
+    EXPECT_EQ(before, 1);
+    EXPECT_EQ(after, 1);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       wholeLinkListsPublishFinalBacklinksAndRejectInvalidReplacement)
+{
+    Base::PyGILStateLocker gil;
+    ScopedPythonErrorClear clearPythonError;
+    PyObjectRef owner(_target->getPyObject());
+    auto* a = _document->addObject<App::FeatureTest>("WholeA");
+    auto* b = _document->addObject<App::FeatureTest>("WholeB");
+    auto* c = _document->addObject<App::FeatureTest>("WholeC");
+    ASSERT_NE(owner.get(), nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    PyObjectRef pa(a->getPyObject()), pb(b->getPyObject()), pc(c->getPyObject());
+    ASSERT_NE(pa.get(), nullptr);
+    ASSERT_NE(pb.get(), nullptr);
+    ASSERT_NE(pc.get(), nullptr);
+    const char* types[] = {"App::PropertyLinkList", "App::PropertyLinkListGlobal",
+                           "App::PropertyLinkListChild", "App::PropertyLinkListHidden",
+                           "App::ConversionBoundaryTest::LinkListOverride"};
+    for (int i = 0; i < 5; ++i) {
+        SCOPED_TRACE(types[i]);
+        const bool hidden = i == 3;
+        const std::string name = "WholeLinks" + std::to_string(i);
+        auto* prop = dynamic_cast<App::PropertyLinkList*>(
+            _target->addDynamicProperty(types[i], name.c_str()));
+        ASSERT_NE(prop, nullptr);
+        PyObjectRef initial(Py_BuildValue("[OO]", pa.get(), pb.get()));
+        ASSERT_NE(initial.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), initial.get()), 0);
+        const auto aBack = a->getInList(), bBack = b->getInList(), cBack = c->getInList();
+        const auto hasOwner = [&](const auto& list) {
+            return std::find(list.begin(), list.end(), _target) != list.end();
+        };
+        EXPECT_EQ(hasOwner(aBack), !hidden);
+        EXPECT_EQ(hasOwner(bBack), !hidden);
+        EXPECT_FALSE(hasOwner(cBack));
+        int before = 0, after = 0;
+        fastsignals::scoped_connection beforeConnection = _document->signalBeforeChangeObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != prop) return;
+                ++before;
+                EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+                EXPECT_EQ(a->getInList(), aBack);
+                EXPECT_EQ(b->getInList(), bBack);
+                EXPECT_EQ(c->getInList(), cBack);
+            });
+        fastsignals::scoped_connection afterConnection = _document->signalChangedObject.connect(
+            [&](const App::DocumentObject& object, const App::Property& property) {
+                if (&object != _target || &property != prop) return;
+                ++after;
+                EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {c, a}));
+                EXPECT_EQ(hasOwner(a->getInList()), !hidden);
+                EXPECT_FALSE(hasOwner(b->getInList()));
+                EXPECT_EQ(hasOwner(c->getInList()), !hidden);
+            });
+        PyObjectRef invalid(Py_BuildValue("[OO]", pc.get(), Py_None));
+        ASSERT_NE(invalid.get(), nullptr);
+        EXPECT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), invalid.get()), -1);
+        EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_ValueError));
+        PyErr_Clear();
+        EXPECT_EQ(prop->getValues(), (std::vector<App::DocumentObject*> {a, b}));
+        EXPECT_EQ(a->getInList(), aBack);
+        EXPECT_EQ(b->getInList(), bBack);
+        EXPECT_EQ(c->getInList(), cBack);
+        EXPECT_EQ(before, 0);
+        EXPECT_EQ(after, 0);
+        PyObjectRef replacement(Py_BuildValue("[OO]", pc.get(), pa.get()));
+        ASSERT_NE(replacement.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), replacement.get()), 0);
+        EXPECT_EQ(before, 1);
+        EXPECT_EQ(after, 1);
+        beforeConnection.disconnect();
+        afterConnection.disconnect();
+        PyObjectRef clear(PyList_New(0));
+        ASSERT_NE(clear.get(), nullptr);
+        ASSERT_EQ(PyObject_SetAttrString(owner.get(), name.c_str(), clear.get()), 0);
+    }
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

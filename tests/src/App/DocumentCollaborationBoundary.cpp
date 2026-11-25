@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <new>
@@ -305,6 +306,7 @@ constexpr std::array reviewedDelegations {
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLinkBase::setSilentRestore", "setFlag(", 1},
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLinkBase::setReturnNewElement", "setFlag(", 1},
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLink::setPyObject", "setValue(", 1},
+    ReviewedDelegation {"PropertyLinks.cpp:PropertyLinkList::setPyValues", "inherited::setPyValues(values, indices)", 1},
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLink::resetLink", "resetLinkNoNotify()", 1},
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLinkSub::setSyncSubObject", "_Flags.set", 1},
     ReviewedDelegation {"PropertyLinks.cpp:PropertyLinkSub::setValue", "setValue(", 1},
@@ -445,7 +447,6 @@ constexpr std::array reviewedHeaderDelegations {
     ReviewedDelegation {"Property.h:setSinglePrecision", "{}", 1},
     ReviewedDelegation {"Property.h:clearTouchList", "_touchList.clear()", 1},
     ReviewedDelegation {"Property.h:setPyValues", "throw Base::NotImplementedError", 1},
-    ReviewedDelegation {"Property.h:setPyValues", "atomic_change guard(*this)", 1},
     ReviewedDelegation {"Property.h:setPyObject", "_setPyObject(obj)", 1},
     ReviewedDelegation {"Property.h:setOrderRelevant", "setStatus(", 1},
     ReviewedDelegation {"Property.h:setValue", "setValues(", 2},
@@ -499,7 +500,7 @@ constexpr std::array expectedSourceMutators {
     ExpectedMutatorInventory {"PropertyFile.cpp", "setter", 5},
     ExpectedMutatorInventory {"PropertyGeo.cpp", "setter", 14},
     ExpectedMutatorInventory {"PropertyLinks.cpp", "collection", 12},
-    ExpectedMutatorInventory {"PropertyLinks.cpp", "setter", 46},
+    ExpectedMutatorInventory {"PropertyLinks.cpp", "setter", 47},
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "conversion", 1},
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "setter", 2},
     ExpectedMutatorInventory {"PropertyStandard.cpp", "collection", 2},
@@ -848,6 +849,84 @@ bool containsEvidence(std::string_view sanitizedBody, std::string_view evidence)
     return compacted(sanitizedBody).find(compacted(evidence)) != std::string::npos;
 }
 
+// These mixed-path setters must retain both their delegation and their safeguards.
+// Match ordered, specific code fragments on sanitized source, not comments or strings.
+bool orderedEvidence(std::string_view body, std::initializer_list<std::string_view> fragments)
+{
+    const auto text = compacted(body);
+    std::size_t next = 0;
+    for (auto fragment : fragments) {
+        const auto needle = compacted(fragment);
+        const auto found = text.find(needle, next);
+        if (found == std::string::npos) {
+            return false;
+        }
+        next = found + needle.size();
+    }
+    return true;
+}
+
+// Deliberately narrow shapes for these two mixed routes, not a C++ parser.
+// Equality on the list body prevents a nested or early-return path from satisfying
+// a check meant for the unconditional path. Update this guard when the route changes.
+bool listPythonRoutes(std::string_view body)
+{
+    return compacted(body) == compacted(R"(
+        { if (indices.empty()) {
+            ListT values {}; values.reserve(vals.size());
+            for (auto* valsContent : vals) { values.push_back(getPyValue(valsContent)); }
+            setValues(std::move(values)); return;
+          }
+          assert(vals.size() == indices.size());
+          std::vector<T> values; values.reserve(vals.size());
+          for (auto* value : vals) { values.push_back(getPyValue(value)); }
+          atomic_change guard(*this);
+          for (std::size_t i = 0; i < indices.size(); ++i) {
+              set1Value(indices[i], values[i]);
+          }
+          guard.tryInvoke(); }
+    )");
+}
+
+bool linkPythonRoutes(std::string_view body)
+{
+    const auto text = compacted(body);
+    const std::string prefix = compacted(R"(
+        { const auto& type = typeid(*this);
+          if (!indices.empty() && (type == typeid(PropertyLinkList)
+              || type == typeid(PropertyLinkListGlobal) || type == typeid(PropertyLinkListChild)
+              || type == typeid(PropertyLinkListHidden))) {
+    )");
+    if (text.find(prefix) != 0) {
+        return false;
+    }
+    const auto opening = prefix.size() - 1;
+    const auto closing = matchingBrace(text, opening);
+    if (closing == std::string::npos
+        || text.substr(closing + 1) != "inherited::setPyValues(values,indices);}") {
+        return false;
+    }
+    const auto preflight = text.substr(opening, closing - opening + 1);
+    // Reject the known whole-preflight dead branch; runtime tests cover behavior.
+    // This narrow check does not prove arbitrary control-flow reachability.
+    if (preflight.starts_with("{if(false){")) {
+        return false;
+    }
+    // The branch validates a staged copy; it must not return or write the property.
+    if (preflight.find("return") != std::string::npos
+        || preflight.find("_lValueList") != preflight.rfind("_lValueList")
+        || preflight.find("set1Value(") != std::string::npos
+        || preflight.find("setValues(") != std::string::npos) {
+        return false;
+    }
+    return orderedEvidence(preflight, {
+        "converted.push_back(getPyValue(value))", "auto staged = _lValueList",
+        "if (index < staged.size() && staged[index] == value)", "continue;",
+        "if (!value || !value->isAttachedToDocument())", "throw Base::ValueError",
+        "if (index == staged.size())", "staged.push_back(value)", "staged[index] = value"
+    });
+}
+
 std::size_t probableMutation(std::string_view body, std::size_t begin, std::size_t end)
 {
     static const std::regex mutation(
@@ -1177,6 +1256,77 @@ TEST_F(DocumentCollaborationBoundaryTest,
     EXPECT_STREQ(second->Label.getValue(), "Before second");
 }
 
+TEST(DocumentCollaborationBoundaryInventory, mixedPythonRouteControlsRejectMissingSafeguards)
+{
+    const std::string list = R"({
+        if (indices.empty()) {
+            ListT values {}; values.reserve(vals.size());
+            for (auto* valsContent : vals) { values.push_back(getPyValue(valsContent)); }
+            setValues(std::move(values)); return;
+        }
+        assert(vals.size() == indices.size());
+        std::vector<T> values; values.reserve(vals.size());
+        for (auto* value : vals) { values.push_back(getPyValue(value)); }
+        atomic_change guard(*this);
+        for (std::size_t i = 0; i < indices.size(); ++i) { set1Value(indices[i], values[i]); }
+        guard.tryInvoke();
+    })";
+    const std::string link = R"({
+        const auto& type = typeid(*this);
+        if (!indices.empty() && (type == typeid(PropertyLinkList)
+            || type == typeid(PropertyLinkListGlobal) || type == typeid(PropertyLinkListChild)
+            || type == typeid(PropertyLinkListHidden))) {
+            converted.push_back(getPyValue(value)); auto staged = _lValueList;
+            if (index < staged.size() && staged[index] == value) { continue; }
+            if (!value || !value->isAttachedToDocument()) { throw Base::ValueError(); }
+            if (index == staged.size()) { staged.push_back(value); }
+            else { staged[index] = value; }
+        }
+        inherited::setPyValues(values, indices);
+    })";
+    EXPECT_TRUE(listPythonRoutes(lexicallySanitized(list)));
+    EXPECT_TRUE(linkPythonRoutes(lexicallySanitized(link)));
+    auto replaceOnce = [](std::string text, const std::string& from, const std::string& to) {
+        const auto pos = text.find(from);
+        if (pos != std::string::npos) {
+            text.replace(pos, from.size(), to);
+        }
+        return text;
+    };
+    const std::string delegation = "inherited::setPyValues(values, indices);";
+    EXPECT_FALSE(linkPythonRoutes(lexicallySanitized(replaceOnce(link, delegation, ""))));
+    EXPECT_FALSE(linkPythonRoutes(lexicallySanitized(replaceOnce(
+        link, delegation, "if (false) { " + delegation + " }"))));
+    auto inside = replaceOnce(link, "        }\n        " + delegation,
+                              "            " + delegation + "\n        }");
+    EXPECT_FALSE(linkPythonRoutes(lexicallySanitized(inside)));
+    // The whole preflight enclosed by this dead branch previously passed.
+    auto deadPreflight = replaceOnce(link,
+        "            converted.push_back(getPyValue(value));",
+        "            if (false) { converted.push_back(getPyValue(value));");
+    deadPreflight = replaceOnce(deadPreflight,
+        "            else { staged[index] = value; }\n        }",
+        "            else { staged[index] = value; }\n            }\n        }");
+    EXPECT_FALSE(linkPythonRoutes(lexicallySanitized(deadPreflight)));
+    EXPECT_FALSE(listPythonRoutes(lexicallySanitized(replaceOnce(
+        list, "setValues(std::move(values)); return;",
+        "if (!indices.empty()) { setValues(std::move(values)); return; } return;"))));
+    for (const std::string token : {"values.push_back(getPyValue(value));",
+                                    "atomic_change guard(*this);",
+                                    "set1Value(indices[i], values[i]);", "guard.tryInvoke();"}) {
+        EXPECT_FALSE(listPythonRoutes(lexicallySanitized(replaceOnce(list, token, ""))));
+        EXPECT_FALSE(listPythonRoutes(lexicallySanitized(
+            replaceOnce(list, token, "if (false) { " + token + " }"))));
+    }
+    auto missingBracket = list;
+    missingBracket.replace(missingBracket.find("guard.tryInvoke()"), 17, "");
+    EXPECT_FALSE(listPythonRoutes(lexicallySanitized(missingBracket)));
+    auto missingValidation = link;
+    missingValidation.replace(missingValidation.find("!value->isAttachedToDocument()"),
+                              std::string("!value->isAttachedToDocument()").size(), "false");
+    EXPECT_FALSE(linkPythonRoutes(lexicallySanitized(missingValidation)));
+}
+
 TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedRejectedOrReviewed)
 {
     const auto repository = locateRepository();
@@ -1194,6 +1344,9 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
         + mutatorName
         + R"()\s*\([^;{}]*\)\s*(?:const\s*)?(?:override\s*)?(?:final\s*)?(?:noexcept(?:\([^)]*\))?\s*)?\{)"
     );
+    std::size_t listPythonRouteCount = 0;
+    std::size_t linkPythonRouteCount = 0;
+    std::size_t linkPythonDefinitionCount = 0;
     std::map<std::string, std::size_t> fallbackCounts;
     std::map<std::string, std::size_t> sourceReviewedCounts;
     std::map<std::string, std::size_t> headerReviewedCounts;
@@ -1234,6 +1387,12 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
             const std::string_view body(source.data() + opening, closing - opening + 1);
             const std::string key = sourcePath.filename().string() + ':' + (*match)[1].str()
                 + "::" + (*match)[2].str();
+            if (key == "PropertyLinks.cpp:PropertyLinkList::setPyValues") {
+                ++linkPythonDefinitionCount;
+                if (linkPythonRoutes(body)) {
+                    ++linkPythonRouteCount;
+                }
+            }
             for (const auto& route : requiredListFallbacks) {
                 if (route.key == key && containsEvidence(body, route.requiredEvidence)) {
                     ++fallbackCounts[key + ':' + std::string(route.requiredEvidence)];
@@ -1255,6 +1414,8 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
         }
     }
 
+    EXPECT_EQ(linkPythonDefinitionCount, 1U);
+    EXPECT_EQ(linkPythonRouteCount, 1U) << "link Python validation or delegation changed";
     for (const auto& route : requiredListFallbacks) {
         const std::string key = std::string(route.key) + ':' + std::string(route.requiredEvidence);
         EXPECT_EQ(fallbackCounts[key], route.expectedCount)
@@ -1293,6 +1454,10 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
             const auto closing = matchingBrace(source, opening);
             ASSERT_NE(closing, std::string::npos) << headerPath << ':' << match->str();
             const std::string_view body(source.data() + opening, closing - opening + 1);
+            if (headerPath.filename() == "Property.h" && method == "setPyValues"
+                && listPythonRoutes(body)) {
+                ++listPythonRouteCount;
+            }
             if (directlyBracketedOrRejected(body)) {
                 continue;
             }
@@ -1315,6 +1480,7 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
         }
     }
 
+    EXPECT_EQ(listPythonRouteCount, 1U) << "list Python delegation or indexed bracket changed";
     for (const auto& reviewed : reviewedHeaderDelegations) {
         const std::string countKey = std::string(reviewed.key) + ':'
             + std::string(reviewed.requiredEvidence);
