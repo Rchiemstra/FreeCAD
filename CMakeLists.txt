@@ -157,6 +157,39 @@ SetLibraryVersions()
 SetGlobalCompilerAndLinkerSettings()
 
 add_subdirectory(src)
+
+# The Linux CI embedded-loop job uses paths from this exact configured build.
+# Failure to capture the binding leaves the explicit job unable to run; it
+# does not make PySide a new configure-time requirement for other builds.
+if(BUILD_GUI AND UNIX AND NOT APPLE AND FREECAD_QT_MAJOR_VERSION EQUAL 6
+   AND TARGET FreeCADMainPy AND TARGET FreeCADGuiPy
+   AND TARGET PySide6::pyside6 AND TARGET Shiboken6::libshiboken)
+    set(_embedded_origins "${CMAKE_BINARY_DIR}/embedded-gui-origins.json")
+    file(REMOVE "${_embedded_origins}")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_SOURCE_DIR}/.github/scripts/embedded_gui_config.py" "${_embedded_origins}"
+        RESULT_VARIABLE _embedded_capture_result)
+    if(NOT _embedded_capture_result EQUAL 0)
+        message(WARNING "Could not capture configured Python Qt binding origins")
+    endif()
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/embedded-gui-config-$<CONFIG>.txt" CONTENT
+"${Python3_EXECUTABLE}
+$<TARGET_FILE:FreeCADMainPy>
+$<TARGET_FILE:FreeCADGuiPy>
+${CMAKE_BINARY_DIR}/Ext
+${_embedded_origins}
+$<TARGET_FILE:Qt6::Core>
+$<TARGET_FILE:Qt6::Gui>
+$<TARGET_FILE:Qt6::Widgets>
+$<TARGET_FILE:PySide6::pyside6>
+$<TARGET_FILE:Shiboken6::libshiboken>
+")
+    # Single-config CI has CMAKE_BUILD_TYPE=Debug.
+else()
+    # A reused build may no longer support the handoff after reconfiguration.
+    file(GLOB _obsolete_embedded_configs "${CMAKE_BINARY_DIR}/embedded-gui-config-*.txt")
+    file(REMOVE ${_obsolete_embedded_configs} "${CMAKE_BINARY_DIR}/embedded-gui-origins.json")
+endif()
 add_subdirectory(data)
 
 BuildAndInstallDesignerPlugin()
