@@ -2520,13 +2520,14 @@ PyObject* DocumentPy::recompute(PyObject* args)
 
             Py::Sequence seq(pyobjs);
             for (Py_ssize_t i = 0; i < seq.size(); ++i) {
-                if (!PyObject_TypeCheck(seq[i].ptr(), &DocumentObjectPy::Type)) {
+                Py::Object item = seq[i];
+                if (!PyObject_TypeCheck(item.ptr(), &DocumentObjectPy::Type)) {
                     PyErr_SetString(PyExc_TypeError,
                                     "Expect element in sequence to be of type document object");
                     return nullptr;
                 }
                 objs.push_back(
-                    static_cast<DocumentObjectPy*>(seq[i].ptr())->getDocumentObjectPtr());
+                    static_cast<DocumentObjectPy*>(item.ptr())->getDocumentObjectPtr());
             }
         }
 
@@ -2575,13 +2576,14 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
 
             Py::Sequence seq(pyobjs);
             for (Py_ssize_t i = 0; i < seq.size(); ++i) {
-                if (!PyObject_TypeCheck(seq[i].ptr(), &DocumentObjectPy::Type)) {
+                Py::Object item = seq[i];
+                if (!PyObject_TypeCheck(item.ptr(), &DocumentObjectPy::Type)) {
                     PyErr_SetString(PyExc_TypeError,
                                     "Expect element in sequence to be of type document object");
                     return nullptr;
                 }
                 objs.push_back(
-                    static_cast<DocumentObjectPy*>(seq[i].ptr())->getDocumentObjectPtr());
+                    static_cast<DocumentObjectPy*>(item.ptr())->getDocumentObjectPtr());
             }
         }
 

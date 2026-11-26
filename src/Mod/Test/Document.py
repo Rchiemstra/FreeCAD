@@ -1246,7 +1246,7 @@ class DocumentRecomputeCases(unittest.TestCase):
         self.Doc.removeObject(L8.Name)
 
     def _submitAndWaitRecomputeAsync(
-        self, objects=None, force=False, check_cycle=False, timeout=10.0
+        self, objects=None, force=False, check_cycle=False, timeout=10.0, selection_factory=None
     ):
         import time
 
@@ -1254,7 +1254,8 @@ class DocumentRecomputeCases(unittest.TestCase):
         handle = None
         while True:
             try:
-                handle = self.Doc.recomputeAsync(objects, force, check_cycle)
+                selection = selection_factory() if selection_factory is not None else objects
+                handle = self.Doc.recomputeAsync(selection, force, check_cycle)
                 break
             except RuntimeError as exc:
                 if "lane is busy" not in str(exc).lower() or time.monotonic() >= deadline:
@@ -1283,6 +1284,59 @@ class DocumentRecomputeCases(unittest.TestCase):
         if isinstance(recompute, dict) and "state" in recompute:
             return str(recompute["state"]).lower()
         return str(status.get("state", "")).lower()
+
+    def testRecomputeSelectionSequenceReadsOnce(self):
+        class CountingSequence:
+            def __init__(self, objects):
+                self.objects = objects
+                self.reads = [0] * len(objects)
+
+            def __len__(self):
+                return len(self.objects)
+
+            def __getitem__(self, index):
+                self.reads[index] += 1
+                return self.objects[index]
+
+        self.L1.Integer += 1
+        self.L2.Integer += 1
+        self.Doc.recompute()
+        initial = (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount)
+        selected = [self.L1, self.L2]
+
+        for make_selection in (CountingSequence, list, tuple):
+            with self.subTest(selection=make_selection.__name__, entry="sync"):
+                selection = make_selection(selected)
+                self.assertEqual(self.Doc.recompute(selection, True), 2)
+                if isinstance(selection, CountingSequence):
+                    self.assertEqual(selection.reads, [1, 1])
+                initial = (initial[0] + 1, initial[1] + 1, initial[2])
+                self.assertEqual(
+                    (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount), initial
+                )
+
+            with self.subTest(selection=make_selection.__name__, entry="async"):
+                if make_selection is CountingSequence:
+                    attempts = []
+
+                    def make_attempt():
+                        selection = CountingSequence(selected)
+                        attempts.append(selection)
+                        return selection
+
+                    status = self._submitAndWaitRecomputeAsync(
+                        force=True, selection_factory=make_attempt
+                    )
+                    self.assertTrue(attempts)
+                    for selection in attempts:
+                        self.assertEqual(selection.reads, [1, 1])
+                else:
+                    status = self._submitAndWaitRecomputeAsync(make_selection(selected), True)
+                self.assertEqual(self._recomputeStatusState(status), "completed", status)
+                initial = (initial[0] + 1, initial[1] + 1, initial[2])
+                self.assertEqual(
+                    (self.L1.ExecCount, self.L2.ExecCount, self.L3.ExecCount), initial
+                )
 
     def testRecomputeAsyncForceCleanFeature(self):
         # Settle a counted feature so it is clean before testing recomputeAsync force forwarding.
