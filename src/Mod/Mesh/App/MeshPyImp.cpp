@@ -33,6 +33,7 @@
 #include <Base/VectorPy.h>
 
 #include <boost/algorithm/string.hpp>
+#include <exception>
 
 #include "Core/Degeneration.h"
 #include "Core/Segmentation.h"
@@ -50,26 +51,174 @@
 using namespace Mesh;
 
 
+// A notification may throw after it has already published part of an edit.
+// Clear active before calling it: retrying is not safe.
 struct MeshPropertyLock
 {
-    explicit MeshPropertyLock(PropertyMeshKernel* p)
-        : prop(p)
+    explicit MeshPropertyLock(PropertyMeshKernel* p) : prop(p)
     {
         if (prop) {
             prop->startEditing();
+            active = true;
         }
     }
-    ~MeshPropertyLock()
+    ~MeshPropertyLock() noexcept
     {
-        if (prop) {
+        if (active) {
+            try {
+                finish();
+            }
+            catch (...) {
+                try {
+                    Base::Console().error("Mesh edit notification failed; partial changes may remain\n");
+                }
+                catch (...) {}
+            }
+        }
+    }
+    void finish()
+    {
+        if (active) {
+            active = false;
             prop->finishEditing();
         }
     }
-
 private:
     PropertyMeshKernel* prop;
+    bool active {false};
     FC_DISABLE_COPY_MOVE(MeshPropertyLock)
 };
+
+// These bindings run with the Python GIL held. PyErr_Fetch transfers all three
+// references and clears the indicator, so observers enter Python with a clean state.
+class MeshPythonError
+{
+public:
+    MeshPythonError() { PyErr_Fetch(&type, &value, &traceback); }
+    ~MeshPythonError() { clear(); }
+    void clear()
+    {
+        Py_CLEAR(type);
+        Py_CLEAR(value);
+        Py_CLEAR(traceback);
+    }
+    bool empty() const { return type == nullptr; }
+    void fetch() { PyErr_Fetch(&type, &value, &traceback); }
+    void restore()
+    {
+        PyErr_Restore(type, value, traceback); // steals, replacing any callback error
+        type = value = traceback = nullptr;
+    }
+    PyObject* exception()
+    {
+        if (!type) {
+            return nullptr;
+        }
+        PyErr_NormalizeException(&type, &value, &traceback);
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+            return nullptr;
+        }
+        if (!value || !PyExceptionInstance_Check(value)) {
+            return nullptr;
+        }
+        if (traceback && PyException_SetTraceback(value, traceback) < 0) {
+            PyErr_Clear(); // Cause is still useful even if traceback attachment fails.
+        }
+        return value;
+    }
+    PyObject* releaseValue()
+    {
+        PyObject* result = value;
+        value = nullptr;
+        return result;
+    }
+private:
+    PyObject *type {nullptr}, *value {nullptr}, *traceback {nullptr};
+    FC_DISABLE_COPY_MOVE(MeshPythonError)
+};
+
+// Called inside a catch with no pending error. Preserve the Python exception
+// when present; otherwise translate the C++ stage for the diagnostic chain.
+void meshExceptionToPython()
+{
+    if (PyErr_Occurred()) {
+        return;
+    }
+    try {
+        throw;
+    }
+    catch (const Base::Exception& e) {
+        PyErr_SetString(e.getPyExceptionType(), e.what());
+    }
+    catch (const std::exception& e) {
+        PyErr_SetString(PyExc_RuntimeError, e.what());
+    }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "unknown C++ or Python exception");
+    }
+}
+
+// Both errors are owned while callbacks are finished. The returned RuntimeError
+// has the notification error as its cause and the body error as that cause's
+// cause, where normalization/allocation permits. No callback is retried.
+void meshDualFailure(MeshPythonError& body, const std::exception_ptr& bodyExceptionPtr)
+{
+    meshExceptionToPython();
+    MeshPythonError finish;
+    if (body.empty()) {
+        try {
+            std::rethrow_exception(bodyExceptionPtr);
+        }
+        catch (...) {
+            meshExceptionToPython();
+            body.fetch();
+        }
+    }
+    PyObject* bodyException = body.exception();
+    PyObject* finishException = finish.exception();
+    if (bodyException && finishException) {
+        PyException_SetCause(finishException, body.releaseValue()); // steals
+    }
+    PyErr_SetString(PyExc_RuntimeError,
+        "Mesh edit and its notification both failed; partial changes or notifications may remain");
+    MeshPythonError result;
+    PyObject* resultException = result.exception();
+    if (resultException && finishException) {
+        PyException_SetCause(resultException, finish.releaseValue()); // steals
+    }
+    else if (resultException && bodyException) {
+        PyException_SetCause(resultException, body.releaseValue());
+    }
+    body.clear();
+    finish.clear();
+    result.restore();
+}
+
+template<typename F>
+void withMeshEdit(PropertyMeshKernel* prop, F&& body)
+{
+    MeshPropertyLock lock(prop);
+    try {
+        body();
+    }
+    catch (...) {
+        // For a PyCXX exception the error indicator, not the C++ object, owns
+        // the original type, value and traceback. Capture before any callback.
+        auto bodyExceptionPtr = std::current_exception();
+        MeshPythonError bodyError;
+        try {
+            lock.finish();
+        }
+        catch (...) {
+            meshDualFailure(bodyError, bodyExceptionPtr);
+            throw Py::Exception(); // PY_CATCH returns the prepared Python error
+        }
+        bodyError.restore();
+        throw;
+    }
+    lock.finish();
+}
 
 int MeshPy::PyInit(PyObject* args, PyObject*)
 {
@@ -1304,8 +1453,7 @@ PyObject* MeshPy::flipNormals(PyObject* args) const
 
     PY_TRY
     {
-        MeshPropertyLock lock(this->parentProperty);
-        getMeshObjectPtr()->flipNormals();
+        withMeshEdit(this->parentProperty, [&] { getMeshObjectPtr()->flipNormals(); });
     }
     PY_CATCH;
 
@@ -1355,8 +1503,7 @@ PyObject* MeshPy::harmonizeNormals(PyObject* args) const
 
     PY_TRY
     {
-        MeshPropertyLock lock(this->parentProperty);
-        getMeshObjectPtr()->harmonizeNormals();
+        withMeshEdit(this->parentProperty, [&] { getMeshObjectPtr()->harmonizeNormals(); });
     }
     PY_CATCH;
 
@@ -1399,7 +1546,8 @@ PyObject* MeshPy::fillupHoles(PyObject* args) const
     if (!PyArg_ParseTuple(args, "k|if", &len, &level, &max_area)) {
         return nullptr;
     }
-    try {
+    PY_TRY
+    {
         std::unique_ptr<MeshCore::AbstractPolygonTriangulator> tria;
         if (max_area > 0.0F) {
             tria = std::unique_ptr<MeshCore::AbstractPolygonTriangulator>(
@@ -1412,14 +1560,12 @@ PyObject* MeshPy::fillupHoles(PyObject* args) const
             );
         }
 
-        MeshPropertyLock lock(this->parentProperty);
-        tria->SetVerifier(new MeshCore::TriangulationVerifierV2);
-        getMeshObjectPtr()->fillupHoles(len, level, *tria);
+        withMeshEdit(this->parentProperty, [&] {
+            tria->SetVerifier(new MeshCore::TriangulationVerifierV2);
+            getMeshObjectPtr()->fillupHoles(len, level, *tria);
+        });
     }
-    catch (const Base::Exception& e) {
-        e.setPyException();
-        return nullptr;
-    }
+    PY_CATCH;
 
     Py_Return;
 }
@@ -1593,8 +1739,7 @@ PyObject* MeshPy::optimizeTopology(PyObject* args) const
 
     PY_TRY
     {
-        MeshPropertyLock lock(this->parentProperty);
-        getMeshObjectPtr()->optimizeTopology(fMaxAngle);
+        withMeshEdit(this->parentProperty, [&] { getMeshObjectPtr()->optimizeTopology(fMaxAngle); });
     }
     PY_CATCH;
 
@@ -1609,8 +1754,7 @@ PyObject* MeshPy::optimizeEdges(PyObject* args) const
 
     PY_TRY
     {
-        MeshPropertyLock lock(this->parentProperty);
-        getMeshObjectPtr()->optimizeEdges();
+        withMeshEdit(this->parentProperty, [&] { getMeshObjectPtr()->optimizeEdges(); });
     }
     PY_CATCH;
 
@@ -2030,38 +2174,39 @@ PyObject* MeshPy::smooth(PyObject* args, PyObject* kwds) const
 
     PY_TRY
     {
-        MeshPropertyLock lock(this->parentProperty);
-        MeshCore::MeshKernel& kernel = getMeshObjectPtr()->getKernel();
-        if (strcmp(method, "Laplace") == 0) {
-            MeshCore::LaplaceSmoothing smooth(kernel);
-            if (lambda > 0) {
-                smooth.SetLambda(lambda);
+        withMeshEdit(this->parentProperty, [&] {
+            MeshCore::MeshKernel& kernel = getMeshObjectPtr()->getKernel();
+            if (strcmp(method, "Laplace") == 0) {
+                MeshCore::LaplaceSmoothing smooth(kernel);
+                if (lambda > 0) {
+                    smooth.SetLambda(lambda);
+                }
+                smooth.Smooth(iter);
             }
-            smooth.Smooth(iter);
-        }
-        else if (strcmp(method, "Taubin") == 0) {
-            MeshCore::TaubinSmoothing smooth(kernel);
-            if (lambda > 0) {
-                smooth.SetLambda(lambda);
+            else if (strcmp(method, "Taubin") == 0) {
+                MeshCore::TaubinSmoothing smooth(kernel);
+                if (lambda > 0) {
+                    smooth.SetLambda(lambda);
+                }
+                if (micro > 0) {
+                    smooth.SetMicro(micro);
+                }
+                smooth.Smooth(iter);
             }
-            if (micro > 0) {
-                smooth.SetMicro(micro);
+            else if (strcmp(method, "PlaneFit") == 0) {
+                MeshCore::PlaneFitSmoothing smooth(kernel);
+                smooth.SetMaximum(maximum);
+                smooth.Smooth(iter);
             }
-            smooth.Smooth(iter);
-        }
-        else if (strcmp(method, "PlaneFit") == 0) {
-            MeshCore::PlaneFitSmoothing smooth(kernel);
-            smooth.SetMaximum(maximum);
-            smooth.Smooth(iter);
-        }
-        else if (strcmp(method, "MedianFilter") == 0) {
-            MeshCore::MedianFilterSmoothing smooth(kernel);
-            smooth.SetWeight(weight);
-            smooth.Smooth(iter);
-        }
-        else {
-            throw Py::ValueError("No such smoothing algorithm");
-        }
+            else if (strcmp(method, "MedianFilter") == 0) {
+                MeshCore::MedianFilterSmoothing smooth(kernel);
+                smooth.SetWeight(weight);
+                smooth.Smooth(iter);
+            }
+            else {
+                throw Py::ValueError("No such smoothing algorithm");
+            }
+        });
     }
     PY_CATCH;
 

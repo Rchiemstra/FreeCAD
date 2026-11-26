@@ -7,6 +7,7 @@ add_executable(Mesh_tests_run
         Importer.cpp
         Mesh.cpp
         MeshFeature.cpp
+        MeshFinalize.cpp
 )
 
 target_compile_definitions(Mesh_tests_run PRIVATE DATADIR="${CMAKE_SOURCE_DIR}/data")
