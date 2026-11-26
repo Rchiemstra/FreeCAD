@@ -656,6 +656,21 @@ ApplicationDirectories::MigrationResult ApplicationDirectories::migrateAllPaths(
     return allResult;
 }
 
+fs::path ApplicationDirectories::multiConfigBuildHome(const fs::path& executable,
+                                                        std::string& buildConfig)
+{
+    buildConfig.clear();
+    const fs::path binDir = executable.parent_path();
+    const fs::path configDir = binDir.parent_path();
+    std::error_code ec;
+    if (binDir.filename() != "bin" ||
+        !fs::is_regular_file(binDir / ".freecad-build-tree", ec)) {
+        return {};
+    }
+    buildConfig = configDir.filename().string();
+    return configDir.parent_path() / "";
+}
+
 // TODO: Consider using this for all UNIX-like OSes
 #if defined(__OpenBSD__)
 #include <cstdio>
@@ -663,7 +678,7 @@ ApplicationDirectories::MigrationResult ApplicationDirectories::migrateAllPaths(
 #include <sys/param.h>
 #include <QCoreApplication>
 
-fs::path ApplicationDirectories::findHomePath(const char* sCall)
+fs::path ApplicationDirectories::findHomePath(const char* sCall, std::string* buildConfig)
 {
     // We have three ways to start this application either use one of the two executables or
     // import the FreeCAD.so module from a running Python session. In the latter case the
@@ -703,7 +718,7 @@ fs::path ApplicationDirectories::findHomePath(const char* sCall)
 #include <sys/sysctl.h>
 #endif
 
-fs::path ApplicationDirectories::findHomePath(const char* sCall)
+fs::path ApplicationDirectories::findHomePath(const char* sCall, std::string* buildConfig)
 {
     // We have three ways to start this application either use one of the two executables or
     // import the FreeCAD.so module from a running Python session. In the latter case the
@@ -745,6 +760,13 @@ fs::path ApplicationDirectories::findHomePath(const char* sCall)
         absPath = resolved;
     }
 
+    if (!Py_IsInitialized() && buildConfig) {
+        auto home = multiConfigBuildHome(Base::FileInfo::stringToPath(absPath), *buildConfig);
+        if (!home.empty()) {
+            return home;
+        }
+    }
+
     // should be an absolute path now
     std::string::size_type pos = absPath.find_last_of("/");
     homePath.assign(absPath,0,pos);
@@ -760,7 +782,7 @@ fs::path ApplicationDirectories::findHomePath(const char* sCall)
 #include <cstdlib>
 #include <sys/param.h>
 
-fs::path ApplicationDirectories::findHomePath(const char* sCall)
+fs::path ApplicationDirectories::findHomePath(const char* sCall, std::string* buildConfig)
 {
     // If Python is initialized at this point, then we're being run from
     // MainPy.cpp, which hopefully rewrote argv[0] to point at the
@@ -794,7 +816,7 @@ fs::path ApplicationDirectories::findHomePath(const char* sCall)
 }
 
 #elif defined (FC_OS_WIN32)
-fs::path ApplicationDirectories::findHomePath(const char* sCall)
+fs::path ApplicationDirectories::findHomePath(const char* sCall, std::string* buildConfig)
 {
     // We have several ways to start this application:
     // * use one of the two executables

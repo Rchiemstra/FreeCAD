@@ -60,6 +60,10 @@ SET(FreeCADMainCmd_SRCS
 )
 
 add_executable(FreeCADMainCmd ${FreeCADMainCmd_SRCS})
+# FreeCADInit checks for bundled Pivy even in the command-line executable.
+if(TARGET pivy)
+    add_dependencies(FreeCADMainCmd pivy)
+endif()
 if(BUILD_TEST)
     add_dependencies(FreeCADMainCmd TestSources)
 endif()
@@ -84,6 +88,13 @@ target_link_libraries(FreeCADMainCmd
 target_compile_warn_error(FreeCADMainCmd)
 
 SET_BIN_DIR(FreeCADMainCmd FreeCADCmd)
+
+# This marker is build-tree-only; it is never installed.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CONFIGURATION_TYPES)
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/$<CONFIG>/bin/.freecad-build-tree"
+         CONTENT "FreeCAD multi-config build tree\n")
+endif()
+
 
 if(WIN32)
     INSTALL(TARGETS FreeCADMainCmd

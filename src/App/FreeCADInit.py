@@ -1406,7 +1406,9 @@ class InitPipeline:
         if App.ConfigGet("PIVY_SOURCE") != "bundled":
             return
 
-        expected = (self.std_home / "Mod" / "pivy").resolve()
+        build_config = App.ConfigGet("BuildTreeConfiguration")
+        package_home = self.std_home / build_config if build_config else self.std_home
+        expected = (package_home / "Mod" / "pivy").resolve()
 
         def block_system_pivy(message: str) -> None:
             for name in list(sys.modules):
@@ -1459,6 +1461,7 @@ class InitPipeline:
         std_mod = std_home / "Mod"
         std_ext = std_home / "Ext"
         std_bin = std_home / "bin"
+        build_config = App.ConfigGet("BuildTreeConfiguration")
         user_macro = Path(App.getUserMacroDir(True)).resolve()
         user_mod = user_home / "Mod"
         search_paths = self.search_paths
@@ -1473,6 +1476,8 @@ class InitPipeline:
         libraries.add(std_home / "lib64")
         libraries.add(std_home / "lib-py3")
         libraries.add(std_lib)
+        if build_config:
+            libraries.add(std_home / build_config / "lib", PathPriority.OverrideFirst)
 
         search_paths.add(
             libraries,
@@ -1495,6 +1500,14 @@ class InitPipeline:
             dll_path=PathPriority.FallbackLast,
         )
 
+        if build_config:
+            search_paths.add(
+                std_home / build_config / "bin",
+                env_path=PathPriority.OverrideFirst,
+                sys_path=PathPriority.Ignore,
+                dll_path=PathPriority.FallbackLast,
+            )
+
         # Scan for Directory based Mods
         # Order is important because of overrides
         Log("Init:   Searching for modules...")
@@ -1513,6 +1526,8 @@ class InitPipeline:
         # from FreeCAD.Module import package
         import_path = PathSet([libraries])
         import_path.add(std_mod, PathPriority.OverrideFirst)
+        if build_config:
+            import_path.add(std_home / build_config / "Mod", PathPriority.OverrideFirst)
         import_path.add(user_mod, PathPriority.FallbackLast)
         App.__path__ = [str(path) for path in import_path.build()]
 
@@ -1540,6 +1555,22 @@ class InitPipeline:
         # Resolve Dir Mods
         for mod in mods.iter():
             mod.resolve(search_paths)
+            # Only built-in workbenches use SET_BIN_DIR's per-config output.
+            # An overriding user workbench must not inherit the built-in binaries.
+            if build_config and mod.state == ModState.Resolved and mod.path.parent == std_mod:
+                search_paths.add(
+                    std_home / build_config / "Mod" / mod.path.name,
+                    env_path=PathPriority.OverrideLast,
+                    sys_path=PathPriority.OverrideFirst,
+                )
+
+        # Bundled packages are configuration-specific; workbench resources stay shared.
+        if build_config:
+            search_paths.add(
+                std_home / build_config / "Mod",
+                env_path=PathPriority.Ignore,
+                sys_path=PathPriority.OverrideFirst,
+            )
 
     def load_mods(self) -> None:
         """

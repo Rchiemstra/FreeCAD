@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import IntEnum
+import os
 import sys
 import unittest
 
@@ -103,6 +104,24 @@ class FreeCADInitContractTest(unittest.TestCase):
         self.assertIsInstance(FreeCAD.__MacroDirs__, list)
         self.assertTrue(hasattr(FreeCAD, "__path__"))
         self.assertTrue(all(isinstance(path, str) for path in FreeCAD.__path__))
+
+    def test_multiconfig_build_tree_startup(self) -> None:
+        """Check the paths actually used by a marked multi-config command-line build."""
+        from pathlib import Path
+
+        config = FreeCAD.ConfigGet("BuildTreeConfiguration")
+        if expected := os.environ.get("FREECAD_TEST_BUILD_CONFIG"):
+            self.assertEqual(config, expected)
+        if expected := os.environ.get("FREECAD_TEST_RESOURCE_DIR"):
+            self.assertEqual(Path(FreeCAD.getResourceDir()).resolve(), Path(expected).resolve())
+        if config:
+            home = Path(FreeCAD.getHomePath()).resolve()
+            self.assertTrue((home / config / "bin" / ".freecad-build-tree").is_file())
+            self.assertIn(str(home / config / "lib"), sys.path)
+            part = home / config / "Mod" / "Part"
+            self.assertIn(str(part), sys.path)
+            import Part
+            self.assertEqual(Path(Part.__file__).resolve().parent, part.resolve())
 
     def test_intentional_bootstrap_leaks_remain_available(self) -> None:
         main = sys.modules["__main__"]
