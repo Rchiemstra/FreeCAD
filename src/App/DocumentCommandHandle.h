@@ -60,13 +60,15 @@ struct AppExport DocumentCommandRecomputeFeatureObservation
     std::string diagnostic;
     /** False when the node settled without running the feature's execute(). */
     bool executed {true};
+    /** True when this node may execute on the document owner thread. */
+    bool ownerThreadExecution {false};
 };
 
 /**
  * Copyable, pointer-free observation of one admitted recompute command.
  *
- * Unlike DocumentRecomputeSnapshot, this record is observation-only and never
- * carries owner-thread execution or polling semantics.
+ * This record is observation-only; affinity describes the plan and does not
+ * cause observation to poll or execute it.
  */
 struct AppExport DocumentCommandRecomputeObservation
 {
@@ -78,6 +80,8 @@ struct AppExport DocumentCommandRecomputeObservation
     double progress {0.0};
     std::string diagnostic;
     std::vector<DocumentCommandRecomputeFeatureObservation> features;
+    /** Number of nodes that may execute on the document owner thread. */
+    std::size_t ownerThreadFeatures {0};
 
     [[nodiscard]] bool terminal() const noexcept
     {

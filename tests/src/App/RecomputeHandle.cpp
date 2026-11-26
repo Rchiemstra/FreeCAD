@@ -316,6 +316,27 @@ TEST_F(RecomputeHandleTest,
     EXPECT_EQ(feature->ExecCount.getValue(), 2);  // came back from the worker
 }
 
+TEST_F(RecomputeHandleTest, isolatedVenuePublishesWorkerAffinityForExecutedFeature)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("IsolatedAffinityProbe");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_TRUE(feature->canRecomputeOnWorker());
+    ASSERT_EQ(feature->ExecCount.getValue(), 0);
+    feature->touch();
+    auto handle = _document->recomputeAsync(
+        {feature}, false, 0, App::RecomputeVenue::Isolated);
+    const auto result = handle->wait(120s);
+    ASSERT_TRUE(result.terminal()) << result.diagnostic;
+    ASSERT_EQ(result.state, App::DocumentRecomputeState::Completed) << result.diagnostic;
+    ASSERT_EQ(result.features.size(), 1U);
+    EXPECT_EQ(result.ownerThreadFeatures, 0U);
+    EXPECT_EQ(result.features[0].featureId, feature->getNameInDocument());
+    EXPECT_FALSE(result.features[0].ownerThreadExecution);
+    EXPECT_EQ(result.features[0].state, App::DocumentRecomputeFeatureState::Committed);
+    EXPECT_TRUE(result.features[0].executed);
+    EXPECT_EQ(feature->ExecCount.getValue(), 1);
+}
+
 TEST_F(RecomputeHandleTest, isolatedVenueStillFallsBackForAnUnoptedFeature)
 {
     auto* blocker = _document->addObject<App::FeatureTestAsyncBlocker>("Unopted");

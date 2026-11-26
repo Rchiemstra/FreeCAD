@@ -46,6 +46,18 @@ class DocumentExecutionLaneTestAccess
 public:
     using Hook = void (*)();
 
+    static DocumentCommandRecomputeObservation observe(
+        const DocumentExecutionLane& lane, const DocumentRecomputeSnapshot& snapshot)
+    {
+        return lane.makeRecomputeObservation(snapshot);
+    }
+
+    static DocumentRecomputeSnapshot restore(
+        const DocumentExecutionLane& lane, const DocumentCommandRecomputeObservation& observation)
+    {
+        return lane.recomputeSnapshotFromObservation(observation);
+    }
+
     static bool isCollaborationOwnerThread(const Document& document) noexcept
     {
         return document.isCollaborationOwnerThread();
@@ -695,6 +707,155 @@ TEST_F(DocumentExecutionLaneTest, StatusObservationReturnsStableIdentity)
     EXPECT_EQ(first.id, second.id);
     EXPECT_EQ(first.document, second.document);
     EXPECT_NE(first.state, App::DocumentCommandState::Failed);
+}
+
+TEST_F(DocumentExecutionLaneTest, PureConversionRecomputeAffinityRoundTrip)
+{
+    auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    App::DocumentRecomputeSnapshot input;
+    input.ownerThreadFeatures = 1;
+    input.features.resize(2);
+    input.features[0].featureId = "owner";
+    input.features[0].ownerThreadExecution = true;
+    input.features[1].featureId = "worker";
+    input.features[1].ownerThreadExecution = false;
+    const auto observation = App::Internal::DocumentExecutionLaneTestAccess::observe(*lane, input);
+    EXPECT_EQ(observation.ownerThreadFeatures, 1U);
+    ASSERT_EQ(observation.features.size(), 2U);
+    EXPECT_TRUE(observation.features[0].ownerThreadExecution);
+    EXPECT_FALSE(observation.features[1].ownerThreadExecution);
+    const auto restored = App::Internal::DocumentExecutionLaneTestAccess::restore(*lane, observation);
+    EXPECT_EQ(restored.ownerThreadFeatures, 1U);
+    ASSERT_EQ(restored.features.size(), 2U);
+    EXPECT_TRUE(restored.features[0].ownerThreadExecution);
+    EXPECT_FALSE(restored.features[1].ownerThreadExecution);
+
+    input.ownerThreadFeatures = 0;
+    input.features[0].ownerThreadExecution = false;
+    const auto workerObservation =
+        App::Internal::DocumentExecutionLaneTestAccess::observe(*lane, input);
+    const auto workerRestored =
+        App::Internal::DocumentExecutionLaneTestAccess::restore(*lane, workerObservation);
+    EXPECT_EQ(workerObservation.ownerThreadFeatures, 0U);
+    EXPECT_EQ(workerRestored.ownerThreadFeatures, 0U);
+    ASSERT_EQ(workerRestored.features.size(), 2U);
+    EXPECT_FALSE(workerRestored.features[0].ownerThreadExecution);
+    EXPECT_FALSE(workerRestored.features[1].ownerThreadExecution);
+}
+
+TEST_F(DocumentExecutionLaneTest, PublicRecomputeAffinitySurvivesActiveAndRetainedStatus)
+{
+    auto* feature = doc()->addObject<App::FeatureTest>("OwnerVenueProbe");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_EQ(feature->ExecCount.getValue(), 0);
+    feature->touch();
+
+    struct Witness {
+        std::mutex mutex;
+        std::condition_variable ready;
+        bool bound {false};
+        App::DocumentCommandHandle command;
+        std::optional<App::DocumentCommandSnapshot> active;
+        std::optional<App::DocumentRecomputeSnapshot> activeRecompute;
+    };
+    auto witness = std::make_shared<Witness>();
+    fastsignals::scoped_connection connection = doc()->signalRecomputed.connect(
+        [witness, document = doc()](const App::Document&, const std::vector<App::DocumentObject*>&) {
+            std::unique_lock lock(witness->mutex);
+            if (!witness->ready.wait_for(lock, 5s, [&] { return witness->bound; })) {
+                return;
+            }
+            witness->active = witness->command.status();
+            if (witness->active->recompute) {
+                App::RecomputeHandle handle(*document, witness->active->recompute->id);
+                witness->activeRecompute = handle.status();
+            }
+        });
+    auto execution = doc()->executionHandle();
+    const auto outcome = execution.trySubmit(makeRecomputeCommand("affinity-public"));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    App::DocumentCommandHandle command(outcome.commandId, execution.identity());
+    {
+        std::lock_guard lock(witness->mutex);
+        witness->command = command;
+        witness->bound = true;
+    }
+    witness->ready.notify_all();
+    ASSERT_TRUE(waitForTerminal(command, 30s));
+    {
+        std::lock_guard lock(witness->mutex);
+        ASSERT_TRUE(witness->active);
+        EXPECT_FALSE(witness->active->terminal());
+        ASSERT_TRUE(witness->active->recompute);
+        EXPECT_EQ(witness->active->recompute->ownerThreadFeatures, 1U);
+        ASSERT_EQ(witness->active->recompute->features.size(), 1U);
+        EXPECT_TRUE(witness->active->recompute->features[0].ownerThreadExecution);
+        ASSERT_TRUE(witness->activeRecompute);
+        EXPECT_EQ(witness->activeRecompute->ownerThreadFeatures, 1U);
+        ASSERT_EQ(witness->activeRecompute->features.size(), 1U);
+        EXPECT_TRUE(witness->activeRecompute->features[0].ownerThreadExecution);
+    }
+    const auto terminal = command.status();
+    ASSERT_EQ(terminal.state, App::DocumentCommandState::Completed) << terminal.diagnostic;
+    ASSERT_TRUE(terminal.recompute);
+    EXPECT_EQ(terminal.recompute->ownerThreadFeatures, 1U);
+    ASSERT_EQ(terminal.recompute->features.size(), 1U);
+    EXPECT_TRUE(terminal.recompute->features[0].ownerThreadExecution);
+    EXPECT_EQ(terminal.recompute->features[0].featureId, feature->getNameInDocument());
+    EXPECT_EQ(terminal.recompute->features[0].state,
+              App::DocumentCommandRecomputeFeatureState::Committed);
+    EXPECT_TRUE(terminal.recompute->features[0].executed);
+    EXPECT_EQ(feature->ExecCount.getValue(), 1);
+    App::RecomputeHandle recompute(*doc(), terminal.recompute->id);
+    const auto retained = recompute.status();
+    ASSERT_TRUE(retained.terminal());
+    EXPECT_EQ(retained.ownerThreadFeatures, 1U);
+    ASSERT_EQ(retained.features.size(), 1U);
+    EXPECT_TRUE(retained.features[0].ownerThreadExecution);
+    EXPECT_EQ(retained.features[0].state, App::DocumentRecomputeFeatureState::Committed);
+    EXPECT_TRUE(retained.features[0].executed);
+    static_cast<void>(connection);
+}
+
+TEST_F(DocumentExecutionLaneTest, SyntheticPlanAffinitySurvivesActiveAndRetainedStatus)
+{
+    _blocking->reset();
+    auto execution = doc()->executionHandle();
+    const auto outcome = execution.trySubmit(makeLaneBlockingRecomputeCommand());
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    App::DocumentCommandHandle command(outcome.commandId, execution.identity());
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    auto active = command.status();
+    while ((!active.recompute || active.recompute->features.empty())
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        active = command.status();
+    }
+    ASSERT_FALSE(active.terminal());
+    ASSERT_TRUE(active.recompute);
+    ASSERT_EQ(active.recompute->features.size(), 1U);
+    EXPECT_EQ(active.recompute->ownerThreadFeatures, 0U);
+    EXPECT_FALSE(active.recompute->features[0].ownerThreadExecution);
+    App::RecomputeHandle recompute(*doc(), active.recompute->id);
+    const auto activeRecompute = recompute.status();
+    ASSERT_EQ(activeRecompute.features.size(), 1U);
+    EXPECT_EQ(activeRecompute.ownerThreadFeatures, 0U);
+    EXPECT_FALSE(activeRecompute.features[0].ownerThreadExecution);
+    _blocking->release();
+    ASSERT_TRUE(waitForTerminal(command, 30s));
+    const auto terminal = command.status();
+    ASSERT_EQ(terminal.state, App::DocumentCommandState::Completed) << terminal.diagnostic;
+    ASSERT_TRUE(terminal.recompute);
+    ASSERT_EQ(terminal.recompute->features.size(), 1U);
+    EXPECT_EQ(terminal.recompute->ownerThreadFeatures, 0U);
+    EXPECT_FALSE(terminal.recompute->features[0].ownerThreadExecution);
+    const auto retained = recompute.status();
+    ASSERT_TRUE(retained.terminal());
+    ASSERT_EQ(retained.features.size(), 1U);
+    EXPECT_EQ(retained.ownerThreadFeatures, 0U);
+    EXPECT_FALSE(retained.features[0].ownerThreadExecution);
 }
 
 TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
