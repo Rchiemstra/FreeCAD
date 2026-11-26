@@ -53,8 +53,23 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
 
         doc = self.doc
         self.doc = None
-        self.cleanup_gui_document(doc)
-        super().tearDown()
+        try:
+            self.close_linked_offset_dialogs()
+        finally:
+            try:
+                self.cleanup_gui_document(doc)
+            finally:
+                super().tearDown()
+
+    def close_linked_offset_dialogs(self):
+        # These modeless dialogs belong to the main window, not Control's task
+        # dialog or the document. A failed assertion can leave one open.
+        for dialog in FreeCADGui.getMainWindow().findChildren(QtGui.QDialog, "LinkedOffsetEdit"):
+            if dialog.isVisible():
+                dialog.reject()
+            # WA_DeleteOnClose posts DeferredDelete. Drain this dialog's event
+            # before the next test searches the main window by object name.
+            QtCore.QCoreApplication.sendPostedEvents(dialog, QtCore.QEvent.DeferredDelete)
 
     def pump(self, timeout_ms=50):
         loop = QtCore.QEventLoop()
@@ -1422,6 +1437,55 @@ class TestSketcherOffsetGui(SketcherGuiTestCase):
         dialog.findChild(QtGui.QPushButton, "LinkedOffsetDetach").click()
         self.assertEqual(Sketcher.listLinkedOffsets(self.sketch), [])
         self.assertEqual(self.sketch.Geometry[1].StartPoint, point)
+
+    def test_linked_dialog_cleanup_crosses_unittest_fixture_boundary(self):
+        window = FreeCADGui.getMainWindow()
+        dialogs = lambda: window.findChildren(QtGui.QDialog, "LinkedOffsetEdit")
+        self.assertEqual(dialogs(), [])
+        seen = []
+
+        class DialogFixture(TestSketcherOffsetGui):
+            def open_edit(self):
+                self.linked_fixture()
+                FreeCADGui.Selection.clearSelection()
+                FreeCADGui.Selection.addSelection(self.sketch, "Edge2")
+                FreeCADGui.runCommand("Sketcher_LinkedOffsetEdit", 0)
+                dialog = window.findChild(QtGui.QDialog, "LinkedOffsetEdit")
+                self.assertIsNotNone(dialog)
+                self.assertTrue(dialog.isVisible())
+                self.assertFalse(dialog.isModal())
+                self.assertIn("Explicit refresh",
+                              dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+                seen.append(dialog)
+                # Intentionally leave the modeless dialog open for tearDown.
+
+            def open_refusal(self):
+                self.linked_fixture()
+                self.translate_linked_geometry(1, FreeCAD.Vector(2, 0, 0))
+                FreeCADGui.Selection.clearSelection()
+                FreeCADGui.Selection.addSelection(self.doc.Name, self.sketch.Name, "Edge2")
+                FreeCADGui.runCommand("Sketcher_LinkedOffsetRefresh", 0)
+                dialog = window.findChild(QtGui.QDialog, "LinkedOffsetEdit")
+                self.assertIsNotNone(dialog)
+                self.assertIsNot(dialog, seen[0])
+                self.assertTrue(dialog.isVisible())
+                self.assertIn("Detach", dialog.findChild(QtGui.QLabel, "LinkedOffsetStatus").text())
+                seen.append(dialog)
+
+        def run_fixture(method):
+            result = unittest.TestResult()
+            DialogFixture(method).run(result)
+            self.assertEqual(result.testsRun, 1)
+            self.assertEqual(result.skipped, [])
+            self.assertEqual(result.errors, [])
+            self.assertEqual(result.failures, [])
+
+        run_fixture("open_edit")
+        # This is after the complete first tearDown and before the second setUp.
+        self.assertEqual(dialogs(), [])
+        run_fixture("open_refusal")
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(dialogs(), [])
 
     def test_linked_internal_helper_references_refuse_refit(self):
         self.linked_fixture()
