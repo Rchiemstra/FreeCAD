@@ -2169,9 +2169,10 @@ TEST_F(DocumentCollaborationServiceTest, closeDropsQueuedDispatchHeldByCollabora
 
     const auto closeStatus = closeFuture.wait_for(std::chrono::seconds(2));
     if (closeStatus != std::future_status::ready) {
-        blockerBarrier.release();
         lanePin->cancelApplicationClose();
     }
+    // Also release when close returns early without invoking the Closing hook.
+    blockerBarrier.release();
 
     const auto blockerStatus = blockerFuture.wait_for(std::chrono::seconds(2));
     const auto workerStatus = workerFuture.wait_for(std::chrono::seconds(2));

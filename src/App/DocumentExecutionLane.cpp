@@ -393,6 +393,10 @@ void DocumentExecutionLane::endRecoverySnapshotOwnerWork() noexcept
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 {
     std::lock_guard lock(_mutex);
+    // A reentrant owner dispatch must not discard later admitted dispatches.
+    if (isOwnerThread() && _activeDispatchCount > 0 && !_dispatchQueue.empty()) {
+        return false;
+    }
     if (_active) {
         if (_active->command.kind == DocumentCommandKind::Close
             && (isOwnerThread() || std::this_thread::get_id() == _marshalledCloseThread)) {
@@ -416,6 +420,10 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 bool DocumentExecutionLane::tryBeginApplicationClose() noexcept
 {
     std::lock_guard lock(_mutex);
+    // A reentrant owner dispatch must not discard later admitted dispatches.
+    if (isOwnerThread() && _activeDispatchCount > 0 && !_dispatchQueue.empty()) {
+        return false;
+    }
     if (_active) {
         if (_active->command.kind == DocumentCommandKind::Close
             && (isOwnerThread() || std::this_thread::get_id() == _marshalledCloseThread)) {
