@@ -22,6 +22,7 @@
 #include <deque>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 using namespace std::chrono_literals;
@@ -64,6 +65,8 @@ struct TerminalArchive
     {
         DocumentCommandId commandId {0};
         DocumentCommandSnapshot snapshot;
+        std::shared_ptr<DocumentSaveOutcome> save;
+        bool saveReady {false};
     };
 
     mutable std::mutex mutex;
@@ -76,11 +79,60 @@ struct TerminalArchive
     {
         std::lock_guard lock(mutex);
         auto& bucket = perInstance[instanceId];
+        for (auto& entry : bucket) {
+            if (entry.commandId == commandId) {
+                entry.snapshot = snapshot;
+                return;
+            }
+        }
         // Evict oldest entries when over the cap.
         while (bucket.size() >= kLruCap) {
             bucket.pop_front();
         }
         bucket.push_back({commandId, snapshot});
+    }
+
+    // Allocate all storage before admitting the Save, so publishing its result
+    // after file installation needs no allocation and cannot lose that result.
+    void reserveSave(DocumentInstanceId instanceId, DocumentCommandId commandId)
+    {
+        auto outcome = std::make_shared<DocumentSaveOutcome>();
+        std::lock_guard lock(mutex);
+        auto& bucket = perInstance[instanceId];
+        while (bucket.size() >= kLruCap) {
+            bucket.pop_front();
+        }
+        bucket.push_back({commandId, {}, std::move(outcome), false});
+    }
+
+    void publishSave(DocumentInstanceId instanceId, DocumentCommandId commandId,
+                     DocumentSaveOutcome outcome)
+    {
+        std::lock_guard lock(mutex);
+        auto& bucket = perInstance.at(instanceId);
+        for (auto& entry : bucket) {
+            if (entry.commandId == commandId && entry.save) {
+                *entry.save = std::move(outcome);
+                entry.saveReady = true;
+                return;
+            }
+        }
+        throw std::logic_error("missing reserved save outcome");
+    }
+
+    std::shared_ptr<const DocumentSaveOutcome> findSave(DocumentInstanceId instanceId,
+                                                         DocumentCommandId commandId) const
+    {
+        std::lock_guard lock(mutex);
+        const auto it = perInstance.find(instanceId);
+        if (it != perInstance.end()) {
+            for (const auto& entry : it->second) {
+                if (entry.commandId == commandId && entry.saveReady) {
+                    return entry.save;
+                }
+            }
+        }
+        return {};
     }
 
     /** Remember a closed document and drop the oldest closed buckets past the cap. */
@@ -133,6 +185,12 @@ findTerminalCommandSnapshot(DocumentInstanceId instanceId,
     catch (...) {
         return std::nullopt;
     }
+}
+
+std::shared_ptr<const DocumentSaveOutcome>
+findCommandSaveOutcome(DocumentInstanceId instanceId, DocumentCommandId commandId)
+{
+    return getTerminalArchive().findSave(instanceId, commandId);
 }
 
 DocumentExecutionClosePolicy::UnresponsiveLaneAction
@@ -580,6 +638,9 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
 
+    if (active.command.kind == DocumentCommandKind::Save) {
+        getTerminalArchive().reserveSave(_identity.documentInstanceId, active.id);
+    }
     _active = std::move(active);
     if (_active->command.kind == DocumentCommandKind::Recompute) {
         DocumentRecomputeId admissionId {0};
@@ -1262,24 +1323,34 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             }
             return true;
         }
-        case DocumentCommandKind::Save:
+        case DocumentCommandKind::Save: {
             if (command.command.save && command.command.save->saveAs
                 && !command.command.save->targetPath.empty()) {
-                return _document
-                    .saveAsWithOutcome(command.command.save->targetPath.c_str(),
-                                       command.command.save->overwrite,
-                                       command.command.save->expectedDestinationSha256)
-                    .succeeded();
+                auto outcome = _document.saveAsWithOutcome(
+                    command.command.save->targetPath.c_str(),
+                    command.command.save->overwrite,
+                    command.command.save->expectedDestinationSha256);
+                const bool succeeded = outcome.succeeded();
+                getTerminalArchive().publishSave(_identity.documentInstanceId, command.id,
+                                                 std::move(outcome));
+                return succeeded;
             }
-            // M10: Canonical save with no file name fails with a clear diagnostic.
+            // Preserve the legacy partial-document and missing-name behaviour.
             if (!command.command.save || !command.command.save->saveAs) {
                 const char* fn = _document.FileName.getValue();
                 if (!fn || *fn == '\0') {
-                    throw Base::ValueError(
-                        "document has no file name; use Save As");
+                    throw Base::ValueError("document has no file name; use Save As");
                 }
             }
-            return _document.save();
+            if (_document.testStatus(Document::PartialDoc)) {
+                return _document.save();
+            }
+            auto outcome = _document.saveWithOutcome();
+            const bool succeeded = outcome.succeeded();
+            getTerminalArchive().publishSave(_identity.documentInstanceId, command.id,
+                                             std::move(outcome));
+            return succeeded;
+        }
         case DocumentCommandKind::Close:
             return false;
         case DocumentCommandKind::Edit: {

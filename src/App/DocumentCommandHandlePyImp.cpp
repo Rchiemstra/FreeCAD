@@ -135,7 +135,13 @@ PyObject* DocumentCommandHandlePy::status(PyObject* args)
     }
     PY_TRY
     {
-        return commandSnapshotToPython(getDocumentCommandHandlePtr()->status());
+        const auto* handle = getDocumentCommandHandlePtr();
+        Py::Object result(commandSnapshotToPython(handle->status()), true);
+        if (const auto outcome = handle->saveOutcome()) {
+            Py::Dict dict(result);
+            dict.setItem("save_result", Py::Object(makeDocumentSaveOutcomePy(*outcome), true));
+        }
+        return Py::new_reference_to(result);
     }
     PY_CATCH;
 }

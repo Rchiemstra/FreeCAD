@@ -17,6 +17,8 @@
 namespace App
 {
 
+struct DocumentSaveOutcome;
+
 enum class DocumentCommandState
 {
     Running,
@@ -137,6 +139,9 @@ public:
 
     /** Read-only observation that cannot advance execution or acquire locks. */
     [[nodiscard]] DocumentCommandSnapshot status() const;
+
+    /** Retained save result, or null until a save has produced one or after eviction. */
+    [[nodiscard]] std::shared_ptr<const DocumentSaveOutcome> saveOutcome() const;
 
     /** Cooperative cancellation request; safe even when the owner thread is stalled. */
     [[nodiscard]] bool cancel(std::string reason = "command cancelled by caller");

@@ -104,6 +104,10 @@ AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
 findTerminalCommandSnapshot(DocumentInstanceId instanceId,
                             DocumentCommandId commandId) noexcept;
 
+/** Look up the retained outcome of an admitted Save, subject to archive eviction. */
+[[nodiscard]] AppExport std::shared_ptr<const DocumentSaveOutcome>
+findCommandSaveOutcome(DocumentInstanceId instanceId, DocumentCommandId commandId);
+
 /** RAII marker for GUI dispatch wait-loop pumping (GilTryLock deadlock avoidance). */
 class AppExport DocumentExecutionLaneGuiDispatchPumpScope final
 {

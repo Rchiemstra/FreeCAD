@@ -11,6 +11,8 @@ using PyObject = _object;
 namespace App
 {
 
+AppExport PyObject* makeDocumentSaveOutcomePy(const DocumentSaveOutcome& outcome);
+
 AppExport PyObject* makeDocumentCommandHandlePy(const DocumentCommandHandle& handle);
 
 }  // namespace App

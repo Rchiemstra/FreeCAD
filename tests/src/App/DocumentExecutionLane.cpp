@@ -9,6 +9,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/DocumentExecutionStall.h>
+#include <App/DocumentFileWriter.h>
 #include <App/DocumentHandle.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/DocumentExecutionTelemetry.h>
@@ -1102,6 +1103,137 @@ TEST_F(DocumentExecutionLaneTest, EditCommandRollsBackOnUnknownObject)
     ASSERT_TRUE(doc()->undo());
     EXPECT_EQ(feature->Integer.getValue(), 1);
 }
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+TEST_F(DocumentExecutionLaneTest, SaveHandleRetainsWriterOutcome)
+{
+    // Restore any pre-existing global, even if a test assertion exits early.
+    struct Cleanup {
+        PyObject* previous {nullptr};
+        Cleanup() {
+            Base::PyGILStateLocker gil;
+            auto* globals = PyModule_GetDict(PyImport_AddModule("__main__"));
+            previous = Py_XNewRef(PyDict_GetItemString(globals, "_s217"));
+        }
+        ~Cleanup() {
+            try {
+                Base::Interpreter().runString(
+                    "if globals().get('_s217') is not None and globals()['_s217'].get('tmp'):\n"
+                    "    if globals()['_s217'].get('handle') and not globals()['_s217']['handle'].done():\n"
+                    "        globals()['_s217']['tmp']._finalizer.detach()\n"
+                    "    else:\n"
+                    "        globals()['_s217']['tmp'].cleanup()\n");
+            } catch (...) {}
+            Base::PyGILStateLocker gil;
+            auto* globals = PyModule_GetDict(PyImport_AddModule("__main__"));
+            if (previous) {
+                if (PyDict_SetItemString(globals, "_s217", previous) < 0) {
+                    PyErr_Clear();
+                }
+                Py_DECREF(previous);
+            } else if (PyDict_DelItemString(globals, "_s217") < 0) {
+                PyErr_Clear();
+            }
+        }
+    } cleanup;
+    ASSERT_NE(doc()->addObject("App::FeatureTest", "Receipt217Marker"), nullptr);
+    ASSERT_NO_THROW(Base::Interpreter().runString("_s217 = {}\n_s217['_s217'] = _s217\n"));
+    const auto runScoped = [](const std::string& script) {
+        const auto wrapped = "exec(r\'\'\'" + script + "\'\'\', _s217)\n";
+        Base::Interpreter().runString(wrapped.c_str());
+    };
+    const std::string setup = std::string(R"PY(
+import FreeCAD as App
+import pathlib, tempfile, zipfile
+_s217['tmp'] = tempfile.TemporaryDirectory(prefix='fc-save217-')
+_s217['dir'] = pathlib.Path(_s217['tmp'].name)
+_s217['doc'] = App.getDocument(")PY") + _docName + R"PY(")
+_s217['success'] = _s217['dir'] / 'success.FCStd'
+_s217['busy'] = _s217['dir'] / 'busy.FCStd'
+_s217['late'] = _s217['dir'] / 'late.FCStd'
+_s217['late'].write_bytes(b'old destination')
+)PY";
+    ASSERT_NO_THROW(runScoped(setup));
+    auto waitPythonHandle = [&]() {
+        unsigned long long id = 0;
+        {
+            Base::PyGILStateLocker gil;
+            PyObject* main = PyImport_AddModule("__main__");
+            ASSERT_NE(main, nullptr);
+            PyObject* vars = PyDict_GetItemString(PyModule_GetDict(main), "_s217");
+            ASSERT_NE(vars, nullptr);
+            PyObject* receipt = PyDict_GetItemString(vars, "handle");
+            ASSERT_NE(receipt, nullptr);
+            PyObject* idObj = PyObject_CallMethod(receipt, "id", nullptr);
+            ASSERT_NE(idObj, nullptr);
+            id = PyLong_AsUnsignedLongLong(idObj);
+            Py_DECREF(idObj);
+            ASSERT_FALSE(PyErr_Occurred());
+        }
+        App::DocumentCommandHandle handle(id, doc()->executionHandle().identity());
+        ASSERT_TRUE(waitForTerminal(handle, 30s));
+    };
+
+    ASSERT_NO_THROW(runScoped(
+        "_s217['handle'] = _s217['doc'].saveAsync(str(_s217['success']))\n"));
+    ASSERT_NO_FATAL_FAILURE(waitPythonHandle());
+    ASSERT_NO_THROW(runScoped(R"PY(
+h = _s217['handle']; snap = h.status(); result = snap['save_result']
+assert snap['id'] == h.id() and snap['state'] == 'Completed', snap
+assert result['success'] and result['file_written'] and result['durability_verified'], result
+assert result['target_path'] == str(_s217['success']) and not result['error_code'], result
+with zipfile.ZipFile(_s217['success']) as z:
+    assert z.testzip() is None and b'Receipt217Marker' in z.read('Document.xml')
+assert h.status()['save_result'] == result
+)PY"));
+
+    _blocking->reset();
+    const auto busyActive = doc()->executionHandle().trySubmit(makeLaneBlockingRecomputeCommand());
+    ASSERT_EQ(busyActive.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted(5s));
+    EXPECT_NO_THROW(runScoped(R"PY(
+try:
+    _s217['doc'].saveAsync(str(_s217['busy']))
+except RuntimeError as e:
+    assert 'busy' in str(e).lower(), str(e)
+else:
+    raise AssertionError('busy save was admitted')
+assert not _s217['busy'].exists()
+)PY"));
+    _blocking->release();
+    App::DocumentCommandHandle blocker(busyActive.commandId, doc()->executionHandle().identity());
+    ASSERT_TRUE(waitForTerminal(blocker, 30s));
+
+    auto injection = App::Internal::setDocumentFileWriterRequestDecoratorForTesting(
+        [](App::Internal::DocumentFileReplacementRequest& request) {
+            request.testFault = App::Internal::DocumentFileWriterTestFault::
+                AfterReplacementBeforeVerification;
+        });
+    ASSERT_NO_THROW(runScoped(
+        "_s217['handle'] = _s217['doc'].saveAsync(str(_s217['late']), True)\n"));
+    ASSERT_NO_FATAL_FAILURE(waitPythonHandle());
+    injection.reset();
+    ASSERT_NO_THROW(runScoped(R"PY(
+h = _s217['handle']; snap = h.status(); result = snap['save_result']
+assert snap['id'] == h.id() and snap['state'] == 'Failed', snap
+assert not result['success'] and result['file_written'] and not result['durability_verified'], result
+assert result['target_path'] == str(_s217['late']), result
+assert result['error_code'] == 'TEST_INJECTED_REPLACEMENT_VERIFICATION_FAILURE', result
+assert 'Injected failure' in result['message'], result
+assert _s217['late'].read_bytes() != b'old destination'
+with zipfile.ZipFile(_s217['late']) as z:
+    assert z.testzip() is None and b'Receipt217Marker' in z.read('Document.xml')
+assert h.status()['save_result'] == result
+)PY"));
+
+    ASSERT_NO_THROW(runScoped(R"PY(
+sync_path = _s217['dir'] / 'sync.FCStd'
+sync = _s217['doc'].saveAsWithOutcome(str(sync_path), True)
+assert sync['success'] and sync['file_written'] and sync['durability_verified'], sync
+assert sync_path.is_file() and sync_path.stat().st_size > 0
+)PY"));
+}
+#endif
 
 // M10: Canonical saveAsync with no FileName fails with the expected diagnostic.
 TEST_F(DocumentExecutionLaneTest, SaveAsyncWithNoFileNameFailsWithDiagnostic)

@@ -111,6 +111,11 @@ DocumentCommandSnapshot DocumentCommandHandle::status() const
     return snapshot;
 }
 
+std::shared_ptr<const DocumentSaveOutcome> DocumentCommandHandle::saveOutcome() const
+{
+    return valid() ? findCommandSaveOutcome(_document.documentInstanceId, _id) : nullptr;
+}
+
 bool DocumentCommandHandle::cancel(std::string reason)
 {
     if (!valid()) {
