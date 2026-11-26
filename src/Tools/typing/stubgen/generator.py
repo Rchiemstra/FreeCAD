@@ -18,6 +18,7 @@ of growing this file again.
 
 from __future__ import annotations
 
+import ast
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,6 +163,22 @@ def append_property_aliases(
         target.write_text(merged, encoding="utf-8")
 
 
+def property_support_names(
+    properties: list[TypedCppProperty], catalog: PropertyCatalog
+) -> set[str]:
+    """Find FreeCAD-owned support names referenced by these property contracts."""
+    names: set[str] = set()
+    for prop in properties:
+        for expression in (prop.getter, prop.setter or ""):
+            if expression:
+                names.update(
+                    node.id
+                    for node in ast.walk(ast.parse(expression, mode="eval"))
+                    if isinstance(node, ast.Name)
+                )
+    return names & ({alias.name for alias in catalog.aliases} | {"DocumentObject"})
+
+
 def append_cpp_properties(
     out_dir: Path,
     module_names: set[str],
@@ -195,6 +212,12 @@ def append_cpp_properties(
             raise FileNotFoundError(f"Expected generated {module_name} stub: {target}")
         original = target.read_text(encoding="utf-8")
         merged = add_cpp_properties(original, tuple(module_properties))
+        if module_name != "FreeCAD":
+            # Property contracts are authored in the FreeCAD namespace.
+            support_names = property_support_names(module_properties, property_catalog)
+            if support_names:
+                import_line = "from FreeCAD import " + ", ".join(sorted(support_names)) + "\n"
+                merged = merge_module_support_nodes(merged, import_line)
         if merged != original:
             target.write_text(merged, encoding="utf-8")
     return CppPropertyReport(len(discovered_properties), len(properties), tuple(diagnostics))
