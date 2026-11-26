@@ -1073,5 +1073,64 @@ class CrashReportDiagnostics(unittest.TestCase):
         self.assertNotIn("libStale.so", stderr)
 
 
+class SupportedLauncherTests(unittest.TestCase):
+    def test_default_modes_use_resolved_gui_and_companion_without_build_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for mode in ("installed", "path", "direct", "macos"):
+                with self.subTest(mode=mode):
+                    directory = (root / mode / "FreeCAD.app/Contents/MacOS" if mode == "macos"
+                                 else root / mode / "bin")
+                    directory.mkdir(parents=True)
+                    gui, console = directory / "FreeCAD", directory / "FreeCADCmd"
+                    for exe in (gui, console):
+                        exe.write_text("#!/bin/sh\nexit 0\n")
+                        exe.chmod(0o755)
+                    alias_dir = root / mode / "aliases"
+                    alias_dir.mkdir()
+                    (alias_dir / "FreeCAD").symlink_to(gui)
+                    calls = []
+                    def run(cmd):
+                        calls.append(cmd)
+                        if cmd[-1] == "-t":
+                            suites = CONSOLE_SUITES if cmd[0] == str(console) else (*CONSOLE_SUITES, *FULL_SUITES, *NEWLY_REQUIRED_GUI_SUITES)
+                            return 0, _listing(*suites)
+                        return 0, _ran(1)
+                    arg = {"installed": str(root / mode), "path": None,
+                           "direct": str(gui), "macos": str(gui)}[mode]
+                    real_run = runner.run_gui_modules
+                    with mock.patch.dict(os.environ, {"PATH": str(alias_dir)}), \
+                         mock.patch.object(runner, "_ensure_headless_gl"), \
+                         mock.patch.object(runner, "run_gui_modules", side_effect=lambda exe: real_run(exe, run=run, crash_helper=False, crash_reports_dir=root / "no-reports")), \
+                         mock.patch.object(runner, "_log"):
+                        self.assertEqual(runner.main(["runner"] + ([arg] if arg else [])), 0)
+                    self.assertEqual(calls[0], [str(gui), "-t"])
+                    self.assertEqual(calls[1], [str(console), "-t"])
+                    self.assertTrue(all(call[0] == str(gui) for call in calls[2:]))
+
+
+class EmbeddedOriginTests(unittest.TestCase):
+    def test_missing_wrong_mixed_and_non_extension_origins(self):
+        import importlib.machinery
+        import types
+        import test_embedded_gui_loop as embedded
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build, other = root / "lib", root / "other"
+            build.mkdir(); other.mkdir()
+            good, wrong = build / "FreeCAD.so", other / "FreeCADGui.so"
+            good.touch(); wrong.touch()
+            loader = importlib.machinery.ExtensionFileLoader("FreeCAD", str(good))
+            with mock.patch.object(embedded.importlib.util, "find_spec", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    embedded.load_build_module("FreeCAD", good)
+            for path, candidate_loader in ((wrong, loader), (good, object())):
+                spec = types.SimpleNamespace(origin=str(path), loader=candidate_loader)
+                with mock.patch.object(embedded.importlib.util, "find_spec", return_value=spec):
+                    with self.assertRaises(RuntimeError):
+                        embedded.load_build_module("FreeCADGui", good)
+
+
+
 if __name__ == "__main__":
     unittest.main()

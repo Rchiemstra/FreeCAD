@@ -277,6 +277,23 @@ class GateSemanticsTests(unittest.TestCase):
             check=False,
         )
 
+    def test_embedded_boundary_has_independent_baseline(self):
+        sig = "QWidget: same warning"
+        baseline = self.write_baseline({"Previous": {sig: 2}})
+        log = self.write_log(
+            "Running GUI tests for module: Previous\n"
+            "QWidget: same warning\n"
+            "Running GUI tests for module: EmbeddedGuiLoop\n"
+            "QWidget: same warning\n"
+        )
+        fmt, seen, counts = checker.scan_log(log)
+        self.assertEqual(fmt, "e2e")
+        self.assertEqual(seen, {"Previous", "EmbeddedGuiLoop"})
+        self.assertEqual(counts, {"Previous": {sig: 1}, "EmbeddedGuiLoop": {sig: 1}})
+        result = self.run_cli("--baseline", baseline, log)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("[EmbeddedGuiLoop] new error signature", result.stderr)
+
     def test_pass_when_counts_equal_baseline(self):
         sig = "Coin error in SoGroup::removeChild(): tried to remove non-existent child 0x<ADDR> (Separator)"
         baseline = self.write_baseline({"TestDraftGui": {sig: 2}, "OtherUnseenMod": {sig: 5}})
@@ -509,7 +526,7 @@ class GateSemanticsTests(unittest.TestCase):
 
 
 class ShellHookTests(unittest.TestCase):
-    def run_e2e_hook(self, runner_output: str, runner_rc: int, baseline: dict | None = None):
+    def run_e2e_hook(self, runner_output: str, runner_rc: int, baseline: dict | None = None, embedded_rc: int = 0):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             baseline_file = directory / "baseline.json"
@@ -521,6 +538,10 @@ class ShellHookTests(unittest.TestCase):
                 "gdb": "exit 0\n",
                 "mktemp": 'printf "%s\\n" "$TEST_LOG"\n',
                 "xvfb-run": (
+                    'case "$*" in *run_embedded_gui_loop.py*)\n'
+                    '  printf "%s\\n" "$*" > "$TEST_ARGS"; echo embedded >> "$TEST_CALLS"; exit "$EMBEDDED_RC";;\n'
+                    'esac\n'
+                    'echo runner >> "$TEST_CALLS"\n'
                     'printf "%s" "$TEST_OUTPUT"\n'
                     'exit "$TEST_RC"\n'
                 ),
@@ -535,9 +556,12 @@ class ShellHookTests(unittest.TestCase):
                 TEST_LOG=str(directory / "e2e.log"),
                 TEST_OUTPUT=runner_output,
                 TEST_RC=str(runner_rc),
+                EMBEDDED_RC=str(embedded_rc),
+                TEST_CALLS=str(directory / "calls"),
+                TEST_ARGS=str(directory / "args"),
                 FREECAD_LOG_ERROR_BASELINE=str(baseline_file),
             )
-            return subprocess.run(
+            result = subprocess.run(
                 ["sh", str(E2E_SCRIPT)],
                 cwd=directory,
                 env=env,
@@ -545,6 +569,10 @@ class ShellHookTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            result.calls = (directory / "calls").read_text().splitlines()
+            args = directory / "args"
+            result.embedded_args = args.read_text() if args.exists() else ""
+            return result
 
     def test_e2e_hook_streams_and_passes_when_clean(self):
         out = (
@@ -556,6 +584,19 @@ class ShellHookTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("Running GUI tests for module: TestPartGui", res.stdout)
         self.assertIn("log-gate: PASS", res.stdout)
+        self.assertEqual(res.calls, ["runner", "embedded"])
+        self.assertIn("python3 .github/scripts/run_embedded_gui_loop.py build/debug/embedded-gui-config-Debug.txt", res.embedded_args)
+        self.assertIn("Running GUI tests for module: EmbeddedGuiLoop", res.stdout)
+
+    def test_embedded_failure_fails_normal_job(self):
+        res = self.run_e2e_hook("Running GUI tests for module: TestPartGui\n", 0, embedded_rc=7)
+        self.assertEqual(res.returncode, 7, res.stdout + res.stderr)
+        self.assertEqual(res.calls, ["runner", "embedded"])
+
+    def test_embedded_timeout_fails_normal_job(self):
+        res = self.run_e2e_hook("Running GUI tests for module: TestPartGui\n", 0, embedded_rc=124)
+        self.assertEqual(res.returncode, 124, res.stdout + res.stderr)
+        self.assertEqual(res.calls, ["runner", "embedded"])
 
     def test_e2e_hook_fails_on_new_coin_error_even_when_runner_exits_zero(self):
         out = (
@@ -575,6 +616,7 @@ class ShellHookTests(unittest.TestCase):
         )
         res = self.run_e2e_hook(out, runner_rc=4)
         self.assertEqual(res.returncode, 4)
+        self.assertEqual(res.calls, ["runner"])
         self.assertIn("FAIL: [TestPartGui] new error signature", res.stderr)
 
         res_clean = self.run_e2e_hook("Running GUI tests for module: TestPartGui\n", runner_rc=124)

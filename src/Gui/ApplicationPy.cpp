@@ -26,6 +26,7 @@
 #include <QPrinter>
 #include <QFileInfo>
 #include <map>
+#include <exception>
 #include <QIcon>
 #if defined(Q_OS_WIN)
 # include <windows.h>
@@ -387,7 +388,24 @@ PyObject* Gui::ApplicationPy::sExec_loop(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    qApp->exec();
+    try {
+        // Restore the calling thread state before translating any exception.
+        Base::PyGILStateRelease release;
+        qApp->exec();
+    }
+    catch (const Base::Exception& exception) {
+        Base::setPythonFrameInspectionUnsafe(false);
+        PyErr_SetString(PyExc_RuntimeError, exception.what());
+        return nullptr;
+    }
+    catch (const std::exception& exception) {
+        PyErr_SetString(PyExc_RuntimeError, exception.what());
+        return nullptr;
+    }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception in GUI event loop");
+        return nullptr;
+    }
 
     Py_INCREF(Py_None);
     return Py_None;

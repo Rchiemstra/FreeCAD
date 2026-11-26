@@ -26,7 +26,15 @@ echo "== e2e log: $log =="
   env QT_QPA_PLATFORM="$QT_QPA_PLATFORM" \
     xvfb-run -a -s "-screen 0 1024x768x24" \
     python3 .github/scripts/run_gui_tests.py build/debug 2>&1
-  printf '%s\n' "$?" >"$rc_file"
+  runner_status=$?
+  if [ "$runner_status" -eq 0 ]; then
+    echo "Running GUI tests for module: EmbeddedGuiLoop"
+    env QT_QPA_PLATFORM="$QT_QPA_PLATFORM" \
+      xvfb-run -a -s "-screen 0 1024x768x24" \
+      python3 .github/scripts/run_embedded_gui_loop.py build/debug/embedded-gui-config-Debug.txt 2>&1
+    runner_status=$?
+  fi
+  printf '%s\n' "$runner_status" >"$rc_file"
 ) | tee "$log"
 
 runner_rc=""
