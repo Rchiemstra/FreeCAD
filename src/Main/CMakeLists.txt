@@ -60,6 +60,10 @@ SET(FreeCADMainCmd_SRCS
 )
 
 add_executable(FreeCADMainCmd ${FreeCADMainCmd_SRCS})
+# FreeCADInit checks for bundled Pivy even in the command-line executable.
+if(TARGET pivy)
+    add_dependencies(FreeCADMainCmd pivy)
+endif()
 if(BUILD_TEST)
     add_dependencies(FreeCADMainCmd TestSources)
 endif()

@@ -168,3 +168,11 @@ foreach (exe ${TestExecutables})
         gtest_discover_tests(${exe})
     endif()
 endforeach()
+
+# Check the normal command-line initialization, including the bundled Python binding.
+if(TARGET pivy)
+    add_test(NAME FreeCADCmd_bundled_pivy_startup
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_cmd_bundled_pivy_startup.py
+            $<TARGET_FILE:FreeCADMainCmd> ${CMAKE_BINARY_DIR}/Mod/pivy)
+endif()
